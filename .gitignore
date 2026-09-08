@@ -1,0 +1,20 @@
+# Local credentials and runtime state
+.codex-quota-guard/
+codex-home/
+runtime-state.json
+*.local.json
+
+# Java build outputs
+backend/target/
+
+# Electron dependencies and build outputs
+desktop/node_modules/
+desktop/.vite/
+desktop/out/
+desktop/dist/
+
+# Coverage and OS files
+coverage.out
+*.test
+Thumbs.db
+
