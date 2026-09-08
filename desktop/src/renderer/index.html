@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Codex Quota Guard</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main>
+      <section class="hero" aria-labelledby="app-title">
+        <p class="eyebrow">本机受管服务</p>
+        <h1 id="app-title">Codex Quota Guard</h1>
+        <p>团队额度和执行策略将只通过本地受保护服务读取。</p>
+      </section>
+
+      <section class="status-card" aria-labelledby="status-title">
+        <div>
+          <p class="eyebrow" id="status-title">服务状态</p>
+          <p class="status" id="service-status" aria-live="polite">正在连接本地服务…</p>
+        </div>
+        <button id="refresh-status" type="button">刷新状态</button>
+      </section>
+    </main>
+    <script type="module" src="/renderer.mjs"></script>
+  </body>
+</html>
