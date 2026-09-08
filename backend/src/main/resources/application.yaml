@@ -1,0 +1,9 @@
+server:
+  address: 127.0.0.1
+  port: 47821
+  error:
+    include-message: never
+
+spring:
+  application:
+    name: codex-quota-guard
