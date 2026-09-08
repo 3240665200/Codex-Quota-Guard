@@ -23,7 +23,7 @@ class QuotaSnapshotFactoryTest {
                         "codex_other", new RawRateLimitBucket(
                                 "codex_other",
                                 "Fast model",
-                                new RawRateLimitWindow(44.5, 60, CAPTURED_AT.plusSeconds(1_800).getEpochSecond()),
+                                new RawRateLimitWindow(44.5, 60L, CAPTURED_AT.plusSeconds(1_800).getEpochSecond()),
                                 null,
                                 "",
                                 false
@@ -31,8 +31,8 @@ class QuotaSnapshotFactoryTest {
                         "codex", new RawRateLimitBucket(
                                 "codex",
                                 "",
-                                new RawRateLimitWindow(23.0, 300, CAPTURED_AT.plusSeconds(7_200).getEpochSecond()),
-                                new RawRateLimitWindow(33.0, 10_080, CAPTURED_AT.plusSeconds(345_600).getEpochSecond()),
+                                new RawRateLimitWindow(23.0, 300L, CAPTURED_AT.plusSeconds(7_200).getEpochSecond()),
+                                new RawRateLimitWindow(33.0, 10_080L, CAPTURED_AT.plusSeconds(345_600).getEpochSecond()),
                                 "plus",
                                 false
                         )
@@ -60,7 +60,7 @@ class QuotaSnapshotFactoryTest {
                 "Alice",
                 new AccountState(true, "plus"),
                 Map.of("codex", new RawRateLimitBucket(
-                        "codex", "", new RawRateLimitWindow(100.1, 300, CAPTURED_AT.plusSeconds(7_200).getEpochSecond()), null, "plus", false
+                        "codex", "", new RawRateLimitWindow(100.1, 300L, CAPTURED_AT.plusSeconds(7_200).getEpochSecond()), null, "plus", false
                 )),
                 CAPTURED_AT
         )).isInstanceOf(QuotaSnapshotException.class);
@@ -71,7 +71,7 @@ class QuotaSnapshotFactoryTest {
                 "Alice",
                 new AccountState(true, "plus"),
                 Map.of("codex", new RawRateLimitBucket(
-                        "codex", "", new RawRateLimitWindow(50.0, 300, 0), null, "plus", false
+                        "codex", "", new RawRateLimitWindow(50.0, 300L, 0L), null, "plus", false
                 )),
                 CAPTURED_AT
         )).isInstanceOf(QuotaSnapshotException.class);
