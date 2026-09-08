@@ -1,8 +1,11 @@
 import { app, BrowserWindow, ipcMain, net, protocol, session } from "electron";
+import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 
 import { BackendClient } from "./backend-client.mjs";
+import { buildBackendLaunch } from "./backend-launch.mjs";
 import { isTrustedRendererUrl } from "./renderer-origin.mjs";
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url));
@@ -21,11 +24,12 @@ protocol.registerSchemesAsPrivileged([
 
 app.enableSandbox();
 
-const backendClient = createBackendClientFromEnvironment();
+let backendRuntime;
 
 app.whenReady().then(async () => {
     configureLocalRendererProtocol();
     session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+    backendRuntime = startBackend();
     registerIpcHandlers();
     await createWindow();
 });
@@ -35,6 +39,8 @@ app.on("window-all-closed", () => {
         app.quit();
     }
 });
+
+app.on("before-quit", stopBackend);
 
 async function createWindow() {
     const window = new BrowserWindow({
@@ -61,15 +67,42 @@ async function createWindow() {
     await window.loadURL("app://quota-guard/index.html");
 }
 
-function createBackendClientFromEnvironment() {
-    const token = process.env.CODEX_QUOTA_GUARD_API_TOKEN;
-    if (!token) {
-        throw new Error("The desktop app must launch the backend with an ephemeral API token.");
-    }
-    return new BackendClient({
-        baseUrl: process.env.CODEX_QUOTA_GUARD_BACKEND_URL ?? "http://127.0.0.1:47821",
-        token
+function startBackend() {
+    const token = randomBytes(32).toString("base64url");
+    const port = 47821;
+    const launch = buildBackendLaunch({
+        jarPath: resolveBackendJarPath(),
+        token,
+        port
     });
+    const backendProcess = spawn(launch.command, launch.args, launch.options);
+    backendProcess.stderr.on("data", () => {
+        // The renderer receives only a generic availability message; backend output may contain local paths.
+    });
+    backendProcess.on("error", () => {
+        // The status request will report the backend as unavailable without exposing process details.
+    });
+    return {
+        backendProcess,
+        client: new BackendClient({ baseUrl: `http://127.0.0.1:${port}`, token })
+    };
+}
+
+function resolveBackendJarPath() {
+    if (process.env.CODEX_QUOTA_GUARD_BACKEND_JAR) {
+        return resolve(process.env.CODEX_QUOTA_GUARD_BACKEND_JAR);
+    }
+    if (app.isPackaged) {
+        return resolve(process.resourcesPath, "backend", "codex-quota-guard-backend.jar");
+    }
+    return resolve(currentDirectory, "../../../backend/target/backend-0.1.0-SNAPSHOT.jar");
+}
+
+function stopBackend() {
+    const backendProcess = backendRuntime?.backendProcess;
+    if (backendProcess && backendProcess.exitCode === null && !backendProcess.killed) {
+        backendProcess.kill();
+    }
 }
 
 function configureLocalRendererProtocol() {
@@ -94,6 +127,9 @@ function registerIpcHandlers() {
         if (!isTrustedRendererUrl(event.senderFrame.url)) {
             throw new Error("Untrusted renderer attempted to access the local backend.");
         }
-        return backendClient.status();
+        if (!backendRuntime) {
+            throw new Error("The local backend is starting.");
+        }
+        return backendRuntime.client.status();
     });
 }
