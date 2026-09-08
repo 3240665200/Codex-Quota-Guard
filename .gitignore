@@ -6,6 +6,7 @@ runtime-state.json
 
 # Java build outputs
 backend/target/
+.m2/
 
 # Electron dependencies and build outputs
 desktop/node_modules/
@@ -17,4 +18,3 @@ desktop/dist/
 coverage.out
 *.test
 Thumbs.db
-
