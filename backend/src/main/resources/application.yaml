@@ -7,3 +7,6 @@ server:
 spring:
   application:
     name: codex-quota-guard
+
+quota-guard:
+  room-directory: ${CODEX_QUOTA_GUARD_ROOM_DIRECTORY:${user.home}/.codex-quota-guard/room}
