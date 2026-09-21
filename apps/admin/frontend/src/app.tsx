@@ -1,10 +1,10 @@
-import { LogoutOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
+import { LogoutOutlined, SafetyCertificateFilled, UserOutlined } from '@ant-design/icons';
 import type { RequestConfig, RunTimeLayoutConfig } from '@umijs/max';
 import { history, Link } from '@umijs/max';
 import type { RequestOptions } from '@@/plugin-request/types';
-import { App as AntApp, Button, ConfigProvider, Result, Typography } from 'antd';
+import { App as AntApp, Button, ConfigProvider, Result, Tooltip, Typography } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
-import type { ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
 
 import {
   ApiError,
@@ -13,6 +13,7 @@ import {
   getSession,
   logout,
   PermissionDeniedError,
+  SESSION_EXPIRED_EVENT,
 } from './services/api';
 import type { UserResponse } from './services/api';
 import './style.css';
@@ -70,29 +71,50 @@ export async function getInitialState(): Promise<InitialState> {
 
 export const layout: RunTimeLayoutConfig = ({ initialState, setInitialState }) => ({
   actionsRender: () => [
-    <Tagline key="tagline">管理员控制台</Tagline>,
-    <Button
-      icon={<LogoutOutlined />}
-      key="logout"
-      onClick={() => {
-        void logout().finally(() => {
-          setInitialState((previous) => ({
-            ...previous,
-            currentUser: undefined,
-            notice: '',
-          }));
-          history.replace(loginPath);
-        });
-      }}
-      type="text"
-    >
-      退出登录
-    </Button>,
+    <Tooltip key="logout" title="退出登录">
+      <Button
+        aria-label="退出登录"
+        className="cqg-logout-button"
+        icon={<LogoutOutlined />}
+        onClick={() => {
+          void logout().finally(() => {
+            setInitialState((previous) => ({
+              ...previous,
+              currentUser: undefined,
+              notice: '',
+            }));
+            history.replace(loginPath);
+          });
+        }}
+        shape="circle"
+        type="text"
+      />
+    </Tooltip>,
   ],
   avatarProps: {
-    icon: <SafetyCertificateOutlined />,
-    title: initialState?.currentUser?.displayName || initialState?.currentUser?.email,
+    className: 'cqg-admin-avatar',
+    icon: <UserOutlined />,
+    title: initialState?.currentUser ? '管理员' : undefined,
   },
+  childrenRender: (children) => (
+    <SessionExpiryBoundary
+      onExpired={() => {
+        const { pathname, search } = history.location;
+        setInitialState((previous) => ({
+          ...previous,
+          currentUser: undefined,
+          notice: '登录已过期，请重新登录。',
+        }));
+        if (pathname !== loginPath) {
+          history.replace(
+            `${loginPath}?redirect=${encodeURIComponent(pathname + search)}`,
+          );
+        }
+      }}
+    >
+      {children}
+    </SessionExpiryBoundary>
+  ),
   footerRender: () => (
     <Typography.Text className="cqg-shell-footer" type="secondary">
       Codex Quota Guard · 管理端
@@ -100,19 +122,19 @@ export const layout: RunTimeLayoutConfig = ({ initialState, setInitialState }) =
   ),
   logo: (
     <span aria-hidden="true" className="cqg-brand-logo">
-      CQ
+      <SafetyCertificateFilled />
     </span>
   ),
   menuItemRender: (item, dom) => {
     if (!item.path) return dom;
     return <Link to={item.path}>{dom}</Link>;
   },
-  menuHeaderRender: (logo, title) => (
+  menuHeaderRender: (logo) => (
     <div className="cqg-menu-header">
       {logo}
       <span>
-        <Typography.Text strong>{title}</Typography.Text>
-        <Typography.Text type="secondary">管理员控制台</Typography.Text>
+        <Typography.Text strong>Quota Guard</Typography.Text>
+        <Typography.Text type="secondary">管理中心</Typography.Text>
       </span>
     </div>
   ),
@@ -149,8 +171,19 @@ export const request: RequestConfig = {
   ],
 };
 
-function Tagline({ children }: { children: ReactNode }) {
-  return <span className="cqg-layout-tagline">{children}</span>;
+function SessionExpiryBoundary({
+  children,
+  onExpired,
+}: {
+  children: ReactNode;
+  onExpired: () => void;
+}) {
+  useEffect(() => {
+    window.addEventListener(SESSION_EXPIRED_EVENT, onExpired);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onExpired);
+  }, [onExpired]);
+
+  return children;
 }
 
 export function rootContainer(container: ReactNode): ReactNode {

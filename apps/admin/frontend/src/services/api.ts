@@ -56,6 +56,9 @@ export interface UserListParams {
 export type UserUpdate = Partial<Pick<UserResponse, 'status' | 'role'>>;
 
 const SESSION_KEY = 'codex-quota-guard.session';
+export const SESSION_EXPIRED_EVENT = 'codex-quota-guard:session-expired';
+
+let refreshPromise: Promise<AuthResponse> | null = null;
 
 export class ApiError extends Error {
   readonly status: number;
@@ -111,6 +114,13 @@ export function clearSession(): void {
   storage()?.removeItem(SESSION_KEY);
 }
 
+function expireSession(): void {
+  clearSession();
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+  }
+}
+
 function getErrorMessage(payload: unknown, fallback: string): string {
   if (!payload || typeof payload !== 'object') return fallback;
   const record = payload as Record<string, unknown>;
@@ -133,23 +143,44 @@ async function readPayload(response: Response): Promise<unknown> {
 export async function request<T>(
   path: string,
   init: RequestInit = {},
-  options: { authenticated?: boolean } = {},
+  options: { authenticated?: boolean; retryAfterRefresh?: boolean } = {},
 ): Promise<T> {
+  const authenticated = options.authenticated !== false;
+  const requestSession = authenticated ? getSession() : null;
   const headers = new Headers(init.headers);
   if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
 
-  if (options.authenticated !== false) {
-    const session = getSession();
-    if (session?.accessToken) {
-      headers.set('Authorization', `Bearer ${session.accessToken}`);
-    }
+  if (authenticated && requestSession?.accessToken) {
+    headers.set('Authorization', `Bearer ${requestSession.accessToken}`);
   }
 
   const response = await fetch(path, { ...init, headers });
   const payload = await readPayload(response);
 
+  if (response.status === 401 && authenticated && options.retryAfterRefresh !== false) {
+    const currentSession = getSession();
+
+    if (
+      currentSession?.accessToken &&
+      currentSession.accessToken !== requestSession?.accessToken
+    ) {
+      return request<T>(path, init, { ...options, retryAfterRefresh: false });
+    }
+
+    if (
+      currentSession?.refreshToken &&
+      currentSession.accessToken === requestSession?.accessToken
+    ) {
+      await refreshAuthenticatedSession(currentSession.refreshToken);
+      return request<T>(path, init, { ...options, retryAfterRefresh: false });
+    }
+  }
+
   if (!response.ok) {
-    if (response.status === 401 || response.status === 403) clearSession();
+    if (response.status === 401 || response.status === 403) {
+      if (authenticated) expireSession();
+      else clearSession();
+    }
     const fallback =
       response.status === 401
         ? '登录已过期，请重新登录'
@@ -160,6 +191,40 @@ export async function request<T>(
   }
 
   return payload as T;
+}
+
+async function refreshAuthenticatedSession(refreshToken: string): Promise<AuthResponse> {
+  if (!refreshPromise) {
+    refreshPromise = request<AuthResponse>(
+      '/api/v1/auth/refresh',
+      {
+        body: JSON.stringify({ refreshToken }),
+        method: 'POST',
+      },
+      { authenticated: false, retryAfterRefresh: false },
+    ).then((response) => {
+      if (
+        !response.accessToken ||
+        !response.refreshToken ||
+        !response.user ||
+        response.user.role !== 'ADMIN'
+      ) {
+        throw new PermissionDeniedError('刷新后的会话不具备管理员权限');
+      }
+      setSession(response);
+      return response;
+    });
+  }
+
+  const pendingRefresh = refreshPromise;
+  try {
+    return await pendingRefresh;
+  } catch (error) {
+    expireSession();
+    throw error;
+  } finally {
+    if (refreshPromise === pendingRefresh) refreshPromise = null;
+  }
 }
 
 export async function login(email: string, password: string): Promise<AuthResponse> {

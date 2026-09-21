@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   clearSession,
+  getDashboard,
   getSession,
   listUsers,
   login,
@@ -94,6 +95,102 @@ describe('admin API client', () => {
 
     await expect(listUsers()).rejects.toMatchObject({ status: 401 });
     expect(getSession()).toBeNull();
+  });
+
+  it('refreshes an expired access token and retries the authenticated request', async () => {
+    setSession({
+      accessToken: 'expired-access-token',
+      refreshToken: 'old-refresh-token',
+      user: adminUser,
+    });
+    fetchMock
+      .mockResolvedValueOnce(response({ message: 'token expired' }, 401))
+      .mockResolvedValueOnce(
+        response({
+          accessToken: 'fresh-access-token',
+          refreshToken: 'rotated-refresh-token',
+          user: adminUser,
+        } satisfies AuthResponse),
+      )
+      .mockResolvedValueOnce(
+        response({ items: [], page: 0, size: 20, totalElements: 0, totalPages: 0 }),
+      );
+
+    await expect(listUsers()).resolves.toMatchObject({ items: [] });
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/v1/auth/refresh');
+    const [, retryInit] = fetchMock.mock.calls[2] as [string, RequestInit];
+    expect((retryInit.headers as Headers).get('Authorization')).toBe(
+      'Bearer fresh-access-token',
+    );
+    expect(getSession()).toMatchObject({
+      accessToken: 'fresh-access-token',
+      refreshToken: 'rotated-refresh-token',
+    });
+  });
+
+  it('coalesces concurrent refresh attempts before retrying protected requests', async () => {
+    setSession({
+      accessToken: 'expired-access-token',
+      refreshToken: 'old-refresh-token',
+      user: adminUser,
+    });
+
+    let resolveRefresh!: (value: Response) => void;
+    const refreshResponse = new Promise<Response>((resolve) => {
+      resolveRefresh = resolve;
+    });
+
+    fetchMock.mockImplementation((path: string, init: RequestInit) => {
+      if (path === '/api/v1/auth/refresh') return refreshResponse;
+
+      const authorization = (init.headers as Headers).get('Authorization');
+      if (authorization === 'Bearer expired-access-token') {
+        return Promise.resolve(response({ message: 'token expired' }, 401));
+      }
+      if (path === '/api/v1/admin/dashboard') {
+        return Promise.resolve(
+          response({
+            activeUsers: 1,
+            adminUsers: 1,
+            disabledUsers: 0,
+            newUsersLast7Days: 1,
+            totalUsers: 1,
+          }),
+        );
+      }
+      return Promise.resolve(
+        response({ items: [], page: 0, size: 20, totalElements: 0, totalPages: 0 }),
+      );
+    });
+
+    const usersRequest = listUsers();
+    const dashboardRequest = getDashboard();
+
+    await vi.waitFor(() => {
+      expect(
+        fetchMock.mock.calls.filter(([path]) => path === '/api/v1/auth/refresh'),
+      ).toHaveLength(1);
+    });
+    resolveRefresh(
+      response({
+        accessToken: 'fresh-access-token',
+        refreshToken: 'rotated-refresh-token',
+        user: adminUser,
+      } satisfies AuthResponse),
+    );
+
+    await expect(Promise.all([usersRequest, dashboardRequest])).resolves.toHaveLength(2);
+    expect(
+      fetchMock.mock.calls.filter(([path]) => path === '/api/v1/auth/refresh'),
+    ).toHaveLength(1);
+    const retriedRequests = fetchMock.mock.calls.filter(([, init]) =>
+      ((init as RequestInit).headers as Headers)
+        .get('Authorization')
+        ?.includes('fresh-access-token'),
+    );
+    expect(retriedRequests).toHaveLength(2);
   });
 
   it('revokes the refresh session on logout and always clears local credentials', async () => {

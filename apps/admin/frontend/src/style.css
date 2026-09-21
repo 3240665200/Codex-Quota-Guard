@@ -77,20 +77,25 @@ textarea {
 
 .cqg-login-logo,
 .cqg-brand-logo {
+  position: relative;
   display: inline-grid;
   place-items: center;
+  overflow: hidden;
+  border: 1px solid rgb(255 255 255 / 38%);
   color: #fff;
-  font-weight: 800;
-  letter-spacing: -0.04em;
-  background: linear-gradient(135deg, #2563eb, #7c3aed);
-  box-shadow: 0 8px 20px rgb(37 99 235 / 28%);
+  background:
+    radial-gradient(circle at 72% 22%, rgb(255 255 255 / 34%), transparent 30%),
+    linear-gradient(145deg, #3b82f6 0%, #4f46e5 52%, #7c3aed 100%);
+  box-shadow:
+    0 8px 22px rgb(79 70 229 / 26%),
+    inset 0 1px 0 rgb(255 255 255 / 24%);
 }
 
 .cqg-login-logo {
   width: 52px;
   height: 52px;
   border-radius: 16px;
-  font-size: 18px;
+  font-size: 24px;
 }
 
 .cqg-login-alert {
@@ -108,18 +113,41 @@ textarea {
   min-height: 100vh;
 }
 
-.cqg-layout-tagline {
-  display: inline-flex;
-  align-items: center;
-  color: #526078;
-  font-size: 13px;
+.cqg-brand-logo {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  border-radius: 12px;
+  font-size: 18px;
 }
 
-.cqg-brand-logo {
-  width: 32px;
-  height: 32px;
-  border-radius: 10px;
-  font-size: 12px;
+.cqg-admin-avatar {
+  color: #fff !important;
+  background: linear-gradient(145deg, #2563eb, #4f46e5) !important;
+  box-shadow:
+    0 5px 14px rgb(37 99 235 / 24%),
+    inset 0 1px 0 rgb(255 255 255 / 28%);
+}
+
+.cqg-logout-button {
+  width: 40px;
+  min-width: 40px;
+  height: 40px;
+  color: #64748b;
+  transition-property: color, background-color, box-shadow, transform;
+  transition-duration: 150ms;
+  transition-timing-function: ease-out;
+}
+
+.cqg-logout-button:hover,
+.cqg-logout-button:focus-visible {
+  color: #dc2626 !important;
+  background: #fef2f2 !important;
+  box-shadow: 0 0 0 1px rgb(220 38 38 / 8%);
+}
+
+.cqg-logout-button:active {
+  transform: scale(0.96);
 }
 
 .cqg-menu-header {
@@ -140,6 +168,17 @@ textarea {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.cqg-menu-header .ant-typography:first-child {
+  color: #172033;
+  font-size: 18px;
+  line-height: 24px;
+}
+
+.cqg-menu-header .ant-typography:last-child {
+  font-size: 13px;
+  line-height: 18px;
 }
 
 .cqg-shell-footer {

@@ -1,4 +1,4 @@
-import { LockOutlined, MailOutlined } from '@ant-design/icons';
+import { LockOutlined, MailOutlined, SafetyCertificateFilled } from '@ant-design/icons';
 import { LoginForm, ProFormText } from '@ant-design/pro-components';
 import { Alert, App as AntApp } from 'antd';
 import { history, useModel } from '@umijs/max';
@@ -35,7 +35,7 @@ export default function LoginPage() {
         className="cqg-login-card"
         logo={
           <div aria-hidden="true" className="cqg-login-logo">
-            CQ
+            <SafetyCertificateFilled />
           </div>
         }
         onFinish={async (values) => {
