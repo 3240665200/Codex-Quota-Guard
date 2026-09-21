@@ -24,12 +24,18 @@ apps/
   client/
     frontend/   React + Tauri 桌面客户端
     backend/    Java 桌面本地服务
-docs/           架构与 API 契约
-pom.xml         两个 Java 后端的 Maven 聚合入口
-pnpm-workspace.yaml
+docs/
+  architecture/ 架构方案与能力边界
+  api/          对外 API 契约
+  product/      产品流程与用户旅程
+  README.md     文档索引
+package.json    前端工作区统一命令
+pom.xml         Java 后端 Maven 聚合入口
+pnpm-workspace.yaml  pnpm 工作区声明
 ```
 
 每个应用的前端与后端都放在同一个应用目录下，同时保持独立构建和部署边界。
+仓库根目录只保留工作区入口；依赖目录和构建产物由工具生成，不属于源码层级。
 
 ## 环境要求
 
