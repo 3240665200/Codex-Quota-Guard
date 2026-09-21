@@ -1,76 +1,102 @@
 # Codex Quota Guard
 
-用于协作团队的 Codex 额度监控桌面工具，支持 Windows、macOS 和 Linux。
+Codex Quota Guard 是一个同时包含跨平台桌面客户端与 Web 管理后台的单仓库项目。
 
 ## 技术栈
 
-- 桌面壳：Tauri 2 + Rust
-- 界面：React 18 + TypeScript + Vite
-- UI：Tailwind CSS + shadcn/ui（Radix UI）+ Lucide
-- 前端状态：TanStack Query + Zod + react-i18next + Framer Motion + Sonner
-- 后端：Java 17 + Spring Boot 4（桌面本地服务 + Web 用户服务）
+- 客户端界面：React 18、TypeScript、Vite、Tailwind CSS、shadcn/ui
+- 客户端桌面壳：Tauri 2 + Rust
+- 客户端本地后端：Java 17 + Spring Boot 4
+- 管理端界面：Ant Design Pro 6、React 19、Umi Max 4、Ant Design 6、Pro Components 3
+- 管理端后端：Java 17 + Spring Boot 4、Spring Security、PostgreSQL、Flyway
 
-Rust 只负责桌面窗口、安全边界、桌面本地 Java 进程生命周期和固定 API 代理。
-桌面本地后端负责 Codex 官方账号、额度、共享房间和本机 Codex app-server 通信；Web 后端负责 Web 用户注册登录、用户资料、角色和在线服务数据。两类账号相互独立：Web 用户账号不等于 Codex 官方账号，Web 后端不保存 Codex 登录凭据。
+客户端本地后端负责 Codex 官方账号、额度、共享房间和本机 `codex app-server`
+通信。管理端后端负责应用用户、管理员权限与联网服务数据。应用用户账号与 Codex
+官方账号相互独立，服务器不会接收或保存 Codex 登录凭据。
 
-## 安全模型
+## 目录结构
 
-- 桌面本地 Java 服务只监听 `127.0.0.1`；独立 Web 后端部署时必须由 HTTPS 或可信反向代理保护。
-- Tauri 每次启动生成临时 bearer token，只通过 `QUOTA_GUARD_API_TOKEN` 环境变量交给 Java。
-- React 无法读取 token，也不能代理任意本地 URL。
-- 设备登录地址只能由系统浏览器打开 `https://auth.openai.com/**`。
-- 关闭桌面主窗口时，由该实例启动的 Java 子进程会同步退出。
-- 共享空间只保存签名的成员资料、策略与额度快照，不保存或传输 Codex 登录凭据。
+```text
+apps/
+  admin/
+    frontend/   Ant Design Pro 管理界面
+    backend/    Java Web 用户与管理 API
+  client/
+    frontend/   React + Tauri 桌面客户端
+    backend/    Java 桌面本地服务
+docs/           架构与 API 契约
+pom.xml         两个 Java 后端的 Maven 聚合入口
+pnpm-workspace.yaml
+```
 
-## 项目结构
+每个应用的前端与后端都放在同一个应用目录下，同时保持独立构建和部署边界。
 
-- `src/`：React/shadcn 桌面界面与组件测试
-- `src-tauri/`：Tauri 2 壳、Java 启动器、固定 API 命令与 Rust 测试
-- `services/desktop-backend/`：桌面端随附的 Java 17 + Spring Boot 本地后端与测试
-- `services/web-backend/`：可独立部署的 Java 17 + Spring Boot Web 用户后端与测试
-- `pom.xml`：Maven aggregator，统一管理两个 Java 服务模块（两个子模块仍使用各自的 Spring Boot parent）
-- `scripts/prepare-backend.mjs`：构建 Java JAR 并复制到 Tauri 资源目录
-- `docs/tauri-react-refactor.md`：重构边界、接口契约和验收标准
+## 环境要求
 
-## 开发
+- Java 17
+- Maven 3.9+
+- Node.js 22+
+- pnpm 10.12.3
+- Rust 1.85+ 与 Tauri 对应平台依赖（只开发管理端时不需要 Rust）
+- PostgreSQL（运行管理端后端时需要）
 
-环境要求：Java 17、Maven 3.9+、Node.js 20+、pnpm 10.12.3、Rust 1.85+，以及 Tauri 对应平台的系统依赖。
+安装前端依赖：
 
 ```bash
 pnpm install
-pnpm dev
 ```
 
-`pnpm dev` 会先运行 Java 测试并准备后端 JAR，再启动 Vite 和 Tauri。
+## 运行管理后台
 
-启动 Web 后端开发服务：
+先按 `apps/admin/backend/.env.example` 配置 PostgreSQL、JWT 和管理员初始化变量，再启动 Java API：
 
 ```bash
-pnpm dev:web-backend
+pnpm dev:admin-backend
 ```
 
-启动前需准备 PostgreSQL，并设置数据库与 JWT 环境变量；完整配置见
-`services/web-backend/README.md`。
+另开一个终端启动 Ant Design Pro：
+
+```bash
+pnpm dev:admin
+```
+
+默认管理页面为 `http://localhost:8000`，开发环境会把 `/api` 代理到
+`http://127.0.0.1:8080`。
+
+## 运行桌面客户端
+
+```bash
+pnpm dev:client
+```
+
+该命令会构建 `apps/client/backend` 的 Java JAR，把它复制到 Tauri 资源目录，
+然后启动 Vite 与 Tauri。Java 服务只监听回环地址，并由 Tauri 管理生命周期。
 
 ## 验证与构建
 
 ```bash
-pnpm typecheck
-pnpm test:unit
-mvn test
-pnpm test:java
-mvn -f services/desktop-backend/pom.xml verify
-mvn -f services/web-backend/pom.xml verify
-cargo test --manifest-path src-tauri/Cargo.toml
-pnpm build
+mvn verify
+pnpm test:client
+pnpm test:admin
+pnpm build:client
+pnpm build:admin
+cargo test --manifest-path apps/client/frontend/src-tauri/Cargo.toml
 ```
 
-其中 `test:desktop-backend` 和 `test:web-backend` 分别验证两个服务，`test:java` 串行运行两者；根级 `mvn test` 会通过 aggregator 运行两个模块。
-
-只构建当前平台的桌面可执行文件、不生成安装包：
+也可以执行聚合验证：
 
 ```bash
-pnpm tauri build --no-bundle
+pnpm verify
 ```
 
-构建产物位于 `src-tauri/target/release/`。macOS 和 Linux 安装包需要分别在对应系统上构建。
+桌面安装包需要分别在 Windows、macOS、Linux 上构建。管理端前端的生产构建产物
+位于 `apps/admin/frontend/dist`，应与启用 HTTPS 的 Java API 或反向代理一起部署。
+
+## 安全边界
+
+- 管理 API 的管理员权限由 Java 后端强制校验，前端菜单隐藏不是权限控制。
+- 密码只保存 BCrypt 哈希；refresh token 在数据库中只保存 SHA-256 摘要。
+- 生产环境必须使用 HTTPS，并从环境变量或密钥管理服务注入数据库和 JWT 密钥。
+- 桌面端临时 bearer token、Web access token、refresh token 和数据库密码均不得提交到 Git。
+
+管理端前端基于 [Ant Design Pro](https://github.com/ant-design/ant-design-pro) 官方模板定制。

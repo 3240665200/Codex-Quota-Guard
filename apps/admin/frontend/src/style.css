@@ -1,0 +1,242 @@
+:root {
+  color: #172033;
+  background: #f4f7fb;
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  min-width: 320px;
+  background: #f4f7fb;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+.cqg-full-state {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 24px;
+  background: #f4f7fb;
+}
+
+.cqg-state-card {
+  width: min(560px, 100%);
+  border: 0;
+  border-radius: 16px;
+}
+
+.cqg-login-shell {
+  position: relative;
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  overflow: hidden;
+  padding: 32px 16px 72px;
+  background: radial-gradient(circle at top right, #dbeafe 0, #f8fbff 48%, #eef4ff 100%);
+}
+
+.cqg-login-decoration {
+  position: absolute;
+  top: -220px;
+  right: -160px;
+  width: 520px;
+  height: 520px;
+  border: 1px solid rgb(37 99 235 / 14%);
+  border-radius: 50%;
+  box-shadow: 0 0 0 44px rgb(37 99 235 / 4%), 0 0 0 88px rgb(37 99 235 / 3%);
+}
+
+.cqg-login-card {
+  z-index: 1;
+  width: min(440px, 100%);
+  padding: 32px 28px 24px;
+  border: 1px solid rgb(148 163 184 / 24%);
+  border-radius: 20px;
+  background: rgb(255 255 255 / 94%);
+  box-shadow: 0 24px 70px rgb(30 64 175 / 14%);
+  backdrop-filter: blur(10px);
+}
+
+.cqg-login-logo,
+.cqg-brand-logo {
+  display: inline-grid;
+  place-items: center;
+  color: #fff;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  background: linear-gradient(135deg, #2563eb, #7c3aed);
+  box-shadow: 0 8px 20px rgb(37 99 235 / 28%);
+}
+
+.cqg-login-logo {
+  width: 52px;
+  height: 52px;
+  border-radius: 16px;
+  font-size: 18px;
+}
+
+.cqg-login-alert {
+  margin-bottom: 20px;
+  text-align: left;
+}
+
+.cqg-login-footer {
+  position: absolute;
+  bottom: 26px;
+  z-index: 1;
+}
+
+.cqg-shell {
+  min-height: 100vh;
+}
+
+.cqg-layout-tagline {
+  display: inline-flex;
+  align-items: center;
+  color: #526078;
+  font-size: 13px;
+}
+
+.cqg-brand-logo {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  font-size: 12px;
+}
+
+.cqg-menu-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 56px;
+  padding: 10px 16px;
+}
+
+.cqg-menu-header > span {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.cqg-menu-header .ant-typography {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cqg-shell-footer {
+  display: block;
+  padding: 16px 24px 20px;
+  text-align: center;
+  font-size: 12px;
+}
+
+.cqg-exception-page {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 24px;
+  background: #f4f7fb;
+}
+
+.cqg-stat-card,
+.cqg-users-card {
+  border: 1px solid #e5eaf2;
+  border-radius: 14px;
+  box-shadow: 0 8px 24px rgb(15 23 42 / 3%);
+}
+
+.cqg-stat-card {
+  min-height: 128px;
+}
+
+.cqg-stat-card .ant-statistic-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cqg-inline-alert {
+  margin-bottom: 16px;
+}
+
+.cqg-filter-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px 12px;
+  margin-bottom: 20px;
+}
+
+.cqg-filter-form .ant-form-item {
+  margin-bottom: 0;
+}
+
+.cqg-filter-form .ant-form-item-label {
+  padding-bottom: 4px;
+}
+
+.cqg-user-cell {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.cqg-user-cell .ant-typography {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cqg-users-table .ant-table-thead > tr > th {
+  color: #526078;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+@media (max-width: 992px) {
+  .cqg-filter-form {
+    align-items: stretch;
+  }
+}
+
+@media (max-width: 640px) {
+  .cqg-login-card {
+    padding: 24px 20px 16px;
+  }
+
+  .cqg-filter-form {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .cqg-filter-form .ant-form-item,
+  .cqg-filter-form .ant-form-item-control,
+  .cqg-filter-form .ant-input,
+  .cqg-filter-form .ant-select {
+    width: 100%;
+  }
+
+  .cqg-users-card {
+    margin-inline: -8px;
+  }
+}

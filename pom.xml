@@ -11,7 +11,7 @@
     <name>Codex Quota Guard services</name>
 
     <modules>
-        <module>services/desktop-backend</module>
-        <module>services/web-backend</module>
+        <module>apps/client/backend</module>
+        <module>apps/admin/backend</module>
     </modules>
 </project>

@@ -4,21 +4,23 @@ codex-home/
 runtime-state.json
 *.local.json
 .env
-services/*/.env
-!services/*/.env.example
+apps/*/*/.env
+!apps/*/*/.env.example
 
 # Java build outputs
-services/*/target/
+apps/*/backend/target/
 .m2/
 
 # React and Tauri build outputs
 node_modules/
 dist/
-src-tauri/target/
-src-tauri/gen/
-src-tauri/resources/backend/*.jar
-src-tauri/icons/android/
-src-tauri/icons/ios/
+apps/client/frontend/src-tauri/target/
+apps/client/frontend/src-tauri/gen/
+apps/client/frontend/src-tauri/resources/backend/*.jar
+apps/client/frontend/src-tauri/icons/android/
+apps/client/frontend/src-tauri/icons/ios/
+apps/*/frontend/.umi/
+apps/*/frontend/.umi-production/
 
 # Coverage and OS files
 coverage.out

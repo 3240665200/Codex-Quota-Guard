@@ -101,6 +101,61 @@
 }
 ```
 
+## 管理接口
+
+管理接口统一位于 `/api/v1/admin`，必须携带有效 access token，并由 Java 后端
+实时确认当前用户为 `ADMIN` 且状态为 `ACTIVE`。普通用户返回 `403 / AUTH_FORBIDDEN`，
+未登录或 token 无效返回 `401`。
+
+### GET `/api/v1/admin/dashboard`
+
+返回管理首页统计：
+
+```json
+{
+  "totalUsers": 120,
+  "activeUsers": 116,
+  "disabledUsers": 4,
+  "adminUsers": 2,
+  "newUsersLast7Days": 18
+}
+```
+
+### GET `/api/v1/admin/users`
+
+支持以下查询参数：
+
+- `page`：从 `0` 开始，默认 `0`。
+- `size`：每页数量，范围 `1..100`，默认 `20`。
+- `q`：按邮箱或昵称进行不区分大小写的包含搜索。
+- `status`：可选 `ACTIVE`、`DISABLED`。
+- `role`：可选 `USER`、`ADMIN`。
+
+结果按 `createdAt` 倒序并使用 `id` 作为稳定次级排序：
+
+```json
+{
+  "items": [],
+  "page": 0,
+  "size": 20,
+  "totalElements": 0,
+  "totalPages": 0
+}
+```
+
+### PATCH `/api/v1/admin/users/{id}`
+
+修改用户状态或角色，请求至少包含一个字段：
+
+```json
+{"status":"DISABLED","role":"USER"}
+```
+
+成功返回更新后的 `UserResponse`。目标不存在返回 `404 / USER_NOT_FOUND`；管理员
+不得禁用自己或把自己降为普通用户，系统也始终保留至少一个启用中的管理员。违反这些
+约束时返回 `409`；移除最后一个启用管理员会返回 `ADMIN_LAST_ACTIVE`。前端隐藏操作
+按钮只能改善体验，不能替代后端授权和保护规则。
+
 ## 状态码与 Spring Boot 对照
 
 | HTTP | 使用场景 | 建议实现映射 |
@@ -135,4 +190,4 @@
 
 ## 明确不提供的端点
 
-本期不提供 `/verify-email`、`/forgot-password`、`/reset-password`、`/admin/*`、Codex OAuth 代理或 Codex 额度接口。新增前端页面或管理员功能前，应先扩展本契约和权限模型。
+本期不提供 `/verify-email`、`/forgot-password`、`/reset-password`、Codex OAuth 代理或 Codex 额度接口。

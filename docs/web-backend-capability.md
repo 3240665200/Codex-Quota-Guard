@@ -17,8 +17,9 @@
 | 刷新轮换 | refresh token 每次使用后作废并换发新 token；重复使用或失效 token 令全部关联会话失效。 |
 | 退出 | access token 验证当前用户后，撤销请求体中 refresh token 所属的会话族；access token 通过短过期时间自然失效。 |
 | 个人资料 | `GET` 查看当前用户；`PATCH` 修改昵称和邮箱，邮箱必须重新校验唯一性。 |
-| 角色 | `USER`、`ADMIN` 两个角色；本期仅保留数据模型和鉴权扩展点，未提供管理界面。 |
+| 角色 | `USER`、`ADMIN` 两个角色；管理 API 由 Java 后端强制执行 `ADMIN` 授权。 |
 | 禁用 | `DISABLED` 用户不可注册新会话、不可刷新；已有 access token 在请求鉴权时也必须拒绝。 |
+| 管理后台 | Ant Design Pro 管理端提供登录、用户统计、搜索分页、启用/禁用和角色管理。 |
 | 数据库 | PostgreSQL 为运行数据库，Flyway 管理版本化迁移；启动时校验迁移状态。 |
 | 安全错误 | 所有 API 错误使用统一 JSON 格式，不回显密码、token 或内部堆栈。 |
 
@@ -51,14 +52,16 @@
 | `JWT_SECRET` | 是 | 生产环境使用密钥管理系统注入的签名密钥。 |
 | `ACCESS_TOKEN_TTL` | 否 | access token 有效期，默认 `15m`。 |
 | `REFRESH_TOKEN_TTL` | 否 | refresh token 有效期，默认 `30d`。 |
-| `CORS_ALLOWED_ORIGINS` | 否 | 逗号分隔的精确允许来源，默认仅 `http://localhost:1420`。 |
+| `CORS_ALLOWED_ORIGINS` | 否 | 逗号分隔的精确允许来源，默认 `http://localhost:1420,http://localhost:8000`。 |
 | `AUTH_RATE_LIMIT_PER_MINUTE` | 否 | 每个 IP、每个认证端点的分钟请求上限，默认 20。 |
 | `FLYWAY_VALIDATE_ON_MIGRATE` | 否 | 默认开启迁移校验。 |
+| `ADMIN_BOOTSTRAP_EMAIL` | 否 | 与密码同时设置时，仅用于首次创建管理员。 |
+| `ADMIN_BOOTSTRAP_PASSWORD` | 否 | 至少 12 位；不得写入源码、日志或版本库。 |
+| `ADMIN_BOOTSTRAP_DISPLAY_NAME` | 否 | 首个管理员昵称，未设置时使用安全默认值。 |
 
 ## 非目标（本期不实现）
 
 - 邮箱验证、找回密码、改密邮件和多因素认证。
-- Web 管理界面；`ADMIN` 仅作为后续管理 API 的角色基础。
 - Codex OAuth 代理、Codex token 云端存储或云端额度采集。
 - 房间文件同步、成员策略发布、自动退出 Codex；这些仍属于桌面端/共享房间能力。
 
@@ -68,3 +71,4 @@
 2. 注册、登录、刷新轮换、退出、个人资料 GET/PATCH 均返回本文件约定的状态码和 JSON 结构。
 3. 禁用用户必须在登录、刷新和每次受保护请求鉴权时即时拒绝；refresh token 重放会撤销会话链。
 4. 任何响应、异常和日志都不包含密码原文、token 原文或 Codex 凭据。
+5. 普通用户不能访问任何 `/api/v1/admin/**` 接口；管理员不能禁用或降级自己，系统必须始终保留至少一个启用中的管理员。

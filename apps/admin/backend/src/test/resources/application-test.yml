@@ -1,0 +1,20 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:pingche;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1
+    username: sa
+    password:
+  flyway:
+    enabled: true
+    validate-on-migrate: true
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+
+app:
+  jwt-secret: test-secret-that-is-longer-than-thirty-two-bytes
+  jwt-issuer: codex-quota-guard-test
+  access-token-ttl: 15m
+  refresh-token-ttl: 7d
+  cors-allowed-origins: http://localhost:1420,http://localhost:8000
+  auth-rate-limit-per-minute: 1000

@@ -1,0 +1,34 @@
+{
+  "name": "codex-quota-guard-admin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Codex Quota Guard administrator console",
+  "scripts": {
+    "dev": "max dev",
+    "start": "max dev",
+    "build": "max build",
+    "prepare": "max setup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@ant-design/icons": "^6.3.2",
+    "@ant-design/pro-components": "^3.1.14-7",
+    "@umijs/max": "^4.7.3",
+    "antd": "^6.6.0",
+    "antd-style": "^4.1.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "jsdom": "^26.1.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
