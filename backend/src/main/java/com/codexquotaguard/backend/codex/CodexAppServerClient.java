@@ -81,6 +81,24 @@ public final class CodexAppServerClient implements AutoCloseable {
         return Map.copyOf(buckets);
     }
 
+    public DeviceLogin startDeviceLogin() {
+        requireInitialized();
+        var params = mapper.createObjectNode();
+        params.put("type", "chatgptDeviceCode");
+        JsonNode result = call("account/login/start", params);
+        return new DeviceLogin(
+                text(result, "type"),
+                text(result, "loginId"),
+                text(result, "verificationUrl"),
+                text(result, "userCode")
+        );
+    }
+
+    public void logout() {
+        requireInitialized();
+        call("account/logout", mapper.createObjectNode());
+    }
+
     @Override
     public void close() {
         try {
