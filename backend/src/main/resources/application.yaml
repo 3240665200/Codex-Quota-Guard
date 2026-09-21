@@ -9,4 +9,5 @@ spring:
     name: codex-quota-guard
 
 quota-guard:
+  api-token: ${QUOTA_GUARD_API_TOKEN:}
   room-directory: ${CODEX_QUOTA_GUARD_ROOM_DIRECTORY:${user.home}/.codex-quota-guard/room}

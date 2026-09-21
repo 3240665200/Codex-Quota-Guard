@@ -1,5 +1,6 @@
 package com.codexquotaguard.backend.codex;
 
+import com.codexquotaguard.backend.account.CodexGateway;
 import com.codexquotaguard.backend.quota.AccountState;
 import com.codexquotaguard.backend.quota.RawRateLimitBucket;
 import com.codexquotaguard.backend.quota.RawRateLimitWindow;
@@ -14,7 +15,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /** Synchronous JSON-RPC client for a locally started {@code codex app-server}. */
-public final class CodexAppServerClient implements AutoCloseable {
+public final class CodexAppServerClient implements CodexGateway, AutoCloseable {
 
     private static final int MAX_IGNORED_MESSAGES = 1_024;
 
