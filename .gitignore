@@ -3,9 +3,12 @@
 codex-home/
 runtime-state.json
 *.local.json
+.env
+services/*/.env
+!services/*/.env.example
 
 # Java build outputs
-backend/target/
+services/*/target/
 .m2/
 
 # React and Tauri build outputs

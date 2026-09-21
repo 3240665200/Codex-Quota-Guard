@@ -5,7 +5,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const pom = path.join(projectRoot, "backend", "pom.xml");
+const pom = path.join(projectRoot, "services", "desktop-backend", "pom.xml");
 const escapedPom = pom.replaceAll('"', process.platform === "win32" ? '""' : '\\"');
 const build = spawnSync(`mvn -f "${escapedPom}" package`, {
   cwd: projectRoot,
@@ -19,7 +19,8 @@ if (build.status !== 0) {
 
 const source = path.join(
   projectRoot,
-  "backend",
+  "services",
+  "desktop-backend",
   "target",
   "backend-0.1.0-SNAPSHOT.jar",
 );

@@ -47,7 +47,7 @@
 
 ## 验收标准
 
-- `backend` 全部测试通过，Spring Boot 仅绑定回环地址且无 token 时拒绝启动。
+- `services/desktop-backend` 全部测试通过，Spring Boot 仅绑定回环地址且无 token 时拒绝启动。
 - React 构建、类型检查和测试通过；加载、空、错误、成功四种状态完整。
 - Tauri Rust 测试和打包检查通过；React 无法获得 Java bearer token。
 - Windows 上可启动/退出，Java 进程随应用生命周期关闭。
