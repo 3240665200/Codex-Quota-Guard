@@ -22,9 +22,31 @@ export class BackendClient {
     }
 
     async status() {
+        const payload = await this.#request("/api/v1/status");
+        if (payload?.service !== "codex-quota-guard" || payload?.state !== "online") {
+            throw new BackendClientError("The local backend returned an invalid status response.");
+        }
+        return { service: payload.service, state: payload.state };
+    }
+
+    async overview() {
+        const payload = await this.#request("/api/v1/room/overview");
+        if (typeof payload?.configured !== "boolean" || !Array.isArray(payload.members) || !Array.isArray(payload.warnings)) {
+            throw new BackendClientError("The local backend returned an invalid room overview.");
+        }
+        return {
+            configured: payload.configured,
+            roomId: typeof payload.roomId === "string" ? payload.roomId : "",
+            name: typeof payload.name === "string" ? payload.name : "",
+            members: payload.members.map(normalizeMember),
+            warnings: payload.warnings.filter((warning) => typeof warning === "string").slice(0, 50)
+        };
+    }
+
+    async #request(path) {
         let response;
         try {
-            response = await this.fetchImpl(`${this.baseUrl}/api/v1/status`, {
+            response = await this.fetchImpl(`${this.baseUrl}${path}`, {
                 method: "GET",
                 headers: { Authorization: `Bearer ${this.token}` }
             });
@@ -42,12 +64,59 @@ export class BackendClient {
         } catch {
             throw new BackendClientError("The local backend returned invalid JSON.");
         }
-
-        if (payload?.service !== "codex-quota-guard" || payload?.state !== "online") {
-            throw new BackendClientError("The local backend returned an invalid status response.");
-        }
-        return { service: payload.service, state: payload.state };
+        return payload;
     }
+}
+
+function normalizeMember(member) {
+    if (!member || typeof member.memberId !== "string" || typeof member.displayName !== "string") {
+        throw new BackendClientError("The local backend returned an invalid member.");
+    }
+    return {
+        memberId: member.memberId,
+        displayName: member.displayName,
+        managedLogin: member.managedLogin === true,
+        enforcementConsent: member.enforcementConsent === true,
+        snapshot: normalizeSnapshot(member.snapshot)
+    };
+}
+
+function normalizeSnapshot(snapshot) {
+    if (snapshot === null || snapshot === undefined) {
+        return null;
+    }
+    if (typeof snapshot.capturedAt !== "string" || typeof snapshot.authenticated !== "boolean" || !Array.isArray(snapshot.buckets)) {
+        throw new BackendClientError("The local backend returned an invalid quota snapshot.");
+    }
+    return {
+        capturedAt: snapshot.capturedAt,
+        authenticated: snapshot.authenticated,
+        enforcement: {
+            locked: snapshot.enforcement?.locked === true,
+            lockedUntil: typeof snapshot.enforcement?.lockedUntil === "string" ? snapshot.enforcement.lockedUntil : null
+        },
+        buckets: snapshot.buckets.map((bucket) => ({
+            limitId: typeof bucket?.limitId === "string" ? bucket.limitId : "unknown",
+            limitName: typeof bucket?.limitName === "string" ? bucket.limitName : "",
+            primary: normalizeWindow(bucket?.primary),
+            secondary: normalizeWindow(bucket?.secondary)
+        }))
+    };
+}
+
+function normalizeWindow(window) {
+    if (!window) {
+        return null;
+    }
+    if (typeof window.usedPercent !== "number" || !Number.isFinite(window.usedPercent)
+        || window.usedPercent < 0 || window.usedPercent > 100 || typeof window.resetsAt !== "string") {
+        throw new BackendClientError("The local backend returned an invalid quota window.");
+    }
+    return {
+        usedPercent: window.usedPercent,
+        remainingPercent: typeof window.remainingPercent === "number" ? window.remainingPercent : 100 - window.usedPercent,
+        resetsAt: window.resetsAt
+    };
 }
 
 function normalizeLoopbackUrl(value) {

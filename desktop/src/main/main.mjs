@@ -124,12 +124,24 @@ function configureLocalRendererProtocol() {
 
 function registerIpcHandlers() {
     ipcMain.handle("quota:status", async (event) => {
-        if (!isTrustedRendererUrl(event.senderFrame.url)) {
-            throw new Error("Untrusted renderer attempted to access the local backend.");
-        }
-        if (!backendRuntime) {
-            throw new Error("The local backend is starting.");
-        }
-        return backendRuntime.client.status();
+        assertTrustedRenderer(event);
+        return requireBackend().status();
     });
+    ipcMain.handle("quota:overview", async (event) => {
+        assertTrustedRenderer(event);
+        return requireBackend().overview();
+    });
+}
+
+function assertTrustedRenderer(event) {
+    if (!isTrustedRendererUrl(event.senderFrame.url)) {
+        throw new Error("Untrusted renderer attempted to access the local backend.");
+    }
+}
+
+function requireBackend() {
+    if (!backendRuntime) {
+        throw new Error("The local backend is starting.");
+    }
+    return backendRuntime.client;
 }

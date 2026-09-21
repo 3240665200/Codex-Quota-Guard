@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from "electron";
 
 contextBridge.exposeInMainWorld("quotaGuard", {
-    status: () => ipcRenderer.invoke("quota:status")
+    status: () => ipcRenderer.invoke("quota:status"),
+    overview: () => ipcRenderer.invoke("quota:overview")
 });
