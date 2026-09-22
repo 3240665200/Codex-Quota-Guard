@@ -23,7 +23,7 @@ export default function LoginPage() {
   useEffect(() => {
     setError(initialState?.notice ?? '');
     if (initialState?.currentUser) {
-      const redirect = new URLSearchParams(window.location.search).get('redirect');
+      const redirect = new URLSearchParams(history.location.search).get('redirect');
       history.replace(getSafeRedirectUrl(redirect));
     }
   }, [initialState?.currentUser, initialState?.notice]);
@@ -52,7 +52,7 @@ export default function LoginPage() {
               notice: '',
             }));
             message.success('登录成功');
-            const redirect = new URLSearchParams(window.location.search).get('redirect');
+            const redirect = new URLSearchParams(history.location.search).get('redirect');
             history.replace(getSafeRedirectUrl(redirect));
             return true;
           } catch (loginError) {

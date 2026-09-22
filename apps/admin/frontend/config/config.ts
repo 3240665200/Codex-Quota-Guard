@@ -11,6 +11,7 @@ export default defineConfig({
   esbuildMinifyIIFE: true,
   fastRefresh: true,
   hash: true,
+  history: { type: 'hash' },
   initialState: {},
   layout: {
     contentWidth: 'Fluid',
