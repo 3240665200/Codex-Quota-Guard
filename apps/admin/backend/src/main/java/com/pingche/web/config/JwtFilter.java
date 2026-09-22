@@ -51,9 +51,12 @@ public class JwtFilter extends OncePerRequestFilter {
         }
 
         try {
-            UUID userId = jwtService.parseUserId(authorization.substring(7));
+            JwtService.JwtIdentity identity = jwtService.parseIdentity(
+                    authorization.substring(7)
+            );
+            UUID userId = identity.userId();
             User user = users.findById(userId).orElse(null);
-            if (user == null) {
+            if (user == null || user.getSessionVersion() != identity.sessionVersion()) {
                 unauthorized(response);
                 return;
             }

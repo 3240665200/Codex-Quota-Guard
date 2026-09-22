@@ -18,9 +18,10 @@ class JwtServiceTest {
         );
         UUID userId = UUID.randomUUID();
 
-        String token = service.create(userId, "USER");
+        String token = service.create(userId, "USER", 7L);
 
         assertThat(service.parseUserId(token)).isEqualTo(userId);
+        assertThat(service.parseIdentity(token).sessionVersion()).isEqualTo(7L);
         assertThat(service.getLifetime()).isEqualTo(Duration.ofMinutes(5));
     }
 

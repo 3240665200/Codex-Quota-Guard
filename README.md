@@ -10,9 +10,10 @@ Codex Quota Guard 是一个同时包含跨平台桌面客户端与 Web 管理后
 - 管理端界面：Ant Design Pro 6、React 19、Umi Max 4、Ant Design 6、Pro Components 3
 - 管理端后端：Java 17 + Spring Boot 4、Spring Security、PostgreSQL、Flyway
 
-客户端本地后端负责 Codex 官方账号、额度、共享房间和本机 `codex app-server`
-通信。管理端后端负责应用用户、管理员权限与联网服务数据。应用用户账号与 Codex
-官方账号相互独立，服务器不会接收或保存 Codex 登录凭据。
+客户端本地后端负责额度、共享房间和本机 `codex app-server` 通信。管理端后端负责
+应用用户、管理员权限与联网服务数据，并原生管理 Codex 账号。应用用户与 Codex 账号
+相互独立；Codex 凭据由 Java 后端使用 AES-GCM 加密后保存到 PostgreSQL，查询接口
+不会返回凭据原文。
 
 ## 目录结构
 
@@ -102,6 +103,8 @@ pnpm verify
 
 - 管理 API 的管理员权限由 Java 后端强制校验，前端菜单隐藏不是权限控制。
 - 密码只保存 BCrypt 哈希；refresh token 在数据库中只保存 SHA-256 摘要。
+- 强制下线通过会话版本立即使该用户的 access token 与 refresh token 全部失效。
+- Codex 凭据加密密钥只注入 Java 后端，不会发送到浏览器或写入仓库。
 - 生产环境必须使用 HTTPS，并从环境变量或密钥管理服务注入数据库和 JWT 密钥。
 - 桌面端临时 bearer token、Web access token、refresh token 和数据库密码均不得提交到 Git。
 

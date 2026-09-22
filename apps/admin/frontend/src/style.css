@@ -244,6 +244,12 @@ textarea {
   white-space: nowrap;
 }
 
+.cqg-codex-avatar {
+  color: #fff;
+  background: linear-gradient(145deg, #2563eb 0%, #7c3aed 100%);
+  box-shadow: 0 5px 14px rgb(79 70 229 / 22%);
+}
+
 .cqg-users-table .ant-table-thead > tr > th {
   color: #526078;
   font-size: 12px;

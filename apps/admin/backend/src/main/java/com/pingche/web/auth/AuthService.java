@@ -93,6 +93,10 @@ public class AuthService {
             sessions.revokeFamily(current.getFamilyId(), now);
             throw accountDisabled();
         }
+        if (current.getSessionVersion() != user.getSessionVersion()) {
+            sessions.revokeFamily(current.getFamilyId(), now);
+            throw invalidRefreshToken();
+        }
 
         IssuedSession replacement = newSession(user, current.getFamilyId(), now);
         current.revoke(now, replacement.session().getId());
@@ -141,14 +145,19 @@ public class AuthService {
                 familyId,
                 hashToken(rawToken),
                 now.plus(refreshLifetime),
-                now
+                now,
+                user.getSessionVersion()
         );
         return new IssuedSession(rawToken, session);
     }
 
     private AuthResponse response(User user, String refreshToken) {
         return new AuthResponse(
-                jwtService.create(user.getId(), user.getRole().name()),
+                jwtService.create(
+                        user.getId(),
+                        user.getRole().name(),
+                        user.getSessionVersion()
+                ),
                 "Bearer",
                 jwtService.getLifetime().toSeconds(),
                 refreshToken,

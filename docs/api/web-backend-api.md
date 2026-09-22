@@ -143,26 +143,127 @@
 }
 ```
 
-### PATCH `/api/v1/admin/users/{id}`
+### GET `/api/v1/admin/users/{id}`
 
-修改用户状态或角色，请求至少包含一个字段：
+返回指定用户的 `UserResponse`。目标不存在返回 `404 / USER_NOT_FOUND`。
+
+### POST `/api/v1/admin/users`
+
+由管理员直接创建应用用户：
 
 ```json
-{"status":"DISABLED","role":"USER"}
+{
+  "email": "user@example.com",
+  "displayName": "小明",
+  "password": "correct horse battery staple",
+  "role": "USER",
+  "status": "ACTIVE"
+}
+```
+
+成功返回 `201 Created`、新用户的 `UserResponse` 和 `Location` 响应头。密码至少
+12 位；重复邮箱返回 `409 / AUTH_EMAIL_EXISTS`。
+
+### PATCH `/api/v1/admin/users/{id}`
+
+修改邮箱、昵称、密码、状态或角色，请求至少包含一个字段：
+
+```json
+{
+  "email": "new@example.com",
+  "displayName": "新昵称",
+  "password": "new password at least 12 chars",
+  "status": "DISABLED",
+  "role": "USER"
+}
 ```
 
 成功返回更新后的 `UserResponse`。目标不存在返回 `404 / USER_NOT_FOUND`；管理员
 不得禁用自己或把自己降为普通用户，系统也始终保留至少一个启用中的管理员。违反这些
 约束时返回 `409`；移除最后一个启用管理员会返回 `ADMIN_LAST_ACTIVE`。前端隐藏操作
-按钮只能改善体验，不能替代后端授权和保护规则。
+按钮只能改善体验，不能替代后端授权和保护规则。修改密码或禁用用户会使该用户的全部
+现有会话立即失效。
+
+### DELETE `/api/v1/admin/users/{id}`
+
+永久删除应用用户，成功返回 `204 No Content`。管理员不能删除自己，也不能删除最后
+一个启用中的管理员；违反约束返回 `409`。用户关联的 refresh session 由数据库外键
+级联删除。
+
+### POST `/api/v1/admin/users/{id}/force-logout`
+
+递增用户会话版本并撤销其全部 refresh session，成功返回 `204 No Content`。该用户
+此前签发的 access token 会在下一次请求鉴权时立即失效，而不是等待自然过期。
+
+## Codex 账号管理接口
+
+这些接口仅供管理员使用，由本项目 Java 后端直接实现。凭据使用 AES-GCM 加密后
+保存到 PostgreSQL；响应只包含账户元数据，不包含凭据明文、密文或加密 IV。
+
+### GET `/api/v1/admin/codex-accounts`
+
+支持 `page`、`size`、`q`、`status` 参数，规则与用户列表一致。`q` 按邮箱或显示
+名称不区分大小写搜索；`status` 可选 `ACTIVE`、`DISABLED`。返回分页结构：
+
+```json
+{
+  "items": [{
+    "id": "uuid",
+    "email": "codex@example.com",
+    "displayName": "Primary Codex",
+    "status": "ACTIVE",
+    "hasCredential": true,
+    "createdAt": "2026-09-22T01:00:00Z",
+    "updatedAt": "2026-09-22T01:00:00Z"
+  }],
+  "page": 0,
+  "size": 20,
+  "totalElements": 1,
+  "totalPages": 1
+}
+```
+
+### GET `/api/v1/admin/codex-accounts/{id}`
+
+按 UUID 查询一个 Codex 账号。不存在返回 `404 / CODEX_ACCOUNT_NOT_FOUND`。响应不
+返回凭据。
+
+### POST `/api/v1/admin/codex-accounts`
+
+添加 Codex 账号：
+
+```json
+{
+  "email": "codex@example.com",
+  "displayName": "Primary Codex",
+  "status": "ACTIVE",
+  "credential": {
+    "access_token": "...",
+    "refresh_token": "..."
+  }
+}
+```
+
+`credential` 必须是 JSON object，序列化后最大 1 MiB。成功返回 `201 Created`、
+账户元数据和 `Location`；重复邮箱返回 `409 / CODEX_ACCOUNT_EMAIL_EXISTS`。服务端
+为每次新增或替换生成独立 96-bit 随机 IV，使用 AES-256-GCM 加密后才写入数据库。
+
+### PATCH `/api/v1/admin/codex-accounts/{id}`
+
+可修改 `email`、`displayName`、`status`，也可传新的 `credential` 替换凭据；至少
+包含一个字段。未传 `credential` 时保留原密文。成功返回更新后的账户元数据。
+
+### DELETE `/api/v1/admin/codex-accounts/{id}`
+
+永久删除账户及其加密凭据，成功返回 `204 No Content`。删除后无法恢复。
 
 ## 状态码与 Spring Boot 对照
 
 | HTTP | 使用场景 | 建议实现映射 |
 | --- | --- | --- |
 | `200` | 登录、刷新、查询/更新资料 | `@RestController` 正常返回 DTO |
-| `201` | 注册成功 | `ResponseEntity.status(CREATED)` |
-| `204` | 退出成功 | 空响应 |
+| `201` | 注册或管理员创建成功 | `ResponseEntity.status(CREATED)` |
+| `204` | 退出、删除或强制下线成功 | 空响应 |
 | `400` | JSON/字段校验失败 | `@Valid` + `@RestControllerAdvice` |
 | `401` | 未认证、access/refresh 无效 | Spring Security entry point 或异常处理器 |
 | `403` | 账号已禁用或权限不足 | access denied handler；每次鉴权实时检查用户状态 |
@@ -180,14 +281,16 @@
 {"code":"AUTH_ACCOUNT_DISABLED","message":"账号已禁用","requestId":"uuid","details":[]}
 ```
 
-不得返回 Spring 默认错误页、堆栈、密码或 token。CORS 只接受 `CORS_ALLOWED_ORIGINS` 的精确匹配来源；禁止 `*`，预检仅允许契约所需的 `GET, PATCH, POST`、`Authorization, Content-Type`，并设置有限的 `Access-Control-Max-Age`。CORS 层直接拒绝非法 Origin 时由框架返回 `403`。
+不得返回 Spring 默认错误页、堆栈、密码或 token。CORS 只接受 `CORS_ALLOWED_ORIGINS` 的精确匹配来源；禁止 `*`，预检仅允许契约所需的 `GET, PATCH, POST, DELETE`、`Authorization, Content-Type`，并设置有限的 `Access-Control-Max-Age`。CORS 层直接拒绝非法 Origin 时由框架返回 `403`。
 
 ## Flyway 初始迁移契约
 
 - `V1__create_users.sql`：创建 `users`、枚举/约束和规范化邮箱唯一索引。
 - `V2__create_refresh_sessions.sql`：创建 `refresh_sessions`、用户外键、token hash 索引和撤销/过期字段。
+- `V3__add_user_session_version.sql`：为用户和 refresh session 增加会话版本，用于立即强制下线。
+- `V4__create_codex_accounts.sql`：创建原生 Codex 账户表、唯一邮箱约束和加密凭据字段。
 - 后续迁移只追加新版本，不修改已执行的迁移；生产启动必须启用校验。
 
 ## 明确不提供的端点
 
-本期不提供 `/verify-email`、`/forgot-password`、`/reset-password`、Codex OAuth 代理或 Codex 额度接口。
+本期不提供 `/verify-email`、`/forgot-password`、`/reset-password` 或 Codex 额度接口。

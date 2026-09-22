@@ -1,8 +1,10 @@
 package com.pingche.web.admin;
 
 import static org.hamcrest.Matchers.containsString;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -288,6 +290,132 @@ class AdminIntegrationTest {
                         .content("{\"role\":\"USER\"}"))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("ADMIN_SELF_PROTECTION"));
+    }
+
+    @Test
+    void administratorCanCreateReadEditAndDeleteAUser() throws Exception {
+        User administrator = createUser(
+                "admin@example.com",
+                "Administrator",
+                User.Role.ADMIN,
+                User.Status.ACTIVE
+        );
+
+        String location = mvc.perform(post("/api/v1/admin/users")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(administrator))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "email":"  MANAGED@example.com  ",
+                                  "password":"managed-password-1",
+                                  "displayName":"Managed user",
+                                  "role":"USER",
+                                  "status":"ACTIVE"
+                                }
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.email").value("managed@example.com"))
+                .andExpect(jsonPath("$.displayName").value("Managed user"))
+                .andExpect(jsonPath("$.role").value("USER"))
+                .andExpect(jsonPath("$.status").value("ACTIVE"))
+                .andReturn()
+                .getResponse()
+                .getHeader(HttpHeaders.LOCATION);
+
+        mvc.perform(get(location)
+                        .header(HttpHeaders.AUTHORIZATION, bearer(administrator)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.email").value("managed@example.com"));
+
+        mvc.perform(patch(location)
+                        .header(HttpHeaders.AUTHORIZATION, bearer(administrator))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "email":"renamed@example.com",
+                                  "displayName":"Renamed user",
+                                  "password":"replacement-password-2",
+                                  "role":"ADMIN"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.email").value("renamed@example.com"))
+                .andExpect(jsonPath("$.displayName").value("Renamed user"))
+                .andExpect(jsonPath("$.role").value("ADMIN"));
+
+        mvc.perform(delete(location)
+                        .header(HttpHeaders.AUTHORIZATION, bearer(administrator)))
+                .andExpect(status().isNoContent());
+
+        mvc.perform(get(location)
+                        .header(HttpHeaders.AUTHORIZATION, bearer(administrator)))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("USER_NOT_FOUND"));
+    }
+
+    @Test
+    void administratorCannotCreateDuplicateUserOrDeleteSelf() throws Exception {
+        User administrator = createUser(
+                "admin@example.com",
+                "Administrator",
+                User.Role.ADMIN,
+                User.Status.ACTIVE
+        );
+
+        mvc.perform(post("/api/v1/admin/users")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(administrator))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "email":"ADMIN@example.com",
+                                  "password":"managed-password-1",
+                                  "displayName":"Duplicate"
+                                }
+                                """))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("AUTH_EMAIL_EXISTS"));
+
+        mvc.perform(delete("/api/v1/admin/users/{id}", administrator.getId())
+                        .header(HttpHeaders.AUTHORIZATION, bearer(administrator)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("ADMIN_SELF_PROTECTION"));
+    }
+
+    @Test
+    void forceLogoutInvalidatesAccessAndRefreshTokensImmediately() throws Exception {
+        User administrator = createUser(
+                "admin@example.com",
+                "Administrator",
+                User.Role.ADMIN,
+                User.Status.ACTIVE
+        );
+        var targetSession = authService.register(
+                "target@example.com",
+                PASSWORD,
+                "Target"
+        );
+        User target = users.findByEmail("target@example.com").orElseThrow();
+
+        mvc.perform(get("/api/v1/users/me")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + targetSession.accessToken()))
+                .andExpect(status().isOk());
+
+        mvc.perform(post("/api/v1/admin/users/{id}/force-logout", target.getId())
+                        .header(HttpHeaders.AUTHORIZATION, bearer(administrator)))
+                .andExpect(status().isNoContent());
+
+        mvc.perform(get("/api/v1/users/me")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + targetSession.accessToken()))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("AUTH_TOKEN_INVALID"));
+
+        mvc.perform(post("/api/v1/auth/refresh")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"refreshToken":"%s"}
+                                """.formatted(targetSession.refreshToken())))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("AUTH_REFRESH_INVALID"));
     }
 
     private User createUser(

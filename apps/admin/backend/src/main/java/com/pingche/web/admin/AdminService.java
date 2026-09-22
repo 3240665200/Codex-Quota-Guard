@@ -1,6 +1,7 @@
 package com.pingche.web.admin;
 
 import com.pingche.web.auth.DomainException;
+import com.pingche.web.auth.RefreshSessionRepository;
 import com.pingche.web.user.User;
 import com.pingche.web.user.UserRepository;
 import com.pingche.web.user.UserResponse;
@@ -10,12 +11,14 @@ import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.http.HttpStatus;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -30,10 +33,19 @@ public class AdminService {
     );
 
     private final UserRepository users;
+    private final RefreshSessionRepository sessions;
+    private final PasswordEncoder passwordEncoder;
     private final Clock clock;
 
-    public AdminService(UserRepository users, Clock clock) {
+    public AdminService(
+            UserRepository users,
+            RefreshSessionRepository sessions,
+            PasswordEncoder passwordEncoder,
+            Clock clock
+    ) {
         this.users = users;
+        this.sessions = sessions;
+        this.passwordEncoder = passwordEncoder;
         this.clock = clock;
     }
 
@@ -72,23 +84,58 @@ public class AdminService {
         );
     }
 
+    @Transactional(readOnly = true)
+    public UserResponse getUser(UUID userId) {
+        return UserResponse.from(users.findById(userId).orElseThrow(this::userNotFound));
+    }
+
+    @Transactional
+    public UserResponse createUser(AdminUserCreateRequest request) {
+        String email = normalizeEmail(request.email());
+        if (users.existsByEmail(email)) {
+            throw emailExists();
+        }
+
+        User user = new User(
+                email,
+                passwordEncoder.encode(request.password()),
+                normalizeDisplayName(request.displayName())
+        );
+        user.updateAdministration(
+                request.status() == null ? User.Status.ACTIVE : request.status(),
+                request.role() == null ? User.Role.USER : request.role()
+        );
+        try {
+            return UserResponse.from(users.saveAndFlush(user));
+        } catch (DataIntegrityViolationException exception) {
+            throw emailExists();
+        }
+    }
+
     @Transactional
     public UserResponse updateUser(
             UUID actingUserId,
             UUID targetUserId,
-            User.Status status,
-            User.Role role
+            AdminUserUpdateRequest request
     ) {
-        if (status == null && role == null) {
-            throw validation("At least one of status or role is required");
+        if (request.email() == null
+                && request.displayName() == null
+                && request.password() == null
+                && request.status() == null
+                && request.role() == null) {
+            throw validation("At least one user field is required");
         }
 
-        List<User> activeAdministrators = mayRemoveActiveAdministrator(status, role)
+        List<User> activeAdministrators = mayRemoveActiveAdministrator(
+                request.status(),
+                request.role()
+        )
                 ? users.findActiveAdministratorsForUpdate()
                 : List.of();
-        User target = users.findById(targetUserId).orElseThrow(this::userNotFound);
+        User target = users.findByIdForUpdate(targetUserId).orElseThrow(this::userNotFound);
         if (actingUserId.equals(targetUserId)
-                && (status == User.Status.DISABLED || role == User.Role.USER)) {
+                && (request.status() == User.Status.DISABLED
+                || request.role() == User.Role.USER)) {
             throw new DomainException(
                     "ADMIN_SELF_PROTECTION",
                     "Administrators cannot disable or demote themselves",
@@ -97,7 +144,11 @@ public class AdminService {
         }
 
         if (isActiveAdministrator(target)
-                && !willRemainActiveAdministrator(target, status, role)
+                && !willRemainActiveAdministrator(
+                target,
+                request.status(),
+                request.role()
+        )
                 && activeAdministrators.size() <= 1) {
             throw new DomainException(
                     "ADMIN_LAST_ACTIVE",
@@ -106,8 +157,71 @@ public class AdminService {
             );
         }
 
-        target.updateAdministration(status, role);
-        return UserResponse.from(users.saveAndFlush(target));
+        if (request.email() != null || request.displayName() != null) {
+            String email = request.email() == null
+                    ? target.getEmail()
+                    : normalizeEmail(request.email());
+            String displayName = request.displayName() == null
+                    ? target.getDisplayName()
+                    : normalizeDisplayName(request.displayName());
+            if (!email.equals(target.getEmail())
+                    && users.existsByEmailAndIdNot(email, targetUserId)) {
+                throw emailExists();
+            }
+            target.updateProfile(email, displayName);
+        }
+
+        boolean sessionsInvalidated = false;
+        if (request.password() != null) {
+            target.updatePassword(passwordEncoder.encode(request.password()));
+            sessionsInvalidated = true;
+        }
+        boolean becomingDisabled = target.getStatus() == User.Status.ACTIVE
+                && request.status() == User.Status.DISABLED;
+        target.updateAdministration(request.status(), request.role());
+        if (becomingDisabled && !sessionsInvalidated) {
+            target.invalidateSessions();
+            sessionsInvalidated = true;
+        }
+        if (sessionsInvalidated) {
+            sessions.revokeAllForUser(targetUserId, Instant.now(clock));
+        }
+
+        try {
+            return UserResponse.from(users.saveAndFlush(target));
+        } catch (DataIntegrityViolationException exception) {
+            throw emailExists();
+        }
+    }
+
+    @Transactional
+    public void deleteUser(UUID actingUserId, UUID targetUserId) {
+        List<User> activeAdministrators = users.findActiveAdministratorsForUpdate();
+        User target = users.findByIdForUpdate(targetUserId).orElseThrow(this::userNotFound);
+        if (actingUserId.equals(targetUserId)) {
+            throw new DomainException(
+                    "ADMIN_SELF_PROTECTION",
+                    "Administrators cannot delete themselves",
+                    HttpStatus.CONFLICT
+            );
+        }
+        if (isActiveAdministrator(target) && activeAdministrators.size() <= 1) {
+            throw new DomainException(
+                    "ADMIN_LAST_ACTIVE",
+                    "At least one active administrator must remain",
+                    HttpStatus.CONFLICT
+            );
+        }
+        users.delete(target);
+        users.flush();
+    }
+
+    @Transactional
+    public void forceLogout(UUID targetUserId) {
+        User target = users.findByIdForUpdate(targetUserId).orElseThrow(this::userNotFound);
+        target.invalidateSessions();
+        sessions.revokeAllForUser(targetUserId, Instant.now(clock));
+        users.saveAndFlush(target);
     }
 
     private boolean mayRemoveActiveAdministrator(User.Status status, User.Role role) {
@@ -181,6 +295,22 @@ public class AdminService {
         return normalized.isEmpty() ? null : normalized;
     }
 
+    private String normalizeEmail(String email) {
+        String normalized = email.trim().toLowerCase(Locale.ROOT);
+        if (normalized.isEmpty()) {
+            throw validation("email must not be blank");
+        }
+        return normalized;
+    }
+
+    private String normalizeDisplayName(String displayName) {
+        String normalized = displayName.trim();
+        if (normalized.isEmpty()) {
+            throw validation("displayName must not be blank");
+        }
+        return normalized;
+    }
+
     private String escapeLike(String value) {
         return value.replace("\\", "\\\\")
                 .replace("%", "\\%")
@@ -196,6 +326,14 @@ public class AdminService {
                 "USER_NOT_FOUND",
                 "User not found",
                 HttpStatus.NOT_FOUND
+        );
+    }
+
+    private DomainException emailExists() {
+        return new DomainException(
+                "AUTH_EMAIL_EXISTS",
+                "Email is already registered",
+                HttpStatus.CONFLICT
         );
     }
 }

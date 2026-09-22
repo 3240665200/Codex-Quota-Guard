@@ -53,7 +53,48 @@ export interface UserListParams {
   role?: UserRole | '';
 }
 
-export type UserUpdate = Partial<Pick<UserResponse, 'status' | 'role'>>;
+export interface UserCreate {
+  email: string;
+  password: string;
+  displayName: string;
+  role?: UserRole;
+  status?: UserStatus;
+}
+
+export type UserUpdate = Partial<
+  Pick<UserResponse, 'email' | 'displayName' | 'status' | 'role'> & { password: string }
+>;
+
+export interface CodexAccount {
+  id: string;
+  email: string;
+  displayName: string;
+  status: UserStatus;
+  hasCredential: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CodexAccountListResponse {
+  items: CodexAccount[];
+  page: number;
+  size: number;
+  totalElements: number;
+  totalPages: number;
+}
+
+export interface CodexAccountCreate {
+  email: string;
+  displayName: string;
+  status?: UserStatus;
+  credential: Record<string, unknown>;
+}
+
+export type CodexAccountUpdate = Partial<
+  Pick<CodexAccount, 'email' | 'displayName' | 'status'> & {
+    credential: Record<string, unknown>;
+  }
+>;
 
 const SESSION_KEY = 'codex-quota-guard.session';
 export const SESSION_EXPIRED_EVENT = 'codex-quota-guard:session-expired';
@@ -314,9 +355,88 @@ export function listUsers({
   return request<UserListResponse>(`/api/v1/admin/users?${params.toString()}`);
 }
 
+export function getUser(id: string): Promise<UserResponse> {
+  return request<UserResponse>(`/api/v1/admin/users/${encodeURIComponent(id)}`);
+}
+
+export function createUser(body: UserCreate): Promise<UserResponse> {
+  return request<UserResponse>('/api/v1/admin/users', {
+    body: JSON.stringify(body),
+    method: 'POST',
+  });
+}
+
 export function updateUser(id: string, body: UserUpdate): Promise<UserResponse> {
   return request<UserResponse>(`/api/v1/admin/users/${encodeURIComponent(id)}`, {
     body: JSON.stringify(body),
     method: 'PATCH',
   });
+}
+
+export function deleteUser(id: string): Promise<void> {
+  return request<void>(`/api/v1/admin/users/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+}
+
+export function forceLogoutUser(id: string): Promise<void> {
+  return request<void>(
+    `/api/v1/admin/users/${encodeURIComponent(id)}/force-logout`,
+    { method: 'POST' },
+  );
+}
+
+export function listCodexAccounts({
+  page = 0,
+  size = 20,
+  q = '',
+  status = '',
+}: {
+  page?: number;
+  size?: number;
+  q?: string;
+  status?: UserStatus | '';
+} = {}): Promise<CodexAccountListResponse> {
+  const params = new URLSearchParams({
+    page: String(page),
+    size: String(size),
+    q,
+    status,
+  });
+  return request<CodexAccountListResponse>(
+    `/api/v1/admin/codex-accounts?${params.toString()}`,
+  );
+}
+
+export function getCodexAccount(id: string): Promise<CodexAccount> {
+  return request<CodexAccount>(
+    `/api/v1/admin/codex-accounts/${encodeURIComponent(id)}`,
+  );
+}
+
+export function createCodexAccount(body: CodexAccountCreate): Promise<CodexAccount> {
+  return request<CodexAccount>('/api/v1/admin/codex-accounts', {
+    body: JSON.stringify(body),
+    method: 'POST',
+  });
+}
+
+export function updateCodexAccount(
+  id: string,
+  body: CodexAccountUpdate,
+): Promise<CodexAccount> {
+  return request<CodexAccount>(
+    `/api/v1/admin/codex-accounts/${encodeURIComponent(id)}`,
+    {
+      body: JSON.stringify(body),
+      method: 'PATCH',
+    },
+  );
+}
+
+export function deleteCodexAccount(id: string): Promise<void> {
+  return request<void>(
+    `/api/v1/admin/codex-accounts/${encodeURIComponent(id)}`,
+    { method: 'DELETE' },
+  );
 }

@@ -50,7 +50,7 @@ export default function DashboardPage() {
             <Alert
               action={<Button onClick={() => void load()}>重试</Button>}
               className="cqg-inline-alert"
-              message="数据刷新失败"
+              title="数据刷新失败"
               showIcon
               type="error"
             />

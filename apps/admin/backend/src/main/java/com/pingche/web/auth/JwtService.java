@@ -41,11 +41,16 @@ public class JwtService {
     }
 
     public String create(UUID userId, String role) {
+        return create(userId, role, 0L);
+    }
+
+    public String create(UUID userId, String role, long sessionVersion) {
         Instant now = Instant.now();
         return Jwts.builder()
                 .issuer(issuer)
                 .subject(userId.toString())
                 .claim("role", role)
+                .claim("sessionVersion", sessionVersion)
                 .issuedAt(Date.from(now))
                 .expiration(Date.from(now.plus(lifetime)))
                 .signWith(key)
@@ -53,12 +58,26 @@ public class JwtService {
     }
 
     public UUID parseUserId(String token) {
+        return parseIdentity(token).userId();
+    }
+
+    public JwtIdentity parseIdentity(String token) {
         Claims claims = Jwts.parser()
                 .verifyWith(key)
                 .requireIssuer(issuer)
                 .build()
                 .parseSignedClaims(token)
                 .getPayload();
-        return UUID.fromString(claims.getSubject());
+        Number sessionVersion = claims.get("sessionVersion", Number.class);
+        if (sessionVersion == null || sessionVersion.longValue() < 0) {
+            throw new IllegalArgumentException("Access token session version is invalid");
+        }
+        return new JwtIdentity(
+                UUID.fromString(claims.getSubject()),
+                sessionVersion.longValue()
+        );
+    }
+
+    public record JwtIdentity(UUID userId, long sessionVersion) {
     }
 }

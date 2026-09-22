@@ -36,6 +36,9 @@ public class RefreshSession {
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
+    @Column(name = "session_version", nullable = false)
+    private long sessionVersion;
+
     @Version
     private long version;
 
@@ -48,7 +51,8 @@ public class RefreshSession {
             UUID familyId,
             String tokenHash,
             Instant expiresAt,
-            Instant createdAt
+            Instant createdAt,
+            long sessionVersion
     ) {
         this.id = id;
         this.userId = userId;
@@ -56,6 +60,7 @@ public class RefreshSession {
         this.tokenHash = tokenHash;
         this.expiresAt = expiresAt;
         this.createdAt = createdAt;
+        this.sessionVersion = sessionVersion;
     }
 
     public UUID getId() {
@@ -68,6 +73,10 @@ public class RefreshSession {
 
     public UUID getFamilyId() {
         return familyId;
+    }
+
+    public long getSessionVersion() {
+        return sessionVersion;
     }
 
     public boolean isUsable(Instant now) {

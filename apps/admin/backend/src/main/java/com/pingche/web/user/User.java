@@ -39,6 +39,9 @@ public class User {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
+    @Column(name = "session_version", nullable = false)
+    private long sessionVersion;
+
     protected User() {
     }
 
@@ -52,6 +55,7 @@ public class User {
         this.status = Status.ACTIVE;
         this.createdAt = now;
         this.updatedAt = now;
+        this.sessionVersion = 0L;
     }
 
     public static User bootstrapAdministrator(
@@ -96,10 +100,19 @@ public class User {
         return updatedAt;
     }
 
+    public long getSessionVersion() {
+        return sessionVersion;
+    }
+
     public void updateProfile(String email, String displayName) {
         this.email = email;
         this.displayName = displayName;
         this.updatedAt = Instant.now();
+    }
+
+    public void updatePassword(String passwordHash) {
+        this.passwordHash = passwordHash;
+        invalidateSessions();
     }
 
     public void updateAdministration(Status status, Role role) {
@@ -109,6 +122,11 @@ public class User {
         if (role != null) {
             this.role = role;
         }
+        this.updatedAt = Instant.now();
+    }
+
+    public void invalidateSessions() {
+        this.sessionVersion++;
         this.updatedAt = Instant.now();
     }
 

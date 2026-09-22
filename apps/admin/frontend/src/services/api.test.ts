@@ -2,13 +2,21 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   clearSession,
+  createCodexAccount,
+  createUser,
+  deleteCodexAccount,
+  deleteUser,
+  forceLogoutUser,
   getDashboard,
   getSession,
+  listCodexAccounts,
   listUsers,
   login,
   logout,
   PermissionDeniedError,
   setSession,
+  updateCodexAccount,
+  updateUser,
 } from './api';
 import type { AuthResponse, UserResponse } from './api';
 
@@ -236,5 +244,68 @@ describe('admin API client', () => {
     expect(finalInit.body).toBe(JSON.stringify({ refreshToken: 'rotated-refresh-token' }));
     expect((finalInit.headers as Headers).get('Authorization')).toBe('Bearer fresh-access-token');
     expect(getSession()).toBeNull();
+  });
+
+  it('uses the user lifecycle endpoints for create, edit, force logout and delete', async () => {
+    setSession({ accessToken: 'admin-access-token', user: adminUser });
+    fetchMock
+      .mockResolvedValueOnce(response(user('USER'), 201))
+      .mockResolvedValueOnce(response({ ...user('USER'), displayName: '新名称' }))
+      .mockResolvedValueOnce({ ok: true, status: 204, text: async () => '' } as Response)
+      .mockResolvedValueOnce({ ok: true, status: 204, text: async () => '' } as Response);
+
+    await createUser({
+      displayName: '普通用户',
+      email: 'user@example.com',
+      password: 'strong-password-1',
+      role: 'USER',
+      status: 'ACTIVE',
+    });
+    await updateUser('user-id', { displayName: '新名称' });
+    await forceLogoutUser('user-id');
+    await deleteUser('user-id');
+
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
+      '/api/v1/admin/users',
+      '/api/v1/admin/users/user-id',
+      '/api/v1/admin/users/user-id/force-logout',
+      '/api/v1/admin/users/user-id',
+    ]);
+    expect((fetchMock.mock.calls[0]?.[1] as RequestInit).method).toBe('POST');
+    expect((fetchMock.mock.calls[2]?.[1] as RequestInit).method).toBe('POST');
+    expect((fetchMock.mock.calls[3]?.[1] as RequestInit).method).toBe('DELETE');
+  });
+
+  it('uses the native Codex account lifecycle endpoints', async () => {
+    setSession({ accessToken: 'admin-access-token', user: adminUser });
+    fetchMock
+      .mockResolvedValueOnce(
+        response({ items: [], page: 0, size: 20, totalElements: 0, totalPages: 0 }),
+      )
+      .mockResolvedValueOnce(
+        response({ id: 'codex-id', email: 'user@example.com', status: 'ACTIVE' }, 201),
+      )
+      .mockResolvedValueOnce(
+        response({ id: 'codex-id', email: 'user@example.com', status: 'DISABLED' }),
+      )
+      .mockResolvedValueOnce({ ok: true, status: 204, text: async () => '' } as Response);
+
+    await listCodexAccounts({ q: 'user', status: 'ACTIVE' });
+    await createCodexAccount({
+      credential: { access_token: 'secret' },
+      displayName: 'Codex User',
+      email: 'user@example.com',
+      status: 'ACTIVE',
+    });
+    await updateCodexAccount('codex-id', { status: 'DISABLED' });
+    await deleteCodexAccount('codex-id');
+
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
+      '/api/v1/admin/codex-accounts?page=0&size=20&q=user&status=ACTIVE',
+      '/api/v1/admin/codex-accounts',
+      '/api/v1/admin/codex-accounts/codex-id',
+      '/api/v1/admin/codex-accounts/codex-id',
+    ]);
+    expect((fetchMock.mock.calls[3]?.[1] as RequestInit).method).toBe('DELETE');
   });
 });

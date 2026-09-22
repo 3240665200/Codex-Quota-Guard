@@ -113,6 +113,8 @@
                         <include>com/pingche/web/user/UserService*</include>
                         <include>com/pingche/web/admin/AdminService*</include>
                         <include>com/pingche/web/admin/AdminBootstrap*</include>
+                        <include>com/pingche/web/codex/CodexAccountService*</include>
+                        <include>com/pingche/web/codex/CodexCredentialCipher*</include>
                     </includes>
                 </configuration>
                 <executions>
