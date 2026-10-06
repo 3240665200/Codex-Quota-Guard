@@ -29,3 +29,6 @@ app:
   admin-bootstrap-password: ${ADMIN_BOOTSTRAP_PASSWORD:}
   admin-bootstrap-display-name: ${ADMIN_BOOTSTRAP_DISPLAY_NAME:Administrator}
   codex-credential-encryption-key: ${CODEX_CREDENTIAL_ENCRYPTION_KEY:}
+  codex-login:
+    command: ${CODEX_LOGIN_COMMAND:codex}
+    work-dir: ${CODEX_AUTH_WORK_DIR:${java.io.tmpdir}}

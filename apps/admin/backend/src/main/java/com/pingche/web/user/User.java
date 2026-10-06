@@ -7,6 +7,7 @@ import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import java.time.Instant;
+import java.util.Objects;
 import java.util.UUID;
 
 @Entity
@@ -41,6 +42,27 @@ public class User {
 
     @Column(name = "session_version", nullable = false)
     private long sessionVersion;
+
+    /**
+     * This is deliberately an identifier rather than a JPA relationship. A system
+     * user must never cause the encrypted Codex credential entity to be loaded or
+     * serialized as part of their profile.
+     */
+    @Column(name = "assigned_codex_account_id")
+    private UUID assignedCodexAccountId;
+
+    /**
+     * Kept as an identifier to avoid eagerly loading team data in authentication
+     * and ordinary user-profile paths.
+     */
+    @Column(name = "team_id")
+    private UUID teamId;
+
+    @Column(name = "five_hour_quota_percent")
+    private Integer fiveHourQuotaPercent;
+
+    @Column(name = "weekly_quota_percent")
+    private Integer weeklyQuotaPercent;
 
     protected User() {
     }
@@ -104,6 +126,22 @@ public class User {
         return sessionVersion;
     }
 
+    public UUID getAssignedCodexAccountId() {
+        return assignedCodexAccountId;
+    }
+
+    public UUID getTeamId() {
+        return teamId;
+    }
+
+    public Integer getFiveHourQuotaPercent() {
+        return fiveHourQuotaPercent;
+    }
+
+    public Integer getWeeklyQuotaPercent() {
+        return weeklyQuotaPercent;
+    }
+
     public void updateProfile(String email, String displayName) {
         this.email = email;
         this.displayName = displayName;
@@ -128,6 +166,46 @@ public class User {
     public void invalidateSessions() {
         this.sessionVersion++;
         this.updatedAt = Instant.now();
+    }
+
+    public boolean assignCodexAccount(UUID codexAccountId) {
+        if (Objects.equals(this.assignedCodexAccountId, codexAccountId)) {
+            return false;
+        }
+        this.assignedCodexAccountId = codexAccountId;
+        this.updatedAt = Instant.now();
+        return true;
+    }
+
+    public boolean unassignCodexAccount() {
+        if (this.assignedCodexAccountId == null) {
+            return false;
+        }
+        this.assignedCodexAccountId = null;
+        this.updatedAt = Instant.now();
+        return true;
+    }
+
+    public boolean updateQuotaPolicy(
+            UUID teamId,
+            Integer fiveHourQuotaPercent,
+            Integer weeklyQuotaPercent,
+            Instant now
+    ) {
+        if (Objects.equals(this.teamId, teamId)
+                && Objects.equals(this.fiveHourQuotaPercent, fiveHourQuotaPercent)
+                && Objects.equals(this.weeklyQuotaPercent, weeklyQuotaPercent)) {
+            return false;
+        }
+        this.teamId = teamId;
+        this.fiveHourQuotaPercent = fiveHourQuotaPercent;
+        this.weeklyQuotaPercent = weeklyQuotaPercent;
+        this.updatedAt = now;
+        return true;
+    }
+
+    public boolean clearTeam(Instant now) {
+        return updateQuotaPolicy(null, fiveHourQuotaPercent, weeklyQuotaPercent, now);
     }
 
     public enum Role {

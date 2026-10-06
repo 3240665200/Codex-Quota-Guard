@@ -9,6 +9,10 @@ public record UserResponse(
         String displayName,
         String role,
         String status,
+        UUID assignedCodexAccountId,
+        UUID teamId,
+        Integer fiveHourQuotaPercent,
+        Integer weeklyQuotaPercent,
         Instant createdAt,
         Instant updatedAt
 ) {
@@ -20,6 +24,10 @@ public record UserResponse(
                 user.getDisplayName(),
                 user.getRole().name(),
                 user.getStatus().name(),
+                user.getAssignedCodexAccountId(),
+                user.getTeamId(),
+                user.getFiveHourQuotaPercent(),
+                user.getWeeklyQuotaPercent(),
                 user.getCreatedAt(),
                 user.getUpdatedAt()
         );

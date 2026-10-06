@@ -16,4 +16,7 @@ public record CodexAccountCreateRequest(
         email = email == null ? null : email.trim();
         displayName = displayName == null ? null : displayName.trim();
     }
+
+    @Override
+    public String toString() { return "CodexAccountCreateRequest[redacted]"; }
 }

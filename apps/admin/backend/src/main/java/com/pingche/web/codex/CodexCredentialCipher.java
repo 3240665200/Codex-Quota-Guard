@@ -1,5 +1,6 @@
 package com.pingche.web.codex;
 
+import com.pingche.web.auth.DomainException;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
@@ -13,6 +14,7 @@ import javax.crypto.spec.SecretKeySpec;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
+import org.springframework.http.HttpStatus;
 
 @Component
 public class CodexCredentialCipher {
@@ -23,6 +25,7 @@ public class CodexCredentialCipher {
             "codex-quota-guard/codex-credentials/v1".getBytes(StandardCharsets.UTF_8);
 
     private final SecretKeySpec key;
+    private boolean dedicatedKey = true;
     private final SecureRandom secureRandom = new SecureRandom();
 
     @Autowired
@@ -33,6 +36,8 @@ public class CodexCredentialCipher {
         this(configuredSecret == null || configuredSecret.isBlank()
                 ? jwtSecret
                 : configuredSecret);
+        dedicatedKey = configuredSecret != null && !configuredSecret.isBlank()
+                && !configuredSecret.equals(jwtSecret);
     }
 
     CodexCredentialCipher(String secret) {
@@ -42,6 +47,14 @@ public class CodexCredentialCipher {
             );
         }
         this.key = new SecretKeySpec(deriveKey(secret), "AES");
+    }
+
+    public void requireDedicatedKey() {
+        if (!dedicatedKey) {
+            throw new DomainException("CODEX_ENCRYPTION_KEY_REQUIRED",
+                    "请先在服务器配置独立的 CODEX_CREDENTIAL_ENCRYPTION_KEY，再保存 Codex 凭据。",
+                    HttpStatus.SERVICE_UNAVAILABLE);
+        }
     }
 
     public EncryptedCredential encrypt(UUID accountId, byte[] plaintext) {

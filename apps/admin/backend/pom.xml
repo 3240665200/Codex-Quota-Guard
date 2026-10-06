@@ -115,6 +115,11 @@
                         <include>com/pingche/web/admin/AdminBootstrap*</include>
                         <include>com/pingche/web/codex/CodexAccountService*</include>
                         <include>com/pingche/web/codex/CodexCredentialCipher*</include>
+                        <include>com/pingche/web/codex/CodexAuthorizationService*</include>
+                        <include>com/pingche/web/codex/CodexLoginRpc*</include>
+                        <include>com/pingche/web/codex/CodexLoginDirectory*</include>
+                        <include>com/pingche/web/codex/CodexLoginUrl*</include>
+                        <include>com/pingche/web/codex/OfficialCodexLoginGateway*</include>
                     </includes>
                 </configuration>
                 <executions>

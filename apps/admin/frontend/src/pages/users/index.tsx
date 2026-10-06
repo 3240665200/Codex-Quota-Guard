@@ -6,6 +6,7 @@ import {
   PlusOutlined,
   PoweroffOutlined,
   SearchOutlined,
+  SlidersOutlined,
   StopOutlined,
   UserOutlined,
 } from '@ant-design/icons';
@@ -19,6 +20,7 @@ import {
   Empty,
   Form,
   Input,
+  InputNumber,
   Modal,
   Select,
   Space,
@@ -32,14 +34,21 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { getErrorMessage } from '../../components/AdminState';
 import {
+  assignCodexAccountToUser,
   createUser,
   deleteUser,
   forceLogoutUser,
   getSession,
+  listCodexAccounts,
+  listTeams,
   listUsers,
+  unassignCodexAccountFromUser,
+  updateUserQuotaPolicy,
   updateUser,
 } from '../../services/api';
 import type {
+  CodexAccount,
+  TeamResponse,
   UserCreate,
   UserListParams,
   UserListResponse,
@@ -48,6 +57,7 @@ import type {
   UserStatus,
   UserUpdate,
 } from '../../services/api';
+import { generateRandomPassword } from './generatePassword';
 
 const PAGE_SIZE = 20;
 const EMPTY_FILTERS: Required<Pick<UserListParams, 'q' | 'status' | 'role'>> = {
@@ -64,6 +74,12 @@ interface UserFormValues {
   status: UserStatus;
 }
 
+interface QuotaPolicyFormValues {
+  teamId: string | null;
+  fiveHourQuotaPercent: number | null;
+  weeklyQuotaPercent: number | null;
+}
+
 function formatDate(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '—';
@@ -73,19 +89,54 @@ function formatDate(value: string): string {
   }).format(date);
 }
 
+function quotaRule() {
+  return {
+    validator: (_: unknown, value: unknown) => {
+      if (
+        value !== null &&
+        value !== undefined &&
+        (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 100)
+      ) {
+        return Promise.reject(new Error('请输入 0 到 100 的数字，或留空继承团队默认值'));
+      }
+      return Promise.resolve();
+    },
+  };
+}
+
+function formatEffectiveQuota(
+  personalValue: number | null,
+  teamValue: number | undefined,
+): string {
+  if (personalValue !== null) return `${personalValue}%（个人覆盖）`;
+  if (teamValue !== undefined) return `${teamValue}%（团队默认）`;
+  return '100%（系统默认）';
+}
+
 export default function UsersPage() {
   const { token } = theme.useToken();
   const { message, modal } = AntApp.useApp();
   const [form] = Form.useForm<UserFormValues>();
+  const passwordValue = Form.useWatch('password', form);
+  const [quotaForm] = Form.useForm<QuotaPolicyFormValues>();
+  const [codexAccounts, setCodexAccounts] = useState<CodexAccount[]>([]);
+  const [codexAccountsLoading, setCodexAccountsLoading] = useState(true);
   const [data, setData] = useState<UserListResponse | null>(null);
   const [draftFilters, setDraftFilters] = useState(EMPTY_FILTERS);
   const [editingUser, setEditingUser] = useState<UserResponse | null>(null);
   const [error, setError] = useState('');
   const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [formOpen, setFormOpen] = useState(false);
+  const [quotaEditingUser, setQuotaEditingUser] = useState<UserResponse | null>(null);
+  const [quotaFormOpen, setQuotaFormOpen] = useState(false);
+  const [quotaSaving, setQuotaSaving] = useState(false);
+  const [teams, setTeams] = useState<TeamResponse[]>([]);
+  const [teamsError, setTeamsError] = useState('');
+  const [teamsLoading, setTeamsLoading] = useState(true);
   const [loading, setLoading] = useState(true);
   const [mutatingId, setMutatingId] = useState<string | null>(null);
   const [page, setPage] = useState(0);
+  const [passwordVisible, setPasswordVisible] = useState(false);
   const [saving, setSaving] = useState(false);
   const currentUserId = getSession()?.user.id;
 
@@ -105,6 +156,47 @@ export default function UsersPage() {
     void load();
   }, [load]);
 
+  const loadCodexAccounts = useCallback(async () => {
+    setCodexAccountsLoading(true);
+    try {
+      const firstPage = await listCodexAccounts({ page: 0, size: 100 });
+      const pages = [firstPage];
+      for (let nextPage = 1; nextPage < firstPage.totalPages; nextPage += 1) {
+        pages.push(await listCodexAccounts({ page: nextPage, size: 100 }));
+      }
+      setCodexAccounts(pages.flatMap((pageData) => pageData.items));
+    } catch (requestError) {
+      message.error(`Codex 账户列表加载失败：${getErrorMessage(requestError)}`);
+    } finally {
+      setCodexAccountsLoading(false);
+    }
+  }, [message]);
+
+  useEffect(() => {
+    void loadCodexAccounts();
+  }, [loadCodexAccounts]);
+
+  const loadTeams = useCallback(async () => {
+    setTeamsLoading(true);
+    setTeamsError('');
+    try {
+      setTeams(await listTeams());
+    } catch (requestError) {
+      setTeamsError(getErrorMessage(requestError));
+    } finally {
+      setTeamsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadTeams();
+  }, [loadTeams]);
+
+  const teamById = useMemo(
+    () => new Map(teams.map((team) => [team.id, team])),
+    [teams],
+  );
+
   const applyFilters = (values = draftFilters) => {
     setPage(0);
     setFilters({
@@ -117,6 +209,7 @@ export default function UsersPage() {
   const openCreate = useCallback(() => {
     setEditingUser(null);
     form.resetFields();
+    setPasswordVisible(false);
     form.setFieldsValue({ role: 'USER', status: 'ACTIVE' });
     setFormOpen(true);
   }, [form]);
@@ -124,6 +217,8 @@ export default function UsersPage() {
   const openEdit = useCallback(
     (user: UserResponse) => {
       setEditingUser(user);
+      form.resetFields();
+      setPasswordVisible(false);
       form.setFieldsValue({
         displayName: user.displayName,
         email: user.email,
@@ -135,6 +230,34 @@ export default function UsersPage() {
     },
     [form],
   );
+
+  const closeUserForm = () => {
+    setFormOpen(false);
+    setPasswordVisible(false);
+    form.resetFields();
+  };
+
+  const fillRandomPassword = () => {
+    try {
+      form.setFieldValue('password', generateRandomPassword());
+      setPasswordVisible(true);
+      message.success('随机密码已生成，请复制并妥善保存');
+    } catch {
+      message.error('当前浏览器无法安全生成密码，请更换浏览器后重试');
+    }
+  };
+
+  const copyPassword = async () => {
+    const password = form.getFieldValue('password');
+    if (typeof password !== 'string' || !password) return;
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
+      await navigator.clipboard.writeText(password);
+      message.success('密码已复制，请妥善保管');
+    } catch {
+      message.error('复制失败，请显示密码后手动复制');
+    }
+  };
 
   const saveUser = async () => {
     const values = await form.validateFields();
@@ -149,13 +272,12 @@ export default function UsersPage() {
         };
         if (values.password) update.password = values.password;
         await updateUser(editingUser.id, update);
-        message.success('用户已更新');
+        message.success(values.password ? '用户已更新，旧登录已失效' : '用户已更新');
       } else {
         await createUser(values as UserCreate);
         message.success('用户已创建');
       }
-      setFormOpen(false);
-      form.resetFields();
+      closeUserForm();
       await load();
     } catch (requestError) {
       if (requestError && typeof requestError === 'object' && 'errorFields' in requestError) {
@@ -217,6 +339,99 @@ export default function UsersPage() {
     },
     [message, modal],
   );
+
+  const confirmCodexAccountAssignment = useCallback(
+    (user: UserResponse, codexAccountId?: string) => {
+      if ((codexAccountId ?? null) === user.assignedCodexAccountId) return;
+      const account = codexAccounts.find((item) => item.id === codexAccountId);
+      setMutatingId(user.id);
+      modal.confirm({
+        cancelText: '取消',
+        content: codexAccountId
+          ? `将 ${account?.displayName ?? '所选 Codex 账户'} 分配给 ${user.email}？该用户现有会话会立即失效。`
+          : `取消 ${user.email} 的 Codex 账户分配？该用户现有会话会立即失效。`,
+        okText: codexAccountId ? '确认分配' : '取消分配',
+        onCancel: () => setMutatingId(null),
+        onOk: async () => {
+          try {
+            if (codexAccountId) {
+              await assignCodexAccountToUser(user.id, codexAccountId);
+              message.success('Codex 账户已分配');
+            } else {
+              await unassignCodexAccountFromUser(user.id);
+              message.success('Codex 账户分配已取消');
+            }
+            await load();
+          } catch (requestError) {
+            message.error(getErrorMessage(requestError));
+            throw requestError;
+          } finally {
+            setMutatingId(null);
+          }
+        },
+        title: codexAccountId ? '分配 Codex 账户？' : '取消账户分配？',
+      });
+    },
+    [codexAccounts, load, message, modal],
+  );
+
+  const openQuotaPolicy = useCallback(
+    (user: UserResponse) => {
+      setQuotaEditingUser(user);
+      quotaForm.setFieldsValue({
+        fiveHourQuotaPercent: user.fiveHourQuotaPercent,
+        teamId: user.teamId,
+        weeklyQuotaPercent: user.weeklyQuotaPercent,
+      });
+      setQuotaFormOpen(true);
+    },
+    [quotaForm],
+  );
+
+  const closeQuotaPolicy = useCallback(() => {
+    setQuotaFormOpen(false);
+    setQuotaEditingUser(null);
+    quotaForm.resetFields();
+  }, [quotaForm]);
+
+  const saveQuotaPolicy = async () => {
+    if (!quotaEditingUser) return;
+    let values: QuotaPolicyFormValues;
+    try {
+      values = await quotaForm.validateFields();
+    } catch {
+      return;
+    }
+
+    const user = quotaEditingUser;
+    modal.confirm({
+      cancelText: '取消',
+      content:
+        '保存后会立即应用团队与个人额度覆盖，并使该用户现有会话失效。页面不会展示或推算 Codex 的真实用量。确定继续吗？',
+      okText: '确认保存',
+      onOk: async () => {
+        setQuotaSaving(true);
+        setMutatingId(user.id);
+        try {
+          await updateUserQuotaPolicy(user.id, {
+            fiveHourQuotaPercent: values.fiveHourQuotaPercent ?? null,
+            teamId: values.teamId || null,
+            weeklyQuotaPercent: values.weeklyQuotaPercent ?? null,
+          });
+          message.success('用户额度策略已保存');
+          closeQuotaPolicy();
+          await load();
+        } catch (requestError) {
+          message.error(getErrorMessage(requestError));
+          throw requestError;
+        } finally {
+          setQuotaSaving(false);
+          setMutatingId(null);
+        }
+      },
+      title: '确认保存额度策略？',
+    });
+  };
 
   const confirmDelete = useCallback(
     (user: UserResponse) => {
@@ -322,6 +537,83 @@ export default function UsersPage() {
         width: 170,
       },
       {
+        dataIndex: 'assignedCodexAccountId',
+        render: (accountId: string | null, user) => (
+          <Select<string>
+            allowClear
+            aria-label={`分配 ${user.email} 的 Codex 账户`}
+            disabled={mutatingId === user.id}
+            loading={codexAccountsLoading}
+            onChange={(nextAccountId) =>
+              confirmCodexAccountAssignment(user, nextAccountId)
+            }
+            options={codexAccounts.map((account) => ({
+              disabled: account.status !== 'ACTIVE' && account.id !== accountId,
+              label: `${account.displayName} · ${account.email}${
+                account.status === 'DISABLED' ? '（已停用）' : ''
+              }`,
+              value: account.id,
+            }))}
+            placeholder="未分配"
+            showSearch
+            optionFilterProp="label"
+            style={{ minWidth: 230 }}
+            value={accountId ?? undefined}
+          />
+        ),
+        title: 'Codex 账户',
+        width: 270,
+      },
+      {
+        dataIndex: 'teamId',
+        render: (teamId: string | null, user) => {
+          const team = teamId ? teamById.get(teamId) : undefined;
+          const teamPolicyLoading = Boolean(teamId) && teamsLoading;
+          const teamPolicyUnavailable =
+            Boolean(teamId) &&
+            !teamsLoading &&
+            (Boolean(teamsError) || !team);
+          return (
+            <Space align="start" orientation="vertical" size={2}>
+              <Typography.Text>
+                {teamPolicyLoading
+                  ? '团队加载中…'
+                  : teamPolicyUnavailable
+                    ? '团队策略不可用'
+                    : teamsError
+                      ? '团队列表不可用'
+                      : team?.name ?? '未分配团队'}
+              </Typography.Text>
+              <Typography.Text type="secondary">
+                {teamPolicyLoading
+                  ? '额度策略加载中…'
+                  : teamPolicyUnavailable
+                    ? '额度策略暂不可用'
+                    : `5 小时 ${formatEffectiveQuota(
+                        user.fiveHourQuotaPercent,
+                        team?.fiveHourQuotaPercent,
+                      )} · 7 天 ${formatEffectiveQuota(
+                        user.weeklyQuotaPercent,
+                        team?.weeklyQuotaPercent,
+                      )}`}
+              </Typography.Text>
+              <Button
+                aria-label={`配置 ${user.email} 的额度策略`}
+                disabled={mutatingId === user.id || teamsLoading}
+                icon={<SlidersOutlined />}
+                onClick={() => openQuotaPolicy(user)}
+                size="small"
+                type="link"
+              >
+                配置团队/个人额度
+              </Button>
+            </Space>
+          );
+        },
+        title: '团队与额度策略',
+        width: 260,
+      },
+      {
         dataIndex: 'createdAt',
         render: (value: string) => formatDate(value),
         title: '创建时间',
@@ -340,6 +632,12 @@ export default function UsersPage() {
                     key: 'edit',
                     label: '编辑',
                     onClick: () => openEdit(user),
+                  },
+                  {
+                    icon: <SlidersOutlined />,
+                    key: 'quota',
+                    label: '配置团队/个人额度',
+                    onClick: () => openQuotaPolicy(user),
                   },
                   {
                     disabled: self,
@@ -376,11 +674,18 @@ export default function UsersPage() {
     ],
     [
       confirmDelete,
+      confirmCodexAccountAssignment,
       confirmForceLogout,
       confirmUpdate,
+      codexAccounts,
+      codexAccountsLoading,
       currentUserId,
       mutatingId,
       openEdit,
+      openQuotaPolicy,
+      teamById,
+      teamsLoading,
+      teamsError,
       token.colorPrimary,
       token.colorPrimaryBg,
     ],
@@ -388,7 +693,7 @@ export default function UsersPage() {
 
   return (
     <PageContainer
-      content="管理用户与登录会话。"
+      content="管理用户、登录会话、团队归属与个人额度覆盖。额度字段是策略百分比，不代表实时用量。"
       extra={[
         <Button icon={<PlusOutlined />} key="create" onClick={openCreate} type="primary">
           新增用户
@@ -470,6 +775,16 @@ export default function UsersPage() {
             type="error"
           />
         ) : null}
+        {teamsError ? (
+          <Alert
+            action={<Button onClick={() => void loadTeams()}>重试</Button>}
+            className="cqg-inline-alert"
+            description={teamsError}
+            title="团队列表加载失败，暂时无法配置额度策略"
+            showIcon
+            type="error"
+          />
+        ) : null}
         <Table<UserResponse>
           className="cqg-users-table"
           columns={columns}
@@ -492,7 +807,7 @@ export default function UsersPage() {
               : false
           }
           rowKey="id"
-          scroll={{ x: 900 }}
+          scroll={{ x: 1430 }}
         />
       </ProCard>
 
@@ -500,10 +815,7 @@ export default function UsersPage() {
         forceRender
         okButtonProps={{ loading: saving }}
         okText={editingUser ? '保存' : '创建'}
-        onCancel={() => {
-          setFormOpen(false);
-          form.resetFields();
-        }}
+        onCancel={closeUserForm}
         onOk={() => void saveUser()}
         open={formOpen}
         title={editingUser ? '编辑用户' : '新增用户'}
@@ -527,7 +839,7 @@ export default function UsersPage() {
             <Input maxLength={120} />
           </Form.Item>
           <Form.Item
-            extra={editingUser ? '留空则保持原密码' : undefined}
+            extra={editingUser ? '留空则保持原密码；修改后该用户需要重新登录' : undefined}
             label="密码"
             name="password"
             rules={[
@@ -536,8 +848,28 @@ export default function UsersPage() {
               { max: 128, message: '密码不能超过 128 位' },
             ]}
           >
-            <Input.Password autoComplete="new-password" />
+            <Input.Password
+              autoComplete="new-password"
+              visibilityToggle={{
+                visible: passwordVisible,
+                onVisibleChange: setPasswordVisible,
+              }}
+            />
           </Form.Item>
+          {editingUser ? (
+            <Space style={{ marginBottom: 20 }}>
+              <Button htmlType="button" onClick={fillRandomPassword}>
+                生成随机密码
+              </Button>
+              <Button
+                disabled={!passwordValue}
+                htmlType="button"
+                onClick={() => void copyPassword()}
+              >
+                复制密码
+              </Button>
+            </Space>
+          ) : null}
           <Space align="start" size={16}>
             <Form.Item
               label="角色"
@@ -567,6 +899,69 @@ export default function UsersPage() {
             </Form.Item>
           </Space>
         </Form>
+      </Modal>
+
+      <Modal
+        forceRender
+        okButtonProps={{ loading: quotaSaving }}
+        okText="保存额度策略"
+        onCancel={closeQuotaPolicy}
+        onOk={() => void saveQuotaPolicy()}
+        open={quotaFormOpen}
+        title={quotaEditingUser ? `配置 ${quotaEditingUser.email} 的额度策略` : '配置额度策略'}
+      >
+        <Form form={quotaForm} layout="vertical" preserve={false}>
+          <Form.Item
+            extra={teamsError ? '团队列表暂不可用，请先重试。' : '用户会继承所选团队的默认额度。'}
+            label="所属团队"
+            name="teamId"
+          >
+            <Select
+              allowClear
+              disabled={teamsLoading || Boolean(teamsError)}
+              loading={teamsLoading}
+              options={teams.map((team) => ({
+                disabled: team.status !== 'ACTIVE' && team.id !== quotaEditingUser?.teamId,
+                label: `${team.name}${team.status === 'DISABLED' ? '（已停用）' : ''}`,
+                value: team.id,
+              }))}
+              placeholder="不分配团队"
+              showSearch
+              optionFilterProp="label"
+            />
+          </Form.Item>
+          <Space align="start" size={16}>
+            <Form.Item
+              extra="留空表示继承团队默认"
+              label="5 小时个人覆盖"
+              name="fiveHourQuotaPercent"
+              rules={[quotaRule()]}
+            >
+              <InputNumber
+                suffix="%"
+                style={{ width: 180 }}
+              />
+            </Form.Item>
+            <Form.Item
+              extra="留空表示继承团队默认"
+              label="7 天个人覆盖"
+              name="weeklyQuotaPercent"
+              rules={[quotaRule()]}
+            >
+              <InputNumber
+                suffix="%"
+                style={{ width: 180 }}
+              />
+            </Form.Item>
+          </Space>
+        </Form>
+        <Alert
+          className="cqg-inline-alert"
+          title="保存会使该用户当前会话失效"
+          description="额度策略只描述允许的百分比窗口；后台不会假装显示 Codex 实时用量。"
+          showIcon
+          type="warning"
+        />
       </Modal>
     </PageContainer>
   );

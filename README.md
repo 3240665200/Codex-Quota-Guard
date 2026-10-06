@@ -10,10 +10,18 @@ Codex Quota Guard 是一个同时包含跨平台桌面客户端与 Web 管理后
 - 管理端界面：Ant Design Pro 6、React 19、Umi Max 4、Ant Design 6、Pro Components 3
 - 管理端后端：Java 17 + Spring Boot 4、Spring Security、PostgreSQL、Flyway
 
-客户端本地后端负责额度、共享房间和本机 `codex app-server` 通信。管理端后端负责
-应用用户、管理员权限与联网服务数据，并原生管理 Codex 账号。应用用户与 Codex 账号
-相互独立；Codex 凭据由 Java 后端使用 AES-GCM 加密后保存到 PostgreSQL，查询接口
-不会返回凭据原文。
+客户端本地后端负责桌面壳与中央服务之间的安全会话和固定接口转发。
+管理端后端负责系统用户、团队与额度策略、管理员权限及 Codex 账号。系统用户与 Codex 账号相互独立；
+管理员为系统用户分配 Codex 账号，Codex 凭据由 Java 后端使用 AES-GCM 加密后保存到
+PostgreSQL，查询接口不会返回凭据原文。
+
+管理端可通过「Codex 账户 → 授权添加」跳转 OpenAI 官方网页登录，也支持远程服务器设备码登录，
+无需手动查找 JSON。服务器需要安装官方 Codex CLI，并配置独立凭据加密密钥；
+详见 [授权配置与安全边界](docs/architecture/codex-credential-custody.md)。
+管理员可设置团队默认额度，并按系统用户分配 Codex 账户和个人额度覆盖值。客户端旧的
+“共享房间”入口已由中央策略取代。当前尚无受控的服务器 Codex 任务执行与逐人计量；
+没有真实测量数据时客户端会显示“尚未采集”，不会把未知用量当成 0。
+策略与实际可用额度的边界见[团队与个人额度策略](docs/architecture/team-quota-policy.md)。
 
 ## 目录结构
 
@@ -55,6 +63,10 @@ pnpm install
 
 ## 运行管理后台
 
+Windows 可直接双击项目根目录的 `一键启动-管理后台.cmd`。它会避免重复启动，
+按需构建 Java API，默认绑定当前局域网 IPv4，启动管理网页并打开登录页；日志保存到
+`D:\BuildCache\pingche\logs`。局域网 HTTP 仅适合临时可信网络，正式使用应配置 HTTPS。
+
 先按 `apps/admin/backend/.env.example` 配置 PostgreSQL、JWT 和管理员初始化变量，再启动 Java API：
 
 ```bash
@@ -67,17 +79,23 @@ pnpm dev:admin-backend
 pnpm dev:admin
 ```
 
-默认管理页面为 `http://localhost:8000`，开发环境会把 `/api` 代理到
-`http://127.0.0.1:8080`。
+默认管理页面为 `http://localhost:8000`，一键启动脚本会把 `/api` 代理到所选后台
+监听地址。直接使用 `pnpm dev:admin` 时，仍默认代理到 `http://127.0.0.1:8080`。
 
 ## 运行桌面客户端
+
+Windows 可直接双击项目根目录的 `一键启动-桌面客户端.cmd`。它会自动定位 Java，
+构建本地 Java 服务并打开 Tauri 客户端；重复双击只会激活已有窗口。客户端默认连接
+`http://127.0.0.1:8080` 的中央服务。安装版可在登录页的“服务器设置”中更改地址；
+保存后需要重启客户端。推荐 HTTPS；仅在可信局域网临时使用 HTTP 时，须勾选风险确认。
 
 ```bash
 pnpm dev:client
 ```
 
 该命令会构建 `apps/client/backend` 的 Java JAR，把它复制到 Tauri 资源目录，
-然后启动 Vite 与 Tauri。Java 服务只监听回环地址，并由 Tauri 管理生命周期。
+然后启动 Vite 与 Tauri。Java 服务只监听回环地址，并由 Tauri 管理生命周期。启动后
+必须先登录本系统账号；客户端不再提供 Codex 登录，也不会接收 Codex 凭据。
 
 ## 验证与构建
 
@@ -105,6 +123,8 @@ pnpm verify
 - 密码只保存 BCrypt 哈希；refresh token 在数据库中只保存 SHA-256 摘要。
 - 强制下线通过会话版本立即使该用户的 access token 与 refresh token 全部失效。
 - Codex 凭据加密密钥只注入 Java 后端，不会发送到浏览器或写入仓库。
+- 新增/替换 Codex 凭据必须配置独立的加密密钥，不再允许写入时回退到 JWT 密钥。
+- 不提供上游凭据下载或客户端下发接口；本机官方 Codex 登录不能承诺凭据对设备所有者不可提取。
 - 生产环境必须使用 HTTPS，并从环境变量或密钥管理服务注入数据库和 JWT 密钥。
 - 桌面端临时 bearer token、Web access token、refresh token 和数据库密码均不得提交到 Git。
 

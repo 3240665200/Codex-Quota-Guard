@@ -1,5 +1,10 @@
 package com.pingche.web.admin;
 
+import com.pingche.web.codex.CodexAccountAssignmentRequest;
+import com.pingche.web.codex.CodexAccountAssignmentService;
+import com.pingche.web.codex.ManagedCodexAccountResponse;
+import com.pingche.web.quota.QuotaPolicyService;
+import com.pingche.web.quota.QuotaPolicyUpdateRequest;
 import com.pingche.web.user.User;
 import com.pingche.web.user.UserResponse;
 import jakarta.validation.Valid;
@@ -12,11 +17,12 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -29,9 +35,17 @@ import org.springframework.web.bind.annotation.RestController;
 public class AdminController {
 
     private final AdminService adminService;
+    private final CodexAccountAssignmentService codexAccountAssignments;
+    private final QuotaPolicyService quotaPolicies;
 
-    public AdminController(AdminService adminService) {
+    public AdminController(
+            AdminService adminService,
+            CodexAccountAssignmentService codexAccountAssignments,
+            QuotaPolicyService quotaPolicies
+    ) {
         this.adminService = adminService;
+        this.codexAccountAssignments = codexAccountAssignments;
+        this.quotaPolicies = quotaPolicies;
     }
 
     @GetMapping("/dashboard")
@@ -91,5 +105,27 @@ public class AdminController {
     public ResponseEntity<Void> forceLogout(@PathVariable("id") UUID id) {
         adminService.forceLogout(id);
         return ResponseEntity.noContent().build();
+    }
+
+    @PutMapping("/users/{id}/codex-account")
+    public ManagedCodexAccountResponse assignCodexAccount(
+            @PathVariable("id") UUID id,
+            @Valid @RequestBody CodexAccountAssignmentRequest request
+    ) {
+        return codexAccountAssignments.assign(id, request.codexAccountId());
+    }
+
+    @DeleteMapping("/users/{id}/codex-account")
+    public ResponseEntity<Void> unassignCodexAccount(@PathVariable("id") UUID id) {
+        codexAccountAssignments.unassign(id);
+        return ResponseEntity.noContent().build();
+    }
+
+    @PutMapping("/users/{id}/quota-policy")
+    public UserResponse updateQuotaPolicy(
+            @PathVariable("id") UUID id,
+            @Valid @RequestBody QuotaPolicyUpdateRequest request
+    ) {
+        return quotaPolicies.update(id, request);
     }
 }

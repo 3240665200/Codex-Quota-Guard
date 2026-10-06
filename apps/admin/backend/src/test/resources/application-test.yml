@@ -13,6 +13,7 @@ spring:
 
 app:
   jwt-secret: test-secret-that-is-longer-than-thirty-two-bytes
+  codex-credential-encryption-key: test-credential-key-independent-from-jwt-secret
   jwt-issuer: codex-quota-guard-test
   access-token-ttl: 15m
   refresh-token-ttl: 7d

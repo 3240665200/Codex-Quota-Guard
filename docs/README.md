@@ -6,6 +6,8 @@
 
 - [Tauri + React 重构方案](architecture/tauri-react-refactor.md)
 - [Web 后端能力契约](architecture/web-backend-capability.md)
+- [Codex 授权、凭据保管与客户端安全边界](architecture/codex-credential-custody.md)
+- [团队与个人额度策略](architecture/team-quota-policy.md)
 
 ## API
 

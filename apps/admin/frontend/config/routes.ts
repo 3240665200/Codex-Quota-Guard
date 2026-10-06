@@ -34,6 +34,13 @@ export default [
   },
   {
     access: 'canAdmin',
+    component: './teams',
+    icon: 'team',
+    name: '团队与额度策略',
+    path: '/teams',
+  },
+  {
+    access: 'canAdmin',
     component: './codex-accounts',
     icon: 'key',
     name: 'Codex 账户',

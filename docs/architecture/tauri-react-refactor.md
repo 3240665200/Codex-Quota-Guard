@@ -9,7 +9,7 @@
 - UI：React 18、TypeScript、Vite、Tailwind CSS、shadcn/ui（Radix UI）
 - 前端能力：TanStack Query、react-i18next、react-hook-form + Zod、Framer Motion、Recharts、Sonner、Lucide
 - 桌面壳：Tauri 2 + Rust，仅负责窗口、安全边界、Java 进程生命周期和本地 API 代理
-- 后端：Java 17 + Spring Boot，负责 Codex app-server、账号、额度、房间、签名和持久化业务
+- 本地后端：Java 17 + Spring Boot，负责系统会话与固定中央 API 网关；上游 Codex 凭据只在中央 Java 服务端使用
 - 平台目标：Windows、macOS、Linux
 
 ## 安全与通信
@@ -19,20 +19,22 @@
 3. React 只能调用显式白名单中的 Tauri commands，不能读取 bearer token，也不能直接访问任意 URL。
 4. Tauri 只允许代理固定路径：
    - `GET /api/v1/status`
-   - `GET /api/v1/room/overview`
+   - `POST /api/v1/session/login`
+   - `GET /api/v1/session/current`
+   - `POST /api/v1/session/logout`
+   - `GET /api/v1/quota/overview`
    - `GET /api/v1/account/overview`
-   - `POST /api/v1/account/login/device`
-   - `POST /api/v1/account/logout`
    - `POST /api/v1/system/shutdown`（仅由 Tauri 在退出时调用）
 5. 窗口关闭时终止由当前实例启动的 Java 子进程。
 
 ## Tauri command 契约
 
 - `status() -> StatusResponse`
-- `room_overview() -> RoomOverview`
-- `account_overview() -> AccountOverview`
-- `start_device_login() -> DeviceLogin`
-- `logout() -> void`
+- `system_login(email, password) -> SystemSessionOverview`
+- `system_current() -> SystemSessionOverview`
+- `system_logout() -> void`
+- `quota_overview() -> QuotaOverview`
+- `account_overview() -> ManagedAccountOverview`
 
 命令返回可序列化 JSON；错误转换为不含 token、邮箱或本地敏感路径的用户可读消息。
 
@@ -41,7 +43,7 @@
 1. 建立 Vite/React/Tailwind/shadcn 脚手架和共享类型。
 2. 修复并补齐 Spring Boot 账号服务/API，统一环境变量配置。
 3. 建立 Tauri 2 壳、Java sidecar 生命周期和固定 API 代理。
-4. 重建额度仪表盘，保留当前房间、成员、配额、警告和刷新能力。
+4. 建立系统账号登录门禁，展示管理员分配的 Codex 账户与中央服务返回的个人额度策略。未知用量明确标记为未采集；受控执行能力须在中央服务端接入。
 5. 分层测试：Java 单元/控制器测试、React 组件测试、Rust 单元测试、桌面烟雾测试。
 6. 通过后删除旧 Electron 运行入口；旧代码保留到新链路验证完成后再移除。
 

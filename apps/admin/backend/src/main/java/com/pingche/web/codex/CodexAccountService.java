@@ -5,6 +5,7 @@ import jakarta.persistence.criteria.Predicate;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
@@ -97,8 +98,7 @@ public class CodexAccountService {
         String displayName = normalizeDisplayName(request.displayName());
         byte[] credential = serializeCredential(request.credential());
         UUID accountId = UUID.randomUUID();
-        CodexCredentialCipher.EncryptedCredential encrypted =
-                cipher.encrypt(accountId, credential);
+        CodexCredentialCipher.EncryptedCredential encrypted = encryptAndClear(accountId, credential);
         Instant now = Instant.now(clock);
         CodexAccount account = new CodexAccount(
                 accountId,
@@ -144,8 +144,7 @@ public class CodexAccountService {
 
         if (request.credential() != null) {
             byte[] credential = serializeCredential(request.credential());
-            CodexCredentialCipher.EncryptedCredential encrypted =
-                    cipher.encrypt(accountId, credential);
+            CodexCredentialCipher.EncryptedCredential encrypted = encryptAndClear(accountId, credential);
             account.replaceCredential(encrypted.ciphertext(), encrypted.iv(), now);
         }
         try {
@@ -164,17 +163,27 @@ public class CodexAccountService {
     }
 
     private byte[] serializeCredential(JsonNode credential) {
+        cipher.requireDedicatedKey();
         if (credential == null || credential.isNull() || !credential.isObject()) {
             throw validation("credential must be a JSON object");
         }
         try {
             byte[] serialized = objectMapper.writeValueAsBytes(credential);
             if (serialized.length > MAX_CREDENTIAL_BYTES) {
+                Arrays.fill(serialized, (byte) 0);
                 throw validation("credential must not exceed 1 MiB");
             }
             return serialized;
         } catch (JacksonException exception) {
             throw validation("credential is not valid JSON");
+        }
+    }
+
+    private CodexCredentialCipher.EncryptedCredential encryptAndClear(UUID id, byte[] credential) {
+        try {
+            return cipher.encrypt(id, credential);
+        } finally {
+            Arrays.fill(credential, (byte) 0);
         }
     }
 

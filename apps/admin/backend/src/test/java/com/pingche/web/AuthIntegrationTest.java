@@ -73,6 +73,27 @@ class AuthIntegrationTest {
     }
 
     @Test
+    void unsupportedMethodIsNotReportedAsAnInternalError() throws Exception {
+        AuthResponse session = authService.register(EMAIL, PASSWORD, "User");
+        mvc.perform(post("/api/v1/users/me")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + session.accessToken()))
+                .andExpect(status().isMethodNotAllowed())
+                .andExpect(header().string(HttpHeaders.ALLOW, containsString("GET")))
+                .andExpect(jsonPath("$.code").value("METHOD_NOT_ALLOWED"))
+                .andExpect(jsonPath("$.requestId").isNotEmpty());
+    }
+
+    @Test
+    void missingEndpointIsNotReportedAsAnInternalError() throws Exception {
+        AuthResponse session = authService.register(EMAIL, PASSWORD, "User");
+        mvc.perform(get("/api/v1/does-not-exist")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + session.accessToken()))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("NOT_FOUND"))
+                .andExpect(jsonPath("$.requestId").isNotEmpty());
+    }
+
+    @Test
     void registerNormalizesEmailAndNeverReturnsPasswordHash() throws Exception {
         MvcResult result = mvc.perform(post("/api/v1/auth/register")
                         .contentType(MediaType.APPLICATION_JSON)

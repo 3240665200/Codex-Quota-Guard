@@ -2,6 +2,8 @@
 .codex-quota-guard/
 codex-home/
 runtime-state.json
+auth.json
+codex-quota-guard-authorizations/
 *.local.json
 .env
 apps/*/*/.env

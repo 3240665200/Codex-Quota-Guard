@@ -1,5 +1,6 @@
 export type UserRole = 'USER' | 'ADMIN';
 export type UserStatus = 'ACTIVE' | 'DISABLED';
+export type TeamStatus = 'ACTIVE' | 'DISABLED';
 
 export interface UserResponse {
   id: string;
@@ -7,6 +8,10 @@ export interface UserResponse {
   displayName: string;
   role: UserRole;
   status: UserStatus;
+  assignedCodexAccountId: string | null;
+  teamId: string | null;
+  fiveHourQuotaPercent: number | null;
+  weeklyQuotaPercent: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -65,6 +70,50 @@ export type UserUpdate = Partial<
   Pick<UserResponse, 'email' | 'displayName' | 'status' | 'role'> & { password: string }
 >;
 
+export interface TeamResponse {
+  id: string;
+  name: string;
+  description: string;
+  status: TeamStatus;
+  fiveHourQuotaPercent: number;
+  weeklyQuotaPercent: number;
+  memberCount: number;
+  createdAt: string;
+  updatedAt: string;
+  version: number;
+}
+
+/** Alias used by callers that treat the response as a domain model. */
+export type Team = TeamResponse;
+
+export interface TeamCreate {
+  name: string;
+  description: string;
+  status?: TeamStatus;
+  fiveHourQuotaPercent: number;
+  weeklyQuotaPercent: number;
+}
+
+export type TeamUpdate = Partial<
+  Pick<
+    TeamResponse,
+    | 'name'
+    | 'description'
+    | 'status'
+    | 'fiveHourQuotaPercent'
+    | 'weeklyQuotaPercent'
+    | 'version'
+  >
+>;
+
+export interface UserQuotaPolicy {
+  teamId: string | null;
+  fiveHourQuotaPercent: number | null;
+  weeklyQuotaPercent: number | null;
+}
+
+export type QuotaPolicyUpdate = UserQuotaPolicy;
+
 export interface CodexAccount {
   id: string;
   email: string;
@@ -74,6 +123,11 @@ export interface CodexAccount {
   createdAt: string;
   updatedAt: string;
 }
+
+export type AssignedCodexAccount = Pick<
+  CodexAccount,
+  'id' | 'displayName' | 'status' | 'updatedAt'
+>;
 
 export interface CodexAccountListResponse {
   items: CodexAccount[];
@@ -95,6 +149,21 @@ export type CodexAccountUpdate = Partial<
     credential: Record<string, unknown>;
   }
 >;
+
+export type CodexLoginMode = 'BROWSER' | 'DEVICE_CODE';
+
+export interface CodexAuthorization {
+  id: string;
+  status: 'STARTING' | 'PENDING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED' | 'EXPIRED';
+  verificationUrl: string | null;
+  userCode: string | null;
+  expiresAt: string;
+  account: CodexAccount | null;
+  errorCode: string | null;
+  message: string | null;
+  mode: CodexLoginMode;
+  authUrl: string | null;
+}
 
 const SESSION_KEY = 'codex-quota-guard.session';
 export const SESSION_EXPIRED_EVENT = 'codex-quota-guard:session-expired';
@@ -386,6 +455,70 @@ export function forceLogoutUser(id: string): Promise<void> {
   );
 }
 
+export function updateUserQuotaPolicy(
+  userId: string,
+  body: UserQuotaPolicy,
+): Promise<UserResponse | void> {
+  return request<UserResponse | void>(
+    `/api/v1/admin/users/${encodeURIComponent(userId)}/quota-policy`,
+    {
+      body: JSON.stringify(body),
+      method: 'PUT',
+    },
+  );
+}
+
+export async function listTeams(): Promise<TeamResponse[]> {
+  const response = await request<TeamResponse[] | { items?: TeamResponse[] }>(
+    '/api/v1/admin/teams',
+  );
+  return Array.isArray(response) ? response : response.items ?? [];
+}
+
+export function getTeam(id: string): Promise<TeamResponse> {
+  return request<TeamResponse>(`/api/v1/admin/teams/${encodeURIComponent(id)}`);
+}
+
+export function createTeam(body: TeamCreate): Promise<TeamResponse> {
+  return request<TeamResponse>('/api/v1/admin/teams', {
+    body: JSON.stringify(body),
+    method: 'POST',
+  });
+}
+
+export function updateTeam(id: string, body: TeamUpdate): Promise<TeamResponse> {
+  return request<TeamResponse>(`/api/v1/admin/teams/${encodeURIComponent(id)}`, {
+    body: JSON.stringify(body),
+    method: 'PATCH',
+  });
+}
+
+export function deleteTeam(id: string): Promise<void> {
+  return request<void>(`/api/v1/admin/teams/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+}
+
+export function assignCodexAccountToUser(
+  userId: string,
+  codexAccountId: string,
+): Promise<AssignedCodexAccount> {
+  return request<AssignedCodexAccount>(
+    `/api/v1/admin/users/${encodeURIComponent(userId)}/codex-account`,
+    {
+      body: JSON.stringify({ codexAccountId }),
+      method: 'PUT',
+    },
+  );
+}
+
+export function unassignCodexAccountFromUser(userId: string): Promise<void> {
+  return request<void>(
+    `/api/v1/admin/users/${encodeURIComponent(userId)}/codex-account`,
+    { method: 'DELETE' },
+  );
+}
+
 export function listCodexAccounts({
   page = 0,
   size = 20,
@@ -437,6 +570,30 @@ export function updateCodexAccount(
 export function deleteCodexAccount(id: string): Promise<void> {
   return request<void>(
     `/api/v1/admin/codex-accounts/${encodeURIComponent(id)}`,
+    { method: 'DELETE' },
+  );
+}
+
+export function startCodexAuthorization(
+  displayName: string,
+  mode: CodexLoginMode = 'DEVICE_CODE',
+): Promise<CodexAuthorization> {
+  return request<CodexAuthorization>('/api/v1/admin/codex-accounts/authorizations', {
+    method: 'POST',
+    body: JSON.stringify({ displayName, mode }),
+  });
+}
+
+export function getCodexAuthorization(id: string, signal?: AbortSignal): Promise<CodexAuthorization> {
+  return request<CodexAuthorization>(
+    `/api/v1/admin/codex-accounts/authorizations/${encodeURIComponent(id)}`,
+    { signal, cache: 'no-store' },
+  );
+}
+
+export function cancelCodexAuthorization(id: string): Promise<void> {
+  return request<void>(
+    `/api/v1/admin/codex-accounts/authorizations/${encodeURIComponent(id)}`,
     { method: 'DELETE' },
   );
 }

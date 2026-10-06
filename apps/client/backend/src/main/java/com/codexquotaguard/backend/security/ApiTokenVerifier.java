@@ -6,7 +6,7 @@ import java.util.regex.Pattern;
 
 /**
  * Verifies the ephemeral bearer token supplied by the Electron main process.
- * The token is deliberately never written to a room file or exposed to a renderer.
+ * The token is deliberately never persisted or exposed to a renderer.
  */
 public final class ApiTokenVerifier {
 

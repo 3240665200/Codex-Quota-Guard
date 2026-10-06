@@ -1,10 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod backend;
+mod server_config;
 
 use backend::{ApiRoute, BackendState};
 use reqwest::Method;
 use serde_json::Value;
+use server_config::ServerConfig;
 use tauri::{Manager, RunEvent, State};
 
 type CommandResult<T> = Result<T, String>;
@@ -16,6 +18,16 @@ fn command_error(error: backend::BackendError) -> String {
 }
 
 #[tauri::command]
+fn server_config_get(app: tauri::AppHandle) -> ServerConfig {
+    server_config::load(&app)
+}
+
+#[tauri::command]
+fn server_config_save(app: tauri::AppHandle, config: ServerConfig) -> CommandResult<ServerConfig> {
+    server_config::save(&app, config).map_err(str::to_owned)
+}
+
+#[tauri::command]
 async fn status(state: State<'_, BackendState>) -> CommandResult<Value> {
     state
         .json(Method::GET, ApiRoute::Status)
@@ -24,40 +36,43 @@ async fn status(state: State<'_, BackendState>) -> CommandResult<Value> {
 }
 
 #[tauri::command]
-async fn room_overview(state: State<'_, BackendState>) -> CommandResult<Value> {
+async fn quota_overview(state: State<'_, BackendState>) -> CommandResult<Value> {
     state
-        .json(Method::GET, ApiRoute::RoomOverview)
+        .json(Method::GET, ApiRoute::QuotaOverview)
         .await
         .map_err(command_error)
 }
 
 #[tauri::command]
-async fn account_overview(state: State<'_, BackendState>) -> CommandResult<Value> {
+async fn system_login(
+    email: String,
+    password: String,
+    state: State<'_, BackendState>,
+) -> CommandResult<Value> {
     state
-        .json(Method::GET, ApiRoute::AccountOverview)
+        .system_login(email, password)
         .await
         .map_err(command_error)
 }
 
 #[tauri::command]
-async fn start_device_login(state: State<'_, BackendState>) -> CommandResult<Value> {
+async fn system_current(state: State<'_, BackendState>) -> CommandResult<Value> {
     state
-        .json(Method::POST, ApiRoute::StartDeviceLogin)
+        .json(Method::GET, ApiRoute::SystemCurrent)
         .await
         .map_err(command_error)
 }
 
 #[tauri::command]
-async fn logout(state: State<'_, BackendState>) -> CommandResult<()> {
+async fn system_logout(state: State<'_, BackendState>) -> CommandResult<()> {
     state
-        .empty(Method::POST, ApiRoute::Logout)
+        .empty(Method::POST, ApiRoute::SystemLogout)
         .await
         .map_err(command_error)
 }
 
 fn main() {
     let builder = tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let state = BackendState::launch(&app.handle())?;
             app.manage(state);
@@ -65,10 +80,12 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             status,
-            room_overview,
-            account_overview,
-            start_device_login,
-            logout
+            quota_overview,
+            system_login,
+            system_current,
+            system_logout,
+            server_config_get,
+            server_config_save
         ]);
 
     let app = match builder.build(tauri::generate_context!()) {

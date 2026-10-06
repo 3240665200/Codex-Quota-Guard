@@ -14,6 +14,7 @@ import {
   App as AntApp,
   Avatar,
   Button,
+  Collapse,
   Empty,
   Form,
   Input,
@@ -42,6 +43,7 @@ import type {
   CodexAccountUpdate,
   UserStatus,
 } from '../../services/api';
+import AuthorizationModal from './AuthorizationModal';
 
 const MAX_CREDENTIAL_BYTES = 1024 * 1024;
 
@@ -73,6 +75,7 @@ export default function CodexAccountsPage() {
   const [editing, setEditing] = useState<CodexAccount | null>(null);
   const [error, setError] = useState('');
   const [formOpen, setFormOpen] = useState(false);
+  const [authorizationOpen, setAuthorizationOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(0);
   const [query, setQuery] = useState('');
@@ -118,13 +121,13 @@ export default function CodexAccountsPage() {
   );
 
   const saveAccount = async () => {
-    const values = await form.validateFields();
-    if (!editing && !credentialFile) {
-      message.warning('请选择 Codex 凭据 JSON');
-      return;
-    }
     setSaving(true);
     try {
+      const values = await form.validateFields();
+      if (!editing && !credentialFile) {
+        message.warning('请选择 Codex 凭据 JSON');
+        return;
+      }
       const credential = credentialFile
         ? await readCredential(credentialFile)
         : undefined;
@@ -286,8 +289,11 @@ export default function CodexAccountsPage() {
     <PageContainer
       content="管理 Codex 登录账户。"
       extra={[
-        <Button icon={<PlusOutlined />} key="create" onClick={openCreate} type="primary">
-          新增账户
+        <Button icon={<UploadOutlined />} key="import" onClick={openCreate}>
+          导入凭据
+        </Button>,
+        <Button icon={<PlusOutlined />} key="create" onClick={() => setAuthorizationOpen(true)} type="primary">
+          授权添加
         </Button>,
       ]}
       title="Codex 账户"
@@ -363,6 +369,10 @@ export default function CodexAccountsPage() {
         />
       </ProCard>
 
+      {authorizationOpen && (
+        <AuthorizationModal onClose={() => setAuthorizationOpen(false)} onAdded={load} />
+      )}
+
       <Modal
         forceRender
         okButtonProps={{ loading: saving }}
@@ -374,7 +384,7 @@ export default function CodexAccountsPage() {
         }}
         onOk={() => void saveAccount()}
         open={formOpen}
-        title={editing ? '编辑 Codex 账户' : '新增 Codex 账户'}
+        title={editing ? '编辑 Codex 账户' : '导入 Codex 账户'}
       >
         <Form form={form} layout="vertical" preserve={false}>
           <Form.Item
@@ -409,7 +419,7 @@ export default function CodexAccountsPage() {
         </Form>
         <Alert
           className="cqg-inline-alert"
-          title="凭据会在 Java 后端加密后保存，不会在查询接口中返回。"
+          title="凭据加密保存在服务器，不提供查看或下载。"
           showIcon
           type="info"
         />
@@ -426,6 +436,24 @@ export default function CodexAccountsPage() {
           <p className="ant-upload-drag-icon"><UploadOutlined /></p>
           <p>{editing ? '可选：上传新凭据替换原凭据' : '上传 Codex 凭据 JSON'}</p>
         </Upload.Dragger>
+        <Collapse ghost style={{ marginTop: 12 }} items={[{
+          key: 'help',
+          label: '如何获取凭据？',
+          children: (
+            <Space orientation="vertical">
+              <Typography.Text>推荐使用「授权添加」，无需寻找文件。已有账户也可在管理员电脑运行：</Typography.Text>
+              <Typography.Text code>codex -c cli_auth_credentials_store=file login</Typography.Text>
+              <Typography.Text>
+                登录后选择 Windows 的 %USERPROFILE%\.codex\auth.json；macOS / Linux 通常是 ~/.codex/auth.json。
+                设置过 CODEX_HOME 时，以该目录为准。系统凭据库模式不会生成此文件。
+              </Typography.Text>
+              <Typography.Text type="warning">此文件等同密码，只导入你有权管理的账户，勿发给客户端用户。</Typography.Text>
+              <Typography.Link href="https://learn.chatgpt.com/docs/auth" target="_blank" rel="noopener noreferrer">
+                查看官方登录说明
+              </Typography.Link>
+            </Space>
+          ),
+        }]} />
       </Modal>
     </PageContainer>
   );

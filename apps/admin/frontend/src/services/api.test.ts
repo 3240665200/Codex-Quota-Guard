@@ -1,32 +1,46 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  assignCodexAccountToUser,
   clearSession,
+  cancelCodexAuthorization,
+  createTeam,
   createCodexAccount,
   createUser,
+  deleteTeam,
   deleteCodexAccount,
   deleteUser,
   forceLogoutUser,
   getDashboard,
+  getCodexAuthorization,
   getSession,
+  listTeams,
   listCodexAccounts,
   listUsers,
   login,
   logout,
   PermissionDeniedError,
   setSession,
+  startCodexAuthorization,
+  updateTeam,
+  updateUserQuotaPolicy,
   updateCodexAccount,
   updateUser,
+  unassignCodexAccountFromUser,
 } from './api';
 import type { AuthResponse, UserResponse } from './api';
 
 const adminUser: UserResponse = {
+  assignedCodexAccountId: null,
   createdAt: '2026-01-01T00:00:00Z',
   displayName: '管理员',
   email: 'admin@example.com',
   id: 'admin-id',
   role: 'ADMIN',
   status: 'ACTIVE',
+  teamId: null,
+  fiveHourQuotaPercent: null,
+  weeklyQuotaPercent: null,
   updatedAt: '2026-01-01T00:00:00Z',
 };
 
@@ -52,6 +66,28 @@ describe('admin API client', () => {
     clearSession();
     fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
+  });
+
+  it('starts, polls without caching and cancels a private Codex authorization', async () => {
+    setSession({ accessToken: 'admin-access-token', user: adminUser });
+    fetchMock.mockResolvedValue(response({ id: 'flow', status: 'PENDING' }));
+    await startCodexAuthorization('开发账户');
+    await getCodexAuthorization('flow');
+    await cancelCodexAuthorization('flow');
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
+      '/api/v1/admin/codex-accounts/authorizations',
+      '/api/v1/admin/codex-accounts/authorizations/flow',
+      '/api/v1/admin/codex-accounts/authorizations/flow',
+    ]);
+    expect(fetchMock.mock.calls[0][1].body).toBe(JSON.stringify({ displayName: '开发账户', mode: 'DEVICE_CODE' }));
+    expect(fetchMock.mock.calls[1][1].cache).toBe('no-store');
+    expect(fetchMock.mock.calls[2][1].method).toBe('DELETE');
+  });
+
+  it('requests the official browser login flow explicitly', async () => {
+    fetchMock.mockResolvedValue(response({ id: 'flow', status: 'PENDING', mode: 'BROWSER' }));
+    await startCodexAuthorization('网页登录账户', 'BROWSER');
+    expect(fetchMock.mock.calls[0][1].body).toBe(JSON.stringify({ displayName: '网页登录账户', mode: 'BROWSER' }));
   });
 
   it('logs in without sending a stale bearer token and stores the admin session', async () => {
@@ -95,6 +131,79 @@ describe('admin API client', () => {
     const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(path).toBe('/api/v1/admin/users?page=2&size=20&q=alice&status=ACTIVE&role=USER');
     expect((init.headers as Headers).get('Authorization')).toBe('Bearer admin-access-token');
+  });
+
+  it('assigns and unassigns a centrally managed Codex account', async () => {
+    setSession({ accessToken: 'admin-access-token', user: adminUser });
+    fetchMock
+      .mockResolvedValueOnce(response({ id: 'codex-id' }))
+      .mockResolvedValueOnce({ ok: true, status: 204, text: async () => '' } as Response);
+
+    await assignCodexAccountToUser('user-id', 'codex-id');
+    await unassignCodexAccountFromUser('user-id');
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      '/api/v1/admin/users/user-id/codex-account',
+    );
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      body: JSON.stringify({ codexAccountId: 'codex-id' }),
+      method: 'PUT',
+    });
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({ method: 'DELETE' });
+  });
+
+  it('manages teams and updates a user quota policy', async () => {
+    setSession({ accessToken: 'admin-access-token', user: adminUser });
+    fetchMock
+      .mockResolvedValueOnce(response([]))
+      .mockResolvedValueOnce(response({ id: 'team-id' }))
+      .mockResolvedValueOnce(response({ id: 'team-id' }))
+      .mockResolvedValueOnce({ ok: true, status: 204, text: async () => '' } as Response)
+      .mockResolvedValueOnce(response({ id: 'user-id' }));
+
+    await expect(listTeams()).resolves.toEqual([]);
+    await createTeam({
+      description: '研发团队',
+      fiveHourQuotaPercent: 80,
+      name: '研发',
+      weeklyQuotaPercent: 90,
+    });
+    await updateTeam('team-id', {
+      fiveHourQuotaPercent: 70,
+      version: 3,
+      weeklyQuotaPercent: 80,
+    });
+    await deleteTeam('team-id');
+    await updateUserQuotaPolicy('user-id', {
+      fiveHourQuotaPercent: null,
+      teamId: 'team-id',
+      weeklyQuotaPercent: 60,
+    });
+
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
+      '/api/v1/admin/teams',
+      '/api/v1/admin/teams',
+      '/api/v1/admin/teams/team-id',
+      '/api/v1/admin/teams/team-id',
+      '/api/v1/admin/users/user-id/quota-policy',
+    ]);
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
+      body: JSON.stringify({
+        description: '研发团队',
+        fiveHourQuotaPercent: 80,
+        name: '研发',
+        weeklyQuotaPercent: 90,
+      }),
+      method: 'POST',
+    });
+    expect(fetchMock.mock.calls[4]?.[1]).toMatchObject({
+      body: JSON.stringify({
+        fiveHourQuotaPercent: null,
+        teamId: 'team-id',
+        weeklyQuotaPercent: 60,
+      }),
+      method: 'PUT',
+    });
   });
 
   it('clears an expired session and exposes the response status', async () => {

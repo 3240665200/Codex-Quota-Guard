@@ -8,11 +8,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use reqwest::{Client, Method};
+use reqwest::{Client, Method, StatusCode};
 use serde_json::Value;
 use tauri::{path::BaseDirectory, AppHandle, Manager};
 use thiserror::Error;
 use uuid::Uuid;
+
+use crate::server_config;
 
 const LOOPBACK_HOST: &str = "127.0.0.1";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(12);
@@ -24,10 +26,10 @@ const RETRY_INTERVAL: Duration = Duration::from_millis(100);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ApiRoute {
     Status,
-    RoomOverview,
-    AccountOverview,
-    StartDeviceLogin,
-    Logout,
+    QuotaOverview,
+    SystemLogin,
+    SystemCurrent,
+    SystemLogout,
     Shutdown,
 }
 
@@ -35,10 +37,10 @@ impl ApiRoute {
     const fn path(self) -> &'static str {
         match self {
             Self::Status => "/api/v1/status",
-            Self::RoomOverview => "/api/v1/room/overview",
-            Self::AccountOverview => "/api/v1/account/overview",
-            Self::StartDeviceLogin => "/api/v1/account/login/device",
-            Self::Logout => "/api/v1/account/logout",
+            Self::QuotaOverview => "/api/v1/quota/overview",
+            Self::SystemLogin => "/api/v1/session/login",
+            Self::SystemCurrent => "/api/v1/session/current",
+            Self::SystemLogout => "/api/v1/session/logout",
             Self::Shutdown => "/api/v1/system/shutdown",
         }
     }
@@ -52,6 +54,10 @@ pub(crate) enum BackendError {
     Unavailable,
     #[error("本地服务返回了无效的数据。")]
     InvalidResponse,
+    #[error("邮箱或密码不正确，请检查后重试。")]
+    InvalidCredentials,
+    #[error("请先登录系统账户。")]
+    SystemLoginRequired,
 }
 
 /// The token deliberately has no Debug implementation, and is never exposed
@@ -84,11 +90,17 @@ impl BackendState {
         let jar = resolve_backend_jar(app)?;
         let port = reserve_loopback_port()?;
         let token = BearerToken::generate();
+        let server = server_config::load(app);
 
         let mut child = Command::new(java_executable())
             .arg("-jar")
             .arg(jar)
             .env("QUOTA_GUARD_API_TOKEN", token.value())
+            .env("QUOTA_GUARD_CONTROL_PLANE_URL", server.url)
+            .env(
+                "QUOTA_GUARD_ALLOW_INSECURE_LAN_HTTP",
+                server.allow_insecure_lan_http.to_string(),
+            )
             .env("SERVER_ADDRESS", LOOPBACK_HOST)
             .env("SERVER_PORT", port.to_string())
             .stdin(Stdio::null())
@@ -114,17 +126,44 @@ impl BackendState {
         method: Method,
         route: ApiRoute,
     ) -> Result<Value, BackendError> {
+        self.json_request(method, route, None).await
+    }
+
+    /// Sends product-user credentials directly to the local Java process.
+    /// The local process relays them to the fixed central origin and keeps the
+    /// resulting access/refresh tokens in memory. This method never accepts
+    /// a caller-provided URL, Authorization header, or token.
+    pub(crate) async fn system_login(
+        &self,
+        email: String,
+        password: String,
+    ) -> Result<Value, BackendError> {
+        self.json_request(
+            Method::POST,
+            ApiRoute::SystemLogin,
+            Some(serde_json::json!({ "email": email, "password": password })),
+        )
+        .await
+    }
+
+    async fn json_request(
+        &self,
+        method: Method,
+        route: ApiRoute,
+        body: Option<Value>,
+    ) -> Result<Value, BackendError> {
         let (url, token) = self.request_target(route)?;
-        let response = self
-            .client
-            .request(method, url)
-            .bearer_auth(token)
+        let mut request = self.client.request(method, url).bearer_auth(token);
+        if let Some(body) = body {
+            request = request.json(&body);
+        }
+        let response = request
             .send()
             .await
             .map_err(|_| BackendError::Unavailable)?;
 
         if !response.status().is_success() {
-            return Err(BackendError::Unavailable);
+            return Err(classify_response(route, response.status()));
         }
 
         response
@@ -146,7 +185,7 @@ impl BackendState {
         if response.status().is_success() {
             Ok(())
         } else {
-            Err(BackendError::Unavailable)
+            Err(classify_response(route, response.status()))
         }
     }
 
@@ -181,6 +220,18 @@ impl BackendState {
             fixed_url(process.port, route),
             process.token.value().to_owned(),
         ))
+    }
+}
+
+fn classify_response(route: ApiRoute, status: StatusCode) -> BackendError {
+    match (route, status) {
+        (ApiRoute::SystemLogin, StatusCode::UNAUTHORIZED | StatusCode::BAD_REQUEST) => {
+            BackendError::InvalidCredentials
+        }
+        (ApiRoute::SystemCurrent | ApiRoute::QuotaOverview, StatusCode::UNAUTHORIZED) => {
+            BackendError::SystemLoginRequired
+        }
+        _ => BackendError::Unavailable,
     }
 }
 
@@ -295,8 +346,12 @@ mod tests {
             "http://127.0.0.1:43117/api/v1/status"
         );
         assert_eq!(
-            fixed_url(43117, ApiRoute::StartDeviceLogin),
-            "http://127.0.0.1:43117/api/v1/account/login/device"
+            fixed_url(43117, ApiRoute::SystemLogin),
+            "http://127.0.0.1:43117/api/v1/session/login"
+        );
+        assert_eq!(
+            fixed_url(43117, ApiRoute::QuotaOverview),
+            "http://127.0.0.1:43117/api/v1/quota/overview"
         );
     }
 
@@ -304,10 +359,10 @@ mod tests {
     fn all_routes_stay_on_loopback_and_api_prefix() {
         for route in [
             ApiRoute::Status,
-            ApiRoute::RoomOverview,
-            ApiRoute::AccountOverview,
-            ApiRoute::StartDeviceLogin,
-            ApiRoute::Logout,
+            ApiRoute::QuotaOverview,
+            ApiRoute::SystemLogin,
+            ApiRoute::SystemCurrent,
+            ApiRoute::SystemLogout,
             ApiRoute::Shutdown,
         ] {
             let url = fixed_url(8080, route);
@@ -323,6 +378,39 @@ mod tests {
         assert!(!error.contains("@"));
         assert!(!error.contains("\\\\"));
         assert!(!error.contains('/'));
+    }
+
+    #[test]
+    fn local_routes_do_not_include_a_codex_login_or_credential_endpoint() {
+        for route in [
+            ApiRoute::Status,
+            ApiRoute::QuotaOverview,
+            ApiRoute::SystemLogin,
+            ApiRoute::SystemCurrent,
+            ApiRoute::SystemLogout,
+            ApiRoute::Shutdown,
+        ] {
+            let path = route.path();
+            assert!(!path.contains("device"));
+            assert!(!path.contains("credential"));
+            assert!(!path.contains("codex/login"));
+        }
+    }
+
+    #[test]
+    fn safe_status_mapping_never_uses_a_remote_error_body() {
+        assert!(matches!(
+            classify_response(ApiRoute::SystemLogin, StatusCode::UNAUTHORIZED),
+            BackendError::InvalidCredentials
+        ));
+        assert!(matches!(
+            classify_response(ApiRoute::SystemCurrent, StatusCode::UNAUTHORIZED),
+            BackendError::SystemLoginRequired
+        ));
+        assert!(matches!(
+            classify_response(ApiRoute::QuotaOverview, StatusCode::UNAUTHORIZED),
+            BackendError::SystemLoginRequired
+        ));
     }
 
     #[test]

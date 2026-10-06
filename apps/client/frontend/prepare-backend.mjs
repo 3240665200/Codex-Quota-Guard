@@ -8,7 +8,7 @@ const frontendRoot = path.dirname(fileURLToPath(import.meta.url));
 const clientRoot = path.resolve(frontendRoot, "..");
 const pom = path.join(clientRoot, "backend", "pom.xml");
 const escapedPom = pom.replaceAll('"', process.platform === "win32" ? '""' : '\\"');
-const build = spawnSync(`mvn -f "${escapedPom}" package`, {
+const build = spawnSync(`mvn -f "${escapedPom}" clean package`, {
   cwd: frontendRoot,
   stdio: "inherit",
   shell: true,

@@ -34,4 +34,27 @@ class LocalApiSecurityIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.service").value("codex-quota-guard"));
     }
+
+    @Test
+    void exposesOnlyASignedOutMetadataEnvelopeBeforeSystemLogin() throws Exception {
+        mockMvc.perform(get("/api/v1/session/current")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + TOKEN))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.authenticated").value(false))
+                .andExpect(jsonPath("$.user").value(org.hamcrest.Matchers.nullValue()))
+                .andExpect(jsonPath("$.accessToken").doesNotExist())
+                .andExpect(jsonPath("$.refreshToken").doesNotExist())
+                .andExpect(jsonPath("$.codexAccount").doesNotExist());
+    }
+
+    @Test
+    void protectsTheFixedQuotaOverviewWithBothTheDesktopBearerAndASystemSession() throws Exception {
+        mockMvc.perform(get("/api/v1/quota/overview"))
+                .andExpect(status().isUnauthorized());
+
+        mockMvc.perform(get("/api/v1/quota/overview")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + TOKEN))
+                .andExpect(status().isUnauthorized());
+
+    }
 }

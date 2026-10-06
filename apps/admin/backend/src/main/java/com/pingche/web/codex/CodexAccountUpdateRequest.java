@@ -14,4 +14,7 @@ public record CodexAccountUpdateRequest(
         email = email == null ? null : email.trim();
         displayName = displayName == null ? null : displayName.trim();
     }
+
+    @Override
+    public String toString() { return "CodexAccountUpdateRequest[redacted]"; }
 }

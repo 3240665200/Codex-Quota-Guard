@@ -3,15 +3,5 @@
   "identifier": "default",
   "description": "Minimal permissions for the main Codex Quota Guard window.",
   "windows": ["main"],
-  "permissions": [
-    "core:default",
-    {
-      "identifier": "opener:allow-open-url",
-      "allow": [
-        {
-          "url": "https://auth.openai.com/**"
-        }
-      ]
-    }
-  ]
+  "permissions": ["core:default"]
 }

@@ -1,35 +1,26 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { openUrl } from "@tauri-apps/plugin-opener";
-import { AnimatePresence, motion } from "framer-motion";
+import { useQuery } from "@tanstack/react-query";
 import {
-  Check,
   CircleAlert,
   Clock3,
-  Copy,
-  ExternalLink,
   Gauge,
-  LogIn,
   LogOut,
   RefreshCw,
   ShieldCheck,
+  UserCircle,
   Users,
 } from "lucide-react";
-import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 import {
   api,
   getApiErrorMessage,
-  type QuotaSnapshot,
-  type RateLimitBucket,
-  type RateLimitWindow,
+  type ManagedCodexAccount,
+  type QuotaOverview,
+  type QuotaTeam,
+  type SystemSession,
 } from "@/lib/api";
-import {
-  formatPercent,
-  formatResetTime,
-  formatWindowDuration,
-} from "@/lib/utils";
+import { formatPercent, formatResetTime } from "@/lib/utils";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -44,6 +35,40 @@ import {
 import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
+
+const notMeasuredLabel = "尚未采集（暂无服务端用量）";
+
+function describePolicySource(source: string): string {
+  switch (source) {
+    case "USER":
+      return "用户策略";
+    case "TEAM":
+      return "团队策略";
+    case "DEFAULT":
+      return "默认策略";
+    default:
+      return "服务端策略";
+  }
+}
+
+function describeBlockReason(reason: string | null): string {
+  switch (reason) {
+    case "USAGE_NOT_MEASURED":
+      return notMeasuredLabel;
+    case "CODEX_ACCOUNT_UNASSIGNED":
+      return "尚未分配 Codex 账户。";
+    case "CODEX_ACCOUNT_UNAVAILABLE":
+      return "分配的 Codex 账户不可用。";
+    case "TEAM_UNAVAILABLE":
+      return "所属团队不可用。";
+    case "FIVE_HOUR_QUOTA_EXCEEDED":
+      return "已超过 5 小时额度限制。";
+    case "WEEKLY_QUOTA_EXCEEDED":
+      return "已超过 7 天额度限制。";
+    default:
+      return "服务端暂无法确认当前额度，请联系管理员。";
+  }
+}
 
 function LoadingCard({ className = "" }: { className?: string }) {
   return (
@@ -78,326 +103,224 @@ function EmptyState({
   );
 }
 
-function WindowProgress({
-  label,
-  window,
+function AssignedAccountCard({
+  assigned,
+  account,
 }: {
-  label: string;
-  window: RateLimitWindow;
+  assigned: boolean;
+  account: ManagedCodexAccount | null;
 }) {
-  const isNearLimit = window.remainingPercent <= 20;
-  return (
-    <div className="flex flex-col gap-2 rounded-lg border bg-muted/20 p-3">
-      <div className="flex items-center justify-between gap-3 text-sm">
-        <span className="font-medium">{label}</span>
-        <Badge variant={isNearLimit ? "destructive" : "secondary"}>
-          {formatPercent(window.remainingPercent)} 剩余
-        </Badge>
-      </div>
-      <Progress
-        value={window.remainingPercent}
-        aria-label={`${label}剩余额度 ${formatPercent(window.remainingPercent)}`}
-      />
-      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-        <span>{formatPercent(window.usedPercent)} 已使用</span>
-        <span>{formatWindowDuration(window.windowDurationMins)}</span>
-        <span>{formatResetTime(window.resetsAt)}</span>
-      </div>
-    </div>
-  );
-}
-
-function QuotaBucket({ bucket }: { bucket: RateLimitBucket }) {
-  return (
-    <div className="flex flex-col gap-3 rounded-xl border p-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <p className="font-medium">{bucket.limitName || bucket.limitId}</p>
-          <p className="text-xs text-muted-foreground">{bucket.limitId}</p>
-        </div>
-        {bucket.spendControlReached ? (
-          <Badge variant="destructive">已达到支出限制</Badge>
-        ) : (
-          <Badge variant="outline">{bucket.planType || "默认计划"}</Badge>
-        )}
-      </div>
-      <div className="grid gap-3 sm:grid-cols-2">
-        {bucket.primary ? (
-          <WindowProgress label="主窗口" window={bucket.primary} />
-        ) : null}
-        {bucket.secondary ? (
-          <WindowProgress label="次窗口" window={bucket.secondary} />
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
-function QuotaSummary({ snapshot }: { snapshot: QuotaSnapshot }) {
-  const { t } = useTranslation();
+  const active = assigned && account?.status === "ACTIVE";
   return (
     <Card>
       <CardHeader>
         <div className="flex items-start justify-between gap-3">
           <div className="flex flex-col gap-1">
-            <CardTitle className="text-lg">{t("quota")}</CardTitle>
+            <CardTitle className="text-lg">后台分配的 Codex 账户</CardTitle>
             <CardDescription>
-              {snapshot.source} · {snapshot.planType || "未识别计划"}
-            </CardDescription>
-          </div>
-          <Badge variant={snapshot.authenticated ? "default" : "secondary"}>
-            {snapshot.authenticated ? t("signedIn") : t("signedOut")}
-          </Badge>
-        </div>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-3">
-        {snapshot.buckets.length === 0 ? (
-          <p className="rounded-lg border border-dashed p-5 text-center text-sm text-muted-foreground">
-            {t("noQuota")}
-          </p>
-        ) : (
-          snapshot.buckets.map((bucket) => (
-            <QuotaBucket key={bucket.limitId} bucket={bucket} />
-          ))
-        )}
-      </CardContent>
-      <CardFooter className="text-xs text-muted-foreground">
-        {t("lastUpdated")}：{formatResetTime(snapshot.capturedAt)}
-      </CardFooter>
-    </Card>
-  );
-}
-
-function AccountCard({
-  authenticated,
-  planType,
-  onLogin,
-  onLogout,
-  isLoggingIn,
-  isLoggingOut,
-}: {
-  authenticated: boolean;
-  planType: string;
-  onLogin: () => void;
-  onLogout: () => void;
-  isLoggingIn: boolean;
-  isLoggingOut: boolean;
-}) {
-  const { t } = useTranslation();
-  return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex flex-col gap-1">
-            <CardTitle className="text-lg">{t("account")}</CardTitle>
-            <CardDescription>
-              {authenticated ? planType || "Codex" : t("signInHint")}
+              {assigned && account
+                ? `${account.displayName} · ${account.status === "ACTIVE" ? "启用" : "不可用"}`
+                : "当前系统账号尚未分配 Codex 账户。"}
             </CardDescription>
           </div>
           <ShieldCheck aria-hidden="true" className="text-muted-foreground" />
         </div>
       </CardHeader>
       <CardContent>
-        <Badge variant={authenticated ? "default" : "secondary"}>
-          {authenticated ? t("signedIn") : t("signedOut")}
+        <Badge
+          variant={active ? "default" : assigned ? "destructive" : "secondary"}
+        >
+          {active ? "后台托管" : assigned ? "已停用" : "未分配"}
         </Badge>
       </CardContent>
-      <CardFooter className="gap-2">
-        {authenticated ? (
-          <Button variant="outline" onClick={onLogout} disabled={isLoggingOut}>
-            <LogOut data-icon="inline-start" />
-            {isLoggingOut ? "处理中…" : t("signOut")}
-          </Button>
-        ) : (
-          <Button onClick={onLogin} disabled={isLoggingIn}>
-            <LogIn data-icon="inline-start" />
-            {isLoggingIn ? "准备中…" : t("signIn")}
-          </Button>
-        )}
+      <CardFooter className="text-xs text-muted-foreground">
+        凭证只保存在服务端，客户端不会获取或保存。
       </CardFooter>
     </Card>
   );
 }
 
-function MemberCard({
-  displayName,
-  memberId,
-  managedLogin,
-  enforcementConsent,
-  snapshot,
-}: {
-  displayName: string;
-  memberId: string;
-  managedLogin: boolean;
-  enforcementConsent: boolean;
-  snapshot: QuotaSnapshot | null;
-}) {
-  const { t } = useTranslation();
+function TeamCard({ team }: { team: QuotaTeam | null }) {
   return (
     <Card>
-      <CardHeader className="gap-3 pb-4">
+      <CardHeader>
         <div className="flex items-start justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-3">
-            <div className="flex size-10 shrink-0 items-center justify-center rounded-full bg-secondary text-secondary-foreground">
-              <Users aria-hidden="true" />
-            </div>
-            <div className="min-w-0">
-              <CardTitle className="truncate text-base">
-                {displayName}
-              </CardTitle>
-              <CardDescription className="truncate">{memberId}</CardDescription>
-            </div>
+          <div className="flex flex-col gap-1">
+            <CardTitle className="text-lg">所属团队</CardTitle>
+            <CardDescription>
+              {team ? team.name : "当前账户尚未加入团队。"}
+            </CardDescription>
           </div>
-          <Badge variant={snapshot?.authenticated ? "default" : "secondary"}>
-            {snapshot?.authenticated ? t("signedIn") : t("pending")}
-          </Badge>
+          <Users aria-hidden="true" className="text-muted-foreground" />
         </div>
-        <div className="flex flex-wrap gap-2">
-          {managedLogin ? (
-            <Badge variant="outline">{t("managed")}</Badge>
-          ) : null}
-          {enforcementConsent ? (
-            <Badge variant="outline">
-              <Check aria-hidden="true" data-icon="inline-start" />
-              {t("enforcement")}
-            </Badge>
-          ) : null}
+      </CardHeader>
+    </Card>
+  );
+}
+
+function PolicyCard({ overview }: { overview: QuotaOverview }) {
+  const { policy } = overview;
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-lg">额度策略</CardTitle>
+        <CardDescription>服务端为当前账户生效的限制。</CardDescription>
+      </CardHeader>
+      <CardContent className="grid gap-3 sm:grid-cols-2">
+        <div className="rounded-lg border bg-muted/20 p-3">
+          <p className="text-sm font-medium">5 小时限额</p>
+          <p className="mt-1 text-2xl font-semibold">
+            {formatPercent(policy.fiveHourLimitPercent)}
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            来源：{describePolicySource(policy.fiveHourSource)}
+          </p>
+        </div>
+        <div className="rounded-lg border bg-muted/20 p-3">
+          <p className="text-sm font-medium">7 天限额</p>
+          <p className="mt-1 text-2xl font-semibold">
+            {formatPercent(policy.weeklyLimitPercent)}
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            来源：{describePolicySource(policy.weeklySource)}
+          </p>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function UsageWindow({
+  label,
+  usedPercent,
+  remainingPercent,
+  resetsAt,
+}: {
+  label: string;
+  usedPercent: number | null;
+  remainingPercent: number | null;
+  resetsAt: string | null;
+}) {
+  if (usedPercent === null || remainingPercent === null) {
+    return (
+      <div className="flex min-h-32 flex-col justify-center rounded-lg border bg-muted/20 p-3">
+        <p className="font-medium">{label}</p>
+        <p className="mt-2 text-sm text-muted-foreground">{notMeasuredLabel}</p>
+      </div>
+    );
+  }
+
+  const nearLimit = remainingPercent <= 20;
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border bg-muted/20 p-3">
+      <div className="flex items-center justify-between gap-3 text-sm">
+        <span className="font-medium">{label}</span>
+        <Badge variant={nearLimit ? "destructive" : "secondary"}>
+          {formatPercent(remainingPercent)} 剩余
+        </Badge>
+      </div>
+      <Progress
+        value={remainingPercent}
+        aria-label={`${label}剩余额度 ${formatPercent(remainingPercent)}`}
+      />
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+        <span>{formatPercent(usedPercent)} 已使用</span>
+        <span>{resetsAt ? formatResetTime(resetsAt) : "重置时间未知"}</span>
+      </div>
+    </div>
+  );
+}
+
+function UsageCard({ overview }: { overview: QuotaOverview }) {
+  const { usage } = overview;
+  const unmeasured = usage.measurementStatus === "NOT_MEASURED";
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <CardTitle className="text-lg">真实用量</CardTitle>
+            <CardDescription>
+              {unmeasured
+                ? notMeasuredLabel
+                : usage.measuredAt
+                  ? `服务端采集于 ${new Date(usage.measuredAt).toLocaleString("zh-CN")}`
+                  : "服务端当前用量"}
+            </CardDescription>
+          </div>
+          <Clock3 aria-hidden="true" className="text-muted-foreground" />
         </div>
       </CardHeader>
       <CardContent>
-        {snapshot ? (
-          <div className="flex flex-col gap-3">
-            {snapshot.buckets.map((bucket) => (
-              <QuotaBucket key={bucket.limitId} bucket={bucket} />
-            ))}
-            {snapshot.buckets.length === 0 ? (
-              <p className="text-sm text-muted-foreground">{t("noQuota")}</p>
-            ) : null}
-          </div>
+        {unmeasured ? (
+          <p className="text-sm text-muted-foreground">{notMeasuredLabel}</p>
         ) : (
-          <p className="text-sm text-muted-foreground">{t("noQuota")}</p>
+          <div className="grid gap-3 md:grid-cols-2">
+            <UsageWindow
+              label="5 小时用量"
+              usedPercent={usage.fiveHourUsedPercent}
+              remainingPercent={usage.fiveHourRemainingPercent}
+              resetsAt={usage.fiveHourResetsAt}
+            />
+            <UsageWindow
+              label="7 天用量"
+              usedPercent={usage.weeklyUsedPercent}
+              remainingPercent={usage.weeklyRemainingPercent}
+              resetsAt={usage.weeklyResetsAt}
+            />
+          </div>
         )}
       </CardContent>
     </Card>
   );
 }
 
-function DeviceLoginCard({
-  verificationUrl,
-  userCode,
-  onDismiss,
-}: {
-  verificationUrl: string;
-  userCode: string;
-  onDismiss: () => void;
-}) {
-  const { t } = useTranslation();
-  const [copied, setCopied] = useState(false);
-
-  const copyCode = async () => {
-    try {
-      await navigator.clipboard.writeText(userCode);
-      setCopied(true);
-      toast.success(t("codeCopied"));
-      window.setTimeout(() => setCopied(false), 1800);
-    } catch {
-      toast.error("复制失败，请手动复制设备码。");
-    }
-  };
-
-  const openVerificationUrl = async () => {
-    try {
-      await openUrl(verificationUrl);
-    } catch {
-      toast.error("无法打开验证地址，请确认它来自 OpenAI 官方域名。");
-    }
-  };
+function AccessCard({ overview }: { overview: QuotaOverview }) {
+  if (overview.allowed) {
+    return (
+      <Alert>
+        <ShieldCheck aria-hidden="true" />
+        <AlertTitle>额度策略检查通过</AlertTitle>
+        <AlertDescription>任务执行尚未接入。</AlertDescription>
+      </Alert>
+    );
+  }
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: -8 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -8 }}
-    >
-      <Alert>
-        <LogIn aria-hidden="true" />
-        <AlertTitle>{t("loginStarted")}</AlertTitle>
-        <AlertDescription className="flex flex-wrap items-center gap-3">
-          <span>{t("loginStartedHint")}</span>
-          <span className="rounded-md border bg-muted px-2 py-1 font-mono font-medium">
-            {userCode}
-          </span>
-          <Button variant="outline" size="sm" onClick={copyCode}>
-            <Copy data-icon="inline-start" />
-            {copied ? t("codeCopied") : t("copyCode")}
-          </Button>
-          <Button variant="outline" size="sm" onClick={openVerificationUrl}>
-            {t("signIn")}
-            <ExternalLink data-icon="inline-end" />
-          </Button>
-          <Button variant="ghost" size="sm" onClick={onDismiss}>
-            关闭
-          </Button>
-        </AlertDescription>
-      </Alert>
-    </motion.div>
+    <Alert variant="destructive">
+      <CircleAlert aria-hidden="true" />
+      <AlertTitle>当前额度暂不可用</AlertTitle>
+      <AlertDescription>
+        {describeBlockReason(overview.blockReason)}
+      </AlertDescription>
+    </Alert>
   );
 }
 
-export function Dashboard() {
-  const { t } = useTranslation();
-  const queryClient = useQueryClient();
-  const [deviceLogin, setDeviceLogin] = useState<{
-    verificationUrl: string;
-    userCode: string;
-  } | null>(null);
+export interface DashboardProps {
+  session: SystemSession;
+  onLogout: () => void;
+}
 
+export function Dashboard({ session, onLogout }: DashboardProps) {
+  const { t } = useTranslation();
   const statusQuery = useQuery({
     queryKey: ["status"],
     queryFn: api.status,
     retry: false,
     refetchInterval: 30_000,
   });
-  const roomQuery = useQuery({
-    queryKey: ["room-overview"],
-    queryFn: api.roomOverview,
+  const quotaQuery = useQuery({
+    queryKey: ["quota-overview"],
+    queryFn: api.quotaOverview,
     retry: false,
   });
-  const accountQuery = useQuery({
-    queryKey: ["account-overview"],
-    queryFn: api.accountOverview,
-    retry: false,
-  });
-  const loginMutation = useMutation({
-    mutationFn: api.startDeviceLogin,
-    onSuccess: (login) => {
-      setDeviceLogin({
-        verificationUrl: login.verificationUrl,
-        userCode: login.userCode,
-      });
-      toast.success(t("loginStarted"));
-    },
-    onError: (error) =>
-      toast.error(`${t("loginFailed")}：${getApiErrorMessage(error)}`),
-  });
-  const logoutMutation = useMutation({
-    mutationFn: api.logout,
-    onSuccess: async () => {
-      toast.success(t("loggedOut"));
-      await queryClient.invalidateQueries({ queryKey: ["account-overview"] });
-    },
-    onError: (error) =>
-      toast.error(`${t("logoutFailed")}：${getApiErrorMessage(error)}`),
-  });
-
-  const isRefreshing =
-    statusQuery.isFetching || roomQuery.isFetching || accountQuery.isFetching;
+  const isRefreshing = statusQuery.isFetching || quotaQuery.isFetching;
   const refresh = async () => {
     try {
       const results = await Promise.all([
         statusQuery.refetch(),
-        roomQuery.refetch(),
-        accountQuery.refetch(),
+        quotaQuery.refetch(),
       ]);
       const failedResult = results.find((result) => result.error);
       if (failedResult?.error) {
@@ -409,13 +332,8 @@ export function Dashboard() {
     }
   };
 
-  const requestError = [
-    statusQuery.error,
-    roomQuery.error,
-    accountQuery.error,
-  ].find(Boolean);
-  const room = roomQuery.data;
-  const account = accountQuery.data;
+  const requestError = [statusQuery.error, quotaQuery.error].find(Boolean);
+  const overview = quotaQuery.data;
   const statusOnline = statusQuery.data?.state === "online";
 
   return (
@@ -434,30 +352,39 @@ export function Dashboard() {
             </h1>
             <p className="max-w-2xl text-muted-foreground">{t("overview")}</p>
           </div>
-          <Button
-            variant="outline"
-            onClick={refresh}
-            disabled={isRefreshing}
-            aria-label={isRefreshing ? t("refreshing") : t("refresh")}
-          >
-            <RefreshCw
-              data-icon="inline-start"
-              className={isRefreshing ? "animate-spin" : undefined}
-            />
-            {isRefreshing ? t("refreshing") : t("refresh")}
-          </Button>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <div className="flex items-center gap-2 rounded-md border bg-card px-3 py-2 text-left">
+              <UserCircle
+                aria-hidden="true"
+                className="size-5 text-muted-foreground"
+              />
+              <div className="flex min-w-0 flex-col">
+                <span className="max-w-40 truncate text-sm font-medium">
+                  {session.user?.displayName}
+                </span>
+                <span className="max-w-40 truncate text-xs text-muted-foreground">
+                  {session.user?.email}
+                </span>
+              </div>
+            </div>
+            <Button variant="outline" onClick={onLogout}>
+              <LogOut data-icon="inline-start" />
+              退出系统
+            </Button>
+            <Button
+              variant="outline"
+              onClick={refresh}
+              disabled={isRefreshing}
+              aria-label={isRefreshing ? t("refreshing") : t("refresh")}
+            >
+              <RefreshCw
+                data-icon="inline-start"
+                className={isRefreshing ? "animate-spin" : undefined}
+              />
+              {isRefreshing ? t("refreshing") : t("refresh")}
+            </Button>
+          </div>
         </header>
-
-        <AnimatePresence initial={false}>
-          {deviceLogin ? (
-            <DeviceLoginCard
-              key="device-login"
-              verificationUrl={deviceLogin.verificationUrl}
-              userCode={deviceLogin.userCode}
-              onDismiss={() => setDeviceLogin(null)}
-            />
-          ) : null}
-        </AnimatePresence>
 
         {requestError ? (
           <Alert variant="destructive">
@@ -472,87 +399,33 @@ export function Dashboard() {
           </Alert>
         ) : null}
 
-        <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,0.4fr)]">
-          {accountQuery.isPending ? (
+        {quotaQuery.isPending ? (
+          <div className="grid gap-4 lg:grid-cols-2">
             <LoadingCard />
-          ) : account ? (
-            <QuotaSummary snapshot={account.snapshot} />
-          ) : (
-            <EmptyState title={t("noQuota")} description={t("signInHint")} />
-          )}
-          {accountQuery.isPending ? (
             <LoadingCard />
-          ) : account ? (
-            <AccountCard
-              authenticated={account.authenticated}
-              planType={account.planType}
-              onLogin={() => loginMutation.mutate()}
-              onLogout={() => logoutMutation.mutate()}
-              isLoggingIn={loginMutation.isPending}
-              isLoggingOut={logoutMutation.isPending}
-            />
-          ) : null}
-        </section>
+            <LoadingCard className="lg:col-span-2" />
+          </div>
+        ) : overview ? (
+          <>
+            <section className="grid gap-4 lg:grid-cols-2">
+              <AssignedAccountCard
+                assigned={overview.assigned}
+                account={overview.codexAccount}
+              />
+              <TeamCard team={overview.team} />
+            </section>
+            <PolicyCard overview={overview} />
+            <UsageCard overview={overview} />
+            <AccessCard overview={overview} />
+          </>
+        ) : (
+          <EmptyState
+            title="暂时无法读取个人额度"
+            description="请刷新重试；如问题持续，请联系管理员。"
+          />
+        )}
 
         <Separator />
-
-        <section className="flex flex-col gap-4" aria-labelledby="room-heading">
-          <div className="flex flex-wrap items-end justify-between gap-3">
-            <div className="flex flex-col gap-1">
-              <h2 id="room-heading" className="text-xl font-semibold">
-                {room?.name || t("room")}
-              </h2>
-              <p className="text-sm text-muted-foreground">
-                {room?.configured
-                  ? `${room.roomId} · ${room.members.length} ${t("members")}`
-                  : t("noRoomHint")}
-              </p>
-            </div>
-            {room?.configured ? (
-              <Badge variant="secondary">
-                <Users data-icon="inline-start" />
-                {room.members.length} {t("members")}
-              </Badge>
-            ) : null}
-          </div>
-
-          {roomQuery.isPending ? (
-            <div className="grid gap-4 md:grid-cols-2">
-              <LoadingCard />
-              <LoadingCard />
-            </div>
-          ) : !room?.configured ? (
-            <EmptyState title={t("noRoom")} description={t("noRoomHint")} />
-          ) : room.members.length === 0 ? (
-            <EmptyState title={t("noMembers")} description={t("noRoomHint")} />
-          ) : (
-            <div className="grid gap-4 md:grid-cols-2">
-              {room.members.map((member) => (
-                <MemberCard key={member.memberId} {...member} />
-              ))}
-            </div>
-          )}
-        </section>
-
-        {room?.warnings.length ? (
-          <section
-            className="flex flex-col gap-3"
-            aria-labelledby="warnings-heading"
-          >
-            <div className="flex items-center gap-2">
-              <Clock3 aria-hidden="true" className="text-muted-foreground" />
-              <h2 id="warnings-heading" className="text-lg font-semibold">
-                {t("warnings")}
-              </h2>
-            </div>
-            {room.warnings.map((warning) => (
-              <Alert key={warning}>
-                <CircleAlert aria-hidden="true" />
-                <AlertDescription>{warning}</AlertDescription>
-              </Alert>
-            ))}
-          </section>
-        ) : null}
       </div>
     </main>
   );

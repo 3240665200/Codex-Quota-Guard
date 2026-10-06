@@ -67,6 +67,10 @@
     "displayName":"小明",
     "role":"USER",
     "status":"ACTIVE",
+    "assignedCodexAccountId":null,
+    "teamId":null,
+    "fiveHourQuotaPercent":null,
+    "weeklyQuotaPercent":null,
     "createdAt":"2026-09-21T12:00:00Z",
     "updatedAt":"2026-09-21T12:00:00Z"
   }
@@ -96,6 +100,10 @@
   "displayName":"小明",
   "role":"USER",
   "status":"ACTIVE",
+  "assignedCodexAccountId":null,
+  "teamId":null,
+  "fiveHourQuotaPercent":null,
+  "weeklyQuotaPercent":null,
   "createdAt":"2026-09-21T12:00:00Z",
   "updatedAt":"2026-09-21T12:00:00Z"
 }
@@ -195,6 +203,112 @@
 递增用户会话版本并撤销其全部 refresh session，成功返回 `204 No Content`。该用户
 此前签发的 access token 会在下一次请求鉴权时立即失效，而不是等待自然过期。
 
+### PUT `/api/v1/admin/users/{id}/codex-account`
+
+把后台托管的 Codex 账户分配给系统用户。请求：
+
+```json
+{"codexAccountId":"uuid"}
+```
+
+仅允许分配启用状态的 Codex 账户。成功响应只包含 `id`、`displayName`、`status`、
+`updatedAt`，不返回 Codex 邮箱、凭据、密文或 IV。变更分配会立即递增该用户的
+`sessionVersion` 并撤销全部 refresh session，因此客户端需要重新登录。
+
+### DELETE `/api/v1/admin/users/{id}/codex-account`
+
+取消系统用户的 Codex 账户分配，成功返回 `204 No Content`，并立即使该用户现有会话失效。
+
+### PUT `/api/v1/admin/users/{id}/quota-policy`
+
+完整替换系统用户的团队归属和两个窗口的个人额度覆盖值；未提供的字段按 `null`
+处理，因此调用方宜显式提供三个字段。个人值为
+`null` 时继承团队默认，没有团队时继承系统默认 `100%`，`0` 表示禁止使用该窗口：
+
+```json
+{"teamId":"uuid","fiveHourQuotaPercent":50,"weeklyQuotaPercent":null}
+```
+
+额度值范围为 `0..100`。成功返回更新后的 `UserResponse`；策略变化立即撤销该用户的旧
+系统会话。该接口只设置策略，不接受客户端上传用量，也不会下发 Codex 凭据。
+
+### 团队管理 `/api/v1/admin/teams`
+
+- `GET /api/v1/admin/teams`：返回团队数组；`GET /api/v1/admin/teams/{id}`：返回单个团队。
+- `POST /api/v1/admin/teams`：创建团队，必填 `name`，可提供 `description`、`status`、
+  `fiveHourQuotaPercent`、`weeklyQuotaPercent`；两个额度缺省时为 `100`，状态缺省为 `ACTIVE`。
+- `PATCH /api/v1/admin/teams/{id}`：更新提供的字段，可传 `version` 防止覆盖其他管理员的
+  并发修改；版本不符返回 `409 / TEAM_VERSION_CONFLICT`。
+- `DELETE /api/v1/admin/teams/{id}`：删除团队并清除成员的团队归属。
+
+团队响应只包含元数据、两个默认额度、`memberCount`、审计时间和 `version`，不包含任何
+Codex 凭据。团队停用、额度或成员归属变化会使受影响成员的旧系统会话失效。
+
+## 桌面客户端接口
+
+### GET `/api/v1/client/account/overview`
+
+使用系统用户的 access token 查询自己的安全账户投影。未分配是正常状态，返回
+`200 OK`、`assigned:false` 和 `codexAccount:null`；已分配时只返回展示所需元数据：
+
+```json
+{
+  "assigned": true,
+  "user": {
+    "id": "uuid",
+    "email": "user@example.com",
+    "displayName": "小明",
+    "role": "USER",
+    "status": "ACTIVE"
+  },
+  "codexAccount": {
+    "id": "uuid",
+    "displayName": "Primary Codex",
+    "status": "ACTIVE",
+    "updatedAt": "2026-09-22T01:00:00Z"
+  }
+}
+```
+
+该接口没有凭据解密或下载路径，只提供账户分配状态。
+
+### GET `/api/v1/client/quota/overview`
+
+使用系统用户 access token 获取当前用户的团队、有效额度策略、服务端用量和限制状态：
+
+```json
+{
+  "assigned": true,
+  "user": {"id":"uuid","email":"user@example.com","displayName":"小明","role":"USER","status":"ACTIVE"},
+  "codexAccount": {"id":"uuid","displayName":"Primary Codex","status":"ACTIVE","updatedAt":"2026-09-22T01:00:00Z"},
+  "team": {"id":"uuid","name":"研发团队"},
+  "policy": {
+    "fiveHourLimitPercent": 50,
+    "weeklyLimitPercent": 80,
+    "fiveHourSource": "USER",
+    "weeklySource": "TEAM"
+  },
+  "usage": {
+    "measurementStatus": "NOT_MEASURED",
+    "fiveHourUsedPercent": null,
+    "weeklyUsedPercent": null,
+    "fiveHourRemainingPercent": null,
+    "weeklyRemainingPercent": null,
+    "fiveHourResetsAt": null,
+    "weeklyResetsAt": null,
+    "measuredAt": null
+  },
+  "allowed": false,
+  "blockReason": "USAGE_NOT_MEASURED"
+}
+```
+
+`policy` 是管理员配置的上限，不等于已经测得的个人消耗。未通过服务器受控执行链路逐人
+记账时，`usage.measurementStatus` 为 `NOT_MEASURED`，数值为 `null`，不得解释为 0 或
+允许执行。策略来源只可能为 `USER`、`TEAM` 或 `DEFAULT`；服务端测量超过 5 分钟、
+所属 Codex 账户已变化或窗口已重置时，返回 `NOT_MEASURED`。上游 Codex 账户的共享
+使用率不能冒充个人用量；客户端也没有用量写入接口。
+
 ## Codex 账号管理接口
 
 这些接口仅供管理员使用，由本项目 Java 后端直接实现。凭据使用 AES-GCM 加密后
@@ -247,6 +361,8 @@
 `credential` 必须是 JSON object，序列化后最大 1 MiB。成功返回 `201 Created`、
 账户元数据和 `Location`；重复邮箱返回 `409 / CODEX_ACCOUNT_EMAIL_EXISTS`。服务端
 为每次新增或替换生成独立 96-bit 随机 IV，使用 AES-256-GCM 加密后才写入数据库。
+新增或替换凭据必须配置独立 `CODEX_CREDENTIAL_ENCRYPTION_KEY`，否则返回
+`503 / CODEX_ENCRYPTION_KEY_REQUIRED`。JSON 导入不代表已向上游验证凭据有效。
 
 ### PATCH `/api/v1/admin/codex-accounts/{id}`
 
@@ -256,6 +372,58 @@
 ### DELETE `/api/v1/admin/codex-accounts/{id}`
 
 永久删除账户及其加密凭据，成功返回 `204 No Content`。删除后无法恢复。
+
+### POST `/api/v1/admin/codex-accounts/authorizations`
+
+请求：`{"displayName":"开发账户","mode":"BROWSER"}`（名称去空白后 1..120 字符）。
+`mode` 允许 `BROWSER`（官方网页登录）和 `DEVICE_CODE`（设备码）；省略或 null 时
+兼容旧客户端，默认 `DEVICE_CODE`；其他值返回 400。使用服务器官方 Codex CLI。
+仅允许管理员，同一管理员至多一个进行中的授权，全局至多四个；
+15 秒内重复发起、容量已满返回 `429 / CODEX_AUTHORIZATION_LIMIT`。
+
+网页登录全局至多一个；重复浏览器会话返回 `409 / CODEX_BROWSER_LOGIN_BUSY`。
+后台与管理员浏览器必须同机（或已有经管理员配置的安全回调隧道）；官方回调固定在
+`http://localhost:1455/auth/callback`，远程服务器应使用设备码登录。端口被占用时返回
+`FAILED / CODEX_BROWSER_LOGIN_BUSY`，不会主动终止占用者。
+
+成功创建授权会话后返回 `200`（上游启动失败也返回安全的 `FAILED` 状态，不包含原始错误）：
+
+```json
+{
+  "id": "uuid",
+  "status": "PENDING",
+  "verificationUrl": "https://auth.openai.com/codex/device",
+  "userCode": "ABCD-1234",
+  "expiresAt": "2026-09-22T12:10:00Z",
+  "account": null,
+  "errorCode": null,
+  "message": null
+}
+```
+
+响应另含 `mode` 和 `authUrl`：设备码模式 `authUrl=null`，网页登录模式返回经过官方域名、
+HTTPS、PKCE 和本机回调校验的 `authUrl`，此时 `verificationUrl`、`userCode` 均为 null。
+前端打开新窗口时使用 `noopener,noreferrer`，弹窗被阻止则显示手动打开链接。
+
+`userCode` 为一次性官方登录验证码，`authUrl` 含此次 OAuth 状态，均不能转交普通客户端用户。此接口不会返回
+上游 access/refresh token。响应使用 `Cache-Control: no-store`。
+
+### GET `/api/v1/admin/codex-accounts/authorizations/{id}`
+
+仅发起者可查看，其他管理员或不存在的会话均返回 `404 / CODEX_AUTHORIZATION_NOT_FOUND`。
+建议每 2 秒串行查询一次。状态为 `STARTING`、`PENDING`、`SUCCEEDED`、`FAILED`、
+`CANCELLED`、`EXPIRED`；终态不再返回 `userCode`、`verificationUrl` 或 `authUrl`。
+
+成功后 `account` 为自动创建的 Codex 账户元数据，邮箱取自官方授权结果；重复邮箱
+以 `FAILED / CODEX_ACCOUNT_EMAIL_EXISTS` 结束，不覆盖原账户。`FAILED` 时 `message`
+是经过过滤的提示。维护任务会独立推进状态，浏览器断开不影响 10 分钟超时清理。
+管理员被禁用、降权、删除或强制下线后，待完成授权不再入库。
+
+### DELETE `/api/v1/admin/codex-accounts/authorizations/{id}`
+
+仅发起者可取消，幂等返回 `204`；已成功的账户不会因取消而删除。临时文件清理失败
+返回 `503 / CODEX_AUTHORIZATION_CLEANUP_FAILED` 并由维护任务重试。授权状态仅在服务器
+内存保存，不跨重启恢复；多实例部署必须保持授权请求路由到同一实例。
 
 ## 状态码与 Spring Boot 对照
 
@@ -281,7 +449,7 @@
 {"code":"AUTH_ACCOUNT_DISABLED","message":"账号已禁用","requestId":"uuid","details":[]}
 ```
 
-不得返回 Spring 默认错误页、堆栈、密码或 token。CORS 只接受 `CORS_ALLOWED_ORIGINS` 的精确匹配来源；禁止 `*`，预检仅允许契约所需的 `GET, PATCH, POST, DELETE`、`Authorization, Content-Type`，并设置有限的 `Access-Control-Max-Age`。CORS 层直接拒绝非法 Origin 时由框架返回 `403`。
+不得返回 Spring 默认错误页、堆栈、密码或 token。CORS 只接受 `CORS_ALLOWED_ORIGINS` 的精确匹配来源；禁止 `*`，预检仅允许契约所需的 `GET, PATCH, POST, PUT, DELETE`、`Authorization, Content-Type`，并设置有限的 `Access-Control-Max-Age`。CORS 层直接拒绝非法 Origin 时由框架返回 `403`。
 
 ## Flyway 初始迁移契约
 
@@ -289,8 +457,10 @@
 - `V2__create_refresh_sessions.sql`：创建 `refresh_sessions`、用户外键、token hash 索引和撤销/过期字段。
 - `V3__add_user_session_version.sql`：为用户和 refresh session 增加会话版本，用于立即强制下线。
 - `V4__create_codex_accounts.sql`：创建原生 Codex 账户表、唯一邮箱约束和加密凭据字段。
+- `V5__assign_codex_accounts_to_system_users.sql`：添加系统用户到 Codex 账户的可空外键；删除 Codex 账户时自动取消关联。
+- `V6__create_teams_and_quota_policies.sql`：创建团队、用户个人策略和服务端个人用量记录，范围由数据库约束校验。
 - 后续迁移只追加新版本，不修改已执行的迁移；生产启动必须启用校验。
 
 ## 明确不提供的端点
 
-本期不提供 `/verify-email`、`/forgot-password`、`/reset-password` 或 Codex 额度接口。
+本期不提供 `/verify-email`、`/forgot-password`、`/reset-password`、Codex 凭据下发、普通客户端用量写入或远程 Codex 任务执行接口。
