@@ -18,14 +18,28 @@ import org.springframework.web.bind.annotation.RestController;
 public final class SystemSessionController {
 
     private final SystemSessionService sessionService;
+    private final MeterPairingService pairing;
 
-    public SystemSessionController(SystemSessionService sessionService) {
+    public SystemSessionController(
+            SystemSessionService sessionService,
+            MeterPairingService pairing
+    ) {
         this.sessionService = sessionService;
+        this.pairing = pairing;
     }
 
     @PostMapping("/login")
     public SystemSessionOverview login(@Valid @RequestBody LoginRequest request) {
-        return sessionService.login(request.email(), request.password());
+        SystemSessionOverview result = sessionService.login(request.email(), request.password());
+        try {
+            pairing.pairIfInstalled();
+        } catch (RuntimeException exception) {
+            // An installed meter belongs to exactly one system user. Do not
+            // display another user's quota while the service bills the first.
+            sessionService.logout();
+            throw new MeterPairingRequiredException();
+        }
+        return result;
     }
 
     @GetMapping("/current")

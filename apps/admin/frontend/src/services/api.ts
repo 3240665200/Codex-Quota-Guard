@@ -8,10 +8,11 @@ export interface UserResponse {
   displayName: string;
   role: UserRole;
   status: UserStatus;
-  assignedCodexAccountId: string | null;
   teamId: string | null;
   fiveHourQuotaPercent: number | null;
   weeklyQuotaPercent: number | null;
+  fiveHourTokenLimit: number | null;
+  weeklyTokenLimit: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -77,6 +78,8 @@ export interface TeamResponse {
   status: TeamStatus;
   fiveHourQuotaPercent: number;
   weeklyQuotaPercent: number;
+  fiveHourTokenLimit: number | null;
+  weeklyTokenLimit: number | null;
   memberCount: number;
   createdAt: string;
   updatedAt: string;
@@ -114,55 +117,65 @@ export interface UserQuotaPolicy {
 
 export type QuotaPolicyUpdate = UserQuotaPolicy;
 
-export interface CodexAccount {
-  id: string;
-  email: string;
-  displayName: string;
-  status: UserStatus;
-  hasCredential: boolean;
-  createdAt: string;
-  updatedAt: string;
+export interface UserTokenLimitUpdate {
+  fiveHourTokenLimit: number | null;
+  weeklyTokenLimit: number | null;
 }
 
-export type AssignedCodexAccount = Pick<
-  CodexAccount,
-  'id' | 'displayName' | 'status' | 'updatedAt'
->;
-
-export interface CodexAccountListResponse {
-  items: CodexAccount[];
-  page: number;
-  size: number;
-  totalElements: number;
-  totalPages: number;
+export interface TeamTokenLimitUpdate extends UserTokenLimitUpdate {
+  version?: number;
 }
 
-export interface CodexAccountCreate {
-  email: string;
-  displayName: string;
-  status?: UserStatus;
-  credential: Record<string, unknown>;
+export interface UserQuotaOverview {
+  policy: {
+    fiveHourTokenLimit: number | null;
+    weeklyTokenLimit: number | null;
+  };
+  usage: {
+    fiveHourUsedTokens: number;
+    weeklyUsedTokens: number;
+    fiveHourRemainingTokens: number | null;
+    weeklyRemainingTokens: number | null;
+  };
 }
 
-export type CodexAccountUpdate = Partial<
-  Pick<CodexAccount, 'email' | 'displayName' | 'status'> & {
-    credential: Record<string, unknown>;
-  }
->;
+export interface OfficialQuotaSnapshot {
+  planType: string | null;
+  fetchedAt: string;
+  receivedAt: string;
+  windows: Array<{
+    limitId: string;
+    slot: string;
+    windowDurationMins: number;
+    usedPercent: number;
+    resetsAt: string | null;
+  }>;
+}
 
-export type CodexLoginMode = 'BROWSER' | 'DEVICE_CODE';
-
-export interface CodexAuthorization {
-  id: string;
-  status: 'STARTING' | 'PENDING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED' | 'EXPIRED';
-  verificationUrl: string | null;
-  userCode: string | null;
+export interface MeterDeviceStatus {
+  deviceId: string;
+  status: 'ACTIVE' | 'REVOKED';
   expiresAt: string;
-  account: CodexAccount | null;
-  errorCode: string | null;
-  message: string | null;
-  mode: CodexLoginMode;
-  authUrl: string | null;
+  lastSeenAt: string | null;
+  online: boolean;
+}
+
+export function getUserMeterDevices(id: string): Promise<MeterDeviceStatus[]> {
+  return request<MeterDeviceStatus[]>(
+    `/api/v1/admin/users/${encodeURIComponent(id)}/meter-devices`,
+  );
+}
+
+export function getUserQuotaOverview(id: string): Promise<UserQuotaOverview> {
+  return request<UserQuotaOverview>(
+    `/api/v1/admin/users/${encodeURIComponent(id)}/quota-overview`,
+  );
+}
+
+export async function getUserOfficialQuota(id: string): Promise<OfficialQuotaSnapshot | null> {
+  return (await request<OfficialQuotaSnapshot | undefined>(
+    `/api/v1/admin/users/${encodeURIComponent(id)}/official-quota`,
+  )) ?? null;
 }
 
 const SESSION_KEY = 'codex-quota-guard.session';
@@ -468,6 +481,19 @@ export function updateUserQuotaPolicy(
   );
 }
 
+export function updateUserTokenLimits(
+  userId: string,
+  body: UserTokenLimitUpdate,
+): Promise<UserResponse> {
+  return request<UserResponse>(
+    `/api/v1/admin/users/${encodeURIComponent(userId)}/token-limits`,
+    {
+      body: JSON.stringify(body),
+      method: 'PUT',
+    },
+  );
+}
+
 export async function listTeams(): Promise<TeamResponse[]> {
   const response = await request<TeamResponse[] | { items?: TeamResponse[] }>(
     '/api/v1/admin/teams',
@@ -493,107 +519,18 @@ export function updateTeam(id: string, body: TeamUpdate): Promise<TeamResponse> 
   });
 }
 
+export function updateTeamTokenLimits(
+  id: string,
+  body: TeamTokenLimitUpdate,
+): Promise<TeamResponse> {
+  return request<TeamResponse>(`/api/v1/admin/teams/${encodeURIComponent(id)}/token-limits`, {
+    body: JSON.stringify(body),
+    method: 'PUT',
+  });
+}
+
 export function deleteTeam(id: string): Promise<void> {
   return request<void>(`/api/v1/admin/teams/${encodeURIComponent(id)}`, {
     method: 'DELETE',
   });
-}
-
-export function assignCodexAccountToUser(
-  userId: string,
-  codexAccountId: string,
-): Promise<AssignedCodexAccount> {
-  return request<AssignedCodexAccount>(
-    `/api/v1/admin/users/${encodeURIComponent(userId)}/codex-account`,
-    {
-      body: JSON.stringify({ codexAccountId }),
-      method: 'PUT',
-    },
-  );
-}
-
-export function unassignCodexAccountFromUser(userId: string): Promise<void> {
-  return request<void>(
-    `/api/v1/admin/users/${encodeURIComponent(userId)}/codex-account`,
-    { method: 'DELETE' },
-  );
-}
-
-export function listCodexAccounts({
-  page = 0,
-  size = 20,
-  q = '',
-  status = '',
-}: {
-  page?: number;
-  size?: number;
-  q?: string;
-  status?: UserStatus | '';
-} = {}): Promise<CodexAccountListResponse> {
-  const params = new URLSearchParams({
-    page: String(page),
-    size: String(size),
-    q,
-    status,
-  });
-  return request<CodexAccountListResponse>(
-    `/api/v1/admin/codex-accounts?${params.toString()}`,
-  );
-}
-
-export function getCodexAccount(id: string): Promise<CodexAccount> {
-  return request<CodexAccount>(
-    `/api/v1/admin/codex-accounts/${encodeURIComponent(id)}`,
-  );
-}
-
-export function createCodexAccount(body: CodexAccountCreate): Promise<CodexAccount> {
-  return request<CodexAccount>('/api/v1/admin/codex-accounts', {
-    body: JSON.stringify(body),
-    method: 'POST',
-  });
-}
-
-export function updateCodexAccount(
-  id: string,
-  body: CodexAccountUpdate,
-): Promise<CodexAccount> {
-  return request<CodexAccount>(
-    `/api/v1/admin/codex-accounts/${encodeURIComponent(id)}`,
-    {
-      body: JSON.stringify(body),
-      method: 'PATCH',
-    },
-  );
-}
-
-export function deleteCodexAccount(id: string): Promise<void> {
-  return request<void>(
-    `/api/v1/admin/codex-accounts/${encodeURIComponent(id)}`,
-    { method: 'DELETE' },
-  );
-}
-
-export function startCodexAuthorization(
-  displayName: string,
-  mode: CodexLoginMode = 'DEVICE_CODE',
-): Promise<CodexAuthorization> {
-  return request<CodexAuthorization>('/api/v1/admin/codex-accounts/authorizations', {
-    method: 'POST',
-    body: JSON.stringify({ displayName, mode }),
-  });
-}
-
-export function getCodexAuthorization(id: string, signal?: AbortSignal): Promise<CodexAuthorization> {
-  return request<CodexAuthorization>(
-    `/api/v1/admin/codex-accounts/authorizations/${encodeURIComponent(id)}`,
-    { signal, cache: 'no-store' },
-  );
-}
-
-export function cancelCodexAuthorization(id: string): Promise<void> {
-  return request<void>(
-    `/api/v1/admin/codex-accounts/authorizations/${encodeURIComponent(id)}`,
-    { method: 'DELETE' },
-  );
 }

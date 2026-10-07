@@ -1,16 +1,16 @@
 package com.codexquotaguard.backend.controlplane;
 
-/** The central service's effective limits for the current managed account. */
+/** The central service's effective personal token limits for the current product user. */
 public record QuotaPolicy(
-        double fiveHourLimitPercent,
-        double weeklyLimitPercent,
+        Long fiveHourTokenLimit,
+        Long weeklyTokenLimit,
         String fiveHourSource,
         String weeklySource
 ) {
 
     public QuotaPolicy {
-        requirePercent(fiveHourLimitPercent, "five-hour limit");
-        requirePercent(weeklyLimitPercent, "weekly limit");
+        requireNullableTokenLimit(fiveHourTokenLimit, "five-hour limit");
+        requireNullableTokenLimit(weeklyTokenLimit, "weekly limit");
         if (isBlank(fiveHourSource) || isBlank(weeklySource)) {
             throw new IllegalArgumentException("Quota policy sources are required.");
         }
@@ -18,9 +18,9 @@ public record QuotaPolicy(
         weeklySource = weeklySource.trim();
     }
 
-    private static void requirePercent(double value, String label) {
-        if (!Double.isFinite(value) || value < 0 || value > 100) {
-            throw new IllegalArgumentException(label + " must be a percentage.");
+    private static void requireNullableTokenLimit(Long value, String label) {
+        if (value != null && value < 0) {
+            throw new IllegalArgumentException(label + " must not be negative when configured.");
         }
     }
 

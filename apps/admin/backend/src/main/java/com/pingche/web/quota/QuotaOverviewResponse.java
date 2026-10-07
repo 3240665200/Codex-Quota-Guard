@@ -1,15 +1,10 @@
 package com.pingche.web.quota;
 
-import com.pingche.web.codex.ClientSystemUserResponse;
-import com.pingche.web.codex.ManagedCodexAccountResponse;
-import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.UUID;
 
 public record QuotaOverviewResponse(
-        boolean assigned,
-        ClientSystemUserResponse user,
-        ManagedCodexAccountResponse codexAccount,
+        QuotaSystemUserResponse user,
         TeamReference team,
         Policy policy,
         Usage usage,
@@ -21,35 +16,30 @@ public record QuotaOverviewResponse(
     }
 
     public record Policy(
-            int fiveHourLimitPercent,
-            int weeklyLimitPercent,
+            Long fiveHourTokenLimit,
+            Long weeklyTokenLimit,
             Source fiveHourSource,
             Source weeklySource
     ) {
         public enum Source {
             USER,
             TEAM,
-            DEFAULT
+            UNCONFIGURED
         }
     }
 
     public record Usage(
             MeasurementStatus measurementStatus,
-            BigDecimal fiveHourUsedPercent,
-            BigDecimal weeklyUsedPercent,
-            BigDecimal fiveHourRemainingPercent,
-            BigDecimal weeklyRemainingPercent,
+            long fiveHourUsedTokens,
+            long weeklyUsedTokens,
+            Long fiveHourRemainingTokens,
+            Long weeklyRemainingTokens,
             Instant fiveHourResetsAt,
             Instant weeklyResetsAt,
             Instant measuredAt
-    ) {
-        static Usage notMeasured() {
-            return new Usage(MeasurementStatus.NOT_MEASURED, null, null, null, null, null, null, null);
-        }
-    }
+    ) { }
 
     public enum MeasurementStatus {
-        CURRENT,
-        NOT_MEASURED
+        CLIENT_REPORTED
     }
 }

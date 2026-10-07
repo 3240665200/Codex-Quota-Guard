@@ -28,28 +28,26 @@ const signedIn = {
   },
 };
 const quotaOverview = {
-  assigned: false,
   user: signedIn.user,
-  codexAccount: null,
   team: null,
   policy: {
-    fiveHourLimitPercent: 80,
-    weeklyLimitPercent: 90,
-    fiveHourSource: "DEFAULT",
-    weeklySource: "DEFAULT",
+    fiveHourTokenLimit: null,
+    weeklyTokenLimit: null,
+    fiveHourSource: "UNCONFIGURED",
+    weeklySource: "UNCONFIGURED",
   },
   usage: {
-    measurementStatus: "NOT_MEASURED",
-    fiveHourUsedPercent: null,
-    weeklyUsedPercent: null,
-    fiveHourRemainingPercent: null,
-    weeklyRemainingPercent: null,
+    measurementStatus: "CLIENT_REPORTED",
+    fiveHourUsedTokens: 0,
+    weeklyUsedTokens: 0,
+    fiveHourRemainingTokens: null,
+    weeklyRemainingTokens: null,
     fiveHourResetsAt: null,
     weeklyResetsAt: null,
-    measuredAt: null,
+    measuredAt: "2026-10-06T00:00:00Z",
   },
   allowed: false,
-  blockReason: "CODEX_ACCOUNT_UNASSIGNED",
+  blockReason: "TOKEN_QUOTA_UNCONFIGURED",
 };
 
 function renderClientApp() {
@@ -86,6 +84,16 @@ describe("ClientApp system session gate", () => {
           return { service: "codex-quota-guard", state: "online" };
         case "quota_overview":
           return quotaOverview;
+        case "usage_status":
+          return {
+            fallback: { state: "UP_TO_DATE", lastScannedAt: "2026-10-07T00:00:00Z",
+              lastReportedAt: null, lastReportedEvents: 0, issues: [] },
+            service: { state: "NOT_INSTALLED", lastScanEpochSeconds: null,
+              lastReportEpochSeconds: null, reportedEvents: 0, errorCode: null },
+            pairingState: "NOT_INSTALLED",
+          };
+        case "codex_rate_limits":
+          return { planType: null, windows: [], fetchedAt: null };
         default:
           throw new Error(`Unexpected command: ${command}`);
       }

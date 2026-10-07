@@ -15,3 +15,14 @@ quota-guard:
     # Remote HTTP is disabled unless the user explicitly approves a private LAN address.
     base-url: ${QUOTA_GUARD_CONTROL_PLANE_URL:http://127.0.0.1:8080}
     allow-insecure-lan-http: ${QUOTA_GUARD_ALLOW_INSECURE_LAN_HTTP:false}
+  codex:
+    # App-owned scan cursors. Never write into the official ~/.codex login directory.
+    home-root: ${QUOTA_GUARD_CODEX_HOME_ROOT:${user.home}/.codex-quota-guard}
+    official-home: ${QUOTA_GUARD_OFFICIAL_CODEX_HOME:${user.home}/.codex}
+    executable: ${CODEX_QUOTA_GUARD_CODEX_EXECUTABLE:codex}
+    usage-scan-delay-ms: ${QUOTA_GUARD_USAGE_SCAN_DELAY_MS:3000}
+    usage-scan-initial-delay-ms: ${QUOTA_GUARD_USAGE_SCAN_INITIAL_DELAY_MS:3000}
+  meter:
+    device-id-file: ${QUOTA_GUARD_METER_DEVICE_ID_FILE:${user.home}/AppData/Roaming/com.codexquotaguard.desktop/meter-device-id.txt}
+    pairing-inbox: ${QUOTA_GUARD_METER_PAIRING_INBOX:${user.home}/AppData/Roaming/com.codexquotaguard.desktop/meter-pairing.json}
+    status-file: ${QUOTA_GUARD_METER_STATUS_FILE:${user.home}/AppData/Roaming/com.codexquotaguard.desktop/meter-status.json}

@@ -33,6 +33,12 @@ public class Team {
     @Column(name = "weekly_quota_percent", nullable = false)
     private int weeklyQuotaPercent;
 
+    @Column(name = "five_hour_token_limit")
+    private Long fiveHourTokenLimit;
+
+    @Column(name = "weekly_token_limit")
+    private Long weeklyTokenLimit;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
@@ -88,6 +94,14 @@ public class Team {
         return weeklyQuotaPercent;
     }
 
+    public Long getFiveHourTokenLimit() {
+        return fiveHourTokenLimit;
+    }
+
+    public Long getWeeklyTokenLimit() {
+        return weeklyTokenLimit;
+    }
+
     public Instant getCreatedAt() {
         return createdAt;
     }
@@ -114,6 +128,17 @@ public class Team {
         this.fiveHourQuotaPercent = fiveHourQuotaPercent;
         this.weeklyQuotaPercent = weeklyQuotaPercent;
         this.updatedAt = now;
+    }
+
+    public boolean updateTokenLimits(Long fiveHourTokenLimit, Long weeklyTokenLimit, Instant now) {
+        if (java.util.Objects.equals(this.fiveHourTokenLimit, fiveHourTokenLimit)
+                && java.util.Objects.equals(this.weeklyTokenLimit, weeklyTokenLimit)) {
+            return false;
+        }
+        this.fiveHourTokenLimit = fiveHourTokenLimit;
+        this.weeklyTokenLimit = weeklyTokenLimit;
+        this.updatedAt = now;
+        return true;
     }
 
     public enum Status {

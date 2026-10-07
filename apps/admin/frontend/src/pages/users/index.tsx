@@ -34,21 +34,24 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { getErrorMessage } from '../../components/AdminState';
 import {
-  assignCodexAccountToUser,
   createUser,
   deleteUser,
   forceLogoutUser,
   getSession,
-  listCodexAccounts,
+  getUserOfficialQuota,
+  getUserMeterDevices,
+  getUserQuotaOverview,
   listTeams,
   listUsers,
-  unassignCodexAccountFromUser,
   updateUserQuotaPolicy,
+  updateUserTokenLimits,
   updateUser,
 } from '../../services/api';
 import type {
-  CodexAccount,
   TeamResponse,
+  OfficialQuotaSnapshot,
+  MeterDeviceStatus,
+  UserQuotaOverview,
   UserCreate,
   UserListParams,
   UserListResponse,
@@ -60,6 +63,7 @@ import type {
 import { generateRandomPassword } from './generatePassword';
 
 const PAGE_SIZE = 20;
+const MAX_TOKEN_LIMIT = 1_000_000_000_000;
 const EMPTY_FILTERS: Required<Pick<UserListParams, 'q' | 'status' | 'role'>> = {
   q: '',
   role: '',
@@ -76,8 +80,8 @@ interface UserFormValues {
 
 interface QuotaPolicyFormValues {
   teamId: string | null;
-  fiveHourQuotaPercent: number | null;
-  weeklyQuotaPercent: number | null;
+  fiveHourTokenLimit: number | null;
+  weeklyTokenLimit: number | null;
 }
 
 function formatDate(value: string): string {
@@ -89,28 +93,39 @@ function formatDate(value: string): string {
   }).format(date);
 }
 
-function quotaRule() {
+function tokenLimitRule() {
   return {
     validator: (_: unknown, value: unknown) => {
+      if (value === null || value === undefined || value === '') return Promise.resolve();
       if (
-        value !== null &&
-        value !== undefined &&
-        (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 100)
+        typeof value !== 'number' ||
+        !Number.isFinite(value) ||
+        value < 0 ||
+        value > MAX_TOKEN_LIMIT ||
+        !Number.isInteger(value)
       ) {
-        return Promise.reject(new Error('请输入 0 到 100 的数字，或留空继承团队默认值'));
+        return Promise.reject(
+          new Error('请输入 0 到 1,000,000,000,000 的整数，或留空继承团队 Token 上限'),
+        );
       }
       return Promise.resolve();
     },
   };
 }
 
-function formatEffectiveQuota(
+function formatTokenLimit(value: number): string {
+  return new Intl.NumberFormat('zh-CN').format(value);
+}
+
+function formatEffectiveTokenLimit(
   personalValue: number | null,
-  teamValue: number | undefined,
+  teamValue: number | null | undefined,
 ): string {
-  if (personalValue !== null) return `${personalValue}%（个人覆盖）`;
-  if (teamValue !== undefined) return `${teamValue}%（团队默认）`;
-  return '100%（系统默认）';
+  if (personalValue !== null) return `${formatTokenLimit(personalValue)} Token（个人上限）`;
+  if (teamValue !== null && teamValue !== undefined) {
+    return `${formatTokenLimit(teamValue)} Token（团队上限）`;
+  }
+  return '未配置';
 }
 
 export default function UsersPage() {
@@ -119,8 +134,6 @@ export default function UsersPage() {
   const [form] = Form.useForm<UserFormValues>();
   const passwordValue = Form.useWatch('password', form);
   const [quotaForm] = Form.useForm<QuotaPolicyFormValues>();
-  const [codexAccounts, setCodexAccounts] = useState<CodexAccount[]>([]);
-  const [codexAccountsLoading, setCodexAccountsLoading] = useState(true);
   const [data, setData] = useState<UserListResponse | null>(null);
   const [draftFilters, setDraftFilters] = useState(EMPTY_FILTERS);
   const [editingUser, setEditingUser] = useState<UserResponse | null>(null);
@@ -130,6 +143,12 @@ export default function UsersPage() {
   const [quotaEditingUser, setQuotaEditingUser] = useState<UserResponse | null>(null);
   const [quotaFormOpen, setQuotaFormOpen] = useState(false);
   const [quotaSaving, setQuotaSaving] = useState(false);
+  const [quotaViewUser, setQuotaViewUser] = useState<UserResponse | null>(null);
+  const [quotaViewLoading, setQuotaViewLoading] = useState(false);
+  const [quotaViewError, setQuotaViewError] = useState('');
+  const [officialQuota, setOfficialQuota] = useState<OfficialQuotaSnapshot | null>(null);
+  const [personalQuota, setPersonalQuota] = useState<UserQuotaOverview | null>(null);
+  const [meterDevices, setMeterDevices] = useState<MeterDeviceStatus[]>([]);
   const [teams, setTeams] = useState<TeamResponse[]>([]);
   const [teamsError, setTeamsError] = useState('');
   const [teamsLoading, setTeamsLoading] = useState(true);
@@ -139,6 +158,29 @@ export default function UsersPage() {
   const [passwordVisible, setPasswordVisible] = useState(false);
   const [saving, setSaving] = useState(false);
   const currentUserId = getSession()?.user.id;
+
+  const openQuotaView = useCallback(async (user: UserResponse) => {
+    setQuotaViewUser(user);
+    setQuotaViewLoading(true);
+    setQuotaViewError('');
+    setOfficialQuota(null);
+    setPersonalQuota(null);
+    setMeterDevices([]);
+    try {
+      const [official, personal, devices] = await Promise.all([
+        getUserOfficialQuota(user.id),
+        getUserQuotaOverview(user.id),
+        getUserMeterDevices(user.id),
+      ]);
+      setOfficialQuota(official);
+      setPersonalQuota(personal);
+      setMeterDevices(devices);
+    } catch (requestError) {
+      setQuotaViewError(getErrorMessage(requestError));
+    } finally {
+      setQuotaViewLoading(false);
+    }
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -155,26 +197,6 @@ export default function UsersPage() {
   useEffect(() => {
     void load();
   }, [load]);
-
-  const loadCodexAccounts = useCallback(async () => {
-    setCodexAccountsLoading(true);
-    try {
-      const firstPage = await listCodexAccounts({ page: 0, size: 100 });
-      const pages = [firstPage];
-      for (let nextPage = 1; nextPage < firstPage.totalPages; nextPage += 1) {
-        pages.push(await listCodexAccounts({ page: nextPage, size: 100 }));
-      }
-      setCodexAccounts(pages.flatMap((pageData) => pageData.items));
-    } catch (requestError) {
-      message.error(`Codex 账户列表加载失败：${getErrorMessage(requestError)}`);
-    } finally {
-      setCodexAccountsLoading(false);
-    }
-  }, [message]);
-
-  useEffect(() => {
-    void loadCodexAccounts();
-  }, [loadCodexAccounts]);
 
   const loadTeams = useCallback(async () => {
     setTeamsLoading(true);
@@ -340,48 +362,13 @@ export default function UsersPage() {
     [message, modal],
   );
 
-  const confirmCodexAccountAssignment = useCallback(
-    (user: UserResponse, codexAccountId?: string) => {
-      if ((codexAccountId ?? null) === user.assignedCodexAccountId) return;
-      const account = codexAccounts.find((item) => item.id === codexAccountId);
-      setMutatingId(user.id);
-      modal.confirm({
-        cancelText: '取消',
-        content: codexAccountId
-          ? `将 ${account?.displayName ?? '所选 Codex 账户'} 分配给 ${user.email}？该用户现有会话会立即失效。`
-          : `取消 ${user.email} 的 Codex 账户分配？该用户现有会话会立即失效。`,
-        okText: codexAccountId ? '确认分配' : '取消分配',
-        onCancel: () => setMutatingId(null),
-        onOk: async () => {
-          try {
-            if (codexAccountId) {
-              await assignCodexAccountToUser(user.id, codexAccountId);
-              message.success('Codex 账户已分配');
-            } else {
-              await unassignCodexAccountFromUser(user.id);
-              message.success('Codex 账户分配已取消');
-            }
-            await load();
-          } catch (requestError) {
-            message.error(getErrorMessage(requestError));
-            throw requestError;
-          } finally {
-            setMutatingId(null);
-          }
-        },
-        title: codexAccountId ? '分配 Codex 账户？' : '取消账户分配？',
-      });
-    },
-    [codexAccounts, load, message, modal],
-  );
-
   const openQuotaPolicy = useCallback(
     (user: UserResponse) => {
       setQuotaEditingUser(user);
       quotaForm.setFieldsValue({
-        fiveHourQuotaPercent: user.fiveHourQuotaPercent,
+        fiveHourTokenLimit: user.fiveHourTokenLimit,
         teamId: user.teamId,
-        weeklyQuotaPercent: user.weeklyQuotaPercent,
+        weeklyTokenLimit: user.weeklyTokenLimit,
       });
       setQuotaFormOpen(true);
     },
@@ -406,22 +393,35 @@ export default function UsersPage() {
     const user = quotaEditingUser;
     modal.confirm({
       cancelText: '取消',
+      title: '确认保存 Token 配额？',
       content:
-        '保存后会立即应用团队与个人额度覆盖，并使该用户现有会话失效。页面不会展示或推算 Codex 的真实用量。确定继续吗？',
+        '保存后会立即应用团队归属与个人 Token 上限，并使该用户现有会话失效。Token 上限是本系统配额，与 Codex 官方账户百分比无关。确定继续吗？',
       okText: '确认保存',
       onOk: async () => {
         setQuotaSaving(true);
         setMutatingId(user.id);
+        let teamPolicySaved = false;
         try {
           await updateUserQuotaPolicy(user.id, {
-            fiveHourQuotaPercent: values.fiveHourQuotaPercent ?? null,
+            fiveHourQuotaPercent: null,
             teamId: values.teamId || null,
-            weeklyQuotaPercent: values.weeklyQuotaPercent ?? null,
+            weeklyQuotaPercent: null,
           });
-          message.success('用户额度策略已保存');
+          teamPolicySaved = true;
+          await updateUserTokenLimits(user.id, {
+            fiveHourTokenLimit: values.fiveHourTokenLimit ?? null,
+            weeklyTokenLimit: values.weeklyTokenLimit ?? null,
+          });
+          message.success('用户团队归属与 Token 配额已保存');
           closeQuotaPolicy();
           await load();
         } catch (requestError) {
+          if (teamPolicySaved) {
+            message.warning('用户团队归属已保存，但个人 Token 上限保存失败；请刷新后重试。');
+            closeQuotaPolicy();
+            await load();
+            return;
+          }
           message.error(getErrorMessage(requestError));
           throw requestError;
         } finally {
@@ -429,7 +429,6 @@ export default function UsersPage() {
           setMutatingId(null);
         }
       },
-      title: '确认保存额度策略？',
     });
   };
 
@@ -537,34 +536,6 @@ export default function UsersPage() {
         width: 170,
       },
       {
-        dataIndex: 'assignedCodexAccountId',
-        render: (accountId: string | null, user) => (
-          <Select<string>
-            allowClear
-            aria-label={`分配 ${user.email} 的 Codex 账户`}
-            disabled={mutatingId === user.id}
-            loading={codexAccountsLoading}
-            onChange={(nextAccountId) =>
-              confirmCodexAccountAssignment(user, nextAccountId)
-            }
-            options={codexAccounts.map((account) => ({
-              disabled: account.status !== 'ACTIVE' && account.id !== accountId,
-              label: `${account.displayName} · ${account.email}${
-                account.status === 'DISABLED' ? '（已停用）' : ''
-              }`,
-              value: account.id,
-            }))}
-            placeholder="未分配"
-            showSearch
-            optionFilterProp="label"
-            style={{ minWidth: 230 }}
-            value={accountId ?? undefined}
-          />
-        ),
-        title: 'Codex 账户',
-        width: 270,
-      },
-      {
         dataIndex: 'teamId',
         render: (teamId: string | null, user) => {
           const team = teamId ? teamById.get(teamId) : undefined;
@@ -579,7 +550,7 @@ export default function UsersPage() {
                 {teamPolicyLoading
                   ? '团队加载中…'
                   : teamPolicyUnavailable
-                    ? '团队策略不可用'
+                    ? '团队 Token 配额不可用'
                     : teamsError
                       ? '团队列表不可用'
                       : team?.name ?? '未分配团队'}
@@ -588,29 +559,29 @@ export default function UsersPage() {
                 {teamPolicyLoading
                   ? '额度策略加载中…'
                   : teamPolicyUnavailable
-                    ? '额度策略暂不可用'
-                    : `5 小时 ${formatEffectiveQuota(
-                        user.fiveHourQuotaPercent,
-                        team?.fiveHourQuotaPercent,
-                      )} · 7 天 ${formatEffectiveQuota(
-                        user.weeklyQuotaPercent,
-                        team?.weeklyQuotaPercent,
+                    ? 'Token 配额暂不可用'
+                    : `5 小时 ${formatEffectiveTokenLimit(
+                        user.fiveHourTokenLimit,
+                        team?.fiveHourTokenLimit,
+                      )} · 7 天 ${formatEffectiveTokenLimit(
+                        user.weeklyTokenLimit,
+                        team?.weeklyTokenLimit,
                       )}`}
               </Typography.Text>
               <Button
-                aria-label={`配置 ${user.email} 的额度策略`}
+                aria-label={`配置 ${user.email} 的团队与 Token 配额`}
                 disabled={mutatingId === user.id || teamsLoading}
                 icon={<SlidersOutlined />}
                 onClick={() => openQuotaPolicy(user)}
                 size="small"
                 type="link"
               >
-                配置团队/个人额度
+                配置团队/个人 Token 配额
               </Button>
             </Space>
           );
         },
-        title: '团队与额度策略',
+        title: '团队与 Token 配额',
         width: 260,
       },
       {
@@ -636,8 +607,13 @@ export default function UsersPage() {
                   {
                     icon: <SlidersOutlined />,
                     key: 'quota',
-                    label: '配置团队/个人额度',
+                    label: '配置团队/个人 Token 配额',
                     onClick: () => openQuotaPolicy(user),
+                  },
+                  {
+                    key: 'quota-view',
+                    label: '查看额度',
+                    onClick: () => void openQuotaView(user),
                   },
                   {
                     disabled: self,
@@ -674,15 +650,13 @@ export default function UsersPage() {
     ],
     [
       confirmDelete,
-      confirmCodexAccountAssignment,
       confirmForceLogout,
       confirmUpdate,
-      codexAccounts,
-      codexAccountsLoading,
       currentUserId,
       mutatingId,
       openEdit,
       openQuotaPolicy,
+      openQuotaView,
       teamById,
       teamsLoading,
       teamsError,
@@ -693,7 +667,7 @@ export default function UsersPage() {
 
   return (
     <PageContainer
-      content="管理用户、登录会话、团队归属与个人额度覆盖。额度字段是策略百分比，不代表实时用量。"
+      content="管理系统用户、团队与个人 Token 限额；官方 Codex 额度由各客户端本机登录后上报。"
       extra={[
         <Button icon={<PlusOutlined />} key="create" onClick={openCreate} type="primary">
           新增用户
@@ -780,7 +754,7 @@ export default function UsersPage() {
             action={<Button onClick={() => void loadTeams()}>重试</Button>}
             className="cqg-inline-alert"
             description={teamsError}
-            title="团队列表加载失败，暂时无法配置额度策略"
+            title="团队列表加载失败，暂时无法配置团队归属"
             showIcon
             type="error"
           />
@@ -807,7 +781,7 @@ export default function UsersPage() {
               : false
           }
           rowKey="id"
-          scroll={{ x: 1430 }}
+          scroll={{ x: 1160 }}
         />
       </ProCard>
 
@@ -904,15 +878,15 @@ export default function UsersPage() {
       <Modal
         forceRender
         okButtonProps={{ loading: quotaSaving }}
-        okText="保存额度策略"
+        okText="保存 Token 配额"
         onCancel={closeQuotaPolicy}
         onOk={() => void saveQuotaPolicy()}
         open={quotaFormOpen}
-        title={quotaEditingUser ? `配置 ${quotaEditingUser.email} 的额度策略` : '配置额度策略'}
+        title={quotaEditingUser ? `配置 ${quotaEditingUser.email} 的团队与 Token 配额` : '配置团队与 Token 配额'}
       >
         <Form form={quotaForm} layout="vertical" preserve={false}>
           <Form.Item
-            extra={teamsError ? '团队列表暂不可用，请先重试。' : '用户会继承所选团队的默认额度。'}
+            extra={teamsError ? '团队列表暂不可用，请先重试。' : '用户会继承所选团队的 Token 上限。'}
             label="所属团队"
             name="teamId"
           >
@@ -932,24 +906,30 @@ export default function UsersPage() {
           </Form.Item>
           <Space align="start" size={16}>
             <Form.Item
-              extra="留空表示继承团队默认"
-              label="5 小时个人覆盖"
-              name="fiveHourQuotaPercent"
-              rules={[quotaRule()]}
+              extra="留空表示继承团队 Token 上限"
+              label="5 小时个人 Token 上限"
+              name="fiveHourTokenLimit"
+              rules={[tokenLimitRule()]}
             >
               <InputNumber
-                suffix="%"
+                max={MAX_TOKEN_LIMIT}
+                min={0}
+                precision={0}
+                suffix="Token"
                 style={{ width: 180 }}
               />
             </Form.Item>
             <Form.Item
-              extra="留空表示继承团队默认"
-              label="7 天个人覆盖"
-              name="weeklyQuotaPercent"
-              rules={[quotaRule()]}
+              extra="留空表示继承团队 Token 上限"
+              label="7 天个人 Token 上限"
+              name="weeklyTokenLimit"
+              rules={[tokenLimitRule()]}
             >
               <InputNumber
-                suffix="%"
+                max={MAX_TOKEN_LIMIT}
+                min={0}
+                precision={0}
+                suffix="Token"
                 style={{ width: 180 }}
               />
             </Form.Item>
@@ -958,10 +938,69 @@ export default function UsersPage() {
         <Alert
           className="cqg-inline-alert"
           title="保存会使该用户当前会话失效"
-          description="额度策略只描述允许的百分比窗口；后台不会假装显示 Codex 实时用量。"
+          description="Token 上限是本系统的个人统计配额；不会退出用户的官方 Codex 应用或 CLI。"
           showIcon
           type="warning"
         />
+      </Modal>
+
+      <Modal
+        footer={null}
+        onCancel={() => setQuotaViewUser(null)}
+        open={quotaViewUser !== null}
+        title={quotaViewUser ? `${quotaViewUser.displayName} 的额度` : '用户额度'}
+      >
+        {quotaViewLoading ? <Typography.Text>正在读取额度…</Typography.Text> : null}
+        {quotaViewError ? <Alert showIcon title="额度读取失败" description={quotaViewError} type="error" /> : null}
+        {!quotaViewLoading && !quotaViewError ? (
+          <Space align="start" orientation="vertical" size={12}>
+            <Typography.Title level={5}>常驻计费服务</Typography.Title>
+            <Typography.Text>
+              Rust 常驻计费：{meterDevices.length === 0 ? '未配对'
+                : meterDevices.some((device) => device.online) ? '在线' : '离线'}
+            </Typography.Text>
+            {meterDevices[0]?.lastSeenAt ? (
+              <Typography.Text type="secondary">
+                最近心跳：{formatDate(meterDevices[0].lastSeenAt)}
+              </Typography.Text>
+            ) : null}
+            <Typography.Title level={5}>官方额度（客户端上报）</Typography.Title>
+            {officialQuota ? (
+              <>
+                <Typography.Text>套餐：{officialQuota.planType ?? '未知'}</Typography.Text>
+                <Typography.Text>
+                  官方 5 小时：{officialQuota.windows.find((window) => window.windowDurationMins === 300)
+                    ? `已使用 ${officialQuota.windows.find((window) => window.windowDurationMins === 300)!.usedPercent}%`
+                    : '官方未提供此窗口'}
+                </Typography.Text>
+                <Typography.Text>
+                  官方 7 天：{officialQuota.windows.find((window) => window.windowDurationMins === 10_080)
+                    ? `已使用 ${officialQuota.windows.find((window) => window.windowDurationMins === 10_080)!.usedPercent}%`
+                    : '官方未提供此窗口'}
+                </Typography.Text>
+                <Typography.Text type="secondary">
+                  最近上报：{formatDate(officialQuota.receivedAt)}
+                  {Date.now() - new Date(officialQuota.receivedAt).getTime() > 5 * 60_000
+                    ? ' · 历史快照（非实时）' : ' · 近期上报'}
+                </Typography.Text>
+              </>
+            ) : <Typography.Text type="secondary">暂无客户端上报的官方额度</Typography.Text>}
+            <Typography.Title level={5}>个人 Token 用量（本机日志上报）</Typography.Title>
+            {personalQuota ? (
+              <>
+                <Typography.Text>
+                  {`个人 5 小时：已用 ${formatTokenLimit(personalQuota.usage.fiveHourUsedTokens)} Token，剩余 ${personalQuota.usage.fiveHourRemainingTokens === null
+                    ? '未配置' : `${formatTokenLimit(personalQuota.usage.fiveHourRemainingTokens)} Token`}`}
+                </Typography.Text>
+                <Typography.Text>
+                  {`个人 7 天：已用 ${formatTokenLimit(personalQuota.usage.weeklyUsedTokens)} Token，剩余 ${personalQuota.usage.weeklyRemainingTokens === null
+                    ? '未配置' : `${formatTokenLimit(personalQuota.usage.weeklyRemainingTokens)} Token`}`}
+                </Typography.Text>
+              </>
+            ) : <Typography.Text type="secondary">暂无个人额度</Typography.Text>}
+            <Typography.Text type="secondary">数据为客户端报告，不能强制限制官方应用的使用。</Typography.Text>
+          </Space>
+        ) : null}
       </Modal>
     </PageContainer>
   );

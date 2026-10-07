@@ -3,9 +3,14 @@ package com.codexquotaguard.backend.system;
 import com.codexquotaguard.backend.controlplane.ControlPlaneAuthSession;
 import com.codexquotaguard.backend.controlplane.ControlPlaneException;
 import com.codexquotaguard.backend.controlplane.ControlPlaneGateway;
+import com.codexquotaguard.backend.controlplane.OfficialCodexRateLimits;
 import com.codexquotaguard.backend.controlplane.PersonalQuotaOverview;
+import com.codexquotaguard.backend.controlplane.MeterEnrollment;
 import com.codexquotaguard.backend.controlplane.SystemUser;
+import com.codexquotaguard.backend.usage.CodexUsageEvent;
 import jakarta.annotation.PreDestroy;
+import java.util.List;
+import java.util.UUID;
 import org.springframework.stereotype.Service;
 
 /**
@@ -65,6 +70,33 @@ public final class SystemSessionService {
         return invokeAuthenticated(controlPlane::quotaOverview);
     }
 
+    public MeterEnrollment enrollMeter(UUID deviceId) {
+        return invokeAuthenticated(accessToken -> controlPlane.enrollMeter(accessToken, deviceId));
+    }
+
+    /** Active product user for local scanner attribution; no network call or credential is exposed. */
+    public java.util.Optional<UUID> localUserId() {
+        synchronized (lock) {
+            return session == null ? java.util.Optional.empty() : java.util.Optional.of(session.user().id());
+        }
+    }
+
+    public UUID requireLocalUserId() {
+        return requireSession().user().id();
+    }
+
+    public PersonalQuotaOverview reportUsage(UUID expectedUserId, List<CodexUsageEvent> events) {
+        return invokeAuthenticated(expectedUserId,
+                accessToken -> controlPlane.reportUsage(accessToken, events));
+    }
+
+    public void reportOfficialQuota(OfficialCodexRateLimits snapshot) {
+        invokeAuthenticated(accessToken -> {
+            controlPlane.reportOfficialQuota(accessToken, snapshot);
+            return null;
+        });
+    }
+
     /** Clears this process immediately, then makes a best-effort central logout. */
     public void logout() {
         Session previous;
@@ -104,7 +136,12 @@ public final class SystemSessionService {
     }
 
     private <T> T invokeAuthenticated(TokenOperation<T> operation) {
+        return invokeAuthenticated(null, operation);
+    }
+
+    private <T> T invokeAuthenticated(UUID expectedUserId, TokenOperation<T> operation) {
         Session attempted = requireSession();
+        requireExpectedUser(attempted, expectedUserId);
         try {
             T result = operation.call(attempted.accessToken());
             updateUserIfCurrent(attempted, extractUser(result));
@@ -118,6 +155,7 @@ public final class SystemSessionService {
         }
 
         Session refreshed = refreshAfterUnauthorized(attempted);
+        requireExpectedUser(refreshed, expectedUserId);
         try {
             T result = operation.call(refreshed.accessToken());
             updateUserIfCurrent(refreshed, extractUser(result));
@@ -133,6 +171,12 @@ public final class SystemSessionService {
         }
     }
 
+    private static void requireExpectedUser(Session session, UUID expectedUserId) {
+        if (expectedUserId != null && !expectedUserId.equals(session.user().id())) {
+            throw new SystemSessionRequiredException();
+        }
+    }
+
     private static SystemUser extractUser(Object result) {
         if (result instanceof SystemUser user) {
             return user;
@@ -140,7 +184,7 @@ public final class SystemSessionService {
         if (result instanceof PersonalQuotaOverview overview) {
             return overview.user();
         }
-        throw new ControlPlaneUnavailableException();
+        return null;
     }
 
     private void updateUserIfCurrent(Session source, SystemUser user) {
@@ -199,6 +243,7 @@ public final class SystemSessionService {
     private static RuntimeException translate(ControlPlaneException exception) {
         return switch (exception.reason()) {
             case UNAUTHORIZED -> new SystemSessionRequiredException();
+            case ACCESS_DENIED -> new CodexAccessDeniedException();
             case INVALID_REQUEST, UNAVAILABLE -> new ControlPlaneUnavailableException();
         };
     }
@@ -206,7 +251,7 @@ public final class SystemSessionService {
     private static RuntimeException translateLogin(ControlPlaneException exception) {
         return switch (exception.reason()) {
             case UNAUTHORIZED, INVALID_REQUEST -> new LoginDeniedException();
-            case UNAVAILABLE -> new ControlPlaneUnavailableException();
+            case ACCESS_DENIED, UNAVAILABLE -> new ControlPlaneUnavailableException();
         };
     }
 

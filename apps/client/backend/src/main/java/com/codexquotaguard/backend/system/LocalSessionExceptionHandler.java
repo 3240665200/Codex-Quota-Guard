@@ -1,5 +1,6 @@
 package com.codexquotaguard.backend.system;
 
+import com.codexquotaguard.backend.codex.OfficialCodexRateLimitsUnavailableException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -22,6 +23,18 @@ public final class LocalSessionExceptionHandler {
     @ExceptionHandler(ControlPlaneUnavailableException.class)
     public ResponseEntity<ErrorBody> controlPlaneUnavailable() {
         return response(HttpStatus.SERVICE_UNAVAILABLE, "CONTROL_PLANE_UNAVAILABLE", "系统服务暂时不可用，请稍后重试。");
+    }
+
+    @ExceptionHandler(MeterPairingRequiredException.class)
+    public ResponseEntity<ErrorBody> meterPairingRequired() {
+        return response(HttpStatus.CONFLICT, "METER_PAIRING_REQUIRED",
+                "计费服务配对失败；当前 Windows 用户可能已绑定其他系统账户，请联系管理员检查设备绑定。");
+    }
+
+    @ExceptionHandler(OfficialCodexRateLimitsUnavailableException.class)
+    public ResponseEntity<ErrorBody> officialLimitsUnavailable() {
+        return response(HttpStatus.SERVICE_UNAVAILABLE, "OFFICIAL_CODEX_LIMITS_UNAVAILABLE",
+                "请先在官方 Codex 应用或 CLI 登录；登录后重试读取官方额度。");
     }
 
     private static ResponseEntity<ErrorBody> response(HttpStatus status, String code, String message) {

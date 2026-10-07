@@ -11,7 +11,6 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 const quotaOverview = {
-  assigned: true,
   user: {
     id: "user-1",
     email: "alice@example.com",
@@ -19,28 +18,22 @@ const quotaOverview = {
     role: "USER",
     status: "ACTIVE",
   },
-  codexAccount: {
-    id: "codex-1",
-    displayName: "Managed Codex",
-    status: "ACTIVE",
-    updatedAt: "2026-09-21T08:00:00Z",
-  },
   team: { id: "team-1", name: "Design" },
   policy: {
-    fiveHourLimitPercent: 80,
-    weeklyLimitPercent: 90,
+    fiveHourTokenLimit: 1_000,
+    weeklyTokenLimit: 10_000,
     fiveHourSource: "TEAM",
-    weeklySource: "DEFAULT",
+    weeklySource: "TEAM",
   },
   usage: {
-    measurementStatus: "CURRENT",
-    fiveHourUsedPercent: 20,
-    weeklyUsedPercent: 10,
-    fiveHourRemainingPercent: 80,
-    weeklyRemainingPercent: 90,
-    fiveHourResetsAt: "2026-09-21T12:00:00Z",
-    weeklyResetsAt: "2026-09-28T08:00:00Z",
-    measuredAt: "2026-09-21T08:00:00Z",
+    measurementStatus: "CLIENT_REPORTED",
+    fiveHourUsedTokens: 200,
+    weeklyUsedTokens: 1_000,
+    fiveHourRemainingTokens: 800,
+    weeklyRemainingTokens: 9_000,
+    fiveHourResetsAt: null,
+    weeklyResetsAt: null,
+    measuredAt: "2026-10-06T08:00:00Z",
   },
   allowed: true,
   blockReason: null,
@@ -84,72 +77,91 @@ describe("Tauri API boundary", () => {
     });
   });
 
-  it("only calls the fixed personal quota command and validates measured values", async () => {
+  it("validates personal token values rather than account-level percentages", async () => {
     invokeMock.mockResolvedValue(quotaOverview);
 
     await expect(api.quotaOverview()).resolves.toMatchObject({
-      assigned: true,
       team: { name: "Design" },
-      usage: { measurementStatus: "CURRENT", fiveHourRemainingPercent: 80 },
+      policy: { fiveHourTokenLimit: 1_000 },
+      usage: {
+        measurementStatus: "CLIENT_REPORTED",
+        fiveHourRemainingTokens: 800,
+      },
     });
     expect(invokeMock).toHaveBeenCalledWith("quota_overview");
   });
 
-  it("preserves unmeasured quota values as null instead of coercing them to zero", async () => {
+  it("accepts a truthful absence of reported usage before the first event", async () => {
     invokeMock.mockResolvedValue({
       ...quotaOverview,
-      usage: {
-        measurementStatus: "NOT_MEASURED",
-        fiveHourUsedPercent: null,
-        weeklyUsedPercent: null,
-        fiveHourRemainingPercent: null,
-        weeklyRemainingPercent: null,
-        fiveHourResetsAt: null,
-        weeklyResetsAt: null,
-        measuredAt: null,
-      },
-      allowed: false,
-      blockReason: "USAGE_NOT_MEASURED",
+      usage: { ...quotaOverview.usage, measuredAt: null },
     });
 
     await expect(api.quotaOverview()).resolves.toMatchObject({
-      usage: { measurementStatus: "NOT_MEASURED", fiveHourUsedPercent: null },
+      usage: { measuredAt: null, fiveHourUsedTokens: 200 },
     });
   });
 
-  it("fails closed when an unmeasured response claims usable quota or supplies numbers", async () => {
+  it("validates safe Rust meter diagnostics and fixed scan commands", async () => {
+    const status = {
+      fallback: { state: "BASELINE_READY", lastScannedAt: "2026-10-07T00:00:00Z",
+        lastReportedAt: null, lastReportedEvents: 0, issues: [] },
+      service: { state: "NOT_INSTALLED", lastScanEpochSeconds: null,
+        lastReportEpochSeconds: null, reportedEvents: 0, errorCode: null },
+      pairingState: "NOT_INSTALLED",
+    };
+    invokeMock.mockResolvedValue(status);
+
+    await expect(api.usageStatus()).resolves.toEqual(status);
+    await expect(api.scanUsage()).resolves.toEqual(status);
+    await expect(api.pairMeter()).resolves.toEqual(status);
+    expect(invokeMock).toHaveBeenCalledWith("usage_status");
+    expect(invokeMock).toHaveBeenCalledWith("usage_scan");
+    expect(invokeMock).toHaveBeenCalledWith("usage_pair");
+  });
+
+  it("fails closed when an unconfigured personal limit claims usable quota", async () => {
     invokeMock.mockResolvedValue({
       ...quotaOverview,
-      usage: {
-        measurementStatus: "NOT_MEASURED",
-        fiveHourUsedPercent: 0,
-        weeklyUsedPercent: null,
-        fiveHourRemainingPercent: null,
-        weeklyRemainingPercent: null,
-        fiveHourResetsAt: null,
-        weeklyResetsAt: null,
-        measuredAt: null,
+      policy: {
+        ...quotaOverview.policy,
+        fiveHourTokenLimit: null,
+        fiveHourSource: "UNCONFIGURED",
       },
+      usage: { ...quotaOverview.usage, fiveHourRemainingTokens: null },
       allowed: true,
-      blockReason: null,
     });
 
     await expect(api.quotaOverview()).rejects.toThrow();
   });
 
-  it("fails closed when a current response omits any required usage value", async () => {
+  it("does not coerce unconfigured personal token limits to zero", async () => {
     invokeMock.mockResolvedValue({
       ...quotaOverview,
-      usage: { ...quotaOverview.usage, weeklyRemainingPercent: null },
+      policy: {
+        fiveHourTokenLimit: null,
+        weeklyTokenLimit: null,
+        fiveHourSource: "UNCONFIGURED",
+        weeklySource: "UNCONFIGURED",
+      },
+      usage: {
+        ...quotaOverview.usage,
+        fiveHourRemainingTokens: null,
+        weeklyRemainingTokens: null,
+      },
+      allowed: false,
+      blockReason: "TOKEN_QUOTA_UNCONFIGURED",
     });
 
-    await expect(api.quotaOverview()).rejects.toThrow();
+    await expect(api.quotaOverview()).resolves.toMatchObject({
+      policy: { fiveHourTokenLimit: null },
+      usage: { fiveHourUsedTokens: 200, fiveHourRemainingTokens: null },
+    });
   });
 
-  it("rejects malformed data before it reaches the dashboard", async () => {
-    invokeMock.mockResolvedValue({ ...quotaOverview, codexAccount: null });
-
-    await expect(api.quotaOverview()).rejects.toThrow();
+  it("does not expose a managed credential login command", () => {
+    expect(api).not.toHaveProperty("codexLogin");
+    expect(api).not.toHaveProperty("codexSession");
   });
 
   it("keeps system session credentials inside the bridge", async () => {
@@ -184,6 +196,28 @@ describe("Tauri API boundary", () => {
     );
   });
 
+  it("keeps official account windows separate from personal token quota", async () => {
+    invokeMock.mockResolvedValue({
+      planType: "pro",
+      windows: [
+        {
+          limitId: "codex",
+          slot: "primary",
+          windowDurationMins: 300,
+          usedPercent: 25,
+          resetsAt: "2026-10-06T12:00:00Z",
+        },
+      ],
+      fetchedAt: "2026-10-06T08:00:00Z",
+    });
+
+    await expect(api.codexRateLimits()).resolves.toMatchObject({
+      planType: "pro",
+      windows: [{ windowDurationMins: 300, usedPercent: 25 }],
+    });
+    expect(invokeMock).toHaveBeenCalledWith("codex_rate_limits");
+  });
+
   it("does not render arbitrary URL or token-like transport errors", () => {
     expect(
       getApiErrorMessage(
@@ -198,9 +232,6 @@ describe("Tauri API boundary", () => {
   });
 
   it("shows only allow-listed Tauri string errors", () => {
-    expect(getApiErrorMessage("邮箱或密码不正确，请检查后重试。")).toBe(
-      "邮箱或密码不正确，请检查后重试。",
-    );
     expect(getApiErrorMessage("本地服务暂时不可用，请稍后重试。")).toBe(
       "本地服务暂时不可用，请稍后重试。",
     );

@@ -5,6 +5,7 @@ public final class ControlPlaneException extends RuntimeException {
 
     public enum Reason {
         UNAUTHORIZED,
+        ACCESS_DENIED,
         INVALID_REQUEST,
         UNAVAILABLE
     }
@@ -26,6 +27,10 @@ public final class ControlPlaneException extends RuntimeException {
 
     public static ControlPlaneException invalidRequest() {
         return new ControlPlaneException(Reason.INVALID_REQUEST);
+    }
+
+    public static ControlPlaneException accessDenied() {
+        return new ControlPlaneException(Reason.ACCESS_DENIED);
     }
 
     public static ControlPlaneException unavailable() {

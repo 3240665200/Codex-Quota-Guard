@@ -1,5 +1,6 @@
 package com.codexquotaguard.backend.controlplane;
 
+import com.codexquotaguard.backend.usage.CodexUsageEvent;
 import java.io.IOException;
 import java.net.Proxy;
 import java.net.ProxySelector;
@@ -12,6 +13,7 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.List;
 import java.util.Locale;
+import java.util.UUID;
 import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.ObjectMapper;
 
@@ -19,6 +21,7 @@ import tools.jackson.databind.ObjectMapper;
 final class HttpControlPlaneGateway implements ControlPlaneGateway {
 
     private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(10);
+    private static final int MAX_USAGE_EVENTS_PER_REQUEST = 100;
     private static final ProxySelector DIRECT_PROXY_SELECTOR = new ProxySelector() {
         @Override
         public List<Proxy> select(URI uri) {
@@ -91,6 +94,47 @@ final class HttpControlPlaneGateway implements ControlPlaneGateway {
     @Override
     public PersonalQuotaOverview quotaOverview(String accessToken) {
         return sendJson(get("/api/v1/client/quota/overview", accessToken), PersonalQuotaOverview.class);
+    }
+
+    @Override
+    public MeterEnrollment enrollMeter(String accessToken, UUID deviceId) {
+        if (deviceId == null) throw ControlPlaneException.invalidRequest();
+        return sendJson(postJson("/api/v1/client/meter/enroll", new MeterDeviceBody(deviceId), accessToken),
+                MeterEnrollment.class);
+    }
+
+    @Override
+    public PersonalQuotaOverview reportUsage(String accessToken, List<CodexUsageEvent> events) {
+        if (events == null || events.isEmpty() || events.size() > MAX_USAGE_EVENTS_PER_REQUEST) {
+            throw ControlPlaneException.invalidRequest();
+        }
+        List<UsageEventBody> eventBodies = events.stream()
+                .map(event -> new UsageEventBody(event.eventId(), event.occurredAt().toString(),
+                        event.totalTokens(), event.source().name()))
+                .toList();
+        HttpResponse<String> response = send(postJson("/api/v1/client/usage/events",
+                new LocalUsageEventsBody(eventBodies), accessToken));
+        if (response.statusCode() == 409) {
+            throw ControlPlaneException.accessDenied();
+        }
+        ensureSuccess(response.statusCode());
+        try {
+            return mapper.readValue(response.body(), PersonalQuotaOverview.class);
+        } catch (RuntimeException exception) {
+            throw ControlPlaneException.unavailable();
+        }
+    }
+
+    @Override
+    public void reportOfficialQuota(String accessToken, OfficialCodexRateLimits snapshot) {
+        HttpRequest request = HttpRequest.newBuilder(endpoint("/api/v1/client/official-quota"))
+                .timeout(requestTimeout)
+                .header("Accept", "application/json")
+                .header("Content-Type", "application/json")
+                .header("Authorization", "Bearer " + accessToken)
+                .PUT(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(snapshot)))
+                .build();
+        sendEmpty(request);
     }
 
     @Override
@@ -256,6 +300,15 @@ final class HttpControlPlaneGateway implements ControlPlaneGateway {
     }
 
     private record RefreshBody(String refreshToken) {
+    }
+
+    private record LocalUsageEventsBody(List<UsageEventBody> events) {
+    }
+
+    private record MeterDeviceBody(UUID deviceId) {
+    }
+
+    private record UsageEventBody(String eventId, String occurredAt, long totalTokens, String source) {
     }
 
     private record AuthResponse(

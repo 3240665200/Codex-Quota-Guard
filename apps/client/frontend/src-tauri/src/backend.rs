@@ -27,6 +27,10 @@ const RETRY_INTERVAL: Duration = Duration::from_millis(100);
 pub(crate) enum ApiRoute {
     Status,
     QuotaOverview,
+    UsageStatus,
+    UsageScan,
+    UsagePair,
+    CodexRateLimits,
     SystemLogin,
     SystemCurrent,
     SystemLogout,
@@ -38,6 +42,10 @@ impl ApiRoute {
         match self {
             Self::Status => "/api/v1/status",
             Self::QuotaOverview => "/api/v1/quota/overview",
+            Self::UsageStatus => "/api/v1/usage/status",
+            Self::UsageScan => "/api/v1/usage/scan",
+            Self::UsagePair => "/api/v1/usage/pair",
+            Self::CodexRateLimits => "/api/v1/codex/rate-limits",
             Self::SystemLogin => "/api/v1/session/login",
             Self::SystemCurrent => "/api/v1/session/current",
             Self::SystemLogout => "/api/v1/session/logout",
@@ -52,10 +60,16 @@ pub(crate) enum BackendError {
     Startup,
     #[error("本地服务暂时不可用，请稍后重试。")]
     Unavailable,
+    #[error("中央后台暂不可用，请确认后台已启动且服务器地址正确。")]
+    ControlPlaneUnavailable,
     #[error("本地服务返回了无效的数据。")]
     InvalidResponse,
     #[error("邮箱或密码不正确，请检查后重试。")]
     InvalidCredentials,
+    #[error(
+        "计费服务配对失败；当前 Windows 用户可能已绑定其他系统账户，请联系管理员检查设备绑定。"
+    )]
+    MeterPairingRequired,
     #[error("请先登录系统账户。")]
     SystemLoginRequired,
 }
@@ -91,6 +105,11 @@ impl BackendState {
         let port = reserve_loopback_port()?;
         let token = BearerToken::generate();
         let server = server_config::load(app);
+        let usage_state_root = usage_state_root(app)?;
+        let app_data = app
+            .path()
+            .app_data_dir()
+            .map_err(|_| BackendError::Startup)?;
 
         let mut child = Command::new(java_executable())
             .arg("-jar")
@@ -100,6 +119,19 @@ impl BackendState {
             .env(
                 "QUOTA_GUARD_ALLOW_INSECURE_LAN_HTTP",
                 server.allow_insecure_lan_http.to_string(),
+            )
+            .env("QUOTA_GUARD_CODEX_HOME_ROOT", &usage_state_root)
+            .env(
+                "QUOTA_GUARD_METER_DEVICE_ID_FILE",
+                app_data.join("meter-device-id.txt"),
+            )
+            .env(
+                "QUOTA_GUARD_METER_PAIRING_INBOX",
+                app_data.join("meter-pairing.json"),
+            )
+            .env(
+                "QUOTA_GUARD_METER_STATUS_FILE",
+                app_data.join("meter-status.json"),
             )
             .env("SERVER_ADDRESS", LOOPBACK_HOST)
             .env("SERVER_PORT", port.to_string())
@@ -228,9 +260,15 @@ fn classify_response(route: ApiRoute, status: StatusCode) -> BackendError {
         (ApiRoute::SystemLogin, StatusCode::UNAUTHORIZED | StatusCode::BAD_REQUEST) => {
             BackendError::InvalidCredentials
         }
-        (ApiRoute::SystemCurrent | ApiRoute::QuotaOverview, StatusCode::UNAUTHORIZED) => {
-            BackendError::SystemLoginRequired
-        }
+        (ApiRoute::SystemLogin, StatusCode::CONFLICT) => BackendError::MeterPairingRequired,
+        (
+            ApiRoute::SystemLogin | ApiRoute::SystemCurrent | ApiRoute::QuotaOverview,
+            StatusCode::SERVICE_UNAVAILABLE,
+        ) => BackendError::ControlPlaneUnavailable,
+        (
+            ApiRoute::SystemCurrent | ApiRoute::QuotaOverview | ApiRoute::CodexRateLimits,
+            StatusCode::UNAUTHORIZED,
+        ) => BackendError::SystemLoginRequired,
         _ => BackendError::Unavailable,
     }
 }
@@ -307,6 +345,13 @@ fn resolve_backend_jar(app: &AppHandle) -> Result<PathBuf, BackendError> {
     Err(BackendError::Startup)
 }
 
+fn usage_state_root(app: &AppHandle) -> Result<PathBuf, BackendError> {
+    app.path()
+        .app_data_dir()
+        .map(|directory| directory.join("usage-state"))
+        .map_err(|_| BackendError::Startup)
+}
+
 fn reserve_loopback_port() -> Result<u16, BackendError> {
     let listener = TcpListener::bind((LOOPBACK_HOST, 0)).map_err(|_| BackendError::Startup)?;
     listener
@@ -360,6 +405,7 @@ mod tests {
         for route in [
             ApiRoute::Status,
             ApiRoute::QuotaOverview,
+            ApiRoute::CodexRateLimits,
             ApiRoute::SystemLogin,
             ApiRoute::SystemCurrent,
             ApiRoute::SystemLogout,
@@ -381,10 +427,11 @@ mod tests {
     }
 
     #[test]
-    fn local_routes_do_not_include_a_codex_login_or_credential_endpoint() {
+    fn local_routes_never_expose_managed_login_or_a_credential_endpoint() {
         for route in [
             ApiRoute::Status,
             ApiRoute::QuotaOverview,
+            ApiRoute::CodexRateLimits,
             ApiRoute::SystemLogin,
             ApiRoute::SystemCurrent,
             ApiRoute::SystemLogout,
@@ -393,7 +440,7 @@ mod tests {
             let path = route.path();
             assert!(!path.contains("device"));
             assert!(!path.contains("credential"));
-            assert!(!path.contains("codex/login"));
+            assert!(!path.ends_with("/codex/login"));
         }
     }
 
@@ -404,12 +451,20 @@ mod tests {
             BackendError::InvalidCredentials
         ));
         assert!(matches!(
+            classify_response(ApiRoute::SystemLogin, StatusCode::SERVICE_UNAVAILABLE),
+            BackendError::ControlPlaneUnavailable
+        ));
+        assert!(matches!(
             classify_response(ApiRoute::SystemCurrent, StatusCode::UNAUTHORIZED),
             BackendError::SystemLoginRequired
         ));
         assert!(matches!(
             classify_response(ApiRoute::QuotaOverview, StatusCode::UNAUTHORIZED),
             BackendError::SystemLoginRequired
+        ));
+        assert!(matches!(
+            classify_response(ApiRoute::SystemLogin, StatusCode::CONFLICT),
+            BackendError::MeterPairingRequired
         ));
     }
 

@@ -13,7 +13,9 @@ public final class QuotaController {
 
     private final SystemSessionService sessionService;
 
-    public QuotaController(SystemSessionService sessionService) {
+    public QuotaController(
+            SystemSessionService sessionService
+    ) {
         this.sessionService = sessionService;
     }
 

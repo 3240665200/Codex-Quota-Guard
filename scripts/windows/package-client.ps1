@@ -68,3 +68,5 @@ foreach ($installer in $installers) {
     Write-Host $installer.FullName
 }
 Write-Host 'The installed app requires Java 17 or newer on the target PC.'
+Write-Host 'The Rust meter executable and install script are bundled in the app meter directory.'
+Write-Host 'Install the Windows service from an elevated PowerShell on each target PC; the setup does not install it silently.'

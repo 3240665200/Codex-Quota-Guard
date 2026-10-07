@@ -40,13 +40,6 @@ export default [
     path: '/teams',
   },
   {
-    access: 'canAdmin',
-    component: './codex-accounts',
-    icon: 'key',
-    name: 'Codex 账户',
-    path: '/codex-accounts',
-  },
-  {
     component: './exception/403',
     layout: false,
     path: '/403',

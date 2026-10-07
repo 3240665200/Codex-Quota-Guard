@@ -2,7 +2,10 @@ package com.pingche.web.config;
 
 import com.pingche.web.auth.JwtService;
 import com.pingche.web.common.SecurityErrorWriter;
+import com.pingche.web.meter.MeterDeviceService;
+import com.pingche.web.meter.MeterTokenFilter;
 import com.pingche.web.user.UserRepository;
+import jakarta.servlet.DispatcherType;
 import java.util.Arrays;
 import java.util.List;
 import org.springframework.beans.factory.annotation.Value;
@@ -63,11 +66,13 @@ public class SecurityConfig {
             HttpSecurity http,
             JwtService jwtService,
             UserRepository users,
+            MeterDeviceService meterDevices,
             SecurityErrorWriter errorWriter,
             @Value("${app.auth-rate-limit-per-minute:20}") int authRateLimit,
             @Value("${app.require-https:false}") boolean requireHttps
     ) throws Exception {
         JwtFilter jwtFilter = new JwtFilter(jwtService, users, errorWriter);
+        MeterTokenFilter meterTokenFilter = new MeterTokenFilter(meterDevices, errorWriter);
         AuthRateLimitFilter rateLimitFilter =
                 new AuthRateLimitFilter(errorWriter, authRateLimit);
 
@@ -92,6 +97,9 @@ public class SecurityConfig {
                                         "Access is forbidden"
                                 )))
                 .authorizeHttpRequests(authorize -> authorize
+                        // The initial REQUEST is authenticated. StreamingResponseBody
+                        // resumes as an internal ASYNC dispatch without its JWT context.
+                        .dispatcherTypeMatchers(DispatcherType.ASYNC).permitAll()
                         .requestMatchers(
                                 HttpMethod.POST,
                                 "/api/v1/auth/register",
@@ -99,8 +107,10 @@ public class SecurityConfig {
                                 "/api/v1/auth/refresh"
                         ).permitAll()
                         .requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
+                        .requestMatchers("/api/v1/meter/**").hasRole("METER")
                         .anyRequest().authenticated())
                 .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class)
+                .addFilterBefore(meterTokenFilter, JwtFilter.class)
                 .addFilterBefore(rateLimitFilter, JwtFilter.class);
 
         if (requireHttps) {

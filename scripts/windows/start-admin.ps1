@@ -3,7 +3,7 @@
 param(
     [switch]$Rebuild,
     [switch]$NoBrowser,
-    [string]$BackendBindAddress = 'auto',
+    [string]$BackendBindAddress = '0.0.0.0',
     [string]$LogDirectory = 'D:\BuildCache\pingche\logs'
 )
 
@@ -57,7 +57,10 @@ function Require-Command([string]$Name) {
 New-Item -ItemType Directory -Path $LogDirectory -Force | Out-Null
 
 $backendListener = @(Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue) |
-    Where-Object LocalAddress -eq $BackendBindAddress | Select-Object -First 1
+    Where-Object {
+        $_.LocalAddress -eq $BackendBindAddress -or
+        ($BackendBindAddress -eq '0.0.0.0' -and $_.LocalAddress -eq '::')
+    } | Select-Object -First 1
 if ($null -ne $backendListener) {
     $process = Get-CimInstance Win32_Process -Filter "ProcessId = $($backendListener.OwningProcess)"
     if ($null -eq $process -or $process.CommandLine -notmatch '(admin-backend-|web-backend-0\.1\.0-SNAPSHOT\.jar)') {
@@ -92,7 +95,8 @@ if ($null -ne $frontendListener) {
     $stderr = Join-Path $LogDirectory "admin-frontend-$stamp.err.log"
     $previousApiTarget = [Environment]::GetEnvironmentVariable('ADMIN_API_TARGET', 'Process')
     try {
-        $env:ADMIN_API_TARGET = "http://${BackendBindAddress}:8080"
+        $proxyAddress = if ($BackendBindAddress -eq '0.0.0.0') { '127.0.0.1' } else { $BackendBindAddress }
+        $env:ADMIN_API_TARGET = "http://${proxyAddress}:8080"
         $frontendProcess = Start-Process -FilePath $pnpm -ArgumentList 'dev:admin' `
             -WorkingDirectory $repositoryRoot -WindowStyle Hidden `
             -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru

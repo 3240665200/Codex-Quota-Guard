@@ -1,8 +1,5 @@
 package com.pingche.web.admin;
 
-import com.pingche.web.codex.CodexAccountAssignmentRequest;
-import com.pingche.web.codex.CodexAccountAssignmentService;
-import com.pingche.web.codex.ManagedCodexAccountResponse;
 import com.pingche.web.quota.QuotaPolicyService;
 import com.pingche.web.quota.QuotaPolicyUpdateRequest;
 import com.pingche.web.user.User;
@@ -35,16 +32,13 @@ import org.springframework.web.bind.annotation.RestController;
 public class AdminController {
 
     private final AdminService adminService;
-    private final CodexAccountAssignmentService codexAccountAssignments;
     private final QuotaPolicyService quotaPolicies;
 
     public AdminController(
             AdminService adminService,
-            CodexAccountAssignmentService codexAccountAssignments,
             QuotaPolicyService quotaPolicies
     ) {
         this.adminService = adminService;
-        this.codexAccountAssignments = codexAccountAssignments;
         this.quotaPolicies = quotaPolicies;
     }
 
@@ -104,20 +98,6 @@ public class AdminController {
     @PostMapping("/users/{id}/force-logout")
     public ResponseEntity<Void> forceLogout(@PathVariable("id") UUID id) {
         adminService.forceLogout(id);
-        return ResponseEntity.noContent().build();
-    }
-
-    @PutMapping("/users/{id}/codex-account")
-    public ManagedCodexAccountResponse assignCodexAccount(
-            @PathVariable("id") UUID id,
-            @Valid @RequestBody CodexAccountAssignmentRequest request
-    ) {
-        return codexAccountAssignments.assign(id, request.codexAccountId());
-    }
-
-    @DeleteMapping("/users/{id}/codex-account")
-    public ResponseEntity<Void> unassignCodexAccount(@PathVariable("id") UUID id) {
-        codexAccountAssignments.unassign(id);
         return ResponseEntity.noContent().build();
     }
 

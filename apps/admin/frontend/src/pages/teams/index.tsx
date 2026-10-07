@@ -33,6 +33,7 @@ import {
   deleteTeam,
   listTeams,
   updateTeam,
+  updateTeamTokenLimits,
 } from '../../services/api';
 import type {
   TeamCreate,
@@ -41,14 +42,15 @@ import type {
   TeamUpdate,
 } from '../../services/api';
 
-const DEFAULT_QUOTA_PERCENT = 100;
+const LEGACY_DEFAULT_QUOTA_PERCENT = 100;
+const MAX_TOKEN_LIMIT = 1_000_000_000_000;
 
 interface TeamFormValues {
   name: string;
   description: string;
   status: TeamStatus;
-  fiveHourQuotaPercent: number;
-  weeklyQuotaPercent: number;
+  fiveHourTokenLimit: number | null;
+  weeklyTokenLimit: number | null;
 }
 
 function formatDate(value: string): string {
@@ -56,20 +58,44 @@ function formatDate(value: string): string {
   return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('zh-CN');
 }
 
-function formatQuota(value: number): string {
-  return `${value}%`;
+function formatTokenLimit(value: number | null): string {
+  return value === null ? '未配置' : new Intl.NumberFormat('zh-CN').format(value);
 }
 
-function quotaRule() {
+function describeTokenLimitSaveFailure(error: unknown): string {
+  const status = error && typeof error === 'object' && 'status' in error
+    ? (error as { status: unknown }).status
+    : null;
+  switch (status) {
+    case 400:
+      return '请求格式无效，请刷新后重试';
+    case 401:
+      return '管理员登录已失效，请重新登录';
+    case 403:
+      return '当前账户没有管理员权限';
+    case 404:
+      return '后台缺少 Token 上限接口，请重启最新后台';
+    case 409:
+      return '团队版本冲突，请刷新后重试';
+    default:
+      return '后台或网络异常，请稍后重试';
+  }
+}
+
+function tokenLimitRule() {
   return {
     validator: (_: unknown, value: unknown) => {
+      if (value === null || value === undefined || value === '') return Promise.resolve();
       if (
         typeof value !== 'number' ||
         !Number.isFinite(value) ||
         value < 0 ||
-        value > 100
+        value > MAX_TOKEN_LIMIT ||
+        !Number.isInteger(value)
       ) {
-        return Promise.reject(new Error('请输入 0 到 100 的数字'));
+        return Promise.reject(
+          new Error('请输入 0 到 1,000,000,000,000 的整数，或留空表示未配置'),
+        );
       }
       return Promise.resolve();
     },
@@ -108,10 +134,10 @@ export default function TeamsPage() {
     form.resetFields();
     form.setFieldsValue({
       description: '',
-      fiveHourQuotaPercent: DEFAULT_QUOTA_PERCENT,
+      fiveHourTokenLimit: null,
       name: '',
       status: 'ACTIVE',
-      weeklyQuotaPercent: DEFAULT_QUOTA_PERCENT,
+      weeklyTokenLimit: null,
     });
     setFormOpen(true);
   }, [form]);
@@ -121,10 +147,10 @@ export default function TeamsPage() {
       setEditing(team);
       form.setFieldsValue({
         description: team.description,
-        fiveHourQuotaPercent: team.fiveHourQuotaPercent,
+        fiveHourTokenLimit: team.fiveHourTokenLimit,
         name: team.name,
         status: team.status,
-        weeklyQuotaPercent: team.weeklyQuotaPercent,
+        weeklyTokenLimit: team.weeklyTokenLimit,
       });
       setFormOpen(true);
     },
@@ -148,23 +174,52 @@ export default function TeamsPage() {
     modal.confirm({
       cancelText: '取消',
       content: editing
-        ? '保存后会影响该团队成员的额度策略，并使相关会话失效。确定继续吗？'
-        : '创建团队后，后续分配到该团队的用户将继承这里的额度策略。确定创建吗？',
+        ? '保存后会更新团队 Token 上限，并使相关成员系统会话失效。留空表示不设个人配额。确定继续吗？'
+        : '创建团队后会立即保存 Token 上限。留空表示不设个人配额。确定创建吗？',
       okText: editing ? '确认保存' : '确认创建',
       onOk: async () => {
         setSaving(true);
         try {
+          const { fiveHourTokenLimit, weeklyTokenLimit, ...teamValues } = values;
           if (editing) {
             const update: TeamUpdate = {
-              ...values,
+              ...teamValues,
               version: editing.version,
             };
-            await updateTeam(editing.id, update);
-            message.success('团队与额度策略已更新');
+            const updatedTeam = await updateTeam(editing.id, update);
+            try {
+              await updateTeamTokenLimits(editing.id, {
+                fiveHourTokenLimit: fiveHourTokenLimit ?? null,
+                version: updatedTeam.version,
+                weeklyTokenLimit: weeklyTokenLimit ?? null,
+              });
+            } catch (tokenLimitError) {
+              message.warning(`团队基本信息已保存，但 Token 上限保存失败：${describeTokenLimitSaveFailure(tokenLimitError)}。`);
+              closeForm();
+              await load();
+              return;
+            }
+            message.success('团队与 Token 上限已更新');
           } else {
-            const create: TeamCreate = { ...values };
-            await createTeam(create);
-            message.success('团队已创建');
+            const create: TeamCreate = {
+              ...teamValues,
+              fiveHourQuotaPercent: LEGACY_DEFAULT_QUOTA_PERCENT,
+              weeklyQuotaPercent: LEGACY_DEFAULT_QUOTA_PERCENT,
+            };
+            const createdTeam = await createTeam(create);
+            try {
+              await updateTeamTokenLimits(createdTeam.id, {
+                fiveHourTokenLimit: fiveHourTokenLimit ?? null,
+                version: createdTeam.version,
+                weeklyTokenLimit: weeklyTokenLimit ?? null,
+              });
+            } catch (tokenLimitError) {
+              message.warning('团队已创建，但 Token 上限保存失败，请在编辑团队中重试。');
+              closeForm();
+              await load();
+              return;
+            }
+            message.success('团队与 Token 上限已创建');
           }
           closeForm();
           await load();
@@ -268,15 +323,15 @@ export default function TeamsPage() {
         width: 100,
       },
       {
-        dataIndex: 'fiveHourQuotaPercent',
-        render: (value: number) => formatQuota(value),
-        title: '5 小时默认额度',
+        dataIndex: 'fiveHourTokenLimit',
+        render: (value: number | null) => formatTokenLimit(value),
+        title: '5 小时 Token 上限',
         width: 150,
       },
       {
-        dataIndex: 'weeklyQuotaPercent',
-        render: (value: number) => formatQuota(value),
-        title: '7 天默认额度',
+        dataIndex: 'weeklyTokenLimit',
+        render: (value: number | null) => formatTokenLimit(value),
+        title: '7 天 Token 上限',
         width: 140,
       },
       {
@@ -329,7 +384,7 @@ export default function TeamsPage() {
 
   return (
     <PageContainer
-      content="配置团队成员共享的默认额度与状态；页面只显示策略，不展示真实用量。"
+      content="配置团队成员的个人 Token 上限。官方 Codex 账户由用户在本机自行登录。"
       extra={[
         <Button
           icon={<PlusOutlined />}
@@ -340,7 +395,7 @@ export default function TeamsPage() {
           新建团队
         </Button>,
       ]}
-      title="团队与额度策略"
+      title="团队与 Token 配额"
     >
       {error ? (
         <Alert
@@ -380,7 +435,7 @@ export default function TeamsPage() {
           }}
           pagination={false}
           rowKey="id"
-          scroll={{ x: 1000 }}
+          scroll={{ x: 1180 }}
         />
       </ProCard>
 
@@ -391,7 +446,7 @@ export default function TeamsPage() {
         onCancel={closeForm}
         onOk={() => void saveTeam()}
         open={formOpen}
-        title={editing ? '编辑团队与额度策略' : '新建团队与额度策略'}
+        title={editing ? '编辑团队与 Token 配额' : '新建团队与 Token 配额'}
       >
         <Form form={form} layout="vertical" preserve={false}>
           <Form.Item
@@ -406,22 +461,30 @@ export default function TeamsPage() {
           </Form.Item>
           <Space align="start" size={16}>
             <Form.Item
-              label="5 小时默认额度"
-              name="fiveHourQuotaPercent"
-              rules={[quotaRule()]}
+              extra="留空表示未配置；额度警告不会退出官方应用"
+              label="5 小时 Token 上限"
+              name="fiveHourTokenLimit"
+              rules={[tokenLimitRule()]}
             >
               <InputNumber
-                suffix="%"
+                max={MAX_TOKEN_LIMIT}
+                min={0}
+                precision={0}
+                suffix="Token"
                 style={{ width: 180 }}
               />
             </Form.Item>
             <Form.Item
-              label="7 天默认额度"
-              name="weeklyQuotaPercent"
-              rules={[quotaRule()]}
+              extra="留空表示未配置；额度警告不会退出官方应用"
+              label="7 天 Token 上限"
+              name="weeklyTokenLimit"
+              rules={[tokenLimitRule()]}
             >
               <InputNumber
-                suffix="%"
+                max={MAX_TOKEN_LIMIT}
+                min={0}
+                precision={0}
+                suffix="Token"
                 style={{ width: 180 }}
               />
             </Form.Item>
@@ -436,7 +499,7 @@ export default function TeamsPage() {
           </Form.Item>
         </Form>
         <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-          额度为策略百分比（0–100），不是 Codex 的实时剩余额度。修改策略后，相关用户会话需要重新建立。
+          Token 上限是本系统的个人配额；官方额度由各客户端读取后，在用户管理的“查看额度”中显示。修改配额后，相关系统会话需要重新建立。
         </Typography.Paragraph>
       </Modal>
     </PageContainer>

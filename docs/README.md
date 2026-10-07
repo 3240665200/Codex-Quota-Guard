@@ -4,10 +4,14 @@
 
 ## 架构
 
-- [Tauri + React 重构方案](architecture/tauri-react-refactor.md)
-- [Web 后端能力契约](architecture/web-backend-capability.md)
-- [Codex 授权、凭据保管与客户端安全边界](architecture/codex-credential-custody.md)
+- [当前系统架构与部署边界](architecture/current-system-architecture.md)
+- [当前方案：本机官方登录与个人 Token 统计](architecture/local-codex-token-quota.md)
 - [团队与个人额度策略](architecture/team-quota-policy.md)
+
+历史方案仅供追溯，不代表当前接口：
+
+- [Tauri + React 重构方案（历史）](architecture/tauri-react-refactor.md)
+- [Web 后端能力契约（历史）](architecture/web-backend-capability.md)
 
 ## API
 

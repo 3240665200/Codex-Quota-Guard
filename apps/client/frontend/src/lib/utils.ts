@@ -26,3 +26,9 @@ export function formatResetTime(value: string): string {
 export function formatPercent(value: number): string {
   return `${Math.round(value)}%`;
 }
+
+export function formatTokenCount(value: number): string {
+  return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 0 }).format(
+    value,
+  );
+}

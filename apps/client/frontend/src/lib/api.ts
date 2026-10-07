@@ -2,6 +2,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { z } from "zod";
 
 const isoInstant = z.string().min(1);
+const tokenCount = z
+  .number()
+  .finite()
+  .int()
+  .min(0)
+  .max(Number.MAX_SAFE_INTEGER);
 
 const statusSchema = z.object({
   service: z.string(),
@@ -21,13 +27,6 @@ const systemUserSchema = z.object({
   status: z.string().min(1),
 });
 
-const managedCodexAccountSchema = z.object({
-  id: z.string().min(1),
-  displayName: z.string().min(1),
-  status: z.string().min(1),
-  updatedAt: isoInstant,
-});
-
 /**
  * The local bridge returns this safe projection only. Access and refresh
  * tokens stay inside the bridge/backend process and are never sent to the
@@ -44,29 +43,62 @@ const quotaTeamSchema = z.object({
 });
 
 const quotaPolicySchema = z.object({
-  fiveHourLimitPercent: z.number().finite().min(0).max(100),
-  weeklyLimitPercent: z.number().finite().min(0).max(100),
-  fiveHourSource: z.string().min(1),
-  weeklySource: z.string().min(1),
+  fiveHourTokenLimit: tokenCount.nullable(),
+  weeklyTokenLimit: tokenCount.nullable(),
+  fiveHourSource: z.enum(["USER", "TEAM", "UNCONFIGURED"]),
+  weeklySource: z.enum(["USER", "TEAM", "UNCONFIGURED"]),
 });
 
 const quotaUsageSchema = z.object({
-  measurementStatus: z.enum(["CURRENT", "NOT_MEASURED"]),
-  fiveHourUsedPercent: z.number().finite().min(0).max(100).nullable(),
-  weeklyUsedPercent: z.number().finite().min(0).max(100).nullable(),
-  fiveHourRemainingPercent: z.number().finite().min(0).max(100).nullable(),
-  weeklyRemainingPercent: z.number().finite().min(0).max(100).nullable(),
+  measurementStatus: z.literal("CLIENT_REPORTED"),
+  fiveHourUsedTokens: tokenCount,
+  weeklyUsedTokens: tokenCount,
+  fiveHourRemainingTokens: tokenCount.nullable(),
+  weeklyRemainingTokens: tokenCount.nullable(),
   fiveHourResetsAt: isoInstant.nullable(),
   weeklyResetsAt: isoInstant.nullable(),
   measuredAt: isoInstant.nullable(),
 });
 
+const usageStatusSchema = z.object({
+  fallback: z.object({
+    state: z.enum(["SIGNED_OUT", "WAITING_FOR_SESSIONS", "BASELINE_READY",
+      "UP_TO_DATE", "REPORTED", "REPORT_FAILED", "SCAN_FAILED"]),
+    lastScannedAt: isoInstant.nullable(),
+    lastReportedAt: isoInstant.nullable(),
+    lastReportedEvents: tokenCount,
+    issues: z.array(z.string().min(1)),
+  }),
+  service: z.object({
+    state: z.enum(["NOT_INSTALLED", "OFFLINE", "BASELINE_READY", "UNPAIRED",
+      "UP_TO_DATE", "REPORTED", "ERROR"]),
+    lastScanEpochSeconds: tokenCount.nullable(),
+    lastReportEpochSeconds: tokenCount.nullable(),
+    reportedEvents: tokenCount,
+    errorCode: z.string().nullable(),
+  }),
+  pairingState: z.enum(["NOT_INSTALLED", "PAIRING_SENT", "PAIRING_FAILED"]),
+});
+
+const officialCodexRateLimitWindowSchema = z.object({
+  limitId: z.string().min(1),
+  slot: z.string().min(1),
+  windowDurationMins: z.number().finite().int().positive(),
+  usedPercent: z.number().finite().min(0).max(100),
+  resetsAt: isoInstant.nullable(),
+});
+
+/** Account-level reference data, explicitly separate from personal token quota. */
+const officialCodexRateLimitsSchema = z.object({
+  planType: z.string().min(1).nullable(),
+  windows: z.array(officialCodexRateLimitWindowSchema),
+  fetchedAt: isoInstant.nullable(),
+});
+
 /** The fixed central response for the currently signed-in product user. */
 const quotaOverviewSchema = z
   .object({
-    assigned: z.boolean(),
     user: systemUserSchema,
-    codexAccount: managedCodexAccountSchema.nullable(),
     team: quotaTeamSchema.nullable(),
     policy: quotaPolicySchema,
     usage: quotaUsageSchema,
@@ -74,37 +106,42 @@ const quotaOverviewSchema = z
     blockReason: z.string().nullable(),
   })
   .superRefine((value, context) => {
-    if (value.assigned !== (value.codexAccount !== null)) {
-      context.addIssue({
-        code: "custom",
-        message: "账户分配状态不一致。",
-        path: ["codexAccount"],
-      });
-    }
-    const usageValues = [
-      value.usage.fiveHourUsedPercent,
-      value.usage.weeklyUsedPercent,
-      value.usage.fiveHourRemainingPercent,
-      value.usage.weeklyRemainingPercent,
-    ];
+    const unconfiguredFiveHour = value.policy.fiveHourTokenLimit === null;
+    const unconfiguredWeekly = value.policy.weeklyTokenLimit === null;
     if (
-      value.usage.measurementStatus === "NOT_MEASURED" &&
-      (usageValues.some((measurement) => measurement !== null) || value.allowed)
+      unconfiguredFiveHour !==
+        (value.policy.fiveHourSource === "UNCONFIGURED") ||
+      unconfiguredWeekly !== (value.policy.weeklySource === "UNCONFIGURED")
     ) {
       context.addIssue({
         code: "custom",
-        message: "未采集用量不能被标记为可用。",
+        message: "Token 限额与来源状态不一致。",
+        path: ["policy"],
+      });
+    }
+    if (
+      (unconfiguredFiveHour && value.usage.fiveHourRemainingTokens !== null) ||
+      (unconfiguredWeekly && value.usage.weeklyRemainingTokens !== null)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "未配置的 Token 限额不能带有剩余额度。",
         path: ["usage"],
       });
     }
     if (
-      value.usage.measurementStatus === "CURRENT" &&
-      usageValues.some((measurement) => measurement === null)
+      value.allowed &&
+      (unconfiguredFiveHour ||
+        unconfiguredWeekly ||
+        value.usage.fiveHourRemainingTokens === null ||
+        value.usage.weeklyRemainingTokens === null ||
+        value.usage.fiveHourRemainingTokens <= 0 ||
+        value.usage.weeklyRemainingTokens <= 0)
     ) {
       context.addIssue({
         code: "custom",
-        message: "当前用量必须包含已用和剩余额度。",
-        path: ["usage"],
+        message: "可用状态必须具有已配置且尚有余量的个人 Token 限额。",
+        path: ["allowed"],
       });
     }
   });
@@ -112,12 +149,15 @@ const quotaOverviewSchema = z
 export type StatusResponse = z.infer<typeof statusSchema>;
 export type ServerConfig = z.infer<typeof serverConfigSchema>;
 export type SystemUser = z.infer<typeof systemUserSchema>;
-export type ManagedCodexAccount = z.infer<typeof managedCodexAccountSchema>;
 export type SystemSession = z.infer<typeof systemSessionSchema>;
 export type QuotaTeam = z.infer<typeof quotaTeamSchema>;
 export type QuotaPolicy = z.infer<typeof quotaPolicySchema>;
 export type QuotaUsage = z.infer<typeof quotaUsageSchema>;
 export type QuotaOverview = z.infer<typeof quotaOverviewSchema>;
+export type UsageStatus = z.infer<typeof usageStatusSchema>;
+export type OfficialCodexRateLimits = z.infer<
+  typeof officialCodexRateLimitsSchema
+>;
 
 async function invokeValidated<T>(
   command: string,
@@ -141,11 +181,17 @@ export const api = {
     await invoke("system_logout");
   },
   quotaOverview: () => invokeValidated("quota_overview", quotaOverviewSchema),
+  usageStatus: () => invokeValidated("usage_status", usageStatusSchema),
+  scanUsage: () => invokeValidated("usage_scan", usageStatusSchema),
+  pairMeter: () => invokeValidated("usage_pair", usageStatusSchema),
+  codexRateLimits: () =>
+    invokeValidated("codex_rate_limits", officialCodexRateLimitsSchema),
 };
 
 const safeBackendMessages = new Set([
   "本地服务启动失败，请确认已安装 Java 17 后重试。",
   "本地服务暂时不可用，请稍后重试。",
+  "中央后台暂不可用，请确认后台已启动且服务器地址正确。",
   "本地服务返回了无效的数据。",
   "邮箱或密码不正确，请检查后重试。",
   "请先登录系统账户。",
@@ -180,4 +226,6 @@ export const schemas = {
   status: statusSchema,
   systemSession: systemSessionSchema,
   quotaOverview: quotaOverviewSchema,
+  usageStatus: usageStatusSchema,
+  officialCodexRateLimits: officialCodexRateLimitsSchema,
 };

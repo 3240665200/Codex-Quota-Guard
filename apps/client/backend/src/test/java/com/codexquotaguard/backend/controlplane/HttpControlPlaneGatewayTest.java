@@ -4,16 +4,92 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.codexquotaguard.backend.usage.CodexUsageEvent;
+import com.codexquotaguard.backend.usage.CodexUsageEventSource;
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.ObjectMapper;
 
 class HttpControlPlaneGatewayTest {
+
+    @Test
+    void enrollsADeviceWithoutReturningMeterTokenToTheRenderer() throws Exception {
+        UUID deviceId = UUID.randomUUID();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/api/v1/client/meter/enroll", exchange -> {
+            assertThat(exchange.getRequestMethod()).isEqualTo("POST");
+            assertThat(exchange.getRequestHeaders().getFirst("Authorization")).isEqualTo("Bearer session-access");
+            String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            assertThat(body).contains(deviceId.toString()).doesNotContain("deviceToken");
+            writeJson(exchange, """
+                    {"deviceId":"%s","deviceToken":"%s","expiresAt":"2026-11-06T00:00:00Z"}
+                    """.formatted(deviceId, "A".repeat(43)));
+        });
+        server.start();
+        try {
+            var enrollment = gateway(server).enrollMeter("session-access", deviceId);
+            assertThat(enrollment.deviceToken()).hasSize(43);
+            assertThat(enrollment.toString()).doesNotContain(enrollment.deviceToken());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void sendsOnlySafeOfficialQuotaSummaryToCentralBackend() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/api/v1/client/official-quota", exchange -> {
+            assertThat(exchange.getRequestMethod()).isEqualTo("PUT");
+            assertThat(exchange.getRequestHeaders().getFirst("Authorization")).isEqualTo("Bearer session-access");
+            String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            assertThat(body).contains("windowDurationMins", "usedPercent", "fetchedAt");
+            assertThat(body).doesNotContain("access_token", "refresh_token", "credential");
+            writeJson(exchange, "{}");
+        });
+        server.start();
+        try {
+            gateway(server).reportOfficialQuota("session-access", new OfficialCodexRateLimits(
+                    "plus", List.of(new OfficialCodexRateLimitWindow("codex", "primary", 300,
+                    25.5, "2026-10-06T05:00:00Z")), "2026-10-06T00:00:00Z"));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void acceptsTheCurrentCentralLoginUserContract() throws Exception {
+        UUID userId = UUID.randomUUID();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/api/v1/auth/login", exchange -> {
+            assertThat(exchange.getRequestMethod()).isEqualTo("POST");
+            writeJson(exchange, """
+                    {"accessToken":"test-access","tokenType":"Bearer","expiresIn":900,
+                     "refreshToken":"test-refresh","refreshExpiresIn":86400,
+                     "user":{"id":"%s","email":"alice@example.com","displayName":"Alice",
+                       "role":"USER","status":"ACTIVE","teamId":null,
+                       "fiveHourQuotaPercent":null,"weeklyQuotaPercent":null,
+                       "fiveHourTokenLimit":1000,"weeklyTokenLimit":10000,
+                       "createdAt":"2026-10-06T00:00:00Z","updatedAt":"2026-10-06T00:00:00Z"}}
+                    """.formatted(userId));
+        });
+        server.start();
+        try {
+            var session = gateway(server).login("alice@example.com", "test-password");
+
+            assertThat(session.user().id()).isEqualTo(userId);
+            assertThat(session.user().email()).isEqualTo("alice@example.com");
+            assertThat(session.toString()).doesNotContain("test-access", "test-refresh");
+        } finally {
+            server.stop(0);
+        }
+    }
 
     @Test
     void permitsHttpsAndDevelopmentLoopbackOnly() {
@@ -50,41 +126,47 @@ class HttpControlPlaneGatewayTest {
     }
 
     @Test
-    void acceptsCurrentUserFieldsWhileRejectingUnexpectedQuotaFields() throws Exception {
+    void acceptsTheExactPersonalTokenQuotaContractAndRejectsUnexpectedFields() throws Exception {
         UUID userId = UUID.randomUUID();
+        UUID accountId = UUID.randomUUID();
         UUID teamId = UUID.randomUUID();
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        server.createContext("/api/v1/auth/login", exchange -> writeJson(exchange, """
-                {"accessToken":"server-access-secret","tokenType":"Bearer","expiresIn":900,
-                 "refreshToken":"server-refresh-secret","refreshExpiresIn":86400,
-                 "user":{"id":"%s","email":"alice@example.com","displayName":"Alice",
-                 "role":"USER","status":"ACTIVE","assignedCodexAccountId":null,
-                 "teamId":"%s","fiveHourQuotaPercent":75,"weeklyQuotaPercent":90,
-                 "createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}}
-                """.formatted(userId, teamId)));
-        server.createContext("/api/v1/client/quota/overview", exchange -> writeJson(exchange, """
-                {"assigned":false,"user":{"id":"%s","email":"alice@example.com","displayName":"Alice",
-                "role":"USER","status":"ACTIVE"},"codexAccount":null,"team":null,
-                "policy":{"fiveHourLimitPercent":80,"weeklyLimitPercent":90,"fiveHourSource":"USER","weeklySource":"DEFAULT"},
-                "usage":{"measurementStatus":"NOT_MEASURED","fiveHourUsedPercent":null,"weeklyUsedPercent":null,
-                "fiveHourRemainingPercent":null,"weeklyRemainingPercent":null,"fiveHourResetsAt":null,
-                "weeklyResetsAt":null,"measuredAt":null},"allowed":false,"blockReason":"USAGE_NOT_MEASURED",
-                "credential":"must-not-be-accepted"}
-                """.formatted(userId)));
+        server.createContext("/api/v1/client/quota/overview", exchange -> {
+            assertThat(exchange.getRequestMethod()).isEqualTo("GET");
+            assertThat(exchange.getRequestHeaders().getFirst("Authorization")).isEqualTo("Bearer session-access");
+            writeJson(exchange, quotaJson(userId, accountId, teamId, true, null));
+        });
         server.start();
         try {
-            var gateway = new HttpControlPlaneGateway(
-                    "http://127.0.0.1:" + server.getAddress().getPort(), new ObjectMapper()
-            );
+            var gateway = gateway(server);
 
-            var session = gateway.login("alice@example.com", "correct-password");
+            var overview = gateway.quotaOverview("session-access");
 
-            assertThat(session.user().id()).isEqualTo(userId);
-            assertThat(session.user().teamId()).isEqualTo(teamId);
-            assertThat(session.user().fiveHourQuotaPercent()).isEqualTo(75);
-            assertThat(session.user().weeklyQuotaPercent()).isEqualTo(90);
-            assertThat(session.toString()).doesNotContain("server-access-secret", "server-refresh-secret");
-            assertThatThrownBy(() -> gateway.quotaOverview(session.accessToken()))
+            assertThat(overview.user().id()).isEqualTo(userId);
+            assertThat(overview.policy().fiveHourTokenLimit()).isEqualTo(1_000L);
+            assertThat(overview.policy().weeklyTokenLimit()).isEqualTo(10_000L);
+            assertThat(overview.usage().measurementStatus()).isEqualTo(QuotaMeasurementStatus.CLIENT_REPORTED);
+            assertThat(overview.usage().fiveHourUsedTokens()).isEqualTo(100L);
+            assertThat(overview.usage().fiveHourRemainingTokens()).isEqualTo(900L);
+            assertThat(overview.toString()).doesNotContain("session-access", "credential", "refresh");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void failsClosedWhenTheCentralQuotaEnvelopeContainsAnUnexpectedCredentialField() throws Exception {
+        UUID userId = UUID.randomUUID();
+        UUID accountId = UUID.randomUUID();
+        UUID teamId = UUID.randomUUID();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/api/v1/client/quota/overview", exchange -> {
+            String quota = quotaJson(userId, accountId, teamId, true, null);
+            writeJson(exchange, quota.substring(0, quota.length() - 1) + ",\"credential\":\"must-not-be-accepted\"}");
+        });
+        server.start();
+        try {
+            assertThatThrownBy(() -> gateway(server).quotaOverview("session-access"))
                     .isInstanceOf(ControlPlaneException.class)
                     .extracting(exception -> ((ControlPlaneException) exception).reason())
                     .isEqualTo(ControlPlaneException.Reason.UNAVAILABLE);
@@ -94,75 +176,106 @@ class HttpControlPlaneGatewayTest {
     }
 
     @Test
-    void acceptsTheExactCentralPersonalQuotaContractWithoutCredentials() throws Exception {
+    void doesNotExposeCredentialDownloadInTheGateway() {
+        assertThat(java.util.Arrays.stream(HttpControlPlaneGateway.class.getDeclaredMethods())
+                .map(java.lang.reflect.Method::getName))
+                .doesNotContain("codexCredential");
+    }
+
+    @Test
+    void reportsOnlyIdempotentTokenEventsWithoutManagedAccountAssignment() throws Exception {
         UUID userId = UUID.randomUUID();
         UUID accountId = UUID.randomUUID();
         UUID teamId = UUID.randomUUID();
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        server.createContext("/api/v1/client/quota/overview", exchange -> {
-            assertThat(exchange.getRequestMethod()).isEqualTo("GET");
+        server.createContext("/api/v1/client/usage/events", exchange -> {
+            String request = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            assertThat(exchange.getRequestMethod()).isEqualTo("POST");
             assertThat(exchange.getRequestHeaders().getFirst("Authorization")).isEqualTo("Bearer session-access");
-            writeJson(exchange, """
-                    {"assigned":true,"user":{"id":"%s","email":"alice@example.com","displayName":"Alice",
-                    "role":"USER","status":"ACTIVE"},"codexAccount":{"id":"%s","displayName":"Team account",
-                    "status":"ACTIVE","updatedAt":"2026-01-01T00:00:00Z"},"team":{"id":"%s","name":"Design"},
-                    "policy":{"fiveHourLimitPercent":75,"weeklyLimitPercent":85,"fiveHourSource":"TEAM","weeklySource":"DEFAULT"},
-                    "usage":{"measurementStatus":"CURRENT","fiveHourUsedPercent":20,"weeklyUsedPercent":10,
-                    "fiveHourRemainingPercent":80,"weeklyRemainingPercent":90,"fiveHourResetsAt":"2026-01-01T05:00:00Z",
-                    "weeklyResetsAt":"2026-01-08T00:00:00Z","measuredAt":"2026-01-01T00:00:00Z"},
-                    "allowed":false,"blockReason":"FIVE_HOUR_QUOTA_EXCEEDED"}
-                    """.formatted(userId, accountId, teamId));
+            assertThat(request).contains("codex-local-usage:v1:abc", "totalTokens", "TOKEN_USAGE_RECORD");
+            assertThat(request).doesNotContain("codexAccountId");
+            assertThat(request).doesNotContain("inputTokens", "outputTokens", "credential");
+            writeJson(exchange, quotaJson(userId, accountId, teamId, true, null));
         });
         server.start();
         try {
-            var gateway = new HttpControlPlaneGateway(
-                    "http://127.0.0.1:" + server.getAddress().getPort(), new ObjectMapper()
+            var gateway = gateway(server);
+            var event = new CodexUsageEvent(
+                    "codex-local-usage:v1:abc",
+                    Instant.parse("2026-10-06T00:00:00Z"),
+                    3L,
+                    0L,
+                    0L,
+                    7L,
+                    0L,
+                    10L,
+                    CodexUsageEventSource.TOKEN_USAGE_RECORD
             );
 
-            var overview = gateway.quotaOverview("session-access");
-
-            assertThat(overview.assigned()).isTrue();
-            assertThat(overview.user().id()).isEqualTo(userId);
-            assertThat(overview.codexAccount().id()).isEqualTo(accountId);
-            assertThat(overview.team().id()).isEqualTo(teamId.toString());
-            assertThat(overview.team().name()).isEqualTo("Design");
-            assertThat(overview.policy().fiveHourSource()).isEqualTo("TEAM");
-            assertThat(overview.usage().measurementStatus()).isEqualTo(QuotaMeasurementStatus.CURRENT);
-            assertThat(overview.usage().fiveHourRemainingPercent()).isEqualTo(80.0);
-            assertThat(overview.allowed()).isFalse();
-            assertThat(overview.blockReason()).isEqualTo("FIVE_HOUR_QUOTA_EXCEEDED");
-            assertThat(overview.toString()).doesNotContain("session-access", "credential", "refresh");
+            assertThat(gateway.reportUsage("session-access", List.of(event)).allowed()).isTrue();
         } finally {
             server.stop(0);
         }
     }
 
     @Test
-    void preservesNullUsageValuesWhenTheCentralServiceHasNotMeasuredUsage() throws Exception {
-        UUID userId = UUID.randomUUID();
+    void treatsAUsageReportPolicyConflictAsAccessDenial() throws Exception {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        server.createContext("/api/v1/client/quota/overview", exchange -> writeJson(exchange, """
-                {"assigned":false,"user":{"id":"%s","email":"alice@example.com","displayName":"Alice",
-                "role":"USER","status":"ACTIVE"},"codexAccount":null,"team":null,
-                "policy":{"fiveHourLimitPercent":75,"weeklyLimitPercent":85,"fiveHourSource":"USER","weeklySource":"DEFAULT"},
-                "usage":{"measurementStatus":"NOT_MEASURED","fiveHourUsedPercent":null,"weeklyUsedPercent":null,
-                "fiveHourRemainingPercent":null,"weeklyRemainingPercent":null,"fiveHourResetsAt":null,
-                "weeklyResetsAt":null,"measuredAt":null},"allowed":false,"blockReason":"USAGE_NOT_MEASURED"}
-                """.formatted(userId)));
+        server.createContext("/api/v1/client/usage/events", exchange -> {
+            byte[] body = "{}".getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add("Content-Type", "application/json");
+            exchange.sendResponseHeaders(409, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
         server.start();
         try {
-            var gateway = new HttpControlPlaneGateway(
-                    "http://127.0.0.1:" + server.getAddress().getPort(), new ObjectMapper()
+            var event = new CodexUsageEvent(
+                    "codex-local-usage:v1:abc",
+                    Instant.parse("2026-10-06T00:00:00Z"),
+                    0L,
+                    0L,
+                    0L,
+                    1L,
+                    0L,
+                    1L,
+                    CodexUsageEventSource.TOKEN_USAGE_RECORD
             );
-
-            var overview = gateway.quotaOverview("session-access");
-
-            assertThat(overview.usage().measurementStatus()).isEqualTo(QuotaMeasurementStatus.NOT_MEASURED);
-            assertThat(overview.usage().fiveHourUsedPercent()).isNull();
-            assertThat(overview.usage().weeklyRemainingPercent()).isNull();
+            assertThatThrownBy(() -> gateway(server).reportUsage("session-access", List.of(event)))
+                    .isInstanceOf(ControlPlaneException.class)
+                    .extracting(exception -> ((ControlPlaneException) exception).reason())
+                    .isEqualTo(ControlPlaneException.Reason.ACCESS_DENIED);
         } finally {
             server.stop(0);
         }
+    }
+
+    private static HttpControlPlaneGateway gateway(HttpServer server) {
+        return new HttpControlPlaneGateway(
+                "http://127.0.0.1:" + server.getAddress().getPort(),
+                new ObjectMapper()
+        );
+    }
+
+    private static String quotaJson(
+            UUID userId,
+            UUID accountId,
+            UUID teamId,
+            boolean allowed,
+            String blockReason
+    ) {
+        String reason = blockReason == null ? "null" : "\"" + blockReason + "\"";
+        return """
+                {"user":{"id":"%s","email":"alice@example.com","displayName":"Alice",
+                "role":"USER","status":"ACTIVE","teamId":"%s","fiveHourQuotaPercent":null,
+                "weeklyQuotaPercent":null,"fiveHourTokenLimit":null,"weeklyTokenLimit":null,
+                "createdAt":"2026-10-06T00:00:00Z","updatedAt":"2026-10-06T00:00:00Z"},
+                "team":{"id":"%s","name":"Design"},
+                "policy":{"fiveHourTokenLimit":1000,"weeklyTokenLimit":10000,"fiveHourSource":"TEAM","weeklySource":"TEAM"},
+                "usage":{"measurementStatus":"CLIENT_REPORTED","fiveHourUsedTokens":100,"weeklyUsedTokens":200,
+                "fiveHourRemainingTokens":900,"weeklyRemainingTokens":9800,"fiveHourResetsAt":null,
+                "weeklyResetsAt":null,"measuredAt":"2026-10-06T00:00:00Z"},"allowed":%s,"blockReason":%s}
+                """.formatted(userId, teamId, teamId, allowed, reason).replaceAll("\\s+", "");
     }
 
     private static void writeJson(com.sun.net.httpserver.HttpExchange exchange, String json) throws IOException {

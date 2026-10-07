@@ -44,14 +44,6 @@ public class User {
     private long sessionVersion;
 
     /**
-     * This is deliberately an identifier rather than a JPA relationship. A system
-     * user must never cause the encrypted Codex credential entity to be loaded or
-     * serialized as part of their profile.
-     */
-    @Column(name = "assigned_codex_account_id")
-    private UUID assignedCodexAccountId;
-
-    /**
      * Kept as an identifier to avoid eagerly loading team data in authentication
      * and ordinary user-profile paths.
      */
@@ -63,6 +55,12 @@ public class User {
 
     @Column(name = "weekly_quota_percent")
     private Integer weeklyQuotaPercent;
+
+    @Column(name = "five_hour_token_limit")
+    private Long fiveHourTokenLimit;
+
+    @Column(name = "weekly_token_limit")
+    private Long weeklyTokenLimit;
 
     protected User() {
     }
@@ -126,10 +124,6 @@ public class User {
         return sessionVersion;
     }
 
-    public UUID getAssignedCodexAccountId() {
-        return assignedCodexAccountId;
-    }
-
     public UUID getTeamId() {
         return teamId;
     }
@@ -140,6 +134,14 @@ public class User {
 
     public Integer getWeeklyQuotaPercent() {
         return weeklyQuotaPercent;
+    }
+
+    public Long getFiveHourTokenLimit() {
+        return fiveHourTokenLimit;
+    }
+
+    public Long getWeeklyTokenLimit() {
+        return weeklyTokenLimit;
     }
 
     public void updateProfile(String email, String displayName) {
@@ -168,24 +170,6 @@ public class User {
         this.updatedAt = Instant.now();
     }
 
-    public boolean assignCodexAccount(UUID codexAccountId) {
-        if (Objects.equals(this.assignedCodexAccountId, codexAccountId)) {
-            return false;
-        }
-        this.assignedCodexAccountId = codexAccountId;
-        this.updatedAt = Instant.now();
-        return true;
-    }
-
-    public boolean unassignCodexAccount() {
-        if (this.assignedCodexAccountId == null) {
-            return false;
-        }
-        this.assignedCodexAccountId = null;
-        this.updatedAt = Instant.now();
-        return true;
-    }
-
     public boolean updateQuotaPolicy(
             UUID teamId,
             Integer fiveHourQuotaPercent,
@@ -206,6 +190,17 @@ public class User {
 
     public boolean clearTeam(Instant now) {
         return updateQuotaPolicy(null, fiveHourQuotaPercent, weeklyQuotaPercent, now);
+    }
+
+    public boolean updateTokenLimits(Long fiveHourTokenLimit, Long weeklyTokenLimit, Instant now) {
+        if (Objects.equals(this.fiveHourTokenLimit, fiveHourTokenLimit)
+                && Objects.equals(this.weeklyTokenLimit, weeklyTokenLimit)) {
+            return false;
+        }
+        this.fiveHourTokenLimit = fiveHourTokenLimit;
+        this.weeklyTokenLimit = weeklyTokenLimit;
+        this.updatedAt = now;
+        return true;
     }
 
     public enum Role {

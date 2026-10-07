@@ -1,5 +1,7 @@
 # Tauri + React 重构方案
 
+> 历史重构方案，仅供追溯；其中“上游 Codex 凭据只在中央 Java 服务端使用”等旧边界已被[当前系统架构](current-system-architecture.md)替代，不可作为现行开发或部署依据。
+
 ## 目标
 
 将现有 Electron + 原生 DOM 桌面端替换为与 CC-Switch 一致的跨平台 UI 技术栈，同时保留 Java 17 + Spring Boot 作为唯一业务后端。

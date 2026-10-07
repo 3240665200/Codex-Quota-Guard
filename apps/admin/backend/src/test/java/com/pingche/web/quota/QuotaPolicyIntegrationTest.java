@@ -3,12 +3,14 @@ package com.pingche.web.quota;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.nullValue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -16,13 +18,10 @@ import com.pingche.web.auth.AuthResponse;
 import com.pingche.web.auth.AuthService;
 import com.pingche.web.auth.JwtService;
 import com.pingche.web.auth.RefreshSessionRepository;
-import com.pingche.web.codex.CodexAccountRepository;
 import com.pingche.web.team.TeamRepository;
 import com.pingche.web.user.User;
 import com.pingche.web.user.UserRepository;
-import java.math.BigDecimal;
 import java.time.Instant;
-import java.time.temporal.ChronoUnit;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -33,6 +32,8 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
+import tools.jackson.databind.ObjectMapper;
 
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -40,315 +41,252 @@ import org.springframework.test.web.servlet.MockMvc;
 class QuotaPolicyIntegrationTest {
 
     private static final String PASSWORD = "test-password-with-sufficient-length";
-    private static final String CLIENT_QUOTA_OVERVIEW = "/api/v1/client/quota/overview";
+    private static final String OVERVIEW = "/api/v1/client/quota/overview";
+    private static final String EVENT_ID = "codex-local-usage:v1:" + "a".repeat(64);
 
     @Autowired private MockMvc mvc;
     @Autowired private AuthService authService;
     @Autowired private JwtService jwtService;
     @Autowired private UserRepository users;
     @Autowired private RefreshSessionRepository refreshSessions;
-    @Autowired private CodexAccountRepository accounts;
     @Autowired private TeamRepository teams;
-    @Autowired private UserQuotaUsageRepository usage;
-    @Autowired private QuotaUsageService quotaUsage;
+    @Autowired private CodexUsageEventRepository events;
+    @Autowired private ObjectMapper objectMapper;
 
     @BeforeEach
     void cleanDatabase() {
-        usage.deleteAll();
+        events.deleteAll();
         refreshSessions.deleteAll();
         users.deleteAll();
         teams.deleteAll();
-        accounts.deleteAll();
     }
 
     @Test
-    void administratorEndpointsRequireAdminAndCorsAllowsPut() throws Exception {
+    void tokenLimitEndpointsRequireAdminAndCorsAllowsPut() throws Exception {
         AuthResponse ordinarySession = authService.register(
-                "ordinary@example.com", PASSWORD, "Ordinary"
-        );
+                "ordinary@example.com", PASSWORD, "Ordinary");
         User ordinary = users.findByEmail("ordinary@example.com").orElseThrow();
 
         mvc.perform(post("/api/v1/admin/teams")
                         .header(HttpHeaders.AUTHORIZATION, bearer(ordinarySession.accessToken()))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(teamRequest("Ordinary team")))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.code").value("AUTH_FORBIDDEN"));
-
-        mvc.perform(put("/api/v1/admin/users/{id}/quota-policy", ordinary.getId())
+                .andExpect(status().isForbidden());
+        mvc.perform(put("/api/v1/admin/users/{id}/token-limits", ordinary.getId())
                         .header(HttpHeaders.AUTHORIZATION, bearer(ordinarySession.accessToken()))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{}"))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.code").value("AUTH_FORBIDDEN"));
-
-        mvc.perform(options("/api/v1/admin/users/{id}/quota-policy", ordinary.getId())
+                        .content("{\"fiveHourTokenLimit\":100,\"weeklyTokenLimit\":500}"))
+                .andExpect(status().isForbidden());
+        mvc.perform(get("/api/v1/admin/users/{id}/quota-overview", ordinary.getId())
+                        .header(HttpHeaders.AUTHORIZATION, bearer(ordinarySession.accessToken())))
+                .andExpect(status().isForbidden());
+        mvc.perform(options("/api/v1/admin/users/{id}/token-limits", ordinary.getId())
                         .header(HttpHeaders.ORIGIN, "http://localhost:1420")
                         .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "PUT"))
                 .andExpect(status().isOk())
-                .andExpect(header().string(
-                        HttpHeaders.ACCESS_CONTROL_ALLOW_METHODS,
-                        containsString("PUT")
-                ));
+                .andExpect(header().string(HttpHeaders.ACCESS_CONTROL_ALLOW_METHODS,
+                        containsString("PUT")));
     }
 
     @Test
-    void quotaPolicyAndTeamPolicyChangesInvalidateAffectedSessions() throws Exception {
-        User administrator = administrator();
-        AuthResponse memberSession = authService.register(
-                "member@example.com", PASSWORD, "Member"
-        );
+    void managedCredentialDownloadIsNotAvailableToSignedInMembers() throws Exception {
+        User admin = administrator();
+        authService.register("member@example.com", PASSWORD, "Member");
         User member = users.findByEmail("member@example.com").orElseThrow();
-        UUID teamId = createTeam(administrator, "Engineering");
+        UUID teamId = createTeam(admin, "Engineering");
+        setTeamLimits(admin, teamId, 500, 1_000);
+        joinTeam(admin, member.getId(), teamId);
+        AuthResponse memberSession = authService.login("member@example.com", PASSWORD);
 
-        mvc.perform(put("/api/v1/admin/users/{id}/quota-policy", member.getId())
-                        .header(HttpHeaders.AUTHORIZATION, bearer(administrator))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {"teamId":"%s","fiveHourQuotaPercent":null,
-                                 "weeklyQuotaPercent":80}
-                                """.formatted(teamId)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.teamId").value(teamId.toString()))
-                .andExpect(jsonPath("$.fiveHourQuotaPercent").value(nullValue()))
-                .andExpect(jsonPath("$.weeklyQuotaPercent").value(80));
-
-        mvc.perform(get(CLIENT_QUOTA_OVERVIEW)
+        mvc.perform(post("/api/v1/client/codex/credential")
                         .header(HttpHeaders.AUTHORIZATION, bearer(memberSession.accessToken())))
-                .andExpect(status().isUnauthorized())
-                .andExpect(jsonPath("$.code").value("AUTH_TOKEN_INVALID"));
+                .andExpect(status().isNotFound());
 
-        AuthResponse afterPolicyChange = authService.login("member@example.com", PASSWORD);
-        mvc.perform(patch("/api/v1/admin/teams/{id}", teamId)
-                        .header(HttpHeaders.AUTHORIZATION, bearer(administrator))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"fiveHourQuotaPercent\":70,\"version\":0}"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.fiveHourQuotaPercent").value(70))
-                .andExpect(jsonPath("$.version").value(1));
-
-        mvc.perform(get(CLIENT_QUOTA_OVERVIEW)
-                        .header(HttpHeaders.AUTHORIZATION, bearer(afterPolicyChange.accessToken())))
-                .andExpect(status().isUnauthorized())
-                .andExpect(jsonPath("$.code").value("AUTH_TOKEN_INVALID"));
-    }
-
-    @Test
-    void overviewUsesOnlyTheCallerAndFailsClosedForUnknownUsage() throws Exception {
-        User administrator = administrator();
-        AuthResponse aliceSession = authService.register("alice@example.com", PASSWORD, "Alice");
-        AuthResponse bobSession = authService.register("bob@example.com", PASSWORD, "Bob");
-        User alice = users.findByEmail("alice@example.com").orElseThrow();
-        User bob = users.findByEmail("bob@example.com").orElseThrow();
-        UUID accountId = createAccount(administrator, "quota-account@example.com", "ACTIVE");
-
-        mvc.perform(put("/api/v1/admin/users/{id}/codex-account", alice.getId())
-                        .header(HttpHeaders.AUTHORIZATION, bearer(administrator))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"codexAccountId\":\"%s\"}".formatted(accountId)))
-                .andExpect(status().isOk());
-        AuthResponse currentAlice = authService.login("alice@example.com", PASSWORD);
-
-        mvc.perform(get(CLIENT_QUOTA_OVERVIEW)
-                        .header(HttpHeaders.AUTHORIZATION, bearer(currentAlice.accessToken())))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.user.id").value(alice.getId().toString()))
-                .andExpect(jsonPath("$.user.email").value("alice@example.com"))
-                .andExpect(jsonPath("$.usage.measurementStatus").value("NOT_MEASURED"))
-                .andExpect(jsonPath("$.usage.fiveHourUsedPercent").value(nullValue()))
-                .andExpect(jsonPath("$.usage.weeklyUsedPercent").value(nullValue()))
-                .andExpect(jsonPath("$.usage.fiveHourRemainingPercent").value(nullValue()))
-                .andExpect(jsonPath("$.allowed").value(false))
-                .andExpect(jsonPath("$.blockReason").value("USAGE_NOT_MEASURED"));
-
-        quotaUsage.recordMeasuredUsage(
-                alice.getId(),
-                accountId,
-                new QuotaUsageMeasurement(
-                        new BigDecimal("30.00"),
-                        new BigDecimal("20.00"),
-                        Instant.now().plus(1, ChronoUnit.HOURS),
-                        Instant.now().plus(1, ChronoUnit.DAYS)
-                )
-        );
-        mvc.perform(get(CLIENT_QUOTA_OVERVIEW)
-                        .header(HttpHeaders.AUTHORIZATION, bearer(currentAlice.accessToken())))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.usage.measurementStatus").value("CURRENT"))
-                .andExpect(jsonPath("$.usage.fiveHourUsedPercent").value(30.0))
-                .andExpect(jsonPath("$.usage.fiveHourRemainingPercent").value(70.0))
-                .andExpect(jsonPath("$.policy.fiveHourLimitPercent").value(100))
-                .andExpect(jsonPath("$.policy.weeklyLimitPercent").value(100))
-                .andExpect(jsonPath("$.policy.fiveHourSource").value("DEFAULT"))
-                .andExpect(jsonPath("$.policy.weeklySource").value("DEFAULT"))
-                .andExpect(jsonPath("$.allowed").value(true))
-                .andExpect(jsonPath("$.blockReason").value(nullValue()));
-
-        UUID teamId = createTeam(administrator, "Alice team");
-        mvc.perform(put("/api/v1/admin/users/{id}/quota-policy", alice.getId())
-                        .header(HttpHeaders.AUTHORIZATION, bearer(administrator))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {"teamId":"%s","fiveHourQuotaPercent":0,
-                                 "weeklyQuotaPercent":null}
-                                """.formatted(teamId)))
-                .andExpect(status().isOk());
-        AuthResponse zeroLimitSession = authService.login("alice@example.com", PASSWORD);
-        mvc.perform(get(CLIENT_QUOTA_OVERVIEW)
-                        .header(HttpHeaders.AUTHORIZATION, bearer(zeroLimitSession.accessToken())))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.policy.fiveHourLimitPercent").value(0))
-                .andExpect(jsonPath("$.policy.weeklyLimitPercent").value(90))
-                .andExpect(jsonPath("$.policy.fiveHourSource").value("USER"))
-                .andExpect(jsonPath("$.policy.weeklySource").value("TEAM"))
-                .andExpect(jsonPath("$.allowed").value(false))
-                .andExpect(jsonPath("$.blockReason").value("FIVE_HOUR_QUOTA_EXCEEDED"));
-
-        mvc.perform(put("/api/v1/admin/users/{id}/quota-policy", alice.getId())
-                        .header(HttpHeaders.AUTHORIZATION, bearer(administrator))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {"teamId":null,"fiveHourQuotaPercent":null,
-                                 "weeklyQuotaPercent":null}
-                                """))
-                .andExpect(status().isOk());
-        AuthResponse defaultPolicySession = authService.login("alice@example.com", PASSWORD);
-        mvc.perform(get(CLIENT_QUOTA_OVERVIEW)
-                        .header(HttpHeaders.AUTHORIZATION, bearer(defaultPolicySession.accessToken())))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.policy.fiveHourSource").value("DEFAULT"))
-                .andExpect(jsonPath("$.policy.weeklySource").value("DEFAULT"))
-                .andExpect(jsonPath("$.allowed").value(true));
-
-        UUID replacementAccountId = createAccount(
-                administrator, "replacement-account@example.com", "ACTIVE"
-        );
-        mvc.perform(put("/api/v1/admin/users/{id}/codex-account", alice.getId())
-                        .header(HttpHeaders.AUTHORIZATION, bearer(administrator))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"codexAccountId\":\"%s\"}".formatted(replacementAccountId)))
-                .andExpect(status().isOk());
-        AuthResponse afterReassignment = authService.login("alice@example.com", PASSWORD);
-
-        mvc.perform(get(CLIENT_QUOTA_OVERVIEW)
-                        .header(HttpHeaders.AUTHORIZATION, bearer(afterReassignment.accessToken())))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.usage.measurementStatus").value("NOT_MEASURED"))
-                .andExpect(jsonPath("$.allowed").value(false))
-                .andExpect(jsonPath("$.blockReason").value("USAGE_NOT_MEASURED"));
-
-        // The overview URL contains no user id. Each caller only receives their
-        // own data; an old session cannot be reused after a policy change.
-        mvc.perform(get(CLIENT_QUOTA_OVERVIEW)
-                        .header(HttpHeaders.AUTHORIZATION, bearer(bobSession.accessToken())))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.user.id").value(bob.getId().toString()));
-        mvc.perform(get(CLIENT_QUOTA_OVERVIEW)
-                        .header(HttpHeaders.AUTHORIZATION, bearer(aliceSession.accessToken())))
+        mvc.perform(post("/api/v1/client/codex/credential"))
                 .andExpect(status().isUnauthorized());
     }
 
     @Test
-    void overviewRejectsUnassignedAndUnavailableAccountOrTeamAndExpiresMeasurements()
-            throws Exception {
-        User administrator = administrator();
-        AuthResponse memberSession = authService.register(
-                "member@example.com", PASSWORD, "Member"
-        );
+    void legacyManagedAccountAdministrationIsNotRegistered() throws Exception {
+        User admin = administrator();
+        mvc.perform(get("/api/v1/admin/codex-accounts")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(admin)))
+                .andExpect(status().isNotFound());
+        mvc.perform(post("/api/v1/admin/codex-accounts")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(admin))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void editingTeamThenSavingTokenLimitsAcceptsTheReturnedVersion() throws Exception {
+        User admin = administrator();
+        UUID teamId = createTeam(admin, "Versioned team");
+        authService.register("member@example.com", PASSWORD, "Member");
         User member = users.findByEmail("member@example.com").orElseThrow();
+        joinTeam(admin, member.getId(), teamId);
+        long previousVersion = teams.findById(teamId).orElseThrow().getVersion();
 
-        mvc.perform(get(CLIENT_QUOTA_OVERVIEW)
-                        .header(HttpHeaders.AUTHORIZATION, bearer(memberSession.accessToken())))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.assigned").value(false))
-                .andExpect(jsonPath("$.allowed").value(false))
-                .andExpect(jsonPath("$.blockReason").value("CODEX_ACCOUNT_UNASSIGNED"));
-
-        UUID teamId = createTeam(administrator, "Operations");
-        UUID accountId = createAccount(administrator, "operations-account@example.com", "ACTIVE");
-        mvc.perform(put("/api/v1/admin/users/{id}/quota-policy", member.getId())
-                        .header(HttpHeaders.AUTHORIZATION, bearer(administrator))
+        MvcResult edited = mvc.perform(patch("/api/v1/admin/teams/{id}", teamId)
+                        .header(HttpHeaders.AUTHORIZATION, bearer(admin))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
-                                {"teamId":"%s","fiveHourQuotaPercent":null,
-                                 "weeklyQuotaPercent":null}
-                                """.formatted(teamId)))
-                .andExpect(status().isOk());
+                                {"name":"Versioned team","description":"Managed policy team",
+                                 "status":"ACTIVE","version":%d}
+                                """.formatted(previousVersion)))
+                .andExpect(status().isOk())
+                .andReturn();
+        long returnedVersion = objectMapper.readTree(edited.getResponse().getContentAsString())
+                .path("version").asLong();
+
+        mvc.perform(put("/api/v1/admin/teams/{id}/token-limits", teamId)
+                        .header(HttpHeaders.AUTHORIZATION, bearer(admin))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"fiveHourTokenLimit":1000000,"weeklyTokenLimit":5000000,
+                                 "version":%d}
+                                """.formatted(returnedVersion)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.fiveHourTokenLimit").value(1000000))
+                .andExpect(jsonPath("$.weeklyTokenLimit").value(5000000));
+    }
+
+    @Test
+    void teamAndPersonalTokenLimitsCountReportedEventsAndInvalidateSessions() throws Exception {
+        User admin = administrator();
+        AuthResponse oldMemberSession = authService.register("member@example.com", PASSWORD, "Member");
+        User member = users.findByEmail("member@example.com").orElseThrow();
+        UUID teamId = createTeam(admin, "Engineering");
+        setTeamLimits(admin, teamId, 500, 1_000);
+        joinTeam(admin, member.getId(), teamId);
+
+        mvc.perform(get(OVERVIEW)
+                        .header(HttpHeaders.AUTHORIZATION, bearer(oldMemberSession.accessToken())))
+                .andExpect(status().isUnauthorized());
+        AuthResponse memberSession = authService.login("member@example.com", PASSWORD);
+        mvc.perform(get(OVERVIEW)
+                        .header(HttpHeaders.AUTHORIZATION, bearer(memberSession.accessToken())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.codexAccount").doesNotExist())
+                .andExpect(jsonPath("$.assigned").doesNotExist())
+                .andExpect(jsonPath("$.policy.fiveHourTokenLimit").value(500))
+                .andExpect(jsonPath("$.policy.weeklyTokenLimit").value(1000))
+                .andExpect(jsonPath("$.policy.fiveHourSource").value("TEAM"))
+                .andExpect(jsonPath("$.usage.measurementStatus").value("CLIENT_REPORTED"))
+                .andExpect(jsonPath("$.usage.fiveHourUsedTokens").value(0))
+                .andExpect(jsonPath("$.usage.measuredAt").value(nullValue()))
+                .andExpect(jsonPath("$.usage.fiveHourRemainingTokens").value(500))
+                .andExpect(jsonPath("$.allowed").value(true));
+
+        String event = usageRequest(EVENT_ID, 120);
+        mvc.perform(post("/api/v1/client/usage/events")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(memberSession.accessToken()))
+                        .contentType(MediaType.APPLICATION_JSON).content(event))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.usage.fiveHourUsedTokens").value(120))
+                .andExpect(jsonPath("$.usage.measuredAt").exists())
+                .andExpect(jsonPath("$.usage.weeklyRemainingTokens").value(880));
+        mvc.perform(post("/api/v1/client/usage/events")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(memberSession.accessToken()))
+                        .contentType(MediaType.APPLICATION_JSON).content(event))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.usage.fiveHourUsedTokens").value(120));
+
+        mvc.perform(put("/api/v1/admin/users/{id}/token-limits", member.getId())
+                        .header(HttpHeaders.AUTHORIZATION, bearer(admin))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"fiveHourTokenLimit\":100,\"weeklyTokenLimit\":null}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.fiveHourTokenLimit").value(100));
+        mvc.perform(get(OVERVIEW)
+                        .header(HttpHeaders.AUTHORIZATION, bearer(memberSession.accessToken())))
+                .andExpect(status().isUnauthorized());
+        AuthResponse afterOverride = authService.login("member@example.com", PASSWORD);
+        mvc.perform(get(OVERVIEW)
+                        .header(HttpHeaders.AUTHORIZATION, bearer(afterOverride.accessToken())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.policy.fiveHourSource").value("USER"))
+                .andExpect(jsonPath("$.policy.weeklySource").value("TEAM"))
+                .andExpect(jsonPath("$.usage.fiveHourRemainingTokens").value(0))
+                .andExpect(jsonPath("$.allowed").value(false))
+                .andExpect(jsonPath("$.blockReason").value("FIVE_HOUR_TOKEN_QUOTA_EXCEEDED"));
+        mvc.perform(post("/api/v1/client/usage/events")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(afterOverride.accessToken()))
+                        .contentType(MediaType.APPLICATION_JSON).content(usageRequest(
+                                "codex-local-usage:v1:" + "b".repeat(64), 20)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.usage.fiveHourUsedTokens").value(140));
+    }
+
+    @Test
+    void missingTokenLimitsFailClosedAndOldPersonalAssignmentRouteIsGone() throws Exception {
+        User admin = administrator();
+        authService.register("member@example.com", PASSWORD, "Member");
+        User member = users.findByEmail("member@example.com").orElseThrow();
+        UUID teamId = createTeam(admin, "Operations");
+        joinTeam(admin, member.getId(), teamId);
+
+        AuthResponse memberSession = authService.login("member@example.com", PASSWORD);
+        mvc.perform(get(OVERVIEW)
+                        .header(HttpHeaders.AUTHORIZATION, bearer(memberSession.accessToken())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.policy.fiveHourTokenLimit").value(nullValue()))
+                .andExpect(jsonPath("$.usage.fiveHourUsedTokens").value(0))
+                .andExpect(jsonPath("$.allowed").value(false))
+                .andExpect(jsonPath("$.blockReason").value("TOKEN_QUOTA_UNCONFIGURED"));
         mvc.perform(put("/api/v1/admin/users/{id}/codex-account", member.getId())
-                        .header(HttpHeaders.AUTHORIZATION, bearer(administrator))
+                        .header(HttpHeaders.AUTHORIZATION, bearer(admin))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"codexAccountId\":\"%s\"}".formatted(accountId)))
-                .andExpect(status().isOk());
-        AuthResponse assignedSession = authService.login("member@example.com", PASSWORD);
+                        .content("{\"codexAccountId\":\"%s\"}".formatted(UUID.randomUUID())))
+                .andExpect(status().isNotFound());
 
-        usage.saveAndFlush(new UserQuotaUsage(
-                member.getId(),
-                accountId,
-                new BigDecimal("10.00"),
-                new BigDecimal("10.00"),
-                Instant.now().plus(1, ChronoUnit.HOURS),
-                Instant.now().plus(1, ChronoUnit.DAYS),
-                Instant.now().minus(6, ChronoUnit.MINUTES)
-        ));
-        mvc.perform(get(CLIENT_QUOTA_OVERVIEW)
-                        .header(HttpHeaders.AUTHORIZATION, bearer(assignedSession.accessToken())))
+        setTeamLimits(admin, teamId, 500, 1_000);
+        AuthResponse afterPolicy = authService.login("member@example.com", PASSWORD);
+        mvc.perform(get(OVERVIEW)
+                        .header(HttpHeaders.AUTHORIZATION, bearer(afterPolicy.accessToken())))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.usage.measurementStatus").value("NOT_MEASURED"))
-                .andExpect(jsonPath("$.allowed").value(false))
-                .andExpect(jsonPath("$.blockReason").value("USAGE_NOT_MEASURED"));
+                .andExpect(jsonPath("$.allowed").value(true));
+    }
 
-        mvc.perform(patch("/api/v1/admin/codex-accounts/{id}", accountId)
-                        .header(HttpHeaders.AUTHORIZATION, bearer(administrator))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"status\":\"DISABLED\"}"))
-                .andExpect(status().isOk());
-        mvc.perform(get(CLIENT_QUOTA_OVERVIEW)
-                        .header(HttpHeaders.AUTHORIZATION, bearer(assignedSession.accessToken())))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.allowed").value(false))
-                .andExpect(jsonPath("$.blockReason").value("CODEX_ACCOUNT_UNAVAILABLE"));
+    @Test
+    void changingTeamTokenLimitsImmediatelyInvalidatesMemberSessions() throws Exception {
+        User admin = administrator();
+        authService.register("member@example.com", PASSWORD, "Member");
+        User member = users.findByEmail("member@example.com").orElseThrow();
+        UUID teamId = createTeam(admin, "Limited team");
+        setTeamLimits(admin, teamId, 500, 1_000);
+        joinTeam(admin, member.getId(), teamId);
+        AuthResponse oldSession = authService.login("member@example.com", PASSWORD);
 
-        mvc.perform(patch("/api/v1/admin/codex-accounts/{id}", accountId)
-                        .header(HttpHeaders.AUTHORIZATION, bearer(administrator))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"status\":\"ACTIVE\"}"))
-                .andExpect(status().isOk());
-        mvc.perform(patch("/api/v1/admin/teams/{id}", teamId)
-                        .header(HttpHeaders.AUTHORIZATION, bearer(administrator))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"status\":\"DISABLED\",\"version\":0}"))
-                .andExpect(status().isOk());
-        AuthResponse afterTeamDisabled = authService.login("member@example.com", PASSWORD);
-        mvc.perform(get(CLIENT_QUOTA_OVERVIEW)
-                        .header(HttpHeaders.AUTHORIZATION, bearer(afterTeamDisabled.accessToken())))
+        setTeamLimits(admin, teamId, 200, 400);
+
+        mvc.perform(get(OVERVIEW)
+                        .header(HttpHeaders.AUTHORIZATION, bearer(oldSession.accessToken())))
+                .andExpect(status().isUnauthorized());
+        AuthResponse newSession = authService.login("member@example.com", PASSWORD);
+        mvc.perform(get(OVERVIEW)
+                        .header(HttpHeaders.AUTHORIZATION, bearer(newSession.accessToken())))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.allowed").value(false))
-                .andExpect(jsonPath("$.blockReason").value("TEAM_UNAVAILABLE"));
+                .andExpect(jsonPath("$.policy.fiveHourTokenLimit").value(200))
+                .andExpect(jsonPath("$.policy.weeklyTokenLimit").value(400));
     }
 
     @Test
     void deletingATeamClearsMembershipAndInvalidatesMembers() throws Exception {
-        User administrator = administrator();
+        User admin = administrator();
         authService.register("member@example.com", PASSWORD, "Member");
         User member = users.findByEmail("member@example.com").orElseThrow();
-        UUID teamId = createTeam(administrator, "Temporary team");
-        mvc.perform(put("/api/v1/admin/users/{id}/quota-policy", member.getId())
-                        .header(HttpHeaders.AUTHORIZATION, bearer(administrator))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {"teamId":"%s","fiveHourQuotaPercent":null,
-                                 "weeklyQuotaPercent":null}
-                                """.formatted(teamId)))
-                .andExpect(status().isOk());
+        UUID teamId = createTeam(admin, "Temporary team");
+        joinTeam(admin, member.getId(), teamId);
         AuthResponse assignedSession = authService.login("member@example.com", PASSWORD);
 
         mvc.perform(delete("/api/v1/admin/teams/{id}", teamId)
-                        .header(HttpHeaders.AUTHORIZATION, bearer(administrator)))
+                        .header(HttpHeaders.AUTHORIZATION, bearer(admin)))
                 .andExpect(status().isNoContent());
         mvc.perform(get("/api/v1/users/me")
                         .header(HttpHeaders.AUTHORIZATION, bearer(assignedSession.accessToken())))
                 .andExpect(status().isUnauthorized());
-
         AuthResponse afterDeletion = authService.login("member@example.com", PASSWORD);
         mvc.perform(get("/api/v1/users/me")
                         .header(HttpHeaders.AUTHORIZATION, bearer(afterDeletion.accessToken())))
@@ -358,19 +296,45 @@ class QuotaPolicyIntegrationTest {
 
     private User administrator() {
         authService.register("admin@example.com", PASSWORD, "Administrator");
-        User administrator = users.findByEmail("admin@example.com").orElseThrow();
-        administrator.updateAdministration(User.Status.ACTIVE, User.Role.ADMIN);
-        return users.saveAndFlush(administrator);
+        User admin = users.findByEmail("admin@example.com").orElseThrow();
+        admin.updateAdministration(User.Status.ACTIVE, User.Role.ADMIN);
+        return users.saveAndFlush(admin);
     }
 
-    private UUID createTeam(User administrator, String name) throws Exception {
+    private UUID createTeam(User admin, String name) throws Exception {
         String location = mvc.perform(post("/api/v1/admin/teams")
-                        .header(HttpHeaders.AUTHORIZATION, bearer(administrator))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(teamRequest(name)))
+                        .header(HttpHeaders.AUTHORIZATION, bearer(admin))
+                        .contentType(MediaType.APPLICATION_JSON).content(teamRequest(name)))
                 .andExpect(status().isCreated())
                 .andReturn().getResponse().getHeader(HttpHeaders.LOCATION);
         return UUID.fromString(location.substring(location.lastIndexOf('/') + 1));
+    }
+
+    private void setTeamLimits(User admin, UUID teamId, long fiveHour, long weekly) throws Exception {
+        mvc.perform(put("/api/v1/admin/teams/{id}/token-limits", teamId)
+                        .header(HttpHeaders.AUTHORIZATION, bearer(admin))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"fiveHourTokenLimit\":%d,\"weeklyTokenLimit\":%d}"
+                                .formatted(fiveHour, weekly)))
+                .andExpect(status().isOk());
+    }
+
+    private void joinTeam(User admin, UUID userId, UUID teamId) throws Exception {
+        mvc.perform(put("/api/v1/admin/users/{id}/quota-policy", userId)
+                        .header(HttpHeaders.AUTHORIZATION, bearer(admin))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"teamId":"%s","fiveHourQuotaPercent":null,
+                                 "weeklyQuotaPercent":null}
+                                """.formatted(teamId)))
+                .andExpect(status().isOk());
+    }
+
+    private String usageRequest(String eventId, long tokens) {
+        return """
+                {"events":[{"eventId":"%s",
+                 "occurredAt":"%s","totalTokens":%d,"source":"TOKEN_USAGE_RECORD"}]}
+                """.formatted(eventId, Instant.now().toString(), tokens);
     }
 
     private String teamRequest(String name) {
@@ -380,23 +344,8 @@ class QuotaPolicyIntegrationTest {
                 """.formatted(name);
     }
 
-    private UUID createAccount(User administrator, String email, String accountStatus) throws Exception {
-        String location = mvc.perform(post("/api/v1/admin/codex-accounts")
-                        .header(HttpHeaders.AUTHORIZATION, bearer(administrator))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {"email":"%s","displayName":"Managed quota account",
-                                 "status":"%s","credential":{"access_token":"test-token"}}
-                                """.formatted(email, accountStatus)))
-                .andExpect(status().isCreated())
-                .andReturn().getResponse().getHeader(HttpHeaders.LOCATION);
-        return UUID.fromString(location.substring(location.lastIndexOf('/') + 1));
-    }
-
     private String bearer(User user) {
-        return bearer(jwtService.create(
-                user.getId(), user.getRole().name(), user.getSessionVersion()
-        ));
+        return bearer(jwtService.create(user.getId(), user.getRole().name(), user.getSessionVersion()));
     }
 
     private String bearer(String accessToken) {

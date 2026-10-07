@@ -15,10 +15,11 @@ public record SystemUser(
         String displayName,
         String role,
         String status,
-        UUID assignedCodexAccountId,
         UUID teamId,
         Integer fiveHourQuotaPercent,
         Integer weeklyQuotaPercent,
+        Long fiveHourTokenLimit,
+        Long weeklyTokenLimit,
         String createdAt,
         String updatedAt
 ) {

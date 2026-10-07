@@ -1,7 +1,6 @@
 package com.codexquotaguard.backend.controlplane;
 
-/** Whether central service usage values were actually measured. */
+/** The central service's measurement provenance for personal token usage. */
 public enum QuotaMeasurementStatus {
-    CURRENT,
-    NOT_MEASURED
+    CLIENT_REPORTED
 }

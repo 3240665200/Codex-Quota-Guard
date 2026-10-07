@@ -5,7 +5,7 @@ param(
     [string]$RuntimeDirectory = 'D:\BuildCache\pingche\runtime',
     [string]$LogDirectory = 'D:\BuildCache\pingche\logs',
     [ValidateRange(1024, 65535)][int]$Port = 8080,
-    [string]$BindAddress = '127.0.0.1',
+    [string]$BindAddress = '0.0.0.0',
     [ValidateRange(15, 300)][int]$StartupTimeoutSeconds = 180,
     [string]$JavaCommand = 'java.exe',
     [string]$MavenCommand = 'mvn.cmd',
@@ -23,7 +23,7 @@ if (-not [System.Net.IPAddress]::TryParse($BindAddress, [ref]$parsedAddress) -or
     $parsedAddress.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) {
     throw 'BindAddress must be a local IPv4 address.'
 }
-if ($BindAddress -ne '127.0.0.1') {
+if ($BindAddress -ne '127.0.0.1' -and $BindAddress -ne '0.0.0.0') {
     $octets = $parsedAddress.GetAddressBytes()
     $privateLan = $octets[0] -eq 10 -or
         ($octets[0] -eq 172 -and $octets[1] -ge 16 -and $octets[1] -le 31) -or
@@ -39,10 +39,13 @@ if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
     throw 'Missing Windows DPAPI configuration. See the backend README; do not generate replacement keys.'
 }
 $settings = Import-Clixml -LiteralPath $ConfigPath
-$required = @('DATABASE_URL', 'DATABASE_USERNAME', 'DATABASE_PASSWORD', 'JWT_SECRET',
-    'CODEX_CREDENTIAL_ENCRYPTION_KEY', 'CODEX_LOGIN_COMMAND', 'CODEX_AUTH_WORK_DIR')
-$allowed = $required + @('CORS_ALLOWED_ORIGINS', 'JWT_ISSUER', 'ACCESS_TOKEN_TTL',
+$required = @('DATABASE_URL', 'DATABASE_USERNAME', 'DATABASE_PASSWORD', 'JWT_SECRET')
+$runtimeKeys = $required + @('CORS_ALLOWED_ORIGINS', 'JWT_ISSUER', 'ACCESS_TOKEN_TTL',
     'REFRESH_TOKEN_TTL', 'AUTH_RATE_LIMIT_PER_MINUTE')
+# Keep old fields readable for the encrypted pre-migration backup, but never
+# inject the retired Codex credential key or CLI settings into the new server.
+$allowed = $runtimeKeys + @('CODEX_CREDENTIAL_ENCRYPTION_KEY', 'CODEX_LOGIN_COMMAND',
+    'CODEX_AUTH_WORK_DIR')
 if ($settings -isnot [System.Collections.IDictionary]) {
     throw 'Invalid protected configuration format.'
 }
@@ -81,25 +84,11 @@ try {
         $originalEnvironment[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
         Remove-Item -LiteralPath "Env:$key" -ErrorAction SilentlyContinue
     }
-    foreach ($key in $settings.Keys) {
+    foreach ($key in $runtimeKeys) {
+        if (-not $settings.Contains($key)) { continue }
         $value = [pscredential]::new('runtime', $settings[$key]).GetNetworkCredential().Password
         [Environment]::SetEnvironmentVariable($key, $value, 'Process')
         $value = $null
-    }
-    if (-not (Test-Path -LiteralPath $env:CODEX_LOGIN_COMMAND -PathType Leaf)) {
-        $candidate = Get-Command codex.exe -ErrorAction SilentlyContinue | Select-Object -First 1
-        $officialBin = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'OpenAI\Codex\bin'))
-        $candidatePath = if ($null -ne $candidate) { [IO.Path]::GetFullPath($candidate.Source) } else { '' }
-        $withinOfficialBin = $candidatePath.StartsWith(
-            $officialBin.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar,
-            [StringComparison]::OrdinalIgnoreCase
-        )
-        $signature = if ($withinOfficialBin) { Get-AuthenticodeSignature -LiteralPath $candidatePath } else { $null }
-        if ($null -eq $signature -or $signature.Status -ne 'Valid' -or
-            $signature.SignerCertificate.Subject -notmatch 'OpenAI OpCo, LLC') {
-            throw 'Official Codex executable was not found. Update CODEX_LOGIN_COMMAND in the protected configuration.'
-        }
-        $env:CODEX_LOGIN_COMMAND = $candidatePath
     }
     $env:WEB_SERVER_PORT = [string]$Port
     $env:SERVER_ADDRESS = $BindAddress

@@ -9,6 +9,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.test.web.servlet.MockMvc;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -56,5 +57,32 @@ class LocalApiSecurityIntegrationTest {
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + TOKEN))
                 .andExpect(status().isUnauthorized());
 
+    }
+
+    @Test
+    void doesNotExposeManagedCodexLoginCommands() throws Exception {
+        mockMvc.perform(get("/api/v1/codex/session")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + TOKEN))
+                .andExpect(status().isNotFound());
+
+        mockMvc.perform(post("/api/v1/codex/login")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + TOKEN))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void exposesSafeMeterAndFallbackStatusOnlyBehindTheDesktopBearer() throws Exception {
+        mockMvc.perform(get("/api/v1/usage/status"))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(get("/api/v1/usage/status")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + TOKEN))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.fallback.state").value("SIGNED_OUT"))
+                .andExpect(jsonPath("$.service.state").isString())
+                .andExpect(jsonPath("$.deviceToken").doesNotExist());
+        mockMvc.perform(post("/api/v1/usage/scan")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + TOKEN))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.fallback.state").value("SIGNED_OUT"));
     }
 }

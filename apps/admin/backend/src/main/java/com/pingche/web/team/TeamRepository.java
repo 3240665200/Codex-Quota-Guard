@@ -20,4 +20,5 @@ public interface TeamRepository extends JpaRepository<Team, UUID> {
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select team from Team team where team.id = :id")
     Optional<Team> findByIdForUpdate(@Param("id") UUID id);
+
 }

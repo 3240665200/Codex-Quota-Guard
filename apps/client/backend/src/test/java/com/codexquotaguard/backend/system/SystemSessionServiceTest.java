@@ -11,6 +11,8 @@ import com.codexquotaguard.backend.controlplane.QuotaMeasurementStatus;
 import com.codexquotaguard.backend.controlplane.QuotaPolicy;
 import com.codexquotaguard.backend.controlplane.QuotaUsage;
 import com.codexquotaguard.backend.controlplane.SystemUser;
+import com.codexquotaguard.backend.usage.CodexUsageEvent;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
@@ -47,8 +49,20 @@ class SystemSessionServiceTest {
         assertThat(gateway.quotaOverviewCalls).isEqualTo(1);
         assertThat(gateway.lastAccessToken).isEqualTo(ACCESS_ONE);
         assertThat(overview.user()).isEqualTo(user);
-        assertThat(overview.usage().fiveHourUsedPercent()).isEqualTo(25.0);
+        assertThat(overview.usage().fiveHourUsedTokens()).isEqualTo(25_000L);
         assertThat(overview.toString()).doesNotContain(ACCESS_ONE, REFRESH_ONE);
+    }
+
+    @Test
+    void refusesToAttributeScannerEventsToADifferentSystemUser() {
+        var alice = user("Alice");
+        var gateway = new FakeGateway(new ControlPlaneAuthSession(ACCESS_ONE, REFRESH_ONE, alice));
+        var service = new SystemSessionService(gateway);
+        service.login("alice@example.com", "password");
+
+        assertThatThrownBy(() -> service.reportUsage(UUID.randomUUID(), List.of()))
+                .isInstanceOf(SystemSessionRequiredException.class);
+        assertThat(gateway.reportCalls).isZero();
     }
 
     @Test
@@ -143,25 +157,24 @@ class SystemSessionServiceTest {
                 null,
                 null,
                 null,
+                null,
                 null
         );
     }
 
     private static PersonalQuotaOverview overview(SystemUser user) {
         return new PersonalQuotaOverview(
-                false,
                 user,
                 null,
-                null,
-                new QuotaPolicy(80, 90, "USER", "DEFAULT"),
+                new QuotaPolicy(100_000L, 500_000L, "USER", "TEAM"),
                 new QuotaUsage(
-                        QuotaMeasurementStatus.CURRENT,
-                        25.0,
-                        15.0,
-                        75.0,
-                        85.0,
-                        "2026-01-01T05:00:00Z",
-                        "2026-01-08T00:00:00Z",
+                        QuotaMeasurementStatus.CLIENT_REPORTED,
+                        25_000L,
+                        15_000L,
+                        75_000L,
+                        485_000L,
+                        null,
+                        null,
                         "2026-01-01T00:00:00Z"
                 ),
                 true,
@@ -180,6 +193,7 @@ class SystemSessionServiceTest {
         private boolean rejectFirstLogout;
         private int currentCalls;
         private int quotaOverviewCalls;
+        private int reportCalls;
         private int refreshCalls;
         private int logoutCalls;
         private String lastPassword;
@@ -227,6 +241,13 @@ class SystemSessionServiceTest {
             if (rejectAllAccessTokens || (rejectFirstAccessToken && ACCESS_ONE.equals(accessToken))) {
                 throw ControlPlaneException.unauthorized();
             }
+            return overview(loginSession.user());
+        }
+
+        @Override
+        public PersonalQuotaOverview reportUsage(String accessToken, List<CodexUsageEvent> events) {
+            reportCalls++;
+            lastAccessToken = accessToken;
             return overview(loginSession.user());
         }
 

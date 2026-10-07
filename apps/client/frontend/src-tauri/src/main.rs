@@ -44,6 +44,38 @@ async fn quota_overview(state: State<'_, BackendState>) -> CommandResult<Value> 
 }
 
 #[tauri::command]
+async fn usage_status(state: State<'_, BackendState>) -> CommandResult<Value> {
+    state
+        .json(Method::GET, ApiRoute::UsageStatus)
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
+async fn usage_scan(state: State<'_, BackendState>) -> CommandResult<Value> {
+    state
+        .json(Method::POST, ApiRoute::UsageScan)
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
+async fn usage_pair(state: State<'_, BackendState>) -> CommandResult<Value> {
+    state
+        .json(Method::POST, ApiRoute::UsagePair)
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
+async fn codex_rate_limits(state: State<'_, BackendState>) -> CommandResult<Value> {
+    state
+        .json(Method::GET, ApiRoute::CodexRateLimits)
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
 async fn system_login(
     email: String,
     password: String,
@@ -81,6 +113,10 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             status,
             quota_overview,
+            usage_status,
+            usage_scan,
+            usage_pair,
+            codex_rate_limits,
             system_login,
             system_current,
             system_logout,

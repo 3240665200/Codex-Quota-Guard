@@ -6,9 +6,7 @@ package com.codexquotaguard.backend.controlplane;
  * authentication payload.
  */
 public record PersonalQuotaOverview(
-        boolean assigned,
         SystemUser user,
-        ManagedCodexAccount codexAccount,
         QuotaTeam team,
         QuotaPolicy policy,
         QuotaUsage usage,
@@ -20,11 +18,8 @@ public record PersonalQuotaOverview(
         if (user == null || policy == null || usage == null) {
             throw new IllegalArgumentException("A complete personal quota overview is required.");
         }
-        if (assigned != (codexAccount != null)) {
-            throw new IllegalArgumentException("Codex account assignment state is inconsistent.");
-        }
-        if (usage.measurementStatus() == QuotaMeasurementStatus.NOT_MEASURED && allowed) {
-            throw new IllegalArgumentException("Unmeasured quota cannot be marked as allowed.");
+        if ((policy.fiveHourTokenLimit() == null || policy.weeklyTokenLimit() == null) && allowed) {
+            throw new IllegalArgumentException("An unconfigured token limit cannot be marked as allowed.");
         }
         blockReason = optionalText(blockReason);
     }
