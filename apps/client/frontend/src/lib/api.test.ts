@@ -57,23 +57,40 @@ describe("Tauri API boundary", () => {
     expect(invokeMock).toHaveBeenCalledWith("status");
   });
 
+  it("uses one fixed native command to ensure the installed meter service is running", async () => {
+    invokeMock.mockResolvedValue("STARTED");
+    await expect(api.ensureMeterService()).resolves.toBe("STARTED");
+    await expect(api.ensureMeterService()).resolves.toBe("STARTED");
+    expect(invokeMock).toHaveBeenCalledWith("meter_service_ensure");
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    invokeMock.mockResolvedValue("SOME_UNKNOWN_SERVICE_RESULT");
+    await expect(api.retryMeterService()).rejects.toThrow();
+    expect(invokeMock).toHaveBeenCalledWith("meter_service_retry");
+    await expect(api.ensureMeterService()).rejects.toThrow();
+  });
+
+  it("accepts first-run service installation and server validation outcomes", async () => {
+    invokeMock
+      .mockResolvedValueOnce("INSTALLED")
+      .mockResolvedValueOnce("SERVER_UNAVAILABLE");
+    await expect(api.retryMeterService()).resolves.toBe("INSTALLED");
+    await expect(api.retryMeterService()).resolves.toBe("SERVER_UNAVAILABLE");
+  });
+
   it("validates the server address setting and uses fixed settings commands", async () => {
     invokeMock.mockResolvedValue({
       url: "http://192.168.0.102:8080",
-      allowInsecureLanHttp: true,
     });
 
     await expect(api.serverConfig()).resolves.toEqual({
       url: "http://192.168.0.102:8080",
-      allowInsecureLanHttp: true,
     });
     await api.saveServerConfig({
       url: "http://192.168.0.102:8080",
-      allowInsecureLanHttp: true,
     });
     expect(invokeMock).toHaveBeenCalledWith("server_config_get");
     expect(invokeMock).toHaveBeenCalledWith("server_config_save", {
-      config: { url: "http://192.168.0.102:8080", allowInsecureLanHttp: true },
+      config: { url: "http://192.168.0.102:8080" },
     });
   });
 
@@ -104,10 +121,20 @@ describe("Tauri API boundary", () => {
 
   it("validates safe Rust meter diagnostics and fixed scan commands", async () => {
     const status = {
-      fallback: { state: "BASELINE_READY", lastScannedAt: "2026-10-07T00:00:00Z",
-        lastReportedAt: null, lastReportedEvents: 0, issues: [] },
-      service: { state: "NOT_INSTALLED", lastScanEpochSeconds: null,
-        lastReportEpochSeconds: null, reportedEvents: 0, errorCode: null },
+      fallback: {
+        state: "BASELINE_READY",
+        lastScannedAt: "2026-10-07T00:00:00Z",
+        lastReportedAt: null,
+        lastReportedEvents: 0,
+        issues: [],
+      },
+      service: {
+        state: "NOT_INSTALLED",
+        lastScanEpochSeconds: null,
+        lastReportEpochSeconds: null,
+        reportedEvents: 0,
+        errorCode: null,
+      },
       pairingState: "NOT_INSTALLED",
     };
     invokeMock.mockResolvedValue(status);
@@ -120,7 +147,7 @@ describe("Tauri API boundary", () => {
     expect(invokeMock).toHaveBeenCalledWith("usage_pair");
   });
 
-  it("fails closed when an unconfigured personal limit claims usable quota", async () => {
+  it("accepts a missing five-hour personal limit when weekly quota remains usable", async () => {
     invokeMock.mockResolvedValue({
       ...quotaOverview,
       policy: {
@@ -132,7 +159,7 @@ describe("Tauri API boundary", () => {
       allowed: true,
     });
 
-    await expect(api.quotaOverview()).rejects.toThrow();
+    await expect(api.quotaOverview()).resolves.toMatchObject({ allowed: true });
   });
 
   it("does not coerce unconfigured personal token limits to zero", async () => {

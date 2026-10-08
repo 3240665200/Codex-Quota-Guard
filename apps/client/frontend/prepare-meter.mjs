@@ -28,7 +28,7 @@ const resources = path.join(frontendRoot, "src-tauri", "resources", "meter");
 mkdirSync(resources, { recursive: true });
 copyFileSync(source, path.join(resources, `quota-guard-meter${suffix}`));
 if (process.platform === "win32") {
-  for (const script of ["install-meter-service.ps1", "uninstall-meter-service.ps1"]) {
+  for (const script of ["install-meter-service.ps1", "uninstall-meter-service.ps1", "show-meter-logs.ps1", "ensure-meter-service.ps1"]) {
     copyFileSync(path.join(repositoryRoot, "scripts", "windows", script),
       path.join(resources, script));
   }

@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { LoaderCircle } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -51,12 +51,47 @@ export function ClientApp() {
   const queryClient = useQueryClient();
   const [logoutError, setLogoutError] = useState<unknown>(null);
   const [localSignedOut, setLocalSignedOut] = useState(false);
+  const meterStartupRequested = useRef(false);
   const sessionQuery = useQuery({
     queryKey: ["system-session"],
     queryFn: api.systemSession,
     retry: false,
     refetchInterval: 30_000,
   });
+
+  useEffect(() => {
+    // React StrictMode replays effects during development. The API boundary
+    // also coalesces remounts so a launch cannot request UAC twice.
+    if (meterStartupRequested.current) return;
+    meterStartupRequested.current = true;
+    void api.ensureMeterService().then((result) => {
+      switch (result) {
+        case "STARTED":
+          toast.success("计费服务已自动启动，会在关闭客户端后继续运行。");
+          break;
+        case "INSTALLED":
+          toast.success("计费服务已自动安装并启动，会在关闭客户端后继续运行。");
+          break;
+        case "NOT_INSTALLED":
+          toast.warning("安装包缺少计费服务文件，请重新安装最新版客户端。");
+          break;
+        case "NEEDS_ADMIN":
+          toast.error("首次安装计费服务需要右键以管理员身份运行客户端。");
+          break;
+        case "SERVER_UNAVAILABLE":
+          toast.error("无法连接后台，计费服务暂未安装。请检查服务器地址后重新打开客户端。");
+          break;
+        case "INSTALL_FAILED":
+          toast.error("计费服务自动安装失败，请检查安装目录和 Windows 服务状态。");
+          break;
+        case "FAILED":
+          toast.error("计费服务启动失败，请在服务管理器中检查状态。");
+          break;
+        default:
+          break;
+      }
+    }).catch(() => toast.error("无法检查计费服务状态，请稍后重试。"));
+  }, []);
 
   const handleAuthenticated = (session: SystemSession) => {
     setLogoutError(null);

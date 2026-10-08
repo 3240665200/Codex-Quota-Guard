@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { I18nextProvider } from "react-i18next";
+import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { invoke } from "@tauri-apps/api/core";
@@ -69,12 +70,13 @@ describe("ClientApp system session gate", () => {
       switch (command) {
         case "system_current":
           return signedOut;
+        case "meter_service_ensure":
+          return "RUNNING";
         case "server_config_get":
-          return { url: "http://127.0.0.1:8080", allowInsecureLanHttp: false };
+          return { url: "http://127.0.0.1:8080" };
         case "server_config_save":
           return {
             url: "http://192.168.0.102:8080",
-            allowInsecureLanHttp: true,
           };
         case "system_login":
           return signedIn;
@@ -104,8 +106,39 @@ describe("ClientApp system session gate", () => {
     renderClientApp();
 
     expect(await screen.findByText("登录 Quota Guard")).toBeVisible();
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("meter_service_ensure"));
     expect(screen.queryByText("登录 Codex")).toBeNull();
     expect(screen.queryByText("上传 Codex 凭证")).toBeNull();
+  });
+
+  it("toggles password visibility without changing the entered value", async () => {
+    const user = userEvent.setup();
+    renderClientApp();
+    const password = await screen.findByLabelText("密码");
+    await user.type(password, "quota-secret");
+    expect(password).toHaveAttribute("type", "password");
+    await user.click(screen.getByRole("button", { name: "显示密码" }));
+    expect(password).toHaveAttribute("type", "text");
+    expect(password).toHaveValue("quota-secret");
+    await user.click(screen.getByRole("button", { name: "隐藏密码" }));
+    expect(password).toHaveAttribute("type", "password");
+  });
+
+  it("does not request a second admin elevation in React StrictMode", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <StrictMode>
+        <I18nextProvider i18n={i18n}>
+          <QueryClientProvider client={queryClient}><ClientApp /></QueryClientProvider>
+        </I18nextProvider>
+      </StrictMode>,
+    );
+    await screen.findByText("登录 Quota Guard");
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("meter_service_ensure"));
+    expect(invokeMock.mock.calls.filter(([command]) => command === "meter_service_ensure"))
+      .toHaveLength(1);
   });
 
   it("opens the personal quota dashboard only after the system login succeeds", async () => {
@@ -147,7 +180,7 @@ describe("ClientApp system session gate", () => {
     expect(invokeMock).toHaveBeenCalledWith("system_logout");
   });
 
-  it("lets a signed-out user save a LAN server address before login", async () => {
+  it("lets a signed-out user save HTTP without a confirmation checkbox", async () => {
     const user = userEvent.setup();
     renderClientApp();
 
@@ -156,14 +189,13 @@ describe("ClientApp system session gate", () => {
     await waitFor(() => expect(address).toHaveValue("http://127.0.0.1:8080"));
     await user.clear(address);
     await user.type(address, "http://192.168.0.102:8080");
-    await user.click(screen.getByRole("checkbox"));
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "保存服务器地址" }));
 
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith("server_config_save", {
         config: {
           url: "http://192.168.0.102:8080",
-          allowInsecureLanHttp: true,
         },
       });
     });

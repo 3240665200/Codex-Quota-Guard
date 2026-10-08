@@ -18,10 +18,14 @@
 - `PATCH /api/v1/admin/users/{id}`：修改邮箱、昵称、密码、状态或角色
 - `DELETE /api/v1/admin/users/{id}`：删除用户
 - `POST /api/v1/admin/users/{id}/force-logout`：强制用户所有会话下线
-- `GET /api/v1/client/quota/overview`：当前系统用户的个人 Token 配额与上报用量
+- `GET /api/v1/client/quota/overview`：当前系统用户的个人用量、团队共享额度和可用量
 - `POST /api/v1/client/usage/events`：客户端幂等上报本机 Codex Token 事件
 - `PUT /api/v1/client/official-quota`：客户端上报不含凭据的官方额度摘要
 - `GET /api/v1/admin/users/{id}/quota-overview`：管理员查看个人 Token 用量
+- `GET /api/v1/admin/teams/{id}/quota-overview`：管理员查看团队成员合计的 5 小时/7 天已用与剩余 Token
+- `POST /api/v1/admin/users/{id}/quota-reset`：重置该用户的个人用量统计起点，不改变团队共享用量
+- `POST /api/v1/admin/teams/{id}/quota-reset`：重置团队共享用量统计起点，不改变成员个人用量
+- `GET /api/v1/admin/users/{id}/usage-events`：管理员分页查看该用户已入库的安全 Token 流水，不返回会话原文或设备令牌
 - `GET /api/v1/admin/users/{id}/official-quota`：管理员查看最后一次客户端上报的官方额度
 - `POST /api/v1/client/meter/enroll`：已登录系统用户配对本机 Rust 计费服务；一次性返回仅能上报的设备令牌
 - `POST /api/v1/meter/heartbeat`、`POST /api/v1/meter/usage/events`：Rust 服务独立心跳和用量上报，使用设备令牌而非用户会话
@@ -34,6 +38,9 @@
 每个 access token 和 refresh session 都绑定用户的会话版本；管理员执行强制下线、
 禁用账号或重置密码后，旧 token 会在下一次请求时立即失效。
 设备令牌单独存储 SHA-256 摘要，只允许 `/api/v1/meter/**`，默认 30 天失效；管理员撤销后不能通过再次登录自行恢复同一设备 ID。
+
+团队 Token 上限由全体成员共享；个人 Token 上限可作为额外约束。上报事件固定记录接收时的团队 ID，成员换队或删除后不会退回旧团队在当前滚动窗口内的已用量。V12 会按迁移时的成员归属回填旧事件；历史成员变动无法从旧数据中精确还原。
+额度重置只保存新的统计起点，旧事件和审计流水不会删除或改写。重置前发生的事件即使延迟补报，也不计入重置后的额度；客户端之后产生的新事件照常计费。管理员操作需要确认，两个重置接口均受 `ROLE_ADMIN` 保护。
 
 所有 `/api/v1/admin/**` 接口均由服务端强制要求 `ROLE_ADMIN`：未登录请求返回
 `401`，普通用户返回 `403`。管理员不能通过管理员接口禁用自己或把自己降级为

@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { App as AntApp } from 'antd';
+import { history } from '@umijs/max';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import UsersPage from './index';
@@ -9,6 +10,7 @@ import {
   getUserOfficialQuota,
   getUserMeterDevices,
   getUserQuotaOverview,
+  getUserUsageEvents,
   listTeams,
   listUsers,
   updateUser,
@@ -16,6 +18,8 @@ import {
   updateUserTokenLimits,
 } from '../../services/api';
 import type { TeamResponse, UserResponse } from '../../services/api';
+
+vi.mock('@umijs/max', () => ({ history: { push: vi.fn() } }));
 
 vi.mock('../../services/api', () => ({
   createUser: vi.fn(),
@@ -25,6 +29,7 @@ vi.mock('../../services/api', () => ({
   getUserOfficialQuota: vi.fn(),
   getUserMeterDevices: vi.fn(),
   getUserQuotaOverview: vi.fn(),
+  getUserUsageEvents: vi.fn(),
   listTeams: vi.fn(),
   listUsers: vi.fn(),
   updateUser: vi.fn(),
@@ -47,6 +52,8 @@ const team: TeamResponse = {
   description: '研发团队',
   fiveHourQuotaPercent: 80,
   fiveHourTokenLimit: 50_000,
+  totalTokenLimit: 200_000,
+  officialAccountId: null,
   id: 'team-1',
   memberCount: 1,
   name: '研发',
@@ -111,6 +118,12 @@ describe('用户额度策略配置', () => {
       usage: { fiveHourUsedTokens: 120, weeklyUsedTokens: 300,
         fiveHourRemainingTokens: 880, weeklyRemainingTokens: 4700 },
     });
+    vi.mocked(getUserUsageEvents).mockResolvedValue({
+      items: [{ id: 'event-1', occurredAt: '2026-10-07T00:00:00Z',
+        receivedAt: '2026-10-07T00:00:02Z', totalTokens: 42,
+        source: 'TOKEN_USAGE_RECORD' }],
+      page: 0, size: 10, totalElements: 1, totalPages: 1,
+    });
   });
 
   it('shows team token limits for null and submits 0 as a real personal token override', async () => {
@@ -169,18 +182,16 @@ describe('用户额度策略配置', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('shows client-reported official quota separately from personal token usage', async () => {
+  it('opens a dedicated quota page for the selected user', async () => {
+    const navigate = vi.spyOn(history, 'push').mockImplementation(() => undefined);
     renderPage();
     await screen.findByText('张三');
     fireEvent.click(screen.getByRole('button', { name: '管理 zhangsan@example.com' }));
     fireEvent.click(await screen.findByRole('menuitem', { name: /查看额度/ }));
 
-    expect(await screen.findByText(/官方 5 小时：已使用 25.5%/)).toBeInTheDocument();
-    expect(screen.getByText(/Rust 常驻计费：在线/)).toBeInTheDocument();
-    expect(screen.getByText(/个人 5 小时：已用 120 Token，剩余 880 Token/)).toBeInTheDocument();
-    expect(getUserOfficialQuota).toHaveBeenCalledWith(user.id);
-    expect(getUserMeterDevices).toHaveBeenCalledWith(user.id);
-    expect(getUserQuotaOverview).toHaveBeenCalledWith(user.id);
+    expect(navigate).toHaveBeenCalledWith(`/quotas/users/${user.id}`);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    navigate.mockRestore();
   });
 
   it('generates, copies, and saves a new password only from the edit dialog', async () => {

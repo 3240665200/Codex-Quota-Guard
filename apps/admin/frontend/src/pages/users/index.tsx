@@ -30,17 +30,16 @@ import {
   theme,
 } from 'antd';
 import type { TableColumnsType } from 'antd';
+import { history } from '@umijs/max';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { getErrorMessage } from '../../components/AdminState';
+import { TokenAmount } from '../../components/TokenAmount';
 import {
   createUser,
   deleteUser,
   forceLogoutUser,
   getSession,
-  getUserOfficialQuota,
-  getUserMeterDevices,
-  getUserQuotaOverview,
   listTeams,
   listUsers,
   updateUserQuotaPolicy,
@@ -49,9 +48,6 @@ import {
 } from '../../services/api';
 import type {
   TeamResponse,
-  OfficialQuotaSnapshot,
-  MeterDeviceStatus,
-  UserQuotaOverview,
   UserCreate,
   UserListParams,
   UserListResponse,
@@ -105,27 +101,12 @@ function tokenLimitRule() {
         !Number.isInteger(value)
       ) {
         return Promise.reject(
-          new Error('请输入 0 到 1,000,000,000,000 的整数，或留空继承团队 Token 上限'),
+          new Error('请输入 0 到 1,000,000,000,000 的整数，或留空表示不设个人上限'),
         );
       }
       return Promise.resolve();
     },
   };
-}
-
-function formatTokenLimit(value: number): string {
-  return new Intl.NumberFormat('zh-CN').format(value);
-}
-
-function formatEffectiveTokenLimit(
-  personalValue: number | null,
-  teamValue: number | null | undefined,
-): string {
-  if (personalValue !== null) return `${formatTokenLimit(personalValue)} Token（个人上限）`;
-  if (teamValue !== null && teamValue !== undefined) {
-    return `${formatTokenLimit(teamValue)} Token（团队上限）`;
-  }
-  return '未配置';
 }
 
 export default function UsersPage() {
@@ -143,12 +124,6 @@ export default function UsersPage() {
   const [quotaEditingUser, setQuotaEditingUser] = useState<UserResponse | null>(null);
   const [quotaFormOpen, setQuotaFormOpen] = useState(false);
   const [quotaSaving, setQuotaSaving] = useState(false);
-  const [quotaViewUser, setQuotaViewUser] = useState<UserResponse | null>(null);
-  const [quotaViewLoading, setQuotaViewLoading] = useState(false);
-  const [quotaViewError, setQuotaViewError] = useState('');
-  const [officialQuota, setOfficialQuota] = useState<OfficialQuotaSnapshot | null>(null);
-  const [personalQuota, setPersonalQuota] = useState<UserQuotaOverview | null>(null);
-  const [meterDevices, setMeterDevices] = useState<MeterDeviceStatus[]>([]);
   const [teams, setTeams] = useState<TeamResponse[]>([]);
   const [teamsError, setTeamsError] = useState('');
   const [teamsLoading, setTeamsLoading] = useState(true);
@@ -158,29 +133,6 @@ export default function UsersPage() {
   const [passwordVisible, setPasswordVisible] = useState(false);
   const [saving, setSaving] = useState(false);
   const currentUserId = getSession()?.user.id;
-
-  const openQuotaView = useCallback(async (user: UserResponse) => {
-    setQuotaViewUser(user);
-    setQuotaViewLoading(true);
-    setQuotaViewError('');
-    setOfficialQuota(null);
-    setPersonalQuota(null);
-    setMeterDevices([]);
-    try {
-      const [official, personal, devices] = await Promise.all([
-        getUserOfficialQuota(user.id),
-        getUserQuotaOverview(user.id),
-        getUserMeterDevices(user.id),
-      ]);
-      setOfficialQuota(official);
-      setPersonalQuota(personal);
-      setMeterDevices(devices);
-    } catch (requestError) {
-      setQuotaViewError(getErrorMessage(requestError));
-    } finally {
-      setQuotaViewLoading(false);
-    }
-  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -560,13 +512,9 @@ export default function UsersPage() {
                   ? '额度策略加载中…'
                   : teamPolicyUnavailable
                     ? 'Token 配额暂不可用'
-                    : `5 小时 ${formatEffectiveTokenLimit(
-                        user.fiveHourTokenLimit,
-                        team?.fiveHourTokenLimit,
-                      )} · 7 天 ${formatEffectiveTokenLimit(
-                        user.weeklyTokenLimit,
-                        team?.weeklyTokenLimit,
-                      )}`}
+                    : <>个人：5 小时 {user.fiveHourTokenLimit === null ? '不设限' : <TokenAmount value={user.fiveHourTokenLimit} />}
+                      {' · '}7 天 {user.weeklyTokenLimit === null ? '不设限' : <TokenAmount value={user.weeklyTokenLimit} />}
+                      <br />团队：{team ? <>{team.name} · 累计 {team.totalTokenLimit === null ? '不设限' : <TokenAmount value={team.totalTokenLimit} />}</> : '未分配'}</>}
               </Typography.Text>
               <Button
                 aria-label={`配置 ${user.email} 的团队与 Token 配额`}
@@ -613,7 +561,7 @@ export default function UsersPage() {
                   {
                     key: 'quota-view',
                     label: '查看额度',
-                    onClick: () => void openQuotaView(user),
+                    onClick: () => history.push(`/quotas/users/${encodeURIComponent(user.id)}`),
                   },
                   {
                     disabled: self,
@@ -656,7 +604,6 @@ export default function UsersPage() {
       mutatingId,
       openEdit,
       openQuotaPolicy,
-      openQuotaView,
       teamById,
       teamsLoading,
       teamsError,
@@ -667,7 +614,7 @@ export default function UsersPage() {
 
   return (
     <PageContainer
-      content="管理系统用户、团队与个人 Token 限额；官方 Codex 额度由各客户端本机登录后上报。"
+      content="个人限额与团队共享总额分别生效；官方 Codex 额度由本机登录后上报。"
       extra={[
         <Button icon={<PlusOutlined />} key="create" onClick={openCreate} type="primary">
           新增用户
@@ -886,7 +833,7 @@ export default function UsersPage() {
       >
         <Form form={quotaForm} layout="vertical" preserve={false}>
           <Form.Item
-            extra={teamsError ? '团队列表暂不可用，请先重试。' : '用户会继承所选团队的 Token 上限。'}
+            extra={teamsError ? '团队列表暂不可用，请先重试。' : '团队共享额度与个人上限分别计算。'}
             label="所属团队"
             name="teamId"
           >
@@ -906,7 +853,7 @@ export default function UsersPage() {
           </Form.Item>
           <Space align="start" size={16}>
             <Form.Item
-              extra="留空表示继承团队 Token 上限"
+              extra="留空表示个人 5 小时不设限"
               label="5 小时个人 Token 上限"
               name="fiveHourTokenLimit"
               rules={[tokenLimitRule()]}
@@ -920,7 +867,7 @@ export default function UsersPage() {
               />
             </Form.Item>
             <Form.Item
-              extra="留空表示继承团队 Token 上限"
+              extra="留空表示个人 7 天不设限；团队 7 天限制仍生效"
               label="7 天个人 Token 上限"
               name="weeklyTokenLimit"
               rules={[tokenLimitRule()]}
@@ -944,64 +891,6 @@ export default function UsersPage() {
         />
       </Modal>
 
-      <Modal
-        footer={null}
-        onCancel={() => setQuotaViewUser(null)}
-        open={quotaViewUser !== null}
-        title={quotaViewUser ? `${quotaViewUser.displayName} 的额度` : '用户额度'}
-      >
-        {quotaViewLoading ? <Typography.Text>正在读取额度…</Typography.Text> : null}
-        {quotaViewError ? <Alert showIcon title="额度读取失败" description={quotaViewError} type="error" /> : null}
-        {!quotaViewLoading && !quotaViewError ? (
-          <Space align="start" orientation="vertical" size={12}>
-            <Typography.Title level={5}>常驻计费服务</Typography.Title>
-            <Typography.Text>
-              Rust 常驻计费：{meterDevices.length === 0 ? '未配对'
-                : meterDevices.some((device) => device.online) ? '在线' : '离线'}
-            </Typography.Text>
-            {meterDevices[0]?.lastSeenAt ? (
-              <Typography.Text type="secondary">
-                最近心跳：{formatDate(meterDevices[0].lastSeenAt)}
-              </Typography.Text>
-            ) : null}
-            <Typography.Title level={5}>官方额度（客户端上报）</Typography.Title>
-            {officialQuota ? (
-              <>
-                <Typography.Text>套餐：{officialQuota.planType ?? '未知'}</Typography.Text>
-                <Typography.Text>
-                  官方 5 小时：{officialQuota.windows.find((window) => window.windowDurationMins === 300)
-                    ? `已使用 ${officialQuota.windows.find((window) => window.windowDurationMins === 300)!.usedPercent}%`
-                    : '官方未提供此窗口'}
-                </Typography.Text>
-                <Typography.Text>
-                  官方 7 天：{officialQuota.windows.find((window) => window.windowDurationMins === 10_080)
-                    ? `已使用 ${officialQuota.windows.find((window) => window.windowDurationMins === 10_080)!.usedPercent}%`
-                    : '官方未提供此窗口'}
-                </Typography.Text>
-                <Typography.Text type="secondary">
-                  最近上报：{formatDate(officialQuota.receivedAt)}
-                  {Date.now() - new Date(officialQuota.receivedAt).getTime() > 5 * 60_000
-                    ? ' · 历史快照（非实时）' : ' · 近期上报'}
-                </Typography.Text>
-              </>
-            ) : <Typography.Text type="secondary">暂无客户端上报的官方额度</Typography.Text>}
-            <Typography.Title level={5}>个人 Token 用量（本机日志上报）</Typography.Title>
-            {personalQuota ? (
-              <>
-                <Typography.Text>
-                  {`个人 5 小时：已用 ${formatTokenLimit(personalQuota.usage.fiveHourUsedTokens)} Token，剩余 ${personalQuota.usage.fiveHourRemainingTokens === null
-                    ? '未配置' : `${formatTokenLimit(personalQuota.usage.fiveHourRemainingTokens)} Token`}`}
-                </Typography.Text>
-                <Typography.Text>
-                  {`个人 7 天：已用 ${formatTokenLimit(personalQuota.usage.weeklyUsedTokens)} Token，剩余 ${personalQuota.usage.weeklyRemainingTokens === null
-                    ? '未配置' : `${formatTokenLimit(personalQuota.usage.weeklyRemainingTokens)} Token`}`}
-                </Typography.Text>
-              </>
-            ) : <Typography.Text type="secondary">暂无个人额度</Typography.Text>}
-            <Typography.Text type="secondary">数据为客户端报告，不能强制限制官方应用的使用。</Typography.Text>
-          </Space>
-        ) : null}
-      </Modal>
     </PageContainer>
   );
 }

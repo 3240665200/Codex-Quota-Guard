@@ -8,19 +8,38 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
+$appData = Join-Path $env:APPDATA 'com.codexquotaguard.desktop'
+$serverConfigFile = Join-Path $appData 'server-config.json'
+if (-not $PSBoundParameters.ContainsKey('ControlPlaneUrl') -and
+        (Test-Path -LiteralPath $serverConfigFile -PathType Leaf)) {
+    if ((Get-Item -LiteralPath $serverConfigFile).Length -gt 4096) {
+        throw 'Desktop server settings are invalid.'
+    }
+    $savedConfig = Get-Content -LiteralPath $serverConfigFile -Raw | ConvertFrom-Json
+    $ControlPlaneUrl = [string]$savedConfig.url
+}
 
 $controlPlaneUri = $null
 if (-not [Uri]::TryCreate($ControlPlaneUrl, [UriKind]::Absolute, [ref]$controlPlaneUri)) {
     throw 'ControlPlaneUrl must be an absolute URL.'
 }
-$isSecureOrigin = $controlPlaneUri.Scheme -eq 'https'
-$isLocalDevelopmentOrigin = $controlPlaneUri.Scheme -eq 'http' -and $controlPlaneUri.IsLoopback
 $hasOriginOnly = $controlPlaneUri.AbsolutePath -eq '/' -and
     [string]::IsNullOrEmpty($controlPlaneUri.Query) -and
     [string]::IsNullOrEmpty($controlPlaneUri.Fragment) -and
     [string]::IsNullOrEmpty($controlPlaneUri.UserInfo)
-if ((-not $isSecureOrigin -and -not $isLocalDevelopmentOrigin) -or -not $hasOriginOnly) {
-    throw 'ControlPlaneUrl must be an HTTPS origin, or an HTTP loopback origin for local development.'
+if ($controlPlaneUri.Scheme -notin @('http', 'https') -or -not $controlPlaneUri.Host -or -not $hasOriginOnly) {
+    throw 'ControlPlaneUrl must be an HTTP or HTTPS origin.'
+}
+if ($controlPlaneUri.Host -eq '0.0.0.0') {
+    $builder = [UriBuilder]::new($controlPlaneUri)
+    $builder.Host = '127.0.0.1'
+    $ControlPlaneUrl = $builder.Uri.GetLeftPart([UriPartial]::Authority)
+}
+$ControlPlaneUrl = ([Uri]$ControlPlaneUrl).GetLeftPart([UriPartial]::Authority)
+if ($PSBoundParameters.ContainsKey('ControlPlaneUrl')) {
+    New-Item -ItemType Directory -Path $appData -Force | Out-Null
+    [IO.File]::WriteAllText($serverConfigFile,
+        (@{url = $ControlPlaneUrl} | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
 }
 
 function Require-Command([string]$Name) {
@@ -47,6 +66,28 @@ if ($null -ne $rendererListener) {
 
 $pnpm = Require-Command 'pnpm.cmd'
 $java = Require-Command 'java.exe'
+$frontendDirectory = Join-Path $repositoryRoot 'apps\client\frontend'
+Push-Location -LiteralPath $frontendDirectory
+try {
+    & $pnpm build:meter
+    if ($LASTEXITCODE -ne 0) { throw 'Rust meter build failed; the desktop client was not started.' }
+} finally {
+    Pop-Location
+}
+
+# Prepare the independent meter before compiling or opening the desktop UI.
+$meter = Get-Service -Name 'CodexQuotaGuardMeter' -ErrorAction SilentlyContinue
+$installMeter = $false
+if ($null -eq $meter) {
+    Write-Host 'The always-on Rust meter service is not installed.'
+    $answer = Read-Host 'Install it now? Windows will request administrator approval. [Y/n]'
+    if ($answer -and $answer -notmatch '^(y|yes)$') {
+        throw 'Meter installation was cancelled; the desktop client was not started.'
+    }
+    $installMeter = $true
+}
+& (Join-Path $PSScriptRoot 'ensure-meter-service.ps1') -ServerUrl $ControlPlaneUrl -InstallIfMissing:$installMeter
+
 $javaHome = Split-Path -Parent (Split-Path -Parent $java)
 $javaw = Join-Path $javaHome 'bin\javaw.exe'
 if (-not (Test-Path -LiteralPath $javaw -PathType Leaf)) {

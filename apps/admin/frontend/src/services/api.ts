@@ -80,6 +80,8 @@ export interface TeamResponse {
   weeklyQuotaPercent: number;
   fiveHourTokenLimit: number | null;
   weeklyTokenLimit: number | null;
+  totalTokenLimit: number | null;
+  officialAccountId: string | null;
   memberCount: number;
   createdAt: string;
   updatedAt: string;
@@ -123,10 +125,14 @@ export interface UserTokenLimitUpdate {
 }
 
 export interface TeamTokenLimitUpdate extends UserTokenLimitUpdate {
+  totalTokenLimit: number | null;
+  officialAccountId: string | null;
   version?: number;
 }
 
 export interface UserQuotaOverview {
+  allowed?: boolean;
+  blockReason?: string | null;
   policy: {
     fiveHourTokenLimit: number | null;
     weeklyTokenLimit: number | null;
@@ -137,6 +143,24 @@ export interface UserQuotaOverview {
     fiveHourRemainingTokens: number | null;
     weeklyRemainingTokens: number | null;
   };
+  teamQuota?: TeamQuotaOverview | null;
+}
+
+export interface TeamQuotaOverview {
+  id: string;
+  name: string;
+  status: TeamStatus;
+  memberCount: number;
+  fiveHourTokenLimit: number | null;
+  weeklyTokenLimit: number | null;
+  totalTokenLimit: number | null;
+  fiveHourUsedTokens: number;
+  weeklyUsedTokens: number;
+  totalUsedTokens: number;
+  fiveHourRemainingTokens: number | null;
+  weeklyRemainingTokens: number | null;
+  totalRemainingTokens: number | null;
+  measuredAt: string | null;
 }
 
 export interface OfficialQuotaSnapshot {
@@ -152,12 +176,44 @@ export interface OfficialQuotaSnapshot {
   }>;
 }
 
+export interface OfficialAccountResponse {
+  id: string;
+  label: string;
+  estimatedTotalTokens: number;
+  reporterEmail: string | null;
+  quota: OfficialQuotaSnapshot | null;
+  createdAt: string;
+  updatedAt: string;
+  version: number;
+}
+
+export interface OfficialAccountInput {
+  label: string;
+  estimatedTotalTokens: number;
+  reporterEmail: string | null;
+  version?: number;
+}
+
 export interface MeterDeviceStatus {
   deviceId: string;
   status: 'ACTIVE' | 'REVOKED';
   expiresAt: string;
   lastSeenAt: string | null;
   online: boolean;
+}
+
+export interface UsageEventLogPage {
+  items: Array<{
+    id: string;
+    occurredAt: string;
+    receivedAt: string;
+    totalTokens: number;
+    source: 'TOKEN_USAGE_RECORD' | 'CUMULATIVE_TOKEN_COUNT_FALLBACK';
+  }>;
+  page: number;
+  size: number;
+  totalElements: number;
+  totalPages: number;
 }
 
 export function getUserMeterDevices(id: string): Promise<MeterDeviceStatus[]> {
@@ -172,10 +228,59 @@ export function getUserQuotaOverview(id: string): Promise<UserQuotaOverview> {
   );
 }
 
+export function getTeamQuotaOverview(id: string): Promise<TeamQuotaOverview> {
+  return request<TeamQuotaOverview>(
+    `/api/v1/admin/teams/${encodeURIComponent(id)}/quota-overview`,
+  );
+}
+
+export function resetUserQuota(id: string): Promise<void> {
+  return request<void>(`/api/v1/admin/users/${encodeURIComponent(id)}/quota-reset`, {
+    method: 'POST',
+  });
+}
+
+export function resetTeamQuota(id: string): Promise<void> {
+  return request<void>(`/api/v1/admin/teams/${encodeURIComponent(id)}/quota-reset`, {
+    method: 'POST',
+  });
+}
+
+export function getUserUsageEvents(
+  id: string,
+  page = 0,
+  size = 10,
+): Promise<UsageEventLogPage> {
+  const params = new URLSearchParams({ page: String(page), size: String(size) });
+  return request<UsageEventLogPage>(
+    `/api/v1/admin/users/${encodeURIComponent(id)}/usage-events?${params.toString()}`,
+  );
+}
+
 export async function getUserOfficialQuota(id: string): Promise<OfficialQuotaSnapshot | null> {
   return (await request<OfficialQuotaSnapshot | undefined>(
     `/api/v1/admin/users/${encodeURIComponent(id)}/official-quota`,
   )) ?? null;
+}
+
+export function listOfficialAccounts(): Promise<OfficialAccountResponse[]> {
+  return request<OfficialAccountResponse[]>('/api/v1/admin/official-accounts');
+}
+
+export function createOfficialAccount(body: OfficialAccountInput): Promise<OfficialAccountResponse> {
+  return request<OfficialAccountResponse>('/api/v1/admin/official-accounts', {
+    body: JSON.stringify(body), method: 'POST',
+  });
+}
+
+export function updateOfficialAccount(id: string, body: OfficialAccountInput): Promise<OfficialAccountResponse> {
+  return request<OfficialAccountResponse>(`/api/v1/admin/official-accounts/${encodeURIComponent(id)}`, {
+    body: JSON.stringify(body), method: 'PUT',
+  });
+}
+
+export function deleteOfficialAccount(id: string): Promise<void> {
+  return request<void>(`/api/v1/admin/official-accounts/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
 const SESSION_KEY = 'codex-quota-guard.session';

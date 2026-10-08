@@ -15,6 +15,10 @@ public interface TeamRepository extends JpaRepository<Team, UUID> {
 
     boolean existsByNameAndIdNot(String name, UUID id);
 
+    boolean existsByOfficialAccountId(UUID officialAccountId);
+
+    List<Team> findByOfficialAccountId(UUID officialAccountId);
+
     List<Team> findAllByOrderByNameAscIdAsc();
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)

@@ -1,6 +1,6 @@
 {
   "name": "@codex-quota-guard/client",
-  "version": "0.2.2",
+  "version": "0.2.11",
   "private": true,
   "description": "Cross-platform Codex quota dashboard with a Java Spring Boot backend",
   "type": "module",
@@ -11,7 +11,8 @@
     "dev:renderer": "vite",
     "build:renderer": "vite build",
     "build:backend": "node prepare-backend.mjs",
-    "build:desktop": "pnpm build:backend && pnpm build:meter && pnpm build:renderer",
+    "build:desktop": "pnpm build:backend && pnpm build:meter && pnpm build:runtime && pnpm build:renderer",
+    "build:runtime": "node prepare-java-runtime.mjs",
     "build:meter": "node prepare-meter.mjs",
     "test:backend": "mvn -f ../backend/pom.xml test",
     "typecheck": "tsc --noEmit",

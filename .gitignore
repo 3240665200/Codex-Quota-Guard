@@ -19,6 +19,9 @@ dist/
 apps/client/frontend/src-tauri/target/
 apps/client/frontend/src-tauri/gen/
 apps/client/frontend/src-tauri/resources/backend/*.jar
+apps/client/frontend/src-tauri/resources/java/
+apps/client/frontend/src-tauri/resources/.java-staging-*/
+apps/client/frontend/.build-cache/
 apps/client/frontend/src-tauri/resources/meter/quota-guard-meter*
 apps/client/frontend/src-tauri/resources/meter/*.ps1
 apps/client/meter/target/

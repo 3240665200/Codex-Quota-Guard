@@ -5,6 +5,7 @@ import jakarta.validation.ConstraintViolationException;
 import jakarta.servlet.http.HttpServletRequest;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -22,9 +23,13 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
 public class ApiExceptionHandler {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(ApiExceptionHandler.class);
+    private static final AtomicLong LAST_METER_REJECTION_LOG = new AtomicLong();
+    private static final long METER_REJECTION_LOG_INTERVAL_MILLIS = 300_000L;
+    private static final String METER_USAGE_PATH = "/api/v1/meter/usage/events";
 
     @ExceptionHandler(DomainException.class)
-    public ResponseEntity<ApiError> domain(DomainException exception) {
+    public ResponseEntity<ApiError> domain(DomainException exception, HttpServletRequest request) {
+        logMeterRejection(request, exception.getCode(), List.of());
         return response(
                 exception.getStatus(),
                 exception.getCode(),
@@ -34,7 +39,8 @@ public class ApiExceptionHandler {
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
-    public ResponseEntity<ApiError> validation(MethodArgumentNotValidException exception) {
+    public ResponseEntity<ApiError> validation(MethodArgumentNotValidException exception,
+            HttpServletRequest request) {
         List<ApiError.FieldViolation> details = exception.getBindingResult()
                 .getFieldErrors()
                 .stream()
@@ -43,6 +49,7 @@ public class ApiExceptionHandler {
                         error.getDefaultMessage()
                 ))
                 .toList();
+        logMeterRejection(request, "VALIDATION_ERROR", details);
         return response(
                 HttpStatus.BAD_REQUEST,
                 "VALIDATION_ERROR",
@@ -66,7 +73,9 @@ public class ApiExceptionHandler {
     }
 
     @ExceptionHandler(HttpMessageNotReadableException.class)
-    public ResponseEntity<ApiError> malformedJson(HttpMessageNotReadableException exception) {
+    public ResponseEntity<ApiError> malformedJson(HttpMessageNotReadableException exception,
+            HttpServletRequest request) {
+        logMeterRejection(request, "MALFORMED_JSON", List.of());
         return response(
                 HttpStatus.BAD_REQUEST,
                 "MALFORMED_JSON",
@@ -127,5 +136,16 @@ public class ApiExceptionHandler {
                 UUID.randomUUID().toString(),
                 details
         ));
+    }
+
+    private void logMeterRejection(HttpServletRequest request, String code,
+            List<ApiError.FieldViolation> details) {
+        if (!METER_USAGE_PATH.equals(request.getRequestURI())) return;
+        long now = System.currentTimeMillis();
+        long previous = LAST_METER_REJECTION_LOG.get();
+        if (now - previous < METER_REJECTION_LOG_INTERVAL_MILLIS
+                || !LAST_METER_REJECTION_LOG.compareAndSet(previous, now)) return;
+        LOGGER.warn("Meter usage rejected code={} fields={}", code,
+                details.stream().map(ApiError.FieldViolation::field).toList());
     }
 }

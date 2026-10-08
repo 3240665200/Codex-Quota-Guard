@@ -6,6 +6,7 @@ import java.util.UUID;
 public record QuotaOverviewResponse(
         QuotaSystemUserResponse user,
         TeamReference team,
+        TeamQuotaOverviewResponse teamQuota,
         Policy policy,
         Usage usage,
         boolean allowed,

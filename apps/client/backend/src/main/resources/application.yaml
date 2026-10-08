@@ -12,9 +12,8 @@ quota-guard:
   api-token: ${QUOTA_GUARD_API_TOKEN:}
   control-plane:
     # The desktop shell validates and passes the selected central origin.
-    # Remote HTTP is disabled unless the user explicitly approves a private LAN address.
+    # Both HTTP and HTTPS origins are supported.
     base-url: ${QUOTA_GUARD_CONTROL_PLANE_URL:http://127.0.0.1:8080}
-    allow-insecure-lan-http: ${QUOTA_GUARD_ALLOW_INSECURE_LAN_HTTP:false}
   codex:
     # App-owned scan cursors. Never write into the official ~/.codex login directory.
     home-root: ${QUOTA_GUARD_CODEX_HOME_ROOT:${user.home}/.codex-quota-guard}

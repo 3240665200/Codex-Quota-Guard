@@ -47,17 +47,46 @@ public class QuotaOverviewService {
         QuotaOverviewResponse.TeamReference teamReference = team == null
                 ? null
                 : new QuotaOverviewResponse.TeamReference(team.getId(), team.getName());
-        QuotaOverviewResponse.Policy policy = policy(user, team);
-        QuotaOverviewResponse.Usage currentUsage = currentUsage(user, policy);
+        QuotaOverviewResponse.Policy policy = policy(user);
+        Instant now = clock.instant();
+        TeamQuotaOverviewResponse teamQuota = team == null ? null : teamQuota(team, now);
+        QuotaOverviewResponse.Usage currentUsage = currentUsage(user, now);
 
-        String blockReason = blockReason(team, currentUsage, policy);
+        String blockReason = blockReason(team, teamQuota, currentUsage, policy);
         return new QuotaOverviewResponse(
                 QuotaSystemUserResponse.from(user),
                 teamReference,
+                teamQuota,
                 policy,
                 currentUsage,
                 blockReason == null,
                 blockReason
+        );
+    }
+
+    @Transactional(readOnly = true)
+    public TeamQuotaOverviewResponse teamOverview(UUID teamId) {
+        Team team = teams.findById(teamId).orElseThrow(() -> new DomainException(
+                "TEAM_NOT_FOUND", "Team not found", HttpStatus.NOT_FOUND));
+        return teamQuota(team, clock.instant());
+    }
+
+    private TeamQuotaOverviewResponse teamQuota(Team team, Instant now) {
+        Instant sinceFiveHour = since(now, FIVE_HOUR_WINDOW, team.getQuotaResetAt());
+        Instant sinceWeekly = since(now, WEEKLY_WINDOW, team.getQuotaResetAt());
+        Instant resetAt = resetAtOrEpoch(team.getQuotaResetAt());
+        long fiveHourUsed = usage.sumTeamTokensSince(team.getId(), sinceFiveHour, now, resetAt);
+        long weeklyUsed = usage.sumTeamTokensSince(team.getId(), sinceWeekly, now, resetAt);
+        long totalUsed = usage.sumTeamTokensSince(team.getId(), resetAt, now, resetAt);
+        return new TeamQuotaOverviewResponse(
+                team.getId(), team.getName(), team.getStatus().name(),
+                users.countByTeamId(team.getId()),
+                team.getFiveHourTokenLimit(), team.getWeeklyTokenLimit(), team.getTotalTokenLimit(),
+                fiveHourUsed, weeklyUsed, totalUsed,
+                remaining(team.getFiveHourTokenLimit(), fiveHourUsed),
+                remaining(team.getWeeklyTokenLimit(), weeklyUsed),
+                remaining(team.getTotalTokenLimit(), totalUsed),
+                usage.latestTeamReceivedAt(team.getId())
         );
     }
 
@@ -66,15 +95,9 @@ public class QuotaOverviewService {
         return teamId == null ? null : teams.findById(teamId).orElse(null);
     }
 
-    private QuotaOverviewResponse.Policy policy(User user, Team team) {
-        ResolvedLimit fiveHour = resolveLimit(
-                user.getFiveHourTokenLimit(),
-                team == null ? null : team.getFiveHourTokenLimit()
-        );
-        ResolvedLimit weekly = resolveLimit(
-                user.getWeeklyTokenLimit(),
-                team == null ? null : team.getWeeklyTokenLimit()
-        );
+    private QuotaOverviewResponse.Policy policy(User user) {
+        ResolvedLimit fiveHour = resolveLimit(user.getFiveHourTokenLimit());
+        ResolvedLimit weekly = resolveLimit(user.getWeeklyTokenLimit());
         return new QuotaOverviewResponse.Policy(
                 fiveHour.limit(),
                 weekly.limit(),
@@ -83,33 +106,41 @@ public class QuotaOverviewService {
         );
     }
 
-    private ResolvedLimit resolveLimit(Long userOverride, Long teamDefault) {
-        if (userOverride != null) {
-            return new ResolvedLimit(userOverride, QuotaOverviewResponse.Policy.Source.USER);
-        }
-        if (teamDefault != null) {
-            return new ResolvedLimit(teamDefault, QuotaOverviewResponse.Policy.Source.TEAM);
+    private ResolvedLimit resolveLimit(Long personalLimit) {
+        if (personalLimit != null) {
+            return new ResolvedLimit(personalLimit, QuotaOverviewResponse.Policy.Source.USER);
         }
         return new ResolvedLimit(null, QuotaOverviewResponse.Policy.Source.UNCONFIGURED);
     }
 
-    private QuotaOverviewResponse.Usage currentUsage(
-            User user,
-            QuotaOverviewResponse.Policy policy
-    ) {
-        Instant now = Instant.now(clock);
-        long fiveHourUsed = usage.sumTokensSince(user.getId(), now.minus(FIVE_HOUR_WINDOW));
-        long weeklyUsed = usage.sumTokensSince(user.getId(), now.minus(WEEKLY_WINDOW));
+    private QuotaOverviewResponse.Usage currentUsage(User user, Instant now) {
+        long fiveHourUsed = usage.sumTokensSince(user.getId(),
+                since(now, FIVE_HOUR_WINDOW, user.getQuotaResetAt()), now,
+                resetAtOrEpoch(user.getQuotaResetAt()));
+        long weeklyUsed = usage.sumTokensSince(user.getId(),
+                since(now, WEEKLY_WINDOW, user.getQuotaResetAt()), now,
+                resetAtOrEpoch(user.getQuotaResetAt()));
+        Long personalFiveHourRemaining = remaining(user.getFiveHourTokenLimit(), fiveHourUsed);
+        Long personalWeeklyRemaining = remaining(user.getWeeklyTokenLimit(), weeklyUsed);
         return new QuotaOverviewResponse.Usage(
                 QuotaOverviewResponse.MeasurementStatus.CLIENT_REPORTED,
                 fiveHourUsed,
                 weeklyUsed,
-                remaining(policy.fiveHourTokenLimit(), fiveHourUsed),
-                remaining(policy.weeklyTokenLimit(), weeklyUsed),
+                personalFiveHourRemaining,
+                personalWeeklyRemaining,
                 null,
                 null,
                 usage.latestReceivedAt(user.getId())
         );
+    }
+
+    private Instant since(Instant now, Duration window, Instant resetAt) {
+        Instant windowStart = now.minus(window);
+        return resetAt == null || resetAt.isBefore(windowStart) ? windowStart : resetAt;
+    }
+
+    private Instant resetAtOrEpoch(Instant resetAt) {
+        return resetAt == null ? Instant.EPOCH : resetAt;
     }
 
     private Long remaining(Long tokenLimit, long used) {
@@ -118,19 +149,36 @@ public class QuotaOverviewService {
 
     private String blockReason(
             Team team,
+            TeamQuotaOverviewResponse teamQuota,
             QuotaOverviewResponse.Usage currentUsage,
             QuotaOverviewResponse.Policy policy
     ) {
         if (team != null && team.getStatus() != Team.Status.ACTIVE) {
             return TEAM_UNAVAILABLE;
         }
-        if (policy.fiveHourTokenLimit() == null || policy.weeklyTokenLimit() == null) {
+        if (teamQuota != null && teamQuota.weeklyTokenLimit() == null) {
             return TOKEN_QUOTA_UNCONFIGURED;
         }
-        if (currentUsage.fiveHourUsedTokens() >= policy.fiveHourTokenLimit()) {
+        if (teamQuota == null && policy.weeklyTokenLimit() == null) {
+            return TOKEN_QUOTA_UNCONFIGURED;
+        }
+        if (teamQuota != null && Long.valueOf(0).equals(teamQuota.fiveHourRemainingTokens())) {
+            return "TEAM_FIVE_HOUR_TOKEN_QUOTA_EXCEEDED";
+        }
+        if (teamQuota != null && Long.valueOf(0).equals(teamQuota.weeklyRemainingTokens())) {
+            return "TEAM_WEEKLY_TOKEN_QUOTA_EXCEEDED";
+        }
+        if (teamQuota != null && Long.valueOf(0).equals(teamQuota.totalRemainingTokens())) {
+            return "TEAM_TOTAL_TOKEN_QUOTA_EXCEEDED";
+        }
+        if (policy.fiveHourSource() == QuotaOverviewResponse.Policy.Source.USER
+                && policy.fiveHourTokenLimit() != null
+                && currentUsage.fiveHourUsedTokens() >= policy.fiveHourTokenLimit()) {
             return FIVE_HOUR_QUOTA_EXCEEDED;
         }
-        if (currentUsage.weeklyUsedTokens() >= policy.weeklyTokenLimit()) {
+        if (policy.weeklySource() == QuotaOverviewResponse.Policy.Source.USER
+                && policy.weeklyTokenLimit() != null
+                && currentUsage.weeklyUsedTokens() >= policy.weeklyTokenLimit()) {
             return WEEKLY_QUOTA_EXCEEDED;
         }
         return null;

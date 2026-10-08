@@ -41,7 +41,7 @@ pnpm-workspace.yaml  pnpm 工作区声明
 每个应用的前端与后端都放在同一个应用目录下，同时保持独立构建和部署边界。
 仓库根目录只保留工作区入口；依赖目录和构建产物由工具生成，不属于源码层级。
 
-## 环境要求
+## 开发和打包电脑的环境要求
 
 - Java 17
 - Maven 3.9+
@@ -49,6 +49,12 @@ pnpm-workspace.yaml  pnpm 工作区声明
 - pnpm 10.12.3
 - Rust 1.85+ 与 Tauri 对应平台依赖（只开发管理端时不需要 Rust）
 - PostgreSQL（运行管理端后端时需要）
+
+Windows **安装版目标电脑**不需要 Java、Maven、Node.js、pnpm 或 Rust。打包脚本会从
+Eclipse Adoptium 下载经 SHA-256 校验的 Temurin Java 17 运行时，并随安装包附带
+WebView2 离线安装程序；下载和编译只在打包电脑进行。目标电脑仍需受支持的 Windows，
+并能连接中央服务。查看官方 Codex 额度或统计 Codex 会话时，还需该电脑上的官方 Codex
+应用或 CLI 已自行登录；这不是本程序的开发环境依赖。
 
 安装前端依赖：
 
@@ -85,32 +91,54 @@ pnpm dev:admin
 Windows 可直接双击项目根目录的 `一键启动-桌面客户端.cmd`。它会自动定位 Java，
 构建本地 Java 服务并打开 Tauri 客户端；重复双击只会激活已有窗口。客户端默认连接
 `http://127.0.0.1:8080` 的中央服务。安装版可在登录页的“服务器设置”中更改地址；
-保存后需要重启客户端。推荐 HTTPS；仅在可信局域网临时使用 HTTP 时，须勾选风险确认。
+支持直接填写 HTTP 或 HTTPS 地址，保存后需要重启客户端，无需确认勾选。
+`0.0.0.0` 是服务端监听地址，客户端填写它时会自动改为 `127.0.0.1`；其他电脑应填写服务器的实际 IP 或域名。
 
 ```bash
 pnpm dev:client
 ```
+
+使用 `scripts/windows/start-client.ps1` 启动时，脚本会先准备 `CodexQuotaGuardMeter`，再编译或打开桌面窗口。
+服务未安装时会询问是否安装；确认后请求 Windows 管理员授权。已安装但停止时立即启动。
+脚本采用客户端保存的服务器地址，并同步计费服务配置；也可传入 `-ControlPlaneUrl` 同时更新两者。源码中的计费程序更新后，脚本会检测已安装版本并请求管理员授权升级。
+取消安装或服务启动失败时脚本会停止启动流程并显示原因。已有服务的设备 ID、绑定账户和统计状态会保留。
 
 该命令会构建 `apps/client/backend` 的 Java JAR，把它复制到 Tauri 资源目录，
 然后启动 Vite 与 Tauri。Java 服务只监听回环地址，并由 Tauri 管理生命周期。启动后
 必须先登录本系统账号；官方 Codex 登录应在官方桌面应用或 CLI 中自行完成。
 本程序不会读取、覆盖或下发官方凭证。开发阶段的局域网 HTTP 会传输本系统密码，仅用于可信测试环境。
 
-Windows 常驻统计需要在每台用户电脑上以管理员身份运行
-`scripts/windows/install-meter-service.ps1 -ServerUrl http://192.168.0.102:8080`。
-脚本会注册自动启动的 `CodexQuotaGuardMeter` 服务；然后重开客户端并登录本系统账号完成设备配对。
-安装脚本不会重启电脑。客户端“计费程序状态”会显示运行、配对和上报结果；后台“用户管理 → 查看额度”
+Windows 常驻统计由每台用户电脑上的 `CodexQuotaGuardMeter` 服务负责。安装 0.2.4 或更新版后，
+先在客户端保存正确的中央服务器地址并重启，再右键以**管理员身份运行安装后的桌面程序**。
+首次启动时，若服务未安装、打包资源齐全且中央服务可连接，客户端会自动安装并启动服务；
+然后登录本系统账号完成设备配对。普通权限、地址错误或服务器不可连接时不会执行安装，
+客户端会给出对应提示，可在修正后于仪表盘点击“安装计费服务”重试。
+已有服务若停止，客户端会请求 Windows 启动；权限不足时只针对固定服务发起一次 UAC 授权。
+关闭桌面窗口不会停止 Rust 服务；它仍由 Windows 服务管理器负责开机启动和进程异常退出后的恢复。
+客户端不能绕过管理员主动停用或 Windows 权限控制。也可在管理员 PowerShell 手动运行
+`scripts/windows/install-meter-service.ps1 -ServerUrl http://192.168.0.102:8080` 作为故障排查方式。
+安装过程不会重启电脑。客户端“计费程序状态”会显示运行、配对和上报结果；后台“用户管理 → 查看额度”
 会显示最近心跳。当前一个 Windows 登录用户只对应一个系统账户，不能在同一设备 ID 上改绑其他账户；
 管理员撤销后该设备 ID 也不可自行重新配对，改绑需要管理员重新登记新设备。服务已安装但未配对时，不应把 0 Token 当作实际用量为 0。
-打包版安装包包含 Rust 可执行文件和安装脚本；在目标电脑安装桌面程序后，可从安装目录的 `meter` 子目录
-运行上述脚本（安装包本身不会静默安装系统服务）。
+打包版包含本地 Java 服务、Temurin Java 17 运行时、WebView2 离线安装程序、Rust
+计费可执行文件和安装脚本。安装包本身不注册计费服务；由首次以管理员身份运行的桌面程序执行安装。
 
 新版 Rust 服务的本地运行日志位于 `%ProgramData%\CodexQuotaGuard\Meter\logs\meter.jsonl`，
-管理员 PowerShell 可用 `Get-Content "$env:ProgramData\CodexQuotaGuard\Meter\logs\meter.jsonl" -Tail 50`
-查看。日志只保存运行状态、心跳、已上报事件数/Token 合计及固定错误码，不保存凭证或原始会话内容；
+管理员 PowerShell 可运行 `& .\scripts\windows\show-meter-logs.ps1 -Tail 50` 查看最近记录，
+或加 `-ErrorsOnly` 只看错误。后台“用户管理 → 查看额度 → Token 用量流水”提供该用户**已入库事件**的分页明细。
+本机日志只保存运行状态、心跳、已上报事件数/Token 合计及固定错误码，不保存凭证或原始会话内容；
 单文件最大 2 MiB，另保留 5 份轮转备份。源码更新后必须重新打包并升级已安装服务，旧可执行文件不会自动获得日志功能。
 
 ## 验证与构建
+
+Windows 一键打包可运行 `& .\scripts\windows\package-client.ps1`，或使用
+`pnpm build:client`。首次打包需要联网下载固定版本的 Temurin JRE 和 WebView2
+离线安装程序，之后 Temurin 压缩包缓存在
+`D:\BuildCache\pingche\desktop-package-target\java-runtime-cache`。
+运行时随安装包放在 `java/` 资源目录，正式版不会调用系统 `PATH` 中的 Java。
+安装包输出到 `D:\BuildCache\pingche\desktop-package-target\release\bundle\nsis`。
+macOS/Linux 打包需通过 `QUOTA_GUARD_BUNDLE_JAVA_HOME` 指定可再分发的 Java 17
+运行时，并在对应系统上构建。
 
 ```bash
 mvn verify

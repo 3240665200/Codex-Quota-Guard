@@ -19,11 +19,14 @@ $uri = $null
 if (-not [Uri]::TryCreate($ServerUrl, [UriKind]::Absolute, [ref]$uri)) {
     throw 'ServerUrl must be an absolute URL.'
 }
-$privateHttp = $uri.Scheme -eq 'http' -and ($uri.IsLoopback -or
-    $uri.Host -match '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)')
-if (($uri.Scheme -ne 'https' -and -not $privateHttp) -or
+if ($uri.Scheme -notin @('http', 'https') -or -not $uri.Host -or
     $uri.AbsolutePath -ne '/' -or $uri.UserInfo -or $uri.Query -or $uri.Fragment) {
-    throw 'ServerUrl must be an HTTPS origin or a private LAN/loopback HTTP origin.'
+    throw 'ServerUrl must be an HTTP or HTTPS origin.'
+}
+if ($uri.Host -eq '0.0.0.0') {
+    $builder = [UriBuilder]::new($uri)
+    $builder.Host = '127.0.0.1'
+    $uri = $builder.Uri
 }
 
 $hasBuildDrive = Test-Path -LiteralPath 'D:\' -PathType Container
@@ -127,6 +130,11 @@ if ($LASTEXITCODE -ne 0) { throw 'Could not configure service recovery.' }
 Start-Service -Name $serviceName -ErrorAction Stop
 $running = Get-Service -Name $serviceName
 $running.WaitForStatus('Running', [TimeSpan]::FromSeconds(20))
+[IO.File]::WriteAllText((Join-Path $appData 'meter-connection.json'),
+    (@{serverUrl = $configuration.serverUrl;
+        binaryHash = (Get-FileHash -LiteralPath $installedBinary -Algorithm SHA256).Hash} | ConvertTo-Json -Compress),
+    [Text.UTF8Encoding]::new($false))
 Write-Host "Rust meter service is running: $serviceName"
 Write-Host "Device ID: $deviceId"
+Write-Host "Private activity log: $(Join-Path $stateDirectory 'logs\meter.jsonl')"
 Write-Host 'Reopen Quota Guard and sign in to pair this service. No computer restart was performed.'

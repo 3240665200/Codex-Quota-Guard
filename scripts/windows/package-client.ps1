@@ -27,6 +27,8 @@ Require-Command 'mvn.cmd' | Out-Null
 Require-Command 'java.exe' | Out-Null
 Require-Command 'cargo.exe' | Out-Null
 Require-Command 'rustc.exe' | Out-Null
+Require-Command 'curl.exe' | Out-Null
+Require-Command 'tar.exe' | Out-Null
 
 New-Item -ItemType Directory -Path $targetDirectory -Force | Out-Null
 Write-Host "Building desktop installer. Rust output: $targetDirectory"
@@ -53,6 +55,10 @@ try {
 }
 
 $bundleDirectory = Join-Path $targetDirectory 'release\bundle\nsis'
+$javaLauncher = Join-Path $frontendDirectory 'src-tauri\resources\java\bin\javaw.exe'
+if (-not (Test-Path -LiteralPath $javaLauncher -PathType Leaf)) {
+    throw "Packaging finished without the bundled Java runtime: $javaLauncher"
+}
 $installers = @(
     Get-ChildItem -LiteralPath $bundleDirectory -Filter '*.exe' -File -ErrorAction SilentlyContinue |
         Where-Object { $_.LastWriteTime -ge $startedAt.AddSeconds(-3) } |
@@ -67,6 +73,7 @@ Write-Host 'Windows installer is ready:'
 foreach ($installer in $installers) {
     Write-Host $installer.FullName
 }
-Write-Host 'The installed app requires Java 17 or newer on the target PC.'
-Write-Host 'The Rust meter executable and install script are bundled in the app meter directory.'
-Write-Host 'Install the Windows service from an elevated PowerShell on each target PC; the setup does not install it silently.'
+Write-Host 'The installer includes a verified Eclipse Temurin Java 17 runtime and offline WebView2 installer.'
+Write-Host 'The target PC does not need Java, Maven, Node.js, pnpm, or Rust installed.'
+Write-Host 'The Rust meter executable, install script, and safe log viewer are bundled in the app meter directory.'
+Write-Host 'After setup, save the server address, restart, then run the installed app as Administrator once for automatic meter-service installation.'

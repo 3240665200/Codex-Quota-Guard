@@ -40,6 +40,28 @@ export default [
     path: '/teams',
   },
   {
+    access: 'canAdmin',
+    component: './official-accounts',
+    icon: 'profile',
+    name: '官方账户',
+    path: '/official-accounts',
+  },
+  {
+    access: 'canAdmin',
+    component: './quotas',
+    icon: 'fund',
+    name: '额度查看',
+    path: '/quotas',
+  },
+  {
+    access: 'canAdmin',
+    component: './quotas/user',
+    layout: true,
+    name: '用户额度',
+    path: '/quotas/users/:id',
+    hideInMenu: true,
+  },
+  {
     component: './exception/403',
     layout: false,
     path: '/403',

@@ -17,7 +17,7 @@ use uuid::Uuid;
 use crate::server_config;
 
 const LOOPBACK_HOST: &str = "127.0.0.1";
-const STARTUP_TIMEOUT: Duration = Duration::from_secs(12);
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const RETRY_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -56,7 +56,7 @@ impl ApiRoute {
 
 #[derive(Debug, Error)]
 pub(crate) enum BackendError {
-    #[error("本地服务启动失败，请确认已安装 Java 17 后重试。")]
+    #[error("本地服务启动失败，安装包可能不完整，请重新安装。")]
     Startup,
     #[error("本地服务暂时不可用，请稍后重试。")]
     Unavailable,
@@ -111,15 +111,11 @@ impl BackendState {
             .app_data_dir()
             .map_err(|_| BackendError::Startup)?;
 
-        let mut child = Command::new(java_executable())
+        let mut child = Command::new(java_executable(app)?)
             .arg("-jar")
             .arg(jar)
             .env("QUOTA_GUARD_API_TOKEN", token.value())
             .env("QUOTA_GUARD_CONTROL_PLANE_URL", server.url)
-            .env(
-                "QUOTA_GUARD_ALLOW_INSECURE_LAN_HTTP",
-                server.allow_insecure_lan_http.to_string(),
-            )
             .env("QUOTA_GUARD_CODEX_HOME_ROOT", &usage_state_root)
             .env(
                 "QUOTA_GUARD_METER_DEVICE_ID_FILE",
@@ -303,8 +299,40 @@ fn request_graceful_shutdown(process: &mut RunningBackend) -> bool {
     false
 }
 
-fn java_executable() -> String {
-    env::var("CODEX_QUOTA_GUARD_JAVA").unwrap_or_else(|_| "java".to_owned())
+fn bundled_java_relative_path() -> PathBuf {
+    PathBuf::from("java").join("bin").join(if cfg!(windows) {
+        "javaw.exe"
+    } else {
+        "java"
+    })
+}
+
+fn java_executable(app: &AppHandle) -> Result<PathBuf, BackendError> {
+    #[cfg(debug_assertions)]
+    if let Some(path) = env::var_os("CODEX_QUOTA_GUARD_JAVA") {
+        return Ok(PathBuf::from(path));
+    }
+
+    let relative = bundled_java_relative_path();
+    if let Ok(executable) = env::current_exe() {
+        if let Some(directory) = executable.parent() {
+            let java = directory.join(&relative);
+            if java.is_file() {
+                return Ok(java);
+            }
+        }
+    }
+    if let Ok(java) = app.path().resolve(&relative, BaseDirectory::Resource) {
+        if java.is_file() {
+            return Ok(java);
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    return Ok(PathBuf::from("java"));
+
+    #[cfg(not(debug_assertions))]
+    Err(BackendError::Startup)
 }
 
 fn resolve_backend_jar(app: &AppHandle) -> Result<PathBuf, BackendError> {
@@ -424,6 +452,14 @@ mod tests {
         assert!(!error.contains("@"));
         assert!(!error.contains("\\\\"));
         assert!(!error.contains('/'));
+    }
+
+    #[test]
+    fn bundled_runtime_uses_a_fixed_platform_launcher() {
+        let path = bundled_java_relative_path();
+        assert!(path.starts_with("java"));
+        assert_eq!(path.parent(), Some(std::path::Path::new("java/bin")));
+        assert_eq!(path.file_name().unwrap(), if cfg!(windows) { "javaw.exe" } else { "java" });
     }
 
     #[test]

@@ -5,7 +5,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import TeamsPage from './index';
 import {
   createTeam,
+  getTeamQuotaOverview,
   listTeams,
+  listOfficialAccounts,
   updateTeam,
   updateTeamTokenLimits,
 } from '../../services/api';
@@ -13,8 +15,10 @@ import type { TeamResponse } from '../../services/api';
 
 vi.mock('../../services/api', () => ({
   createTeam: vi.fn(),
+  getTeamQuotaOverview: vi.fn(),
   deleteTeam: vi.fn(),
   listTeams: vi.fn(),
+  listOfficialAccounts: vi.fn(),
   updateTeam: vi.fn(),
   updateTeamTokenLimits: vi.fn(),
 }));
@@ -24,6 +28,8 @@ const team: TeamResponse = {
   description: '研发团队',
   fiveHourQuotaPercent: 80,
   fiveHourTokenLimit: 50_000,
+  totalTokenLimit: 200_000,
+  officialAccountId: null,
   id: 'team-1',
   memberCount: 2,
   name: '研发',
@@ -50,6 +56,18 @@ describe('团队与 Token 配额页面', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(listTeams).mockResolvedValue([]);
+    vi.mocked(listOfficialAccounts).mockResolvedValue([]);
+    vi.mocked(getTeamQuotaOverview).mockResolvedValue({
+      id: team.id, name: team.name, status: team.status, memberCount: team.memberCount,
+      fiveHourTokenLimit: team.fiveHourTokenLimit,
+      weeklyTokenLimit: team.weeklyTokenLimit,
+      totalTokenLimit: team.totalTokenLimit,
+      fiveHourUsedTokens: 120, weeklyUsedTokens: 300,
+      totalUsedTokens: 500,
+      fiveHourRemainingTokens: 49_880, weeklyRemainingTokens: 99_700,
+      totalRemainingTokens: 199_500,
+      measuredAt: '2026-10-08T04:00:00Z',
+    });
     vi.mocked(createTeam).mockResolvedValue(team);
     vi.mocked(updateTeam).mockResolvedValue(team);
     vi.mocked(updateTeamTokenLimits).mockResolvedValue(team);
@@ -64,7 +82,7 @@ describe('团队与 Token 配额页面', () => {
     });
 
     const inputs = tokenLimitInputs();
-    fireEvent.change(inputs[0], { target: { value: '0' } });
+    fireEvent.change(inputs[1], { target: { value: '0' } });
     fireEvent.click(screen.getByRole('button', { name: /创\s*建/ }));
     fireEvent.click(await screen.findByRole('button', { name: '确认创建' }));
     expect(createTeam).toHaveBeenCalledOnce();
@@ -76,6 +94,8 @@ describe('团队与 Token 配额页面', () => {
     await waitFor(() =>
       expect(updateTeamTokenLimits).toHaveBeenCalledWith(team.id, {
         fiveHourTokenLimit: 0,
+        totalTokenLimit: null,
+        officialAccountId: null,
         version: team.version,
         weeklyTokenLimit: null,
       }),
@@ -88,6 +108,14 @@ describe('团队与 Token 配额页面', () => {
     expect(screen.queryByRole('combobox', { name: '选择托管 Codex 账户' })).not.toBeInTheDocument();
   });
 
+  it('shows shared consumption next to the team limits', async () => {
+    vi.mocked(listTeams).mockResolvedValue([team]);
+    renderPage();
+    expect(await screen.findByTitle('精确值：120 Token')).toBeInTheDocument();
+    expect(screen.getByTitle('精确值：49,880 Token')).toBeInTheDocument();
+    expect(getTeamQuotaOverview).toHaveBeenCalledWith(team.id);
+  });
+
   it('updates token limits without any managed account assignment', async () => {
     vi.mocked(listTeams).mockResolvedValue([team]);
     vi.mocked(updateTeam).mockResolvedValue({ ...team, version: 7 });
@@ -97,6 +125,7 @@ describe('团队与 Token 配额页面', () => {
     const inputs = tokenLimitInputs();
     fireEvent.change(inputs[0], { target: { value: '99999' } });
     fireEvent.change(inputs[1], { target: { value: '99999' } });
+    fireEvent.change(inputs[2], { target: { value: '99999' } });
     fireEvent.click(screen.getByRole('button', { name: /保\s*存/ }));
     fireEvent.click(await screen.findByRole('button', { name: '确认保存' }));
 
@@ -107,6 +136,8 @@ describe('团队与 Token 配额页面', () => {
     );
     expect(updateTeamTokenLimits).toHaveBeenCalledWith(team.id, {
       fiveHourTokenLimit: 99999,
+      totalTokenLimit: 99999,
+      officialAccountId: null,
       version: 7,
       weeklyTokenLimit: 99999,
     });

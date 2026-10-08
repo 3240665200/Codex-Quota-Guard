@@ -2,6 +2,8 @@ package com.pingche.web.team;
 
 import com.pingche.web.auth.DomainException;
 import com.pingche.web.auth.RefreshSessionRepository;
+import com.pingche.web.quota.OfficialAccount;
+import com.pingche.web.quota.OfficialAccountRepository;
 import com.pingche.web.user.User;
 import com.pingche.web.user.UserRepository;
 import java.time.Clock;
@@ -18,13 +20,15 @@ public class TeamTokenLimitService {
     private final TeamRepository teams;
     private final UserRepository users;
     private final RefreshSessionRepository sessions;
+    private final OfficialAccountRepository officialAccounts;
     private final Clock clock;
 
     public TeamTokenLimitService(TeamRepository teams, UserRepository users,
-            RefreshSessionRepository sessions, Clock clock) {
+            RefreshSessionRepository sessions, OfficialAccountRepository officialAccounts, Clock clock) {
         this.teams = teams;
         this.users = users;
         this.sessions = sessions;
+        this.officialAccounts = officialAccounts;
         this.clock = clock;
     }
 
@@ -37,7 +41,19 @@ public class TeamTokenLimitService {
                     "团队已被其他管理员修改，请刷新后重试。", HttpStatus.CONFLICT);
         }
         Instant now = clock.instant();
-        if (team.updateTokenLimits(request.fiveHourTokenLimit(), request.weeklyTokenLimit(), now)) {
+        Long totalLimit = request.totalTokenLimit();
+        if (request.officialAccountId() != null) {
+            OfficialAccount account = officialAccounts.findById(request.officialAccountId())
+                    .orElseThrow(() -> new DomainException("OFFICIAL_ACCOUNT_NOT_FOUND",
+                            "Official account not found", HttpStatus.NOT_FOUND));
+            if (totalLimit != null && totalLimit.longValue() != account.getEstimatedTotalTokens()) {
+                throw new DomainException("TEAM_TOTAL_LIMIT_MISMATCH",
+                        "团队总额度须等于官方账户登记的估算 Token 总量。", HttpStatus.BAD_REQUEST);
+            }
+            totalLimit = account.getEstimatedTotalTokens();
+        }
+        if (team.updateTokenLimits(request.fiveHourTokenLimit(), request.weeklyTokenLimit(),
+                totalLimit, request.officialAccountId(), now)) {
             teams.saveAndFlush(team);
             List<User> members = users.findByTeamIdForUpdate(teamId);
             for (User member : members) {

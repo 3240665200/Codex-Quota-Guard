@@ -1,9 +1,9 @@
+use chrono::{DateTime, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
-use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -27,14 +27,7 @@ pub struct MeterConfig {
 impl MeterConfig {
     pub fn validate(&self) -> Result<(), String> {
         let url = reqwest::Url::parse(&self.server_url).map_err(|_| "METER_SERVER_URL_INVALID")?;
-        let host = url.host_str().ok_or("METER_SERVER_URL_INVALID")?;
-        let private_http = url.scheme() == "http"
-            && (host.eq_ignore_ascii_case("localhost")
-                || host.parse::<IpAddr>().is_ok_and(|ip| match ip {
-                    IpAddr::V4(v4) => v4.is_loopback() || private_ipv4(v4),
-                    IpAddr::V6(v6) => v6.is_loopback(),
-                }));
-        if url.scheme() != "https" && !private_http {
+        if url.host_str().is_none() || !matches!(url.scheme(), "http" | "https") {
             return Err("METER_SERVER_URL_INVALID".into());
         }
         if !url.username().is_empty()
@@ -54,11 +47,6 @@ impl MeterConfig {
         }
         Ok(())
     }
-}
-
-fn private_ipv4(address: Ipv4Addr) -> bool {
-    let [a, b, _, _] = address.octets();
-    a == 10 || (a == 172 && (16..=31).contains(&b)) || (a == 192 && b == 168)
 }
 
 #[derive(Deserialize)]
@@ -403,13 +391,31 @@ where
     F: FnMut(&[UsageEvent]) -> Result<(), String>,
 {
     let outcome = scan(codex_home, previous)?;
-    for batch in outcome.events.chunks(100) {
+    let now = Utc::now();
+    let events: Vec<_> = outcome
+        .events
+        .into_iter()
+        .filter(|event| reportable_at(event, now))
+        .collect();
+    for batch in events.chunks(100) {
         report(batch)?;
     }
     if &outcome.next_state != previous || !state_path.exists() {
         save_state(state_path, &outcome.next_state)?;
     }
-    Ok(outcome)
+    Ok(ScanOutcome {
+        events,
+        next_state: outcome.next_state,
+    })
+}
+
+fn reportable_at(event: &UsageEvent, now: DateTime<Utc>) -> bool {
+    DateTime::parse_from_rfc3339(&event.occurred_at)
+        .ok()
+        .is_some_and(|timestamp| {
+            let timestamp = timestamp.with_timezone(&Utc);
+            timestamp >= now - TimeDelta::days(29) && timestamp <= now + TimeDelta::minutes(4)
+        })
 }
 
 fn meter_endpoint(config: &MeterConfig, path: &str) -> Result<reqwest::Url, String> {
@@ -471,6 +477,7 @@ pub struct MeterRuntime {
     audit: AuditLog,
     last_logged_state: Option<String>,
     last_logged_error: Option<String>,
+    last_logged_epoch_seconds: Option<u64>,
     last_heartbeat: Option<Instant>,
     last_report_epoch_seconds: Option<u64>,
 }
@@ -492,6 +499,7 @@ impl MeterRuntime {
             audit,
             last_logged_state: None,
             last_logged_error: None,
+            last_logged_epoch_seconds: None,
             last_heartbeat: None,
             last_report_epoch_seconds: None,
         })
@@ -516,32 +524,28 @@ impl MeterRuntime {
                 error_code: Some(code),
             },
         };
-        let changed = self.last_logged_state.as_deref() != Some(status.state.as_str())
-            || self.last_logged_error.as_deref() != status.error_code.as_deref();
-        let kind = if status.state == "ERROR" {
-            changed.then_some(AuditKind::Error)
-        } else if status.reported_events > 0 {
-            // The accepted batch was logged before the heartbeat request.
-            None
-        } else if changed {
-            Some(match status.state.as_str() {
-                "BASELINE_READY" => AuditKind::BaselineReady,
-                "UNPAIRED" => AuditKind::Unpaired,
-                _ => AuditKind::StatusChange,
-            })
-        } else {
-            None
-        };
+        if write_public_status(&self.config.status_file, &status).is_err() {
+            status.state = "ERROR".into();
+            status.error_code = Some("METER_STATUS_WRITE_FAILED".into());
+        }
+        let kind = audit_kind_for_status(
+            &status,
+            self.last_logged_state.as_deref(),
+            self.last_logged_error.as_deref(),
+            self.last_logged_epoch_seconds,
+            now,
+        );
         if let Some(kind) = kind {
             if self.audit.append(kind, Some(&status), 0, false).is_err() {
                 status.state = "ERROR".into();
                 status.error_code = Some("METER_LOG_WRITE_FAILED".into());
+                let _ = write_public_status(&self.config.status_file, &status);
             } else {
                 self.last_logged_state = Some(status.state.clone());
                 self.last_logged_error = status.error_code.clone();
+                self.last_logged_epoch_seconds = Some(now);
             }
         }
-        let _ = write_public_status(&self.config.status_file, &status);
         status
     }
 
@@ -636,6 +640,34 @@ impl MeterRuntime {
     }
 }
 
+fn audit_kind_for_status(
+    status: &MeterStatus,
+    last_state: Option<&str>,
+    last_error: Option<&str>,
+    last_logged_at: Option<u64>,
+    now: u64,
+) -> Option<AuditKind> {
+    let changed =
+        last_state != Some(status.state.as_str()) || last_error != status.error_code.as_deref();
+    if status.state == "ERROR" {
+        return (changed
+            || last_logged_at.is_none_or(|previous| now.saturating_sub(previous) >= 300))
+        .then_some(AuditKind::Error);
+    }
+    if status.reported_events > 0 {
+        // The accepted batch was logged before the heartbeat request.
+        return None;
+    }
+    if changed {
+        return Some(match status.state.as_str() {
+            "BASELINE_READY" => AuditKind::BaselineReady,
+            "UNPAIRED" => AuditKind::Unpaired,
+            _ => AuditKind::StatusChange,
+        });
+    }
+    None
+}
+
 fn epoch_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -669,6 +701,9 @@ mod tests {
     use std::io::Read;
     use std::net::TcpListener;
     use std::path::{Path, PathBuf};
+    use std::sync::LazyLock;
+
+    static TEST_TIMESTAMP: LazyLock<String> = LazyLock::new(|| Utc::now().to_rfc3339());
 
     struct TestDir(PathBuf);
 
@@ -692,8 +727,12 @@ mod tests {
     }
 
     fn record(response_id: &str, tokens: u64) -> String {
+        record_at(response_id, tokens, &TEST_TIMESTAMP)
+    }
+
+    fn record_at(response_id: &str, tokens: u64, timestamp: &str) -> String {
         format!(
-            "{{\"type\":\"token_usage_record\",\"timestamp\":\"2026-10-07T00:00:00Z\",\"payload\":{{\"response_id\":\"{response_id}\",\"usage\":{{\"total_tokens\":{tokens}}}}}}}\n"
+            "{{\"type\":\"token_usage_record\",\"timestamp\":\"{timestamp}\",\"payload\":{{\"response_id\":\"{response_id}\",\"usage\":{{\"total_tokens\":{tokens}}}}}}}\n"
         )
     }
 
@@ -770,7 +809,39 @@ mod tests {
     }
 
     #[test]
-    fn configuration_rejects_public_plain_http_and_accepts_private_lan() {
+    fn stale_or_future_records_cannot_block_new_usage_or_the_scan_cursor() {
+        let root = TestDir::new();
+        let home = root.path().join(".codex");
+        let sessions = home.join("sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        let old = (Utc::now() - TimeDelta::days(31)).to_rfc3339();
+        let future = (Utc::now() + TimeDelta::minutes(6)).to_rfc3339();
+        fs::write(
+            sessions.join("run.jsonl"),
+            record_at("old", 10, &old) + &record_at("future", 20, &future) + &record("current", 30),
+        )
+        .unwrap();
+        let state_file = root.path().join("meter-state.json");
+        let mut accepted = Vec::new();
+        let outcome = scan_report_and_commit(&home, &state_file, &ScanState::default(), |events| {
+            accepted.extend(events.iter().map(|event| event.total_tokens));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(accepted, vec![30]);
+        assert_eq!(outcome.events.len(), 1);
+        assert!(state_file.exists());
+
+        let committed = load_state(&state_file).unwrap().unwrap();
+        let next = scan_report_and_commit(&home, &state_file, &committed, |_| {
+            panic!("already scanned events must not be resent")
+        })
+        .unwrap();
+        assert!(next.events.is_empty());
+    }
+
+    #[test]
+    fn configuration_accepts_http_origins_and_rejects_invalid_urls() {
         let root = TestDir::new();
         let mut config = MeterConfig {
             server_url: "http://149.88.90.196:8080".into(),
@@ -780,9 +851,25 @@ mod tests {
             status_file: root.path().join("status.json"),
             device_id: uuid::Uuid::new_v4(),
         };
-        assert!(config.validate().is_err());
-        config.server_url = "http://192.168.0.102:8080".into();
-        assert!(config.validate().is_ok());
+        for url in [
+            "http://149.88.90.196:8080",
+            "http://192.168.0.102:8080",
+            "http://control.example.com:8080",
+            "https://control.example.com",
+        ] {
+            config.server_url = url.into();
+            assert!(config.validate().is_ok(), "{url}");
+        }
+        for url in [
+            "file:///C:/secret",
+            "ftp://control.example.com",
+            "http://user:secret@control.example.com",
+            "http://control.example.com/api",
+            "http://control.example.com/?token=secret",
+        ] {
+            config.server_url = url.into();
+            assert!(config.validate().is_err(), "{url}");
+        }
     }
 
     #[test]
@@ -1001,6 +1088,56 @@ mod tests {
         let public: serde_json::Value =
             serde_json::from_slice(&fs::read(root.path().join("status.json")).unwrap()).unwrap();
         assert_eq!(public["errorCode"], "METER_LOG_WRITE_FAILED");
+    }
+
+    #[test]
+    fn repeated_service_errors_are_logged_periodically_without_flooding() {
+        let status = MeterStatus {
+            state: "ERROR".into(),
+            last_scan_epoch_seconds: 1_000,
+            last_report_epoch_seconds: None,
+            reported_events: 0,
+            error_code: Some("METER_BACKEND_UNAVAILABLE".into()),
+        };
+        assert!(audit_kind_for_status(
+            &status,
+            Some("ERROR"),
+            Some("METER_BACKEND_UNAVAILABLE"),
+            Some(1_000),
+            1_301
+        )
+        .is_some());
+        assert!(audit_kind_for_status(
+            &status,
+            Some("ERROR"),
+            Some("METER_BACKEND_UNAVAILABLE"),
+            Some(1_000),
+            1_299
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn public_status_write_failure_is_recorded_in_the_private_audit_log() {
+        let root = TestDir::new();
+        fs::write(root.path().join("blocked"), b"not-a-directory").unwrap();
+        let config = MeterConfig {
+            server_url: "http://127.0.0.1:1".into(),
+            codex_home: root.path().join(".codex"),
+            pairing_inbox: root.path().join("pairing.json"),
+            state_dir: root.path().join("state"),
+            status_file: root.path().join("blocked/status.json"),
+            device_id: uuid::Uuid::new_v4(),
+        };
+        let mut runtime = MeterRuntime::new(config).unwrap();
+
+        let status = runtime.tick();
+        assert_eq!(
+            status.error_code.as_deref(),
+            Some("METER_STATUS_WRITE_FAILED")
+        );
+        let content = fs::read_to_string(root.path().join("state/logs/meter.jsonl")).unwrap();
+        assert!(content.contains("METER_STATUS_WRITE_FAILED"));
     }
 
     #[test]

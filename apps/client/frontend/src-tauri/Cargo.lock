@@ -346,7 +346,7 @@ dependencies = [
 
 [[package]]
 name = "codex-quota-guard"
-version = "0.2.2"
+version = "0.2.11"
 dependencies = [
  "reqwest 0.12.28",
  "serde",
@@ -355,6 +355,7 @@ dependencies = [
  "tauri-build",
  "thiserror 2.0.20",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

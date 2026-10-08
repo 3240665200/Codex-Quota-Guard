@@ -16,8 +16,11 @@ public class CodexUsageEvent {
     @Column(length = 64)
     private String id;
 
-    @Column(name = "user_id", nullable = false)
+    @Column(name = "user_id")
     private UUID userId;
+
+    @Column(name = "team_id")
+    private UUID teamId;
 
     @Column(name = "total_tokens", nullable = false)
     private long totalTokens;
@@ -35,8 +38,14 @@ public class CodexUsageEvent {
 
     public CodexUsageEvent(String id, UUID userId,
             long totalTokens, Instant occurredAt, Instant receivedAt, String source) {
+        this(id, userId, null, totalTokens, occurredAt, receivedAt, source);
+    }
+
+    public CodexUsageEvent(String id, UUID userId, UUID teamId,
+            long totalTokens, Instant occurredAt, Instant receivedAt, String source) {
         this.id = id;
         this.userId = userId;
+        this.teamId = teamId;
         this.totalTokens = totalTokens;
         this.occurredAt = occurredAt;
         this.receivedAt = receivedAt;
@@ -45,6 +54,7 @@ public class CodexUsageEvent {
 
     public String getId() { return id; }
     public UUID getUserId() { return userId; }
+    public UUID getTeamId() { return teamId; }
     public long getTotalTokens() { return totalTokens; }
     public Instant getOccurredAt() { return occurredAt; }
     public Instant getReceivedAt() { return receivedAt; }

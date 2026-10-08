@@ -92,7 +92,7 @@ class HttpControlPlaneGatewayTest {
     }
 
     @Test
-    void permitsHttpsAndDevelopmentLoopbackOnly() {
+    void permitsHttpAndHttpsOrigins() {
         assertThat(HttpControlPlaneGateway.normalizeBaseUri("https://control.example.com:8443"))
                 .isEqualTo(URI.create("https://control.example.com:8443/"));
         assertThat(HttpControlPlaneGateway.normalizeBaseUri("http://127.0.0.1:8080"))
@@ -102,9 +102,7 @@ class HttpControlPlaneGatewayTest {
     }
 
     @Test
-    void rejectsRemotePlainHttpAndAnythingOtherThanAnOrigin() {
-        assertThatIllegalArgumentException()
-                .isThrownBy(() -> HttpControlPlaneGateway.normalizeBaseUri("http://149.88.90.196:8080"));
+    void rejectsCredentialsPathsAndNonHttpSchemes() {
         assertThatIllegalArgumentException()
                 .isThrownBy(() -> HttpControlPlaneGateway.normalizeBaseUri("https://user:secret@control.example.com"));
         assertThatIllegalArgumentException()
@@ -114,15 +112,17 @@ class HttpControlPlaneGatewayTest {
     }
 
     @Test
-    void permitsPrivateLanHttpOnlyWithExplicitApproval() {
-        assertThat(HttpControlPlaneGateway.normalizeBaseUri("http://192.168.0.102:8080", true))
+    void permitsHttpForLanPublicAddressesAndHostnamesWithoutApproval() {
+        assertThat(HttpControlPlaneGateway.normalizeBaseUri("http://192.168.0.102:8080"))
                 .isEqualTo(URI.create("http://192.168.0.102:8080/"));
-        assertThat(HttpControlPlaneGateway.normalizeBaseUri("http://10.0.0.5:8080", true))
+        assertThat(HttpControlPlaneGateway.normalizeBaseUri("http://10.0.0.5:8080"))
                 .isEqualTo(URI.create("http://10.0.0.5:8080/"));
-        assertThatIllegalArgumentException()
-                .isThrownBy(() -> HttpControlPlaneGateway.normalizeBaseUri("http://149.88.90.196:8080", true));
-        assertThatIllegalArgumentException()
-                .isThrownBy(() -> HttpControlPlaneGateway.normalizeBaseUri("http://example.com:8080", true));
+        assertThat(HttpControlPlaneGateway.normalizeBaseUri("http://149.88.90.196:8080"))
+                .isEqualTo(URI.create("http://149.88.90.196:8080/"));
+        assertThat(HttpControlPlaneGateway.normalizeBaseUri("http://example.com:8080"))
+                .isEqualTo(URI.create("http://example.com:8080/"));
+        assertThat(HttpControlPlaneGateway.normalizeBaseUri("http://0.0.0.0:8080"))
+                .isEqualTo(URI.create("http://127.0.0.1:8080/"));
     }
 
     @Test
@@ -148,6 +148,8 @@ class HttpControlPlaneGatewayTest {
             assertThat(overview.usage().measurementStatus()).isEqualTo(QuotaMeasurementStatus.CLIENT_REPORTED);
             assertThat(overview.usage().fiveHourUsedTokens()).isEqualTo(100L);
             assertThat(overview.usage().fiveHourRemainingTokens()).isEqualTo(900L);
+            assertThat(overview.teamQuota().fiveHourUsedTokens()).isEqualTo(150L);
+            assertThat(overview.teamQuota().fiveHourRemainingTokens()).isEqualTo(850L);
             assertThat(overview.toString()).doesNotContain("session-access", "credential", "refresh");
         } finally {
             server.stop(0);
@@ -268,14 +270,19 @@ class HttpControlPlaneGatewayTest {
         return """
                 {"user":{"id":"%s","email":"alice@example.com","displayName":"Alice",
                 "role":"USER","status":"ACTIVE","teamId":"%s","fiveHourQuotaPercent":null,
-                "weeklyQuotaPercent":null,"fiveHourTokenLimit":null,"weeklyTokenLimit":null,
+                "weeklyQuotaPercent":null,"fiveHourTokenLimit":1000,"weeklyTokenLimit":10000,
                 "createdAt":"2026-10-06T00:00:00Z","updatedAt":"2026-10-06T00:00:00Z"},
                 "team":{"id":"%s","name":"Design"},
-                "policy":{"fiveHourTokenLimit":1000,"weeklyTokenLimit":10000,"fiveHourSource":"TEAM","weeklySource":"TEAM"},
+                "teamQuota":{"id":"%s","name":"Design","status":"ACTIVE","memberCount":2,
+                "fiveHourTokenLimit":1000,"weeklyTokenLimit":10000,"totalTokenLimit":20000,
+                "fiveHourUsedTokens":150,"weeklyUsedTokens":500,"totalUsedTokens":500,
+                "fiveHourRemainingTokens":850,"weeklyRemainingTokens":9500,
+                "totalRemainingTokens":19500,"measuredAt":null},
+                "policy":{"fiveHourTokenLimit":1000,"weeklyTokenLimit":10000,"fiveHourSource":"USER","weeklySource":"USER"},
                 "usage":{"measurementStatus":"CLIENT_REPORTED","fiveHourUsedTokens":100,"weeklyUsedTokens":200,
                 "fiveHourRemainingTokens":900,"weeklyRemainingTokens":9800,"fiveHourResetsAt":null,
                 "weeklyResetsAt":null,"measuredAt":"2026-10-06T00:00:00Z"},"allowed":%s,"blockReason":%s}
-                """.formatted(userId, teamId, teamId, allowed, reason).replaceAll("\\s+", "");
+                """.formatted(userId, teamId, teamId, teamId, allowed, reason).replaceAll("\\s+", "");
     }
 
     private static void writeJson(com.sun.net.httpserver.HttpExchange exchange, String json) throws IOException {

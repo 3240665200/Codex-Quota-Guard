@@ -30,11 +30,27 @@ const session: SystemSession = {
 const quota: QuotaOverview = {
   user: session.user!,
   team: { id: "team-1", name: "Design" },
+  teamQuota: {
+    id: "team-1",
+    name: "Design",
+    status: "ACTIVE",
+    memberCount: 2,
+    fiveHourTokenLimit: 1_000,
+    weeklyTokenLimit: 10_000,
+    totalTokenLimit: 20_000,
+    fiveHourUsedTokens: 900,
+    weeklyUsedTokens: 4_700,
+    totalUsedTokens: 10_000,
+    fiveHourRemainingTokens: 100,
+    weeklyRemainingTokens: 5_300,
+    totalRemainingTokens: 10_000,
+    measuredAt: "2026-10-06T08:00:00Z",
+  },
   policy: {
     fiveHourTokenLimit: 1_000,
     weeklyTokenLimit: 10_000,
-    fiveHourSource: "TEAM",
-    weeklySource: "TEAM",
+    fiveHourSource: "USER",
+    weeklySource: "USER",
   },
   usage: {
     measurementStatus: "CLIENT_REPORTED",
@@ -89,10 +105,20 @@ describe("Dashboard", () => {
         case "usage_scan":
         case "usage_pair":
           return {
-            fallback: { state: "BASELINE_READY", lastScannedAt: "2026-10-07T00:00:00Z",
-              lastReportedAt: null, lastReportedEvents: 0, issues: [] },
-            service: { state: "NOT_INSTALLED", lastScanEpochSeconds: null,
-              lastReportEpochSeconds: null, reportedEvents: 0, errorCode: null },
+            fallback: {
+              state: "BASELINE_READY",
+              lastScannedAt: "2026-10-07T00:00:00Z",
+              lastReportedAt: null,
+              lastReportedEvents: 0,
+              issues: [],
+            },
+            service: {
+              state: "NOT_INSTALLED",
+              lastScanEpochSeconds: null,
+              lastReportEpochSeconds: null,
+              reportedEvents: 0,
+              errorCode: null,
+            },
             pairingState: "NOT_INSTALLED",
           };
         default:
@@ -107,16 +133,38 @@ describe("Dashboard", () => {
     expect(
       await screen.findByRole("heading", { name: "额度仪表盘" }),
     ).toBeVisible();
-    expect(await screen.findByText(/请在官方 Codex 应用或 CLI 中自行登录/)).toBeVisible();
-    expect(await screen.findByText("Design")).toBeVisible();
-    expect(screen.getByText("个人 Token 限额")).toBeVisible();
-    expect(screen.getByText(/Rust 常驻计费服务未安装/)).toBeVisible();
-    expect(screen.getByText("1,000 Token")).toBeVisible();
-    expect(screen.getByText("800 Token 已上报")).toBeVisible();
-    expect(screen.getByText("200 Token 剩余")).toBeVisible();
-    expect(screen.getByText("官方 Codex 账户额度（参考）")).toBeVisible();
-    expect(await screen.findByText("25% 已使用")).toBeVisible();
-    expect(screen.getByText(/绝不会被当作你的个人 Token 用量/)).toBeVisible();
+    expect(
+      await screen.findByRole("heading", { name: "个人 Token" }),
+    ).toBeVisible();
+    expect(await screen.findByText(/Design/)).toBeVisible();
+    expect(screen.getByRole("heading", { name: "团队共享额度" })).toBeVisible();
+    expect(screen.getByText(/计费服务未安装/)).toBeVisible();
+    expect(screen.getAllByTitle("精确值：1,000 Token").length).toBeGreaterThan(
+      0,
+    );
+    expect(
+      screen.getByTitle("精确值：800 Token").parentElement,
+    ).toHaveTextContent("个人已用");
+    expect(screen.getAllByTitle("精确值：100 Token").length).toBeGreaterThan(0);
+    expect(
+      screen.getByTitle("精确值：900 Token").parentElement,
+    ).toHaveTextContent("已用");
+    expect(
+      screen.getByRole("heading", { name: "官方 Codex 额度" }),
+    ).toBeVisible();
+    expect(await screen.findByText("25%")).toBeVisible();
+    expect(
+      screen.getByRole("progressbar", { name: "5 小时个人额度使用进度" }),
+    ).toHaveAttribute("aria-valuenow", "80");
+    expect(
+      screen.getByRole("progressbar", { name: "5 小时团队使用进度" }),
+    ).toHaveAttribute("aria-valuenow", "90");
+    expect(
+      screen.getByRole("progressbar", { name: "累计总额使用进度" }),
+    ).toHaveAttribute("aria-valuenow", "50");
+    expect(
+      screen.getByRole("progressbar", { name: "5 小时窗口官方使用进度" }),
+    ).toHaveAttribute("aria-valuenow", "25");
     expect(new Set(invokeMock.mock.calls.map(([command]) => command))).toEqual(
       new Set([
         "status",
@@ -129,9 +177,58 @@ describe("Dashboard", () => {
 
   it("does not offer credential download or managed Codex login", async () => {
     renderDashboard();
-    await screen.findByText(/请在官方 Codex 应用或 CLI 中自行登录/);
-    expect(screen.queryByRole("button", { name: "登录 Codex" })).not.toBeInTheDocument();
+    await screen.findByRole("heading", { name: "官方 Codex 额度" });
+    expect(
+      screen.queryByRole("button", { name: "登录 Codex" }),
+    ).not.toBeInTheDocument();
     expect(invokeMock).not.toHaveBeenCalledWith("codex_login");
+  });
+
+  it("only displays official quota windows returned by the local account", async () => {
+    invokeMock.mockImplementation(async (command) => {
+      if (command === "status") return status;
+      if (command === "quota_overview") return quota;
+      if (command === "usage_status")
+        return {
+          fallback: {
+            state: "UP_TO_DATE",
+            lastScannedAt: null,
+            lastReportedAt: null,
+            lastReportedEvents: 0,
+            issues: [],
+          },
+          service: {
+            state: "UP_TO_DATE",
+            lastScanEpochSeconds: null,
+            lastReportEpochSeconds: null,
+            reportedEvents: 0,
+            errorCode: null,
+          },
+          pairingState: "PAIRING_SENT",
+        };
+      if (command === "codex_rate_limits")
+        return {
+          planType: "business",
+          windows: [
+            {
+              limitId: "codex",
+              slot: "weekly",
+              windowDurationMins: 10_080,
+              usedPercent: 42,
+              resetsAt: null,
+            },
+          ],
+          fetchedAt: "2026-10-06T08:00:00Z",
+        };
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    renderDashboard();
+
+    expect(
+      await screen.findByRole("progressbar", { name: "7 天窗口官方使用进度" }),
+    ).toBeVisible();
+    expect(screen.queryByText("5 小时窗口")).not.toBeInTheDocument();
   });
 
   it("offers a safe retry when the Rust service is waiting for pairing", async () => {
@@ -139,14 +236,26 @@ describe("Dashboard", () => {
     invokeMock.mockImplementation(async (command) => {
       if (command === "status") return status;
       if (command === "quota_overview") return quota;
-      if (command === "codex_rate_limits") return { planType: null, windows: [], fetchedAt: null };
-      if (command === "usage_status" || command === "usage_pair") return {
-        fallback: { state: "UP_TO_DATE", lastScannedAt: "2026-10-07T00:00:00Z",
-          lastReportedAt: null, lastReportedEvents: 0, issues: [] },
-        service: { state: "UNPAIRED", lastScanEpochSeconds: 1791300000,
-          lastReportEpochSeconds: null, reportedEvents: 0, errorCode: null },
-        pairingState: "PAIRING_FAILED",
-      };
+      if (command === "codex_rate_limits")
+        return { planType: null, windows: [], fetchedAt: null };
+      if (command === "usage_status" || command === "usage_pair")
+        return {
+          fallback: {
+            state: "UP_TO_DATE",
+            lastScannedAt: "2026-10-07T00:00:00Z",
+            lastReportedAt: null,
+            lastReportedEvents: 0,
+            issues: [],
+          },
+          service: {
+            state: "UNPAIRED",
+            lastScanEpochSeconds: 1791300000,
+            lastReportEpochSeconds: null,
+            reportedEvents: 0,
+            errorCode: null,
+          },
+          pairingState: "PAIRING_FAILED",
+        };
       throw new Error(`Unexpected command: ${command}`);
     });
     renderDashboard();
@@ -154,6 +263,78 @@ describe("Dashboard", () => {
     await user.click(await screen.findByRole("button", { name: "重新配对" }));
 
     expect(invokeMock).toHaveBeenCalledWith("usage_pair");
+  });
+
+  it("offers a fixed native retry when the installed Rust service is offline", async () => {
+    const user = (await import("@testing-library/user-event")).default.setup();
+    invokeMock.mockImplementation(async (command) => {
+      if (command === "status") return status;
+      if (command === "quota_overview") return quota;
+      if (command === "codex_rate_limits")
+        return { planType: null, windows: [], fetchedAt: null };
+      if (command === "meter_service_retry") return "STARTED";
+      if (command === "usage_status")
+        return {
+          fallback: {
+            state: "UP_TO_DATE",
+            lastScannedAt: "2026-10-07T00:00:00Z",
+            lastReportedAt: null,
+            lastReportedEvents: 0,
+            issues: [],
+          },
+          service: {
+            state: "OFFLINE",
+            lastScanEpochSeconds: null,
+            lastReportEpochSeconds: null,
+            reportedEvents: 0,
+            errorCode: null,
+          },
+          pairingState: "PAIRING_SENT",
+        };
+      throw new Error(`Unexpected command: ${command}`);
+    });
+    renderDashboard();
+
+    await user.click(
+      await screen.findByRole("button", { name: "启动计费服务" }),
+    );
+    expect(invokeMock).toHaveBeenCalledWith("meter_service_retry");
+  });
+
+  it("offers first-run installation when the Rust service is missing", async () => {
+    const user = (await import("@testing-library/user-event")).default.setup();
+    invokeMock.mockImplementation(async (command) => {
+      if (command === "status") return status;
+      if (command === "quota_overview") return quota;
+      if (command === "codex_rate_limits")
+        return { planType: null, windows: [], fetchedAt: null };
+      if (command === "meter_service_retry") return "INSTALLED";
+      if (command === "usage_status")
+        return {
+          fallback: {
+            state: "UP_TO_DATE",
+            lastScannedAt: "2026-10-07T00:00:00Z",
+            lastReportedAt: null,
+            lastReportedEvents: 0,
+            issues: [],
+          },
+          service: {
+            state: "NOT_INSTALLED",
+            lastScanEpochSeconds: null,
+            lastReportEpochSeconds: null,
+            reportedEvents: 0,
+            errorCode: null,
+          },
+          pairingState: "NOT_INSTALLED",
+        };
+      throw new Error(`Unexpected command: ${command}`);
+    });
+    renderDashboard();
+
+    await user.click(
+      await screen.findByRole("button", { name: "安装计费服务" }),
+    );
+    expect(invokeMock).toHaveBeenCalledWith("meter_service_retry");
   });
 
   it("warns when personal quota is exhausted without claiming official logout", async () => {
@@ -178,34 +359,101 @@ describe("Dashboard", () => {
 
     renderDashboard();
 
-    expect(await screen.findByText("个人 Token 额度已用尽")).toBeVisible();
+    expect(await screen.findByText("Token 额度已用尽")).toBeVisible();
     expect(
       screen.getByText("已达到个人 5 小时 Token 限额。", { exact: false }),
     ).toBeVisible();
     expect(
       screen.getByText(/本应用不会退出官方 Codex 应用或 CLI/),
     ).toBeVisible();
-    expect(screen.queryByRole("button", { name: "登录 Codex" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "登录 Codex" }),
+    ).not.toBeInTheDocument();
   });
 
-  it("labels an unconfigured personal limit without calling it exhausted", async () => {
+  it("identifies an exhausted shared team window", async () => {
     invokeMock.mockImplementation(async (command) => {
       if (command === "status") return status;
-      if (command === "quota_overview") return {
-        ...quota,
-        policy: { ...quota.policy, fiveHourTokenLimit: null, fiveHourSource: "UNCONFIGURED" },
-        usage: { ...quota.usage, fiveHourRemainingTokens: null },
-        allowed: false,
-        blockReason: "TOKEN_QUOTA_UNCONFIGURED",
-      };
-      if (command === "codex_rate_limits") return { planType: null, windows: [], fetchedAt: null };
+      if (command === "quota_overview")
+        return {
+          ...quota,
+          policy: { ...quota.policy, fiveHourSource: "USER" },
+          teamQuota: {
+            ...quota.teamQuota,
+            fiveHourUsedTokens: 1_000,
+            fiveHourRemainingTokens: 0,
+          },
+          usage: { ...quota.usage, fiveHourRemainingTokens: 200 },
+          allowed: false,
+          blockReason: "TEAM_FIVE_HOUR_TOKEN_QUOTA_EXCEEDED",
+        };
+      if (command === "codex_rate_limits")
+        return { planType: null, windows: [], fetchedAt: null };
+      if (command === "usage_status")
+        return {
+          fallback: {
+            state: "UP_TO_DATE",
+            lastScannedAt: null,
+            lastReportedAt: null,
+            lastReportedEvents: 0,
+            issues: [],
+          },
+          service: {
+            state: "UP_TO_DATE",
+            lastScanEpochSeconds: null,
+            lastReportEpochSeconds: null,
+            reportedEvents: 0,
+            errorCode: null,
+          },
+          pairingState: "PAIRING_SENT",
+        };
+      throw new Error(`Unexpected command: ${command}`);
+    });
+    renderDashboard();
+    expect(
+      await screen.findByText(/所属团队的 5 小时共享 Token 额度已用尽/),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("progressbar", { name: "5 小时团队使用进度" }),
+    ).toHaveAttribute("aria-valuenow", "100");
+    expect(
+      screen.getByRole("progressbar", { name: "5 小时个人额度使用进度" }),
+    ).toHaveAttribute("aria-valuenow", "80");
+  });
+
+  it("treats an absent five-hour limit as unlimited", async () => {
+    invokeMock.mockImplementation(async (command) => {
+      if (command === "status") return status;
+      if (command === "quota_overview")
+        return {
+          ...quota,
+          policy: {
+            ...quota.policy,
+            fiveHourTokenLimit: null,
+            fiveHourSource: "UNCONFIGURED",
+          },
+          usage: { ...quota.usage, fiveHourRemainingTokens: null },
+          teamQuota: {
+            ...quota.teamQuota,
+            fiveHourTokenLimit: null,
+            fiveHourRemainingTokens: null,
+          },
+          allowed: true,
+          blockReason: null,
+        };
+      if (command === "codex_rate_limits")
+        return { planType: null, windows: [], fetchedAt: null };
       throw new Error(`Unexpected command: ${command}`);
     });
 
     renderDashboard();
 
-    expect(await screen.findByText("个人 Token 额度未配置")).toBeVisible();
-    expect(screen.queryByText("个人 Token 额度已用尽")).not.toBeInTheDocument();
+    expect(await screen.findByText("额度可用")).toBeVisible();
+    expect(screen.queryByText("Token 额度已用尽")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("progressbar", { name: "5 小时个人额度使用进度" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getAllByText("不设限").length).toBeGreaterThan(0);
   });
 
   it("shows a useful error state when the local service is unavailable", async () => {

@@ -62,6 +62,9 @@ public class User {
     @Column(name = "weekly_token_limit")
     private Long weeklyTokenLimit;
 
+    @Column(name = "quota_reset_at")
+    private Instant quotaResetAt;
+
     protected User() {
     }
 
@@ -142,6 +145,15 @@ public class User {
 
     public Long getWeeklyTokenLimit() {
         return weeklyTokenLimit;
+    }
+
+    public Instant getQuotaResetAt() {
+        return quotaResetAt;
+    }
+
+    public void resetQuota(Instant now) {
+        this.quotaResetAt = now;
+        this.updatedAt = now;
     }
 
     public void updateProfile(String email, String displayName) {

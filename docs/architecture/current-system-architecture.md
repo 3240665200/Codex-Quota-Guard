@@ -18,9 +18,9 @@ Ant Design Pro 管理页 ─────────管理员 API─────
 
 | 组件 | 代码位置 | 职责与生命周期 |
 | --- | --- | --- |
-| 管理页 | `apps/admin/frontend` | 管理系统用户、团队、个人 Token 上限；查看用量、官方额度摘要和设备心跳。 |
+| 管理页 | `apps/admin/frontend` | 管理系统用户、团队、个人 Token 上限、只读官方账户登记；查看用量、官方额度摘要和设备心跳。 |
 | 中央 Java API | `apps/admin/backend` | Spring Security 鉴权、PostgreSQL/Flyway 持久化、幂等事件入库及额度计算；独立部署。 |
-| 桌面界面与 Tauri 壳 | `apps/client/frontend` | 本机登录界面与仪表盘；Tauri 仅向本地 Java 转发固定命令，并管理 Java 子进程。 |
+| 桌面界面与 Tauri 壳 | `apps/client/frontend` | 本机登录界面与仪表盘；把Tauri 仅向本地 Java 转发固定命令，并管理 Java 子进程。 |
 | 本地 Java 服务 | `apps/client/backend` | 只监听回环地址；内存中维护本系统会话、配对计费服务、读取本机官方额度摘要；随桌面程序关闭。 |
 | Rust 计费服务 | `apps/client/meter` | Windows Service，独立于桌面窗口运行；增量扫描本机 Codex 会话日志，发送用量与心跳。 |
 
@@ -31,28 +31,32 @@ Ant Design Pro 管理页 ─────────管理员 API─────
 1. **Quota Guard 系统账户**：本项目用户、管理员和团队使用。桌面端登录后，本地 Java 向中央 Java 获取本系统会话；管理员的强制下线只使本系统会话失效。
 2. **官方 Codex 登录**：用户在官方应用或 CLI 中自行完成。Quota Guard 不托管、分发或覆盖官方凭证，也不替用户登录官方 ChatGPT 桌面应用。
 3. **官方额度**：本地 Java 通过 Codex app-server 的 `account/read` 与 `account/rateLimits/read` 读取账户级套餐、窗口百分比和重置时间，只上报安全摘要。官方没有返回的窗口不得推算或伪造。
-4. **个人 Token 额度**：管理员直接填写团队默认及用户覆盖的滚动 5 小时、7 天 Token 上限。用户覆盖优先于团队；`null` 是未配置，`0` 是零额度。这是本系统按人统计值，不能由官方账户百分比换算。
+4. **团队共享与个人 Token 额度**：管理员填写团队共享的滚动 5 小时、7 天上限和独立累计总额，并可为用户设置独立的个人窗口上限。个人剩余只扣个人用量，团队剩余只扣成员归属该团队的用量；任一已设置的额度用尽，本系统就标记受限。5 小时 `null` 表示不设限，`0` 是零额度；7 天基础额度仍需配置。这些 Token 值不能由官方账户百分比精确换算。
+5. **只读官方账户登记**：后台只保存账户名称、管理员输入的估算总 Token 和一位负责上报的系统用户。团队关联该登记账户后，累计上限与估算值同步。额度快照来自该用户本机的官方登录，中央服务不保存官方凭证、不代为登录，也不能验证快照一定属于登记的账户名称。
 
 ## 配对与计费数据流
 
-1. 管理员在每台 Windows 用户电脑上以该 Windows 用户身份安装 `CodexQuotaGuardMeter`。安装脚本固定该用户的 `.codex` 目录，创建设备 ID，并把服务设为自动启动及异常退出后恢复。安装程序目前**不会静默注册服务**。
+1. 安装程序本身不注册服务。用户在客户端保存中央服务器地址并重启后，以该 Windows 用户身份右键“以管理员身份运行”0.2.4 或更新版桌面程序。若 `CodexQuotaGuardMeter` 尚未安装，桌面端会先验证打包资源和中央服务器，再执行捆绑的安装脚本。脚本固定该用户的 `.codex` 目录，创建设备 ID，并把服务设为自动启动及异常退出后恢复。权限不足、资源缺失或中央服务器不可达时不执行安装；修正后可从仪表盘重试。
+   桌面程序以后启动时会查询 Windows 服务状态，已安装而停止则自动尝试启动；无 `SERVICE_START` 权限时通过 UAC 请求管理员授权启动固定服务。用户取消授权时保留明确诊断，不会静默改动服务权限。关闭桌面程序只结束本地 Java 子进程，不结束已启动的 Rust 服务。
 2. 用户登录桌面端的系统账户。本地 Java 使用系统 access token 调用中央 `/client/meter/enroll`，取得仅可访问 `/meter/**` 的设备令牌，并通过本地配对收件箱交给 Rust 服务。中央数据库只保存设备令牌 SHA-256 摘要；Rust 将令牌放在受限的 ProgramData 目录。一个设备 ID 不能自行改绑另一系统用户，撤销后也不能自行恢复。
 3. Rust 首次启用与首次配对只建立旧日志的字节游标，不追溯计费。之后优先读取新增 `token_usage_record.total_tokens`，生成不含原始响应 ID 的稳定事件 ID。每批至多 100 条；上报成功才提交扫描游标，失败则保留游标重试。
-4. 中央 Java 校验设备令牌、事件格式和时间，按系统用户与事件 ID 去重，存入 `codex_usage_events`。5 小时/7 天窗口按**服务端接收时间**滚动求和，计算已用、剩余和提醒状态。Rust 每约 30 秒发送心跳；管理员可见最后心跳与在线/离线状态。
+4. 中央 Java 校验设备令牌、事件格式和时间，按系统用户与事件 ID 去重，存入 `codex_usage_events`，并固定事件接收时的团队归属。5 小时/7 天窗口按**经过校验的事件发生时间**分别汇总个人与团队用量；团队累计总额从上次重置后计算。接收时间用于审计和最近上报状态。成员换队不转移旧用量，删除成员也不退回团队已用量。Rust 每约 30 秒发送心跳；管理员可见最后心跳与在线/离线状态。
 5. 桌面窗口关闭后 Rust 服务仍可继续上报。桌面程序打开时的 Java 扫描器可作为回退，并兼容部分旧版 `token_count` 累计记录；中央去重防止同一事件重复计费。
 
 ## 日志与排障
 
 新构建的 Rust 服务将安全摘要写到 `%ProgramData%\CodexQuotaGuard\Meter\logs\meter.jsonl`，轮转文件为 `meter.1.jsonl` 至 `meter.5.jsonl`。单文件上限 2 MiB，总占用约 12 MiB；轮转时最旧备份会被删除。日志记录启动/正常停止、基线、配对前状态、成功上报的事件数和 Token 合计、心跳及固定错误码；**不写入官方凭证、设备令牌、原始会话行或响应 ID**。日志目录继承计费服务状态目录的 SYSTEM/Administrators ACL。安装旧版的电脑必须重新构建并升级服务，源码更新不会自动替换运行中的可执行文件。
+同一错误持续出现时最多每 5 分钟重复记录一次，避免日志刷屏；公开状态快照写入失败也会在受限日志中留下固定错误码。查看脚本会忽略损坏行及未知字段，不回显原始 JSON。
 
 管理员 PowerShell 可查看最近记录：
 
 ```powershell
-Get-Content "$env:ProgramData\CodexQuotaGuard\Meter\logs\meter.jsonl" -Tail 50
+& .\scripts\windows\show-meter-logs.ps1 -Tail 50
+& .\scripts\windows\show-meter-logs.ps1 -Tail 50 -ErrorsOnly
 Get-Service CodexQuotaGuardMeter
 ```
 
-桌面端的 `meter-status.json` 只是当前状态快照；中央 `codex_usage_events` 才是已接收的逐笔事件。Windows 事件查看器的 Service Control Manager 记录启动和异常退出，不包含逐笔 Token 数据。
+桌面端的 `meter-status.json` 只是当前状态快照；中央 `codex_usage_events` 才是已接收的逐笔事件。管理员可在“额度查看 → 用户详情 → Token 用量流水”中分页查询指定系统用户的入库记录，流水按服务端接收时间倒序；普通用户无权读取。Windows 事件查看器的 Service Control Manager 记录启动和异常退出，不包含逐笔 Token 数据。
 
 ## 不能保证的事
 

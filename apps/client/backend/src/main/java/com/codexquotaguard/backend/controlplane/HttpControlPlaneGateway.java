@@ -41,28 +41,19 @@ final class HttpControlPlaneGateway implements ControlPlaneGateway {
     private final Duration requestTimeout;
 
     HttpControlPlaneGateway(String baseUrl, ObjectMapper mapper) {
-        this(baseUrl, mapper, false);
-    }
-
-    HttpControlPlaneGateway(String baseUrl, ObjectMapper mapper, boolean allowInsecureLanHttp) {
         this(baseUrl, mapper, HttpClient.newBuilder()
                 .connectTimeout(DEFAULT_TIMEOUT)
                 .followRedirects(HttpClient.Redirect.NEVER)
                 .proxy(DIRECT_PROXY_SELECTOR)
-                .build(), DEFAULT_TIMEOUT, allowInsecureLanHttp);
+                .build(), DEFAULT_TIMEOUT);
     }
 
     HttpControlPlaneGateway(String baseUrl, ObjectMapper mapper, HttpClient client, Duration requestTimeout) {
-        this(baseUrl, mapper, client, requestTimeout, false);
-    }
-
-    HttpControlPlaneGateway(String baseUrl, ObjectMapper mapper, HttpClient client, Duration requestTimeout,
-            boolean allowInsecureLanHttp) {
         if (mapper == null || client == null || requestTimeout == null || requestTimeout.isNegative()
                 || requestTimeout.isZero()) {
             throw new IllegalArgumentException("A complete control-plane HTTP configuration is required.");
         }
-        this.baseUri = normalizeBaseUri(baseUrl, allowInsecureLanHttp);
+        this.baseUri = normalizeBaseUri(baseUrl);
         this.client = client;
         this.mapper = mapper.rebuild().enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES).build();
         this.requestTimeout = requestTimeout;
@@ -224,10 +215,6 @@ final class HttpControlPlaneGateway implements ControlPlaneGateway {
     }
 
     static URI normalizeBaseUri(String baseUrl) {
-        return normalizeBaseUri(baseUrl, false);
-    }
-
-    static URI normalizeBaseUri(String baseUrl, boolean allowInsecureLanHttp) {
         if (baseUrl == null || baseUrl.isBlank()) {
             throw new IllegalArgumentException("Control-plane base URL is required.");
         }
@@ -238,17 +225,15 @@ final class HttpControlPlaneGateway implements ControlPlaneGateway {
             throw new IllegalArgumentException("Control-plane base URL is invalid.");
         }
         String scheme = raw.getScheme();
-        boolean https = "https".equalsIgnoreCase(scheme);
-        boolean localHttp = "http".equalsIgnoreCase(scheme) && isDevelopmentLoopbackHost(raw.getHost());
-        boolean approvedLanHttp = "http".equalsIgnoreCase(scheme) && allowInsecureLanHttp
-                && isPrivateLanIpv4(raw.getHost());
-        if ((!https && !localHttp && !approvedLanHttp)
+        boolean httpScheme = "http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme);
+        if (!httpScheme
                 || raw.getHost() == null || raw.getUserInfo() != null || raw.getQuery() != null
                 || raw.getFragment() != null || !isRootPath(raw.getPath())) {
-            throw new IllegalArgumentException("Control-plane base URL must be HTTPS, loopback HTTP, or explicitly approved private LAN HTTP.");
+            throw new IllegalArgumentException("Control-plane base URL must be an HTTP or HTTPS origin.");
         }
         try {
-            return new URI(scheme.toLowerCase(Locale.ROOT), null, raw.getHost(), raw.getPort(), "/", null, null);
+            String host = "0.0.0.0".equals(raw.getHost()) ? "127.0.0.1" : raw.getHost();
+            return new URI(scheme.toLowerCase(Locale.ROOT), null, host, raw.getPort(), "/", null, null);
         } catch (URISyntaxException exception) {
             throw new IllegalArgumentException("Control-plane base URL is invalid.");
         }
@@ -256,44 +241,6 @@ final class HttpControlPlaneGateway implements ControlPlaneGateway {
 
     private static boolean isRootPath(String path) {
         return path == null || path.isEmpty() || "/".equals(path);
-    }
-
-    private static boolean isDevelopmentLoopbackHost(String host) {
-        return "localhost".equalsIgnoreCase(host)
-                || "127.0.0.1".equals(host)
-                || "::1".equals(host)
-                || "[::1]".equals(host);
-    }
-
-    private static boolean isPrivateLanIpv4(String host) {
-        if (host == null) {
-            return false;
-        }
-        String[] octets = host.split("\\.", -1);
-        if (octets.length != 4) {
-            return false;
-        }
-        int[] values = new int[4];
-        for (int index = 0; index < octets.length; index++) {
-            if (octets[index].isEmpty() || octets[index].length() > 3) {
-                return false;
-            }
-            for (int position = 0; position < octets[index].length(); position++) {
-                if (!Character.isDigit(octets[index].charAt(position))) {
-                    return false;
-                }
-            }
-            try {
-                values[index] = Integer.parseInt(octets[index]);
-            } catch (NumberFormatException exception) {
-                return false;
-            }
-            if (values[index] > 255) {
-                return false;
-            }
-        }
-        return values[0] == 10 || (values[0] == 172 && values[1] >= 16 && values[1] <= 31)
-                || (values[0] == 192 && values[1] == 168);
     }
 
     private record LoginBody(String email, String password) {

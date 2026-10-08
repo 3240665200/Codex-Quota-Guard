@@ -8,6 +8,7 @@ package com.codexquotaguard.backend.controlplane;
 public record PersonalQuotaOverview(
         SystemUser user,
         QuotaTeam team,
+        TeamQuotaOverview teamQuota,
         QuotaPolicy policy,
         QuotaUsage usage,
         boolean allowed,
@@ -18,10 +19,21 @@ public record PersonalQuotaOverview(
         if (user == null || policy == null || usage == null) {
             throw new IllegalArgumentException("A complete personal quota overview is required.");
         }
-        if ((policy.fiveHourTokenLimit() == null || policy.weeklyTokenLimit() == null) && allowed) {
-            throw new IllegalArgumentException("An unconfigured token limit cannot be marked as allowed.");
+        if (allowed && teamQuota == null && policy.weeklyTokenLimit() == null) {
+            throw new IllegalArgumentException("An allowed user needs a personal or team weekly limit.");
+        }
+        if (allowed && teamQuota != null && teamQuota.weeklyTokenLimit() == null) {
+            throw new IllegalArgumentException("An allowed team needs a weekly limit.");
+        }
+        if (teamQuota != null && (team == null || !teamQuota.id().equals(team.id()))) {
+            throw new IllegalArgumentException("Team quota does not match the current team.");
         }
         blockReason = optionalText(blockReason);
+    }
+
+    public PersonalQuotaOverview(SystemUser user, QuotaTeam team, QuotaPolicy policy,
+            QuotaUsage usage, boolean allowed, String blockReason) {
+        this(user, team, null, policy, usage, allowed, blockReason);
     }
 
     private static String optionalText(String value) {

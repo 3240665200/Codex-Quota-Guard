@@ -39,6 +39,12 @@ public class Team {
     @Column(name = "weekly_token_limit")
     private Long weeklyTokenLimit;
 
+    @Column(name = "total_token_limit")
+    private Long totalTokenLimit;
+
+    @Column(name = "official_account_id")
+    private UUID officialAccountId;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
@@ -48,6 +54,9 @@ public class Team {
     @Version
     @Column(nullable = false)
     private long version;
+
+    @Column(name = "quota_reset_at")
+    private Instant quotaResetAt;
 
     protected Team() {
     }
@@ -102,6 +111,14 @@ public class Team {
         return weeklyTokenLimit;
     }
 
+    public Long getTotalTokenLimit() {
+        return totalTokenLimit;
+    }
+
+    public UUID getOfficialAccountId() {
+        return officialAccountId;
+    }
+
     public Instant getCreatedAt() {
         return createdAt;
     }
@@ -112,6 +129,15 @@ public class Team {
 
     public long getVersion() {
         return version;
+    }
+
+    public Instant getQuotaResetAt() {
+        return quotaResetAt;
+    }
+
+    public void resetQuota(Instant now) {
+        this.quotaResetAt = now;
+        this.updatedAt = now;
     }
 
     public void update(
@@ -130,13 +156,18 @@ public class Team {
         this.updatedAt = now;
     }
 
-    public boolean updateTokenLimits(Long fiveHourTokenLimit, Long weeklyTokenLimit, Instant now) {
+    public boolean updateTokenLimits(Long fiveHourTokenLimit, Long weeklyTokenLimit,
+            Long totalTokenLimit, UUID officialAccountId, Instant now) {
         if (java.util.Objects.equals(this.fiveHourTokenLimit, fiveHourTokenLimit)
-                && java.util.Objects.equals(this.weeklyTokenLimit, weeklyTokenLimit)) {
+                && java.util.Objects.equals(this.weeklyTokenLimit, weeklyTokenLimit)
+                && java.util.Objects.equals(this.totalTokenLimit, totalTokenLimit)
+                && java.util.Objects.equals(this.officialAccountId, officialAccountId)) {
             return false;
         }
         this.fiveHourTokenLimit = fiveHourTokenLimit;
         this.weeklyTokenLimit = weeklyTokenLimit;
+        this.totalTokenLimit = totalTokenLimit;
+        this.officialAccountId = officialAccountId;
         this.updatedAt = now;
         return true;
     }

@@ -1,6 +1,6 @@
 [package]
 name = "codex-quota-guard"
-version = "0.2.2"
+version = "0.2.11"
 description = "Secure desktop shell for Codex Quota Guard"
 authors = ["Codex Quota Guard contributors"]
 edition = "2021"
@@ -16,3 +16,6 @@ serde_json = "1"
 tauri = { version = "2", features = [] }
 thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Services", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

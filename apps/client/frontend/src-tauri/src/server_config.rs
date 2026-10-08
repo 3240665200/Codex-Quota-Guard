@@ -1,4 +1,4 @@
-use std::{env, fs, net::Ipv4Addr, path::PathBuf};
+use std::{env, fs, path::PathBuf};
 
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
@@ -11,21 +11,23 @@ const CONFIG_FILE: &str = "server-config.json";
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ServerConfig {
     pub(crate) url: String,
-    pub(crate) allow_insecure_lan_http: bool,
+    // Accept the retired setting when reading existing installations.
+    #[serde(default, rename = "allowInsecureLanHttp", skip_serializing)]
+    _legacy_allow_insecure_lan_http: bool,
 }
 
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             url: DEFAULT_SERVER_URL.to_owned(),
-            allow_insecure_lan_http: false,
+            _legacy_allow_insecure_lan_http: false,
         }
     }
 }
 
 impl ServerConfig {
     fn validated(mut self) -> Result<Self, &'static str> {
-        let raw = Url::parse(self.url.trim())
+        let mut raw = Url::parse(self.url.trim())
             .map_err(|_| "请输入完整的服务器地址，例如 http://192.168.0.102:8080。")?;
         let host = raw.host_str().ok_or("服务器地址缺少主机名。")?;
         if !raw.username().is_empty()
@@ -37,30 +39,16 @@ impl ServerConfig {
             return Err("服务器地址只能填写协议、主机和端口。");
         }
 
-        let ipv4 = host.parse::<Ipv4Addr>().ok();
-        let loopback = host.eq_ignore_ascii_case("localhost")
-            || ipv4.is_some_and(|address| address.is_loopback())
-            || host == "[::1]";
-        let private_lan = ipv4.is_some_and(is_private_lan_ipv4);
-        match raw.scheme() {
-            "https" => {}
-            "http" if loopback => {}
-            "http" if private_lan && self.allow_insecure_lan_http => {}
-            "http" if private_lan => return Err("局域网 HTTP 需要先勾选风险确认。"),
-            _ => return Err("远程服务器须使用 HTTPS；临时 HTTP 仅允许私有局域网 IP。"),
+        if !matches!(raw.scheme(), "http" | "https") {
+            return Err("服务器地址须以 http:// 或 https:// 开头。");
         }
-
+        if host == "0.0.0.0" {
+            raw.set_host(Some("127.0.0.1"))
+                .map_err(|_| "服务器地址缺少主机名。")?;
+        }
         self.url = raw.origin().ascii_serialization();
-        if loopback || raw.scheme() == "https" {
-            self.allow_insecure_lan_http = false;
-        }
         Ok(self)
     }
-}
-
-fn is_private_lan_ipv4(address: Ipv4Addr) -> bool {
-    let [first, second, ..] = address.octets();
-    first == 10 || (first == 172 && (16..=31).contains(&second)) || (first == 192 && second == 168)
 }
 
 fn config_path(app: &AppHandle) -> Result<PathBuf, &'static str> {
@@ -86,8 +74,7 @@ pub(crate) fn load(app: &AppHandle) -> ServerConfig {
     if let Ok(url) = env::var("QUOTA_GUARD_CONTROL_PLANE_URL") {
         if let Ok(valid) = (ServerConfig {
             url,
-            allow_insecure_lan_http: env::var("QUOTA_GUARD_ALLOW_INSECURE_LAN_HTTP")
-                .is_ok_and(|value| value.eq_ignore_ascii_case("true")),
+            ..ServerConfig::default()
         })
         .validated()
         {
@@ -111,60 +98,64 @@ pub(crate) fn save(app: &AppHandle, config: ServerConfig) -> Result<ServerConfig
 mod tests {
     use super::*;
 
-    fn candidate(url: &str, allow_insecure_lan_http: bool) -> ServerConfig {
+    fn candidate(url: &str) -> ServerConfig {
         ServerConfig {
             url: url.into(),
-            allow_insecure_lan_http,
+            ..ServerConfig::default()
         }
     }
 
     #[test]
     fn accepts_https_and_local_development_http() {
         assert_eq!(
-            candidate("https://control.example.com:8443", false)
+            candidate("https://control.example.com:8443")
                 .validated()
                 .unwrap()
                 .url,
             "https://control.example.com:8443"
         );
         assert_eq!(
-            candidate("http://127.0.0.1:8080", false)
-                .validated()
-                .unwrap()
-                .url,
+            candidate("http://127.0.0.1:8080").validated().unwrap().url,
             "http://127.0.0.1:8080"
         );
     }
 
     #[test]
-    fn requires_explicit_confirmation_for_private_lan_http() {
-        assert!(candidate("http://192.168.0.102:8080", false)
-            .validated()
-            .is_err());
+    fn accepts_http_origins_without_a_confirmation_flag() {
+        for url in [
+            "http://192.168.0.102:8080",
+            "http://149.88.90.196:8080",
+            "http://control.example.com:8080",
+        ] {
+            assert_eq!(candidate(url).validated().unwrap().url, url);
+        }
         assert_eq!(
-            candidate("http://192.168.0.102:8080", true)
-                .validated()
-                .unwrap()
-                .url,
-            "http://192.168.0.102:8080"
+            candidate("http://0.0.0.0:8080").validated().unwrap().url,
+            "http://127.0.0.1:8080"
         );
-        assert!(candidate("http://10.0.0.5:8080", true).validated().is_ok());
-        assert!(candidate("http://172.31.2.5:8080", true)
-            .validated()
-            .is_ok());
     }
 
     #[test]
-    fn never_allows_public_http_or_embedded_credentials() {
+    fn reads_legacy_settings_but_saves_only_the_url() {
+        let config: ServerConfig = serde_json::from_str(
+            r#"{"url":"http://control.example.com:8080","allowInsecureLanHttp":false}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(config.validated().unwrap()).unwrap(),
+            serde_json::json!({"url":"http://control.example.com:8080"})
+        );
+    }
+
+    #[test]
+    fn rejects_non_http_schemes_and_embedded_credentials() {
         for url in [
-            "http://149.88.90.196:8080",
-            "http://attacker.example:8080",
             "https://user:secret@control.example.com",
             "https://control.example.com/api",
             "https://control.example.com/?token=secret",
             "file:///C:/secret",
         ] {
-            assert!(candidate(url, true).validated().is_err(), "{url}");
+            assert!(candidate(url).validated().is_err(), "{url}");
         }
     }
 }

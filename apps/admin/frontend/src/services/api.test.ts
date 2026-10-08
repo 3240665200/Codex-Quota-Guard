@@ -8,8 +8,12 @@ import {
   deleteUser,
   forceLogoutUser,
   getDashboard,
+  getTeamQuotaOverview,
   getUserOfficialQuota,
   getUserQuotaOverview,
+  getUserUsageEvents,
+  resetTeamQuota,
+  resetUserQuota,
   getSession,
   listTeams,
   listUsers,
@@ -107,6 +111,48 @@ describe('admin API client', () => {
     expect((init.headers as Headers).get('Authorization')).toBe('Bearer admin-access-token');
   });
 
+  it('requests only one users paged central usage ledger', async () => {
+    setSession({ accessToken: 'admin-access-token', user: adminUser });
+    fetchMock.mockResolvedValue(response({ items: [], page: 1, size: 10,
+      totalElements: 0, totalPages: 0 }));
+
+    await getUserUsageEvents('user/id', 1, 10);
+
+    const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(path).toBe('/api/v1/admin/users/user%2Fid/usage-events?page=1&size=10');
+    expect((init.headers as Headers).get('Authorization')).toBe('Bearer admin-access-token');
+  });
+
+  it('requests team shared usage with administrator authentication', async () => {
+    setSession({ accessToken: 'admin-access-token', user: adminUser });
+    fetchMock.mockResolvedValue(response({ id: 'team-1', fiveHourUsedTokens: 510 }));
+
+    await getTeamQuotaOverview('team/id');
+
+    const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(path).toBe('/api/v1/admin/teams/team%2Fid/quota-overview');
+    expect((init.headers as Headers).get('Authorization')).toBe('Bearer admin-access-token');
+  });
+
+  it('posts administrator-only quota resets without changing limits', async () => {
+    setSession({ accessToken: 'admin-access-token', user: adminUser });
+    fetchMock.mockResolvedValue({ ok: true, status: 204, text: async () => '' } as Response);
+
+    await resetUserQuota('user/id');
+    await resetTeamQuota('team/id');
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
+      '/api/v1/admin/users/user%2Fid/quota-reset',
+      '/api/v1/admin/teams/team%2Fid/quota-reset',
+    ]);
+    for (const [, init] of fetchMock.mock.calls as [string, RequestInit][]) {
+      expect(init.method).toBe('POST');
+      expect((init.headers as Headers).get('Authorization')).toBe('Bearer admin-access-token');
+      expect(init.body).toBeUndefined();
+    }
+  });
+
   it('manages team token limits and a user team policy', async () => {
     setSession({ accessToken: 'admin-access-token', user: adminUser });
     fetchMock
@@ -130,6 +176,8 @@ describe('admin API client', () => {
     });
     await updateTeamTokenLimits('team-id', {
       fiveHourTokenLimit: 50_000,
+      totalTokenLimit: 200_000,
+      officialAccountId: null,
       version: 4,
       weeklyTokenLimit: 100_000,
     });
@@ -165,6 +213,8 @@ describe('admin API client', () => {
     expect(fetchMock.mock.calls[3]?.[1]).toMatchObject({
       body: JSON.stringify({
         fiveHourTokenLimit: 50_000,
+        totalTokenLimit: 200_000,
+        officialAccountId: null,
         version: 4,
         weeklyTokenLimit: 100_000,
       }),

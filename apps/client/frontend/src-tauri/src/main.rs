@@ -1,15 +1,34 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod backend;
+mod meter_service;
 mod server_config;
 
 use backend::{ApiRoute, BackendState};
 use reqwest::Method;
 use serde_json::Value;
 use server_config::ServerConfig;
+use std::sync::OnceLock;
 use tauri::{Manager, RunEvent, State};
 
 type CommandResult<T> = Result<T, String>;
+static METER_STARTUP: OnceLock<meter_service::MeterStartOutcome> = OnceLock::new();
+
+#[tauri::command]
+async fn meter_service_ensure(app: tauri::AppHandle) -> meter_service::MeterStartOutcome {
+    tauri::async_runtime::spawn_blocking(move || {
+        *METER_STARTUP.get_or_init(|| meter_service::ensure_running_or_install(&app))
+    })
+    .await
+    .unwrap_or(meter_service::MeterStartOutcome::Failed)
+}
+
+#[tauri::command]
+async fn meter_service_retry(app: tauri::AppHandle) -> meter_service::MeterStartOutcome {
+    tauri::async_runtime::spawn_blocking(move || meter_service::ensure_running_or_install(&app))
+        .await
+        .unwrap_or(meter_service::MeterStartOutcome::Failed)
+}
 
 fn command_error(error: backend::BackendError) -> String {
     // BackendError has exclusively user-safe messages. Do not pass through
@@ -106,11 +125,13 @@ async fn system_logout(state: State<'_, BackendState>) -> CommandResult<()> {
 fn main() {
     let builder = tauri::Builder::default()
         .setup(|app| {
-            let state = BackendState::launch(&app.handle())?;
+            let state = BackendState::launch(app.handle())?;
             app.manage(state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            meter_service_ensure,
+            meter_service_retry,
             status,
             quota_overview,
             usage_status,

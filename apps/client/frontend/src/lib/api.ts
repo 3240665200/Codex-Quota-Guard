@@ -14,9 +14,20 @@ const statusSchema = z.object({
   state: z.string(),
 });
 
+const meterStartSchema = z.enum([
+  "RUNNING",
+  "STARTED",
+  "INSTALLED",
+  "NOT_INSTALLED",
+  "NEEDS_ADMIN",
+  "SERVER_UNAVAILABLE",
+  "INSTALL_FAILED",
+  "FAILED",
+  "UNSUPPORTED",
+]);
+
 const serverConfigSchema = z.object({
   url: z.string().url(),
-  allowInsecureLanHttp: z.boolean(),
 });
 
 const systemUserSchema = z.object({
@@ -42,6 +53,21 @@ const quotaTeamSchema = z.object({
   name: z.string().min(1),
 });
 
+const teamQuotaSchema = quotaTeamSchema.extend({
+  status: z.enum(["ACTIVE", "DISABLED"]),
+  memberCount: tokenCount,
+  fiveHourTokenLimit: tokenCount.nullable(),
+  weeklyTokenLimit: tokenCount.nullable(),
+  totalTokenLimit: tokenCount.nullable(),
+  fiveHourUsedTokens: tokenCount,
+  weeklyUsedTokens: tokenCount,
+  totalUsedTokens: tokenCount,
+  fiveHourRemainingTokens: tokenCount.nullable(),
+  weeklyRemainingTokens: tokenCount.nullable(),
+  totalRemainingTokens: tokenCount.nullable(),
+  measuredAt: isoInstant.nullable(),
+});
+
 const quotaPolicySchema = z.object({
   fiveHourTokenLimit: tokenCount.nullable(),
   weeklyTokenLimit: tokenCount.nullable(),
@@ -62,16 +88,30 @@ const quotaUsageSchema = z.object({
 
 const usageStatusSchema = z.object({
   fallback: z.object({
-    state: z.enum(["SIGNED_OUT", "WAITING_FOR_SESSIONS", "BASELINE_READY",
-      "UP_TO_DATE", "REPORTED", "REPORT_FAILED", "SCAN_FAILED"]),
+    state: z.enum([
+      "SIGNED_OUT",
+      "WAITING_FOR_SESSIONS",
+      "BASELINE_READY",
+      "UP_TO_DATE",
+      "REPORTED",
+      "REPORT_FAILED",
+      "SCAN_FAILED",
+    ]),
     lastScannedAt: isoInstant.nullable(),
     lastReportedAt: isoInstant.nullable(),
     lastReportedEvents: tokenCount,
     issues: z.array(z.string().min(1)),
   }),
   service: z.object({
-    state: z.enum(["NOT_INSTALLED", "OFFLINE", "BASELINE_READY", "UNPAIRED",
-      "UP_TO_DATE", "REPORTED", "ERROR"]),
+    state: z.enum([
+      "NOT_INSTALLED",
+      "OFFLINE",
+      "BASELINE_READY",
+      "UNPAIRED",
+      "UP_TO_DATE",
+      "REPORTED",
+      "ERROR",
+    ]),
     lastScanEpochSeconds: tokenCount.nullable(),
     lastReportEpochSeconds: tokenCount.nullable(),
     reportedEvents: tokenCount,
@@ -100,12 +140,20 @@ const quotaOverviewSchema = z
   .object({
     user: systemUserSchema,
     team: quotaTeamSchema.nullable(),
+    teamQuota: teamQuotaSchema.nullable().optional(),
     policy: quotaPolicySchema,
     usage: quotaUsageSchema,
     allowed: z.boolean(),
     blockReason: z.string().nullable(),
   })
   .superRefine((value, context) => {
+    if (value.teamQuota && value.teamQuota.id !== value.team?.id) {
+      context.addIssue({
+        code: "custom",
+        message: "团队额度归属不一致。",
+        path: ["teamQuota"],
+      });
+    }
     const unconfiguredFiveHour = value.policy.fiveHourTokenLimit === null;
     const unconfiguredWeekly = value.policy.weeklyTokenLimit === null;
     if (
@@ -125,28 +173,40 @@ const quotaOverviewSchema = z
     ) {
       context.addIssue({
         code: "custom",
-        message: "未配置的 Token 限额不能带有剩余额度。",
+        message: "个人未设限的窗口不能带有个人剩余额度。",
         path: ["usage"],
       });
     }
+    const personalExhausted =
+      (value.usage.fiveHourRemainingTokens !== null &&
+        value.usage.fiveHourRemainingTokens <= 0) ||
+      (value.usage.weeklyRemainingTokens !== null &&
+        value.usage.weeklyRemainingTokens <= 0);
+    const teamExhausted =
+      value.teamQuota &&
+      [
+        value.teamQuota.fiveHourRemainingTokens,
+        value.teamQuota.weeklyRemainingTokens,
+        value.teamQuota.totalRemainingTokens,
+      ].some((remaining) => remaining !== null && remaining <= 0);
     if (
       value.allowed &&
-      (unconfiguredFiveHour ||
-        unconfiguredWeekly ||
-        value.usage.fiveHourRemainingTokens === null ||
-        value.usage.weeklyRemainingTokens === null ||
-        value.usage.fiveHourRemainingTokens <= 0 ||
-        value.usage.weeklyRemainingTokens <= 0)
+      (personalExhausted ||
+        teamExhausted ||
+        (value.teamQuota
+          ? value.teamQuota.weeklyTokenLimit === null
+          : unconfiguredWeekly))
     ) {
       context.addIssue({
         code: "custom",
-        message: "可用状态必须具有已配置且尚有余量的个人 Token 限额。",
+        message: "可用状态必须具有尚有余量的必需团队或个人额度。",
         path: ["allowed"],
       });
     }
   });
 
 export type StatusResponse = z.infer<typeof statusSchema>;
+export type MeterStartOutcome = z.infer<typeof meterStartSchema>;
 export type ServerConfig = z.infer<typeof serverConfigSchema>;
 export type SystemUser = z.infer<typeof systemUserSchema>;
 export type SystemSession = z.infer<typeof systemSessionSchema>;
@@ -159,6 +219,10 @@ export type OfficialCodexRateLimits = z.infer<
   typeof officialCodexRateLimitsSchema
 >;
 
+// StrictMode and a fast renderer remount must not trigger duplicate UAC prompts.
+// An explicit dashboard retry uses a separate native command.
+let meterStartupPromise: Promise<MeterStartOutcome> | null = null;
+
 async function invokeValidated<T>(
   command: string,
   schema: z.ZodType<T>,
@@ -170,6 +234,20 @@ async function invokeValidated<T>(
 }
 
 export const api = {
+  ensureMeterService: () => {
+    meterStartupPromise ??= invokeValidated(
+      "meter_service_ensure",
+      meterStartSchema,
+    );
+    return meterStartupPromise;
+  },
+  retryMeterService: () => {
+    meterStartupPromise = invokeValidated(
+      "meter_service_retry",
+      meterStartSchema,
+    );
+    return meterStartupPromise;
+  },
   status: () => invokeValidated("status", statusSchema),
   serverConfig: () => invokeValidated("server_config_get", serverConfigSchema),
   saveServerConfig: (config: ServerConfig) =>
@@ -198,8 +276,7 @@ const safeBackendMessages = new Set([
   "请输入完整的服务器地址，例如 http://192.168.0.102:8080。",
   "服务器地址缺少主机名。",
   "服务器地址只能填写协议、主机和端口。",
-  "局域网 HTTP 需要先勾选风险确认。",
-  "远程服务器须使用 HTTPS；临时 HTTP 仅允许私有局域网 IP。",
+  "服务器地址须以 http:// 或 https:// 开头。",
   "无法读取客户端设置目录。",
   "无法保存服务器设置，请检查目录权限。",
   "无法保存服务器设置，请稍后重试。",

@@ -1,7 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   CircleAlert,
-  Clock3,
   Gauge,
   LogOut,
   RefreshCw,
@@ -17,55 +16,104 @@ import {
   getApiErrorMessage,
   type OfficialCodexRateLimits,
   type QuotaOverview,
-  type QuotaTeam,
   type SystemSession,
   type UsageStatus,
 } from "@/lib/api";
-import { formatPercent, formatResetTime, formatTokenCount } from "@/lib/utils";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Separator } from "@/components/ui/separator";
+  formatCompactTokenCount,
+  formatPercent,
+  formatResetTime,
+  formatTokenCount,
+} from "@/lib/utils";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
-
-function describePolicySource(source: string): string {
-  switch (source) {
-    case "USER":
-      return "用户策略";
-    case "TEAM":
-      return "团队策略";
-    case "UNCONFIGURED":
-      return "尚未配置";
-    default:
-      return "服务端策略";
-  }
-}
 
 function describeBlockReason(reason: string | null): string {
   switch (reason) {
     case "TOKEN_QUOTA_UNCONFIGURED":
-      return "个人 5 小时或 7 天 Token 限额尚未配置。";
+      return "7 天基础额度尚未配置。";
     case "TEAM_UNAVAILABLE":
       return "所属团队不可用。";
     case "FIVE_HOUR_TOKEN_QUOTA_EXCEEDED":
       return "已达到个人 5 小时 Token 限额。";
     case "WEEKLY_TOKEN_QUOTA_EXCEEDED":
       return "已达到个人 7 天 Token 限额。";
+    case "TEAM_FIVE_HOUR_TOKEN_QUOTA_EXCEEDED":
+      return "所属团队的 5 小时共享 Token 额度已用尽。";
+    case "TEAM_WEEKLY_TOKEN_QUOTA_EXCEEDED":
+      return "所属团队的 7 天共享 Token 额度已用尽。";
+    case "TEAM_TOTAL_TOKEN_QUOTA_EXCEEDED":
+      return "所属团队的累计 Token 总额度已用尽。";
     default:
       return "服务端暂无法确认当前个人 Token 额度，请联系管理员。";
   }
 }
 
-function formatLimit(value: number | null): string {
-  return value === null ? "未配置" : `${formatTokenCount(value)} Token`;
+function TokenAmount({ value }: { value: number }) {
+  return (
+    <span title={`精确值：${formatTokenCount(value)} Token`}>
+      {formatCompactTokenCount(value)} Token
+    </span>
+  );
+}
+
+function usagePercent(used: number, limit: number | null): number {
+  if (limit === null) return 0;
+  if (limit === 0) return 100;
+  return Math.min(100, Math.max(0, (used / limit) * 100));
+}
+
+function QuotaProgress({
+  used,
+  limit,
+  label,
+}: {
+  used: number;
+  limit: number | null;
+  label: string;
+}) {
+  if (limit === null) {
+    return (
+      <div className="flex justify-between gap-3 text-xs text-muted-foreground">
+        <span>{label}</span>
+        <span>不设限</span>
+      </div>
+    );
+  }
+  const percent = usagePercent(used, limit);
+  const exhausted = percent >= 100;
+  return (
+    <div
+      className="flex flex-col gap-2"
+      role="group"
+      aria-label={`${label}使用进度`}
+    >
+      <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+        <span>{label}</span>
+        <span className="tabular-nums font-medium text-foreground">
+          {new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 1 }).format(
+            percent,
+          )}
+          %
+        </span>
+      </div>
+      <Progress
+        aria-label={`${label}使用进度`}
+        className="h-2 bg-slate-200 dark:bg-slate-800"
+        indicatorClassName={
+          exhausted
+            ? "bg-red-500"
+            : percent >= 80
+              ? "bg-amber-500"
+              : "bg-teal-600"
+        }
+        value={percent}
+      />
+    </div>
+  );
 }
 
 function LoadingCard({ className = "" }: { className?: string }) {
@@ -101,78 +149,84 @@ function EmptyState({
   );
 }
 
-function LocalCodexCard() {
+function TeamCard({ overview }: { overview: QuotaOverview }) {
+  const { team, teamQuota } = overview;
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex flex-col gap-1">
-            <CardTitle className="text-lg">本机官方 Codex 登录</CardTitle>
-            <CardDescription>请在官方 Codex 应用或 CLI 中自行登录。</CardDescription>
+    <section className="cqg-surface min-w-0 p-5" aria-label="团队共享额度">
+      <div className="mb-5 flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="text-base font-semibold">团队共享额度</h2>
+          <p className="mt-1 truncate text-xs text-muted-foreground">
+            {teamQuota
+              ? `${teamQuota.name} · ${teamQuota.memberCount} 位成员`
+              : team
+                ? team.name
+                : "未加入团队"}
+          </p>
+        </div>
+        <Users
+          aria-hidden="true"
+          className="size-5 shrink-0 text-teal-700 dark:text-teal-400"
+        />
+      </div>
+      {teamQuota ? (
+        <div className="space-y-5">
+          <div>
+            <QuotaProgress
+              label="累计总额"
+              used={teamQuota.totalUsedTokens}
+              limit={teamQuota.totalTokenLimit}
+            />
+            <div className="mt-3 flex flex-wrap justify-between gap-2 text-xs tabular-nums text-muted-foreground">
+              <span>
+                <TokenAmount value={teamQuota.totalUsedTokens} /> 已用
+              </span>
+              {teamQuota.totalRemainingTokens !== null ? (
+                <span>
+                  <TokenAmount value={teamQuota.totalRemainingTokens} /> 剩余
+                </span>
+              ) : null}
+            </div>
           </div>
-          <ShieldCheck aria-hidden="true" className="text-muted-foreground" />
-        </div>
-      </CardHeader>
-      <CardContent>
-        <Badge variant="secondary">自行登录</Badge>
-      </CardContent>
-      <CardFooter className="text-xs leading-5 text-muted-foreground">
-        本应用不接收、下发或修改官方登录凭证。官方额度从本机登录状态读取；
-        个人 Token 用量仅根据本机可读取的 Codex 会话日志上报。
-      </CardFooter>
-    </Card>
-  );
-}
-
-function TeamCard({ team }: { team: QuotaTeam | null }) {
-  return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex flex-col gap-1">
-            <CardTitle className="text-lg">所属团队</CardTitle>
-            <CardDescription>
-              {team ? team.name : "当前账户尚未加入团队。"}
-            </CardDescription>
+          <div className="border-t pt-4">
+            <QuotaProgress
+              label="5 小时团队"
+              used={teamQuota.fiveHourUsedTokens}
+              limit={teamQuota.fiveHourTokenLimit}
+            />
+            <div className="flex flex-wrap justify-between gap-2 text-xs tabular-nums text-muted-foreground">
+              <span>
+                <TokenAmount value={teamQuota.fiveHourUsedTokens} /> 已用
+              </span>
+              {teamQuota.fiveHourRemainingTokens !== null ? (
+                <span>
+                  <TokenAmount value={teamQuota.fiveHourRemainingTokens} /> 剩余
+                </span>
+              ) : null}
+            </div>
           </div>
-          <Users aria-hidden="true" className="text-muted-foreground" />
+          <div className="border-t pt-4">
+            <QuotaProgress
+              label="7 天团队"
+              used={teamQuota.weeklyUsedTokens}
+              limit={teamQuota.weeklyTokenLimit}
+            />
+            <div className="mt-3 flex flex-wrap justify-between gap-2 text-xs tabular-nums text-muted-foreground">
+              <span>
+                <TokenAmount value={teamQuota.weeklyUsedTokens} /> 已用
+              </span>
+              {teamQuota.weeklyRemainingTokens !== null ? (
+                <span>
+                  <TokenAmount value={teamQuota.weeklyRemainingTokens} /> 剩余
+                </span>
+              ) : null}
+            </div>
+          </div>
         </div>
-      </CardHeader>
-    </Card>
-  );
-}
-
-function PolicyCard({ overview }: { overview: QuotaOverview }) {
-  const { policy } = overview;
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-lg">个人 Token 限额</CardTitle>
-        <CardDescription>
-          按当前系统用户生效；不是官方账户套餐额度。
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="grid gap-3 sm:grid-cols-2">
-        <div className="rounded-lg border bg-muted/20 p-3">
-          <p className="text-sm font-medium">5 小时上限</p>
-          <p className="mt-1 text-2xl font-semibold">
-            {formatLimit(policy.fiveHourTokenLimit)}
-          </p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            来源：{describePolicySource(policy.fiveHourSource)}
-          </p>
-        </div>
-        <div className="rounded-lg border bg-muted/20 p-3">
-          <p className="text-sm font-medium">7 天上限</p>
-          <p className="mt-1 text-2xl font-semibold">
-            {formatLimit(policy.weeklyTokenLimit)}
-          </p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            来源：{describePolicySource(policy.weeklySource)}
-          </p>
-        </div>
-      </CardContent>
-    </Card>
+      ) : (
+        <p className="text-sm text-muted-foreground">暂无团队共享额度</p>
+      )}
+    </section>
   );
 }
 
@@ -187,141 +241,234 @@ function UsageWindow({
   remainingTokens: number | null;
   limitTokens: number | null;
 }) {
-  if (limitTokens === null) {
-    return (
-      <div className="flex min-h-32 flex-col justify-center rounded-lg border bg-muted/20 p-3">
-        <p className="font-medium">{label}</p>
-        <p className="mt-2 text-sm text-muted-foreground">
-          个人 Token 限额尚未配置
-        </p>
-      </div>
-    );
-  }
-
   const nearLimit =
     remainingTokens !== null &&
+    limitTokens !== null &&
     remainingTokens <= Math.max(1, Math.floor(limitTokens * 0.2));
   return (
-    <div className="flex flex-col gap-2 rounded-lg border bg-muted/20 p-3">
-      <div className="flex items-center justify-between gap-3 text-sm">
-        <span className="font-medium">{label}</span>
-        <Badge variant={nearLimit ? "destructive" : "secondary"}>
-          {remainingTokens === null
-            ? "等待确认"
-            : `${formatTokenCount(remainingTokens)} Token 剩余`}
-        </Badge>
+    <article className="cqg-window flex min-h-[205px] min-w-0 flex-col justify-between p-5">
+      <div className="flex items-start justify-between gap-3">
+        <h3 className="text-sm font-semibold">{label}</h3>
+        <span className="text-xs text-muted-foreground">
+          {limitTokens === null ? "不设限" : "个人上限"}
+        </span>
       </div>
-      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-        <span>{formatTokenCount(usedTokens)} Token 已上报</span>
-        <span>上限 {formatTokenCount(limitTokens)} Token</span>
+      <div className="mt-5 min-w-0">
+        <p className="text-xs text-muted-foreground">
+          {limitTokens === null ? "个人已用" : "个人剩余"}
+        </p>
+        <p
+          className={`mt-1 break-words text-3xl font-semibold tabular-nums ${nearLimit ? "text-red-600" : "text-foreground"}`}
+        >
+          {limitTokens === null ? (
+            <TokenAmount value={usedTokens} />
+          ) : remainingTokens === null ? (
+            "暂不可得"
+          ) : (
+            <TokenAmount value={remainingTokens} />
+          )}
+        </p>
       </div>
-    </div>
+      <div className="mt-6">
+        {limitTokens === null ? (
+          <p className="text-xs text-muted-foreground">
+            本窗口只记录用量，不参与个人限额判断
+          </p>
+        ) : (
+          <>
+            <QuotaProgress
+              label={`${label}个人额度`}
+              used={usedTokens}
+              limit={limitTokens}
+            />
+            <div className="mt-3 flex flex-wrap justify-between gap-x-3 gap-y-1 text-xs tabular-nums text-muted-foreground">
+              <span>
+                个人已用 <TokenAmount value={usedTokens} />
+              </span>
+              <span>
+                上限 <TokenAmount value={limitTokens} />
+              </span>
+            </div>
+          </>
+        )}
+      </div>
+    </article>
   );
 }
 
 function UsageCard({ overview }: { overview: QuotaOverview }) {
   const { usage, policy } = overview;
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <CardTitle className="text-lg">
-              客户端上报的个人 Token 用量
-            </CardTitle>
-            <CardDescription>
-              {usage.measuredAt
-                ? `服务端收到事件于 ${new Date(usage.measuredAt).toLocaleString("zh-CN")}`
-                : "等待服务端确认上报事件"}
-            </CardDescription>
-          </div>
-          <Clock3 aria-hidden="true" className="text-muted-foreground" />
+    <section aria-labelledby="personal-quota-heading">
+      <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
+        <div>
+          <h2 id="personal-quota-heading" className="text-base font-semibold">
+            个人 Token
+          </h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {usage.measuredAt
+              ? `最后上报 ${new Date(usage.measuredAt).toLocaleString("zh-CN")}`
+              : "尚无已接收的用量"}
+          </p>
         </div>
-      </CardHeader>
-      <CardContent className="grid gap-3 md:grid-cols-2">
+        <span className="text-xs text-muted-foreground">
+          窗口按事件发生时间滚动统计
+        </span>
+      </div>
+      <div className="grid gap-3 md:grid-cols-2">
         <UsageWindow
-          label="5 小时用量"
+          label="5 小时"
           usedTokens={usage.fiveHourUsedTokens}
           remainingTokens={usage.fiveHourRemainingTokens}
           limitTokens={policy.fiveHourTokenLimit}
         />
         <UsageWindow
-          label="7 天用量"
+          label="7 天"
           usedTokens={usage.weeklyUsedTokens}
           remainingTokens={usage.weeklyRemainingTokens}
           limitTokens={policy.weeklyTokenLimit}
         />
-      </CardContent>
-      <CardFooter className="text-xs text-muted-foreground">
-        窗口按服务端收到本机上报事件的时间滚动计算；未生成本机 Codex 会话日志的活动不会计入，不能作为官方精确账单。
-      </CardFooter>
-    </Card>
+      </div>
+    </section>
   );
 }
 
-function UsageDiagnosticsCard({ status, scanning, pairing, onScan, onPair }: {
+function UsageDiagnosticsCard({
+  status,
+  scanning,
+  pairing,
+  starting,
+  onScan,
+  onPair,
+  onStart,
+}: {
   status: UsageStatus | undefined;
   scanning: boolean;
   pairing: boolean;
+  starting: boolean;
   onScan: () => void;
   onPair: () => void;
+  onStart: () => void;
 }) {
   const serviceState = status?.service.state;
-  const serviceLabel = serviceState === "NOT_INSTALLED"
-    ? "Rust 常驻计费服务未安装"
-    : serviceState === "OFFLINE"
-      ? "Rust 常驻计费服务离线"
-      : serviceState === "UNPAIRED"
-        ? "Rust 常驻计费服务待配对"
-        : serviceState === "ERROR"
-          ? "Rust 常驻计费服务异常"
-          : serviceState ? "Rust 常驻计费服务运行中" : "正在检查计费服务…";
+  const serviceLabel =
+    serviceState === "NOT_INSTALLED"
+      ? "计费服务未安装"
+      : serviceState === "OFFLINE"
+        ? "计费服务离线"
+        : serviceState === "UNPAIRED"
+          ? "计费服务待配对"
+          : serviceState === "ERROR"
+            ? "计费服务异常"
+            : serviceState
+              ? "计费服务运行中"
+              : "正在检查计费服务…";
   const fallbackState = status?.fallback.state;
-  const fallbackLabel = fallbackState === "BASELINE_READY"
-    ? "本机扫描已建立历史基线，后续新用量才会计入"
-    : fallbackState === "REPORTED"
-      ? `本机扫描刚上报 ${status?.fallback.lastReportedEvents ?? 0} 条事件`
-      : fallbackState === "REPORT_FAILED"
-        ? "本机扫描发现用量，但上报失败，稍后会重试"
-        : fallbackState === "WAITING_FOR_SESSIONS"
-          ? "尚未找到官方 Codex 会话目录"
-          : fallbackState === "SIGNED_OUT"
-            ? "请先登录本系统账户"
-            : fallbackState === "SCAN_FAILED"
-              ? "本机扫描失败，请检查服务状态"
-              : "本机扫描暂无新事件";
+  const fallbackLabel =
+    fallbackState === "BASELINE_READY"
+      ? "本机扫描已建立基线"
+      : fallbackState === "REPORTED"
+        ? `本机扫描刚上报 ${status?.fallback.lastReportedEvents ?? 0} 条事件`
+        : fallbackState === "REPORT_FAILED"
+          ? "本机扫描发现用量，但上报失败，稍后会重试"
+          : fallbackState === "WAITING_FOR_SESSIONS"
+            ? "尚未找到官方 Codex 会话目录"
+            : fallbackState === "SIGNED_OUT"
+              ? "请先登录本系统账户"
+              : fallbackState === "SCAN_FAILED"
+                ? "本机扫描失败，请检查服务状态"
+                : "本机扫描暂无新事件";
+  const serviceHealthy =
+    serviceState === "UP_TO_DATE" || serviceState === "REPORTED";
+  const servicePending =
+    serviceState === "UNPAIRED" || serviceState === "BASELINE_READY";
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-lg">计费程序状态</CardTitle>
-        <CardDescription>{serviceLabel}</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-2 text-sm">
-        <p>{fallbackLabel}</p>
-        {status?.fallback.lastReportedAt ? (
-          <p className="text-muted-foreground">最近成功上报：
-            {new Date(status.fallback.lastReportedAt).toLocaleString("zh-CN")}</p>
-        ) : <p className="text-muted-foreground">后端尚未收到本机 Token 事件。</p>}
-        {serviceState === "NOT_INSTALLED" ? (
-          <p className="text-muted-foreground">当前只有客户端打开并登录时才能扫描；安装 Rust 服务后可后台持续统计。</p>
+    <section
+      className="cqg-surface min-w-0 p-5"
+      aria-labelledby="meter-heading"
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 id="meter-heading" className="text-base font-semibold">
+            计费状态
+          </h2>
+          <p className="mt-1 text-xs text-muted-foreground">{serviceLabel}</p>
+        </div>
+        <span
+          className={`inline-flex items-center gap-2 text-xs ${serviceHealthy ? "text-teal-700 dark:text-teal-400" : servicePending ? "text-amber-700 dark:text-amber-400" : "text-red-700 dark:text-red-400"}`}
+        >
+          <span
+            className={`size-2 rounded-full ${serviceHealthy ? "bg-teal-600" : servicePending ? "bg-amber-500" : "bg-red-500"}`}
+          />
+          {serviceHealthy ? "正常" : servicePending ? "待处理" : "需检查"}
+        </span>
+      </div>
+      <div className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
+        <div>
+          <p className="text-xs text-muted-foreground">本机扫描</p>
+          <p className="mt-1">{fallbackLabel}</p>
+        </div>
+        <div>
+          <p className="text-xs text-muted-foreground">最近上报</p>
+          <p className="mt-1 tabular-nums">
+            {status?.fallback.lastReportedAt
+              ? new Date(status.fallback.lastReportedAt).toLocaleString("zh-CN")
+              : "暂无上报记录"}
+          </p>
+        </div>
+      </div>
+      <div className="mt-3 text-xs">
+        {status?.service.errorCode ? (
+          <p className="text-destructive">
+            服务诊断码：{status.service.errorCode}
+          </p>
         ) : null}
-        {status?.service.errorCode ? <p className="text-destructive">服务诊断码：{status.service.errorCode}</p> : null}
         {status?.pairingState === "PAIRING_FAILED" ? (
-          <p className="text-destructive">设备配对失败，请确认后台在线后重试。</p>
+          <p className="text-destructive">
+            设备配对失败，请确认后台在线后重试。
+          </p>
         ) : null}
-      </CardContent>
-      <CardFooter>
-        <Button size="sm" variant="outline" disabled={scanning} onClick={onScan}>
-          <RefreshCw data-icon="inline-start" className={scanning ? "animate-spin" : undefined} />
+      </div>
+      <div className="mt-4 flex flex-wrap gap-2 border-t pt-4">
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={scanning}
+          onClick={onScan}
+        >
+          <RefreshCw
+            data-icon="inline-start"
+            className={scanning ? "animate-spin" : undefined}
+          />
           {scanning ? "正在扫描…" : "立即扫描"}
         </Button>
-        {serviceState === "UNPAIRED" || status?.pairingState === "PAIRING_FAILED" ? (
-          <Button size="sm" variant="outline" disabled={pairing} onClick={onPair}>
+        {serviceState === "UNPAIRED" ||
+        status?.pairingState === "PAIRING_FAILED" ? (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={pairing}
+            onClick={onPair}
+          >
             {pairing ? "正在配对…" : "重新配对"}
           </Button>
         ) : null}
-      </CardFooter>
-    </Card>
+        {serviceState === "OFFLINE" || serviceState === "NOT_INSTALLED" ? (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={starting}
+            onClick={onStart}
+          >
+            {starting
+              ? "正在处理…"
+              : serviceState === "NOT_INSTALLED"
+                ? "安装计费服务"
+                : "启动计费服务"}
+          </Button>
+        ) : null}
+      </div>
+    </section>
   );
 }
 
@@ -330,25 +477,23 @@ function OfficialRateLimitWindow({
   window,
 }: {
   label: string;
-  window: OfficialCodexRateLimits["windows"][number] | undefined;
+  window: OfficialCodexRateLimits["windows"][number];
 }) {
-  if (!window) {
-    return (
-      <div className="rounded-lg border bg-muted/20 p-3">
-        <p className="font-medium">{label}</p>
-        <p className="mt-2 text-sm text-muted-foreground">
-          官方账户未提供此窗口
-        </p>
-      </div>
-    );
-  }
   return (
-    <div className="rounded-lg border bg-muted/20 p-3">
+    <div className="min-w-0">
       <div className="flex items-center justify-between gap-3 text-sm">
         <span className="font-medium">{label}</span>
-        <Badge variant="secondary">
-          {formatPercent(window.usedPercent)} 已使用
-        </Badge>
+        <span className="font-semibold tabular-nums text-sky-700 dark:text-sky-400">
+          {formatPercent(window.usedPercent)}
+        </span>
+      </div>
+      <div className="mt-3">
+        <Progress
+          aria-label={`${label}官方使用进度`}
+          className="h-2 bg-slate-200 dark:bg-slate-800"
+          indicatorClassName="bg-sky-600"
+          value={window.usedPercent}
+        />
       </div>
       <p className="mt-2 text-xs text-muted-foreground">
         {window.resetsAt ? formatResetTime(window.resetsAt) : "重置时间未知"}
@@ -373,63 +518,95 @@ function OfficialRateLimitsCard({
     (window) => window.windowDurationMins === 10_080,
   );
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-lg">官方 Codex 账户额度（参考）</CardTitle>
-        <CardDescription>
-          {loading
-            ? "正在读取官方账户窗口…"
-            : failed
-              ? "暂时无法读取本机官方额度；请先在官方 Codex 应用或 CLI 登录。"
-              : rateLimits?.planType
-              ? `官方账户套餐：${rateLimits.planType}`
-              : "官方未提供套餐类型"}
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="grid gap-3 md:grid-cols-2">
-        <OfficialRateLimitWindow
-          label="5 小时窗口（官方账户）"
-          window={fiveHour}
+    <section
+      className="cqg-surface min-w-0 p-5"
+      aria-labelledby="official-quota-heading"
+    >
+      <div className="mb-5 flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h2 id="official-quota-heading" className="text-base font-semibold">
+            官方 Codex 额度
+          </h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {loading
+              ? "正在读取…"
+              : failed
+                ? "读取失败，请检查官方登录"
+                : rateLimits?.planType
+                  ? `${rateLimits.planType} 套餐 · 账户级参考`
+                  : "账户级参考"}
+          </p>
+        </div>
+        <Gauge
+          aria-hidden="true"
+          className="size-5 shrink-0 text-sky-700 dark:text-sky-400"
         />
-        <OfficialRateLimitWindow label="7 天窗口（官方账户）" window={weekly} />
-      </CardContent>
-      <CardFooter className="text-xs text-muted-foreground">
-        此处是官方账户级百分比参考，绝不会被当作你的个人 Token 用量或个人 Token
-        限额。
-      </CardFooter>
-    </Card>
+      </div>
+      {fiveHour || weekly ? (
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+          {fiveHour ? (
+            <OfficialRateLimitWindow label="5 小时窗口" window={fiveHour} />
+          ) : null}
+          {weekly ? (
+            <OfficialRateLimitWindow label="7 天窗口" window={weekly} />
+          ) : null}
+        </div>
+      ) : (
+        <p className="text-sm text-muted-foreground">暂无可显示的官方额度</p>
+      )}
+      <p className="mt-5 border-t pt-3 text-xs text-muted-foreground">
+        官方账户额度仅作参考，不计入个人 Token。
+      </p>
+    </section>
   );
 }
 
 function AccessCard({ overview }: { overview: QuotaOverview }) {
   if (overview.allowed) {
     return (
-      <Alert>
-        <ShieldCheck aria-hidden="true" />
-        <AlertTitle>个人 Token 配额检查通过</AlertTitle>
-        <AlertDescription>
-          个人配额尚有余量。官方应用或 CLI 仍由用户自行登录和使用。
-        </AlertDescription>
-      </Alert>
+      <div
+        className="cqg-status-strip cqg-status-ok flex flex-wrap items-center gap-3 px-4 py-3"
+        role="status"
+      >
+        <ShieldCheck
+          aria-hidden="true"
+          className="size-5 shrink-0 text-teal-700 dark:text-teal-400"
+        />
+        <span className="font-semibold">额度可用</span>
+        <span className="text-sm text-muted-foreground">
+          尚未达到已设置的 Token 上限
+        </span>
+      </div>
     );
   }
 
-  const exhausted = overview.blockReason === "FIVE_HOUR_TOKEN_QUOTA_EXCEEDED"
-    || overview.blockReason === "WEEKLY_TOKEN_QUOTA_EXCEEDED";
+  const exhausted =
+    overview.blockReason === "FIVE_HOUR_TOKEN_QUOTA_EXCEEDED" ||
+    overview.blockReason === "WEEKLY_TOKEN_QUOTA_EXCEEDED" ||
+    overview.blockReason === "TEAM_FIVE_HOUR_TOKEN_QUOTA_EXCEEDED" ||
+    overview.blockReason === "TEAM_WEEKLY_TOKEN_QUOTA_EXCEEDED" ||
+    overview.blockReason === "TEAM_TOTAL_TOKEN_QUOTA_EXCEEDED";
   return (
-    <Alert variant="destructive">
-      <CircleAlert aria-hidden="true" />
-      <AlertTitle>
-        {exhausted ? "个人 Token 额度已用尽"
+    <div
+      className="cqg-status-strip cqg-status-warning flex flex-wrap items-center gap-3 px-4 py-3"
+      role="alert"
+    >
+      <CircleAlert
+        aria-hidden="true"
+        className="size-5 shrink-0 text-red-600"
+      />
+      <span className="font-semibold">
+        {exhausted
+          ? "Token 额度已用尽"
           : overview.blockReason === "TOKEN_QUOTA_UNCONFIGURED"
-            ? "个人 Token 额度未配置" : "个人 Token 额度暂不可用"}
-      </AlertTitle>
-      <AlertDescription>
-        {describeBlockReason(overview.blockReason)}{" "}
-        请联系管理员调整限额。本应用不会退出官方 Codex 应用或 CLI；
-        官方使用不经过本服务，因此此限额仅作统计与提醒，不能强制阻止继续使用。
-      </AlertDescription>
-    </Alert>
+            ? "Token 额度未配置"
+            : "额度暂不可用"}
+      </span>
+      <span className="text-sm text-muted-foreground">
+        {describeBlockReason(overview.blockReason)}
+        本应用不会退出官方 Codex 应用或 CLI。
+      </span>
+    </div>
   );
 }
 
@@ -464,8 +641,12 @@ export function Dashboard({ session, onLogout }: DashboardProps) {
     onSuccess: async (status) => {
       queryClient.setQueryData(["usage-status"], status);
       await quotaQuery.refetch();
-      toast[status.fallback.state === "REPORT_FAILED" || status.fallback.state === "SCAN_FAILED"
-        ? "error" : "success"]("扫描完成，请查看计费程序状态。");
+      toast[
+        status.fallback.state === "REPORT_FAILED" ||
+        status.fallback.state === "SCAN_FAILED"
+          ? "error"
+          : "success"
+      ]("扫描完成，请查看计费程序状态。");
     },
     onError: (error) => toast.error(`扫描失败：${getApiErrorMessage(error)}`),
   });
@@ -480,6 +661,34 @@ export function Dashboard({ session, onLogout }: DashboardProps) {
       );
     },
     onError: (error) => toast.error(`配对失败：${getApiErrorMessage(error)}`),
+  });
+  const startMeterMutation = useMutation({
+    mutationFn: api.retryMeterService,
+    onSuccess: async (result) => {
+      if (
+        result === "RUNNING" ||
+        result === "STARTED" ||
+        result === "INSTALLED"
+      ) {
+        toast.success(
+          result === "INSTALLED"
+            ? "计费服务已安装并启动。"
+            : "计费服务已启动，会在关闭客户端后继续运行。",
+        );
+        await usageStatusQuery.refetch();
+      } else if (result === "NEEDS_ADMIN") {
+        toast.error("首次安装需要右键以管理员身份运行客户端。");
+      } else if (result === "NOT_INSTALLED") {
+        toast.warning("安装包缺少计费服务文件，请重新安装最新版客户端。");
+      } else if (result === "SERVER_UNAVAILABLE") {
+        toast.error("无法连接后台，请先检查服务器地址，再重试安装。");
+      } else if (result === "INSTALL_FAILED") {
+        toast.error("计费服务安装失败，请检查 Windows 服务状态。");
+      } else {
+        toast.error("计费服务仍未运行，请检查 Windows 服务状态。");
+      }
+    },
+    onError: () => toast.error("计费服务启动请求失败，请稍后重试。"),
   });
   const overview = quotaQuery.data;
   const rateLimitsQuery = useQuery({
@@ -511,58 +720,67 @@ export function Dashboard({ session, onLogout }: DashboardProps) {
     }
   };
 
-  const requestError = [
-    statusQuery.error,
-    quotaQuery.error,
-  ].find(Boolean);
+  const requestError = [statusQuery.error, quotaQuery.error].find(Boolean);
   const statusOnline = statusQuery.data?.state === "online";
 
   return (
-    <main className="min-h-screen bg-background">
-      <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
-        <header className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
-          <div className="flex flex-col gap-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="outline">{t("appName")}</Badge>
-              <Badge variant={statusOnline ? "default" : "secondary"}>
-                {statusOnline ? t("connected") : t("serviceUnavailable")}
-              </Badge>
+    <main className="cqg-dashboard min-h-screen bg-slate-50 dark:bg-slate-950">
+      <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8">
+        <header className="cqg-dashboard-header flex flex-wrap items-center justify-between gap-4 border-b pb-4">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="flex size-9 shrink-0 items-center justify-center rounded-md bg-foreground text-background">
+              <Gauge aria-hidden="true" className="size-5" />
             </div>
-            <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">
-              {t("dashboard")}
-            </h1>
-            <p className="max-w-2xl text-muted-foreground">{t("overview")}</p>
+            <div className="min-w-0">
+              <p className="text-[11px] font-semibold uppercase text-muted-foreground">
+                Quota Guard
+              </p>
+              <h1 className="text-xl font-semibold">{t("dashboard")}</h1>
+            </div>
+            <span
+              className={`cqg-connection ml-2 hidden items-center gap-2 text-xs sm:inline-flex ${statusOnline ? "text-teal-700 dark:text-teal-400" : "text-amber-700 dark:text-amber-400"}`}
+            >
+              <span
+                className={`size-2 rounded-full ${statusOnline ? "bg-teal-600" : "bg-amber-500"}`}
+              />
+              {statusOnline ? t("connected") : t("serviceUnavailable")}
+            </span>
           </div>
-          <div className="flex flex-wrap items-center justify-end gap-2">
-            <div className="flex items-center gap-2 rounded-md border bg-card px-3 py-2 text-left">
+          <div className="flex min-w-0 items-center justify-end gap-2">
+            <div className="mr-1 flex min-w-0 items-center gap-2 border-r pr-3 text-left">
               <UserCircle
                 aria-hidden="true"
                 className="size-5 text-muted-foreground"
               />
               <div className="flex min-w-0 flex-col">
-                <span className="max-w-40 truncate text-sm font-medium">
+                <span className="max-w-36 truncate text-xs font-medium">
                   {session.user?.displayName}
                 </span>
-                <span className="max-w-40 truncate text-xs text-muted-foreground">
+                <span className="max-w-36 truncate text-[11px] text-muted-foreground">
                   {session.user?.email}
                 </span>
               </div>
             </div>
-            <Button variant="outline" onClick={onLogout}>
-              <LogOut data-icon="inline-start" />
-              退出系统
-            </Button>
             <Button
-              variant="outline"
+              variant="ghost"
+              size="icon"
               onClick={refresh}
               disabled={isRefreshing}
               aria-label={isRefreshing ? t("refreshing") : t("refresh")}
+              title={isRefreshing ? t("refreshing") : t("refresh")}
             >
               <RefreshCw
-                data-icon="inline-start"
                 className={isRefreshing ? "animate-spin" : undefined}
               />
-              {isRefreshing ? t("refreshing") : t("refresh")}
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={onLogout}
+              aria-label="退出系统"
+              title="退出系统"
+            >
+              <LogOut aria-hidden="true" />
             </Button>
           </div>
         </header>
@@ -588,25 +806,25 @@ export function Dashboard({ session, onLogout }: DashboardProps) {
           </div>
         ) : overview ? (
           <>
-            <section className="grid gap-4 lg:grid-cols-2">
-              <LocalCodexCard />
-              <TeamCard team={overview.team} />
-            </section>
-            <PolicyCard overview={overview} />
+            <AccessCard overview={overview} />
+            <UsageCard overview={overview} />
+            <div className="grid min-w-0 gap-4 md:grid-cols-2">
+              <TeamCard overview={overview} />
+              <OfficialRateLimitsCard
+                rateLimits={rateLimitsQuery.data}
+                loading={rateLimitsQuery.isPending}
+                failed={rateLimitsQuery.isError}
+              />
+            </div>
             <UsageDiagnosticsCard
               status={usageStatusQuery.data}
               scanning={scanMutation.isPending}
               pairing={pairMutation.isPending}
+              starting={startMeterMutation.isPending}
               onScan={() => scanMutation.mutate()}
               onPair={() => pairMutation.mutate()}
+              onStart={() => startMeterMutation.mutate()}
             />
-            <UsageCard overview={overview} />
-            <OfficialRateLimitsCard
-              rateLimits={rateLimitsQuery.data}
-              loading={rateLimitsQuery.isPending}
-              failed={rateLimitsQuery.isError}
-            />
-            <AccessCard overview={overview} />
           </>
         ) : (
           <EmptyState
@@ -614,8 +832,6 @@ export function Dashboard({ session, onLogout }: DashboardProps) {
             description="请刷新重试；如问题持续，请联系管理员。"
           />
         )}
-
-        <Separator />
       </div>
     </main>
   );
