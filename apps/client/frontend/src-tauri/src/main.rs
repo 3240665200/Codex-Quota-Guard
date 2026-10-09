@@ -15,6 +15,11 @@ type CommandResult<T> = Result<T, String>;
 static METER_STARTUP: OnceLock<meter_service::MeterStartOutcome> = OnceLock::new();
 
 #[tauri::command]
+fn meter_setup_error(app: tauri::AppHandle) -> Option<String> {
+    meter_service::setup_error(&app)
+}
+
+#[tauri::command]
 async fn meter_service_ensure(app: tauri::AppHandle) -> meter_service::MeterStartOutcome {
     tauri::async_runtime::spawn_blocking(move || {
         *METER_STARTUP.get_or_init(|| meter_service::ensure_running_or_install(&app))
@@ -132,6 +137,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             meter_service_ensure,
             meter_service_retry,
+            meter_setup_error,
             status,
             quota_overview,
             usage_status,

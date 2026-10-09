@@ -1,5 +1,44 @@
 use serde::Serialize;
 
+fn setup_failure_message(bytes: &[u8]) -> Option<String> {
+    if bytes.len() > 4096 {
+        return None;
+    }
+    let status: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    if status.get("state")?.as_str()? != "FAILED" {
+        return None;
+    }
+    let stage = status.get("stage")?.as_str()?;
+    let message = match stage {
+        "ADMIN_CHECK" => "安装需要管理员权限，请右键以管理员身份运行客户端。",
+        "CONFIG_VALIDATE" => "安装配置无效，请检查服务器地址或现有服务的用户归属。",
+        "BINARY_CHECK" => "计费程序无法在这台电脑运行，请重新安装最新版客户端。",
+        "PREPARE_FILES" => "无法准备计费服务文件，请检查安装目录权限与设备绑定。",
+        "PROTECT_FILES" => "无法设置计费服务目录权限，请检查 Windows 安全策略。",
+        "SERVICE_REGISTER" => "Windows 服务注册失败，请检查管理员权限及安全软件拦截。",
+        "SERVICE_RECOVERY" => "无法设置计费服务的自动恢复，请检查 Windows 服务策略。",
+        "SERVICE_START" => "计费服务已注册但启动失败，请重新安装最新版后点击重试。",
+        "SCRIPT_START" => "无法运行安装程序，请检查 Windows PowerShell 是否被禁用。",
+        "INSTALL_TIMEOUT" => "计费服务安装超时，请检查 Windows 服务状态后重试。",
+        _ => return None,
+    };
+    Some(format!("{message}（{stage}）"))
+}
+
+pub(crate) fn setup_error(app: &tauri::AppHandle) -> Option<String> {
+    use tauri::Manager;
+    let file = app
+        .path()
+        .app_data_dir()
+        .ok()?
+        .join("meter-setup-status.json");
+    let metadata = std::fs::symlink_metadata(&file).ok()?;
+    if !metadata.is_file() || metadata.len() > 4096 {
+        return None;
+    }
+    setup_failure_message(&std::fs::read(file).ok()?)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub(crate) enum MeterStartOutcome {
@@ -8,7 +47,6 @@ pub(crate) enum MeterStartOutcome {
     Installed,
     NotInstalled,
     NeedsAdmin,
-    ServerUnavailable,
     InstallFailed,
     Failed,
     #[cfg(not(windows))]
@@ -43,20 +81,24 @@ trait ServiceOps {
 
 trait InstallOps {
     fn bundle_ready(&self) -> bool;
-    fn server_ready(&self) -> bool;
+    fn needs_configuration(&self) -> bool {
+        false
+    }
     fn has_admin_rights(&self) -> bool;
     fn install(&self) -> bool;
 }
 
 fn ensure_with_install(ops: &impl ServiceOps, installer: &impl InstallOps) -> MeterStartOutcome {
-    if ops.state() != ServiceState::Missing {
-        return ensure_with(ops);
+    if ops.state() != ServiceState::Missing && !installer.needs_configuration() {
+        let outcome = ensure_with(ops);
+        if outcome != MeterStartOutcome::Failed || ops.state() != ServiceState::Stopped {
+            return outcome;
+        }
+        // A prior setup may have registered a service whose executable cannot
+        // start. An explicit retry can replace it while retaining its identity.
     }
     if !installer.bundle_ready() {
         return MeterStartOutcome::NotInstalled;
-    }
-    if !installer.server_ready() {
-        return MeterStartOutcome::ServerUnavailable;
     }
     if !installer.has_admin_rights() {
         return MeterStartOutcome::NeedsAdmin;
@@ -130,7 +172,6 @@ mod windows {
     use super::{InstallOps, ServiceOps, ServiceState, StartAttempt};
     use std::ffi::{OsStr, OsString};
     use std::fs;
-    use std::io::Read;
     use std::mem::size_of;
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
     use std::os::windows::process::CommandExt;
@@ -184,6 +225,18 @@ mod windows {
                 .filter(|metadata| metadata.file_type().is_file())?;
             Some(path)
         }
+
+        fn record_failure(&self, stage: &str) {
+            if let Ok(directory) = self.app.path().app_data_dir() {
+                if fs::create_dir_all(&directory).is_ok() {
+                    let summary = serde_json::json!({ "state": "FAILED", "stage": stage });
+                    let _ = fs::write(
+                        directory.join("meter-setup-status.json"),
+                        summary.to_string(),
+                    );
+                }
+            }
+        }
     }
 
     impl InstallOps for WindowsInstaller {
@@ -192,31 +245,27 @@ mod windows {
                 && self.resource("quota-guard-meter.exe").is_some()
         }
 
-        fn server_ready(&self) -> bool {
-            let Ok(client) = reqwest::blocking::Client::builder()
-                .no_proxy()
-                .redirect(reqwest::redirect::Policy::none())
-                .timeout(Duration::from_secs(3))
-                .build()
-            else {
-                return false;
+        fn needs_configuration(&self) -> bool {
+            let Ok(directory) = self.app.path().app_data_dir() else {
+                return true;
             };
-            let url = format!("{}/api/v1/users/me", self.server_url);
-            let Ok(response) = client.get(url).send() else {
-                return false;
+            let file = directory.join("meter-connection.json");
+            let Ok(metadata) = fs::symlink_metadata(&file) else {
+                return true;
             };
-            if response.status() != reqwest::StatusCode::UNAUTHORIZED {
-                return false;
+            if !metadata.is_file() || metadata.len() > 4096 {
+                return true;
             }
-            let mut body = Vec::new();
-            if response.take(4097).read_to_end(&mut body).is_err() || body.len() > 4096 {
-                return false;
-            }
-            serde_json::from_slice::<serde_json::Value>(&body)
-                .ok()
-                .and_then(|body| body.get("code")?.as_str().map(str::to_owned))
-                .as_deref()
-                == Some("AUTH_REQUIRED")
+            let Ok(bytes) = fs::read(file) else {
+                return true;
+            };
+            let Ok(connection) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+                return true;
+            };
+            connection
+                .get("serverUrl")
+                .and_then(serde_json::Value::as_str)
+                != Some(self.server_url.as_str())
         }
 
         fn has_admin_rights(&self) -> bool {
@@ -243,6 +292,7 @@ mod windows {
             powershell.push("v1.0");
             powershell.push("powershell.exe");
             if !powershell.is_file() {
+                self.record_failure("SCRIPT_START");
                 return false;
             }
             let Ok(mut child) = Command::new(powershell)
@@ -262,10 +312,11 @@ mod windows {
                 .creation_flags(CREATE_NO_WINDOW)
                 .spawn()
             else {
+                self.record_failure("SCRIPT_START");
                 return false;
             };
 
-            let deadline = Instant::now() + Duration::from_secs(60);
+            let deadline = Instant::now() + Duration::from_secs(90);
             loop {
                 match child.try_wait() {
                     Ok(Some(status)) => return status.success(),
@@ -275,6 +326,7 @@ mod windows {
                     _ => {
                         let _ = child.kill();
                         let _ = child.wait();
+                        self.record_failure("INSTALL_TIMEOUT");
                         return false;
                     }
                 }
@@ -468,7 +520,7 @@ mod tests {
 
     struct FakeInstaller {
         bundled: bool,
-        server_ready: bool,
+        needs_configuration: bool,
         admin: bool,
         install_succeeds: bool,
         installs: Cell<u32>,
@@ -478,7 +530,7 @@ mod tests {
         fn ready() -> Self {
             Self {
                 bundled: true,
-                server_ready: true,
+                needs_configuration: false,
                 admin: true,
                 install_succeeds: true,
                 installs: Cell::new(0),
@@ -490,8 +542,8 @@ mod tests {
         fn bundle_ready(&self) -> bool {
             self.bundled
         }
-        fn server_ready(&self) -> bool {
-            self.server_ready
+        fn needs_configuration(&self) -> bool {
+            self.needs_configuration
         }
         fn has_admin_rights(&self) -> bool {
             self.admin
@@ -602,7 +654,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_service_is_installed_once_after_admin_and_server_checks() {
+    fn a_missing_service_can_be_installed_offline_after_admin_checks() {
         let missing = FakeOps::new(ServiceState::Missing);
         let installer = FakeInstaller::ready();
         assert_eq!(
@@ -619,15 +671,9 @@ mod tests {
     }
 
     #[test]
-    fn installation_never_runs_with_wrong_server_missing_bundle_or_no_admin() {
+    fn installation_never_runs_with_missing_bundle_or_no_admin() {
         let missing = FakeOps::new(ServiceState::Missing);
         let mut installer = FakeInstaller::ready();
-        installer.server_ready = false;
-        assert_eq!(
-            ensure_with_install(&missing, &installer),
-            MeterStartOutcome::ServerUnavailable
-        );
-        installer.server_ready = true;
         installer.admin = false;
         assert_eq!(
             ensure_with_install(&missing, &installer),
@@ -643,6 +689,37 @@ mod tests {
     }
 
     #[test]
+    fn a_registered_service_that_cannot_start_is_repaired_with_the_bundle() {
+        let mut stopped = FakeOps::new(ServiceState::Stopped);
+        stopped.start = StartAttempt::Failed;
+        let installer = FakeInstaller::ready();
+        assert_eq!(
+            ensure_with_install(&stopped, &installer),
+            MeterStartOutcome::Installed
+        );
+        assert_eq!(stopped.starts.get(), 1);
+        assert_eq!(installer.installs.get(), 1);
+    }
+
+    #[test]
+    fn a_changed_server_address_is_applied_even_if_the_service_is_running() {
+        let running = FakeOps::new(ServiceState::Running);
+        let mut installer = FakeInstaller::ready();
+        installer.needs_configuration = true;
+        assert_eq!(
+            ensure_with_install(&running, &installer),
+            MeterStartOutcome::Installed
+        );
+        assert_eq!(installer.installs.get(), 1);
+        installer.admin = false;
+        assert_eq!(
+            ensure_with_install(&running, &installer),
+            MeterStartOutcome::NeedsAdmin
+        );
+        assert_eq!(installer.installs.get(), 1);
+    }
+
+    #[test]
     fn failed_installation_is_never_reported_as_running() {
         let missing = FakeOps::new(ServiceState::Missing);
         let mut installer = FakeInstaller::ready();
@@ -652,5 +729,21 @@ mod tests {
             MeterStartOutcome::InstallFailed
         );
         assert_eq!(installer.installs.get(), 1);
+    }
+
+    #[test]
+    fn installation_diagnostics_expose_only_known_step_messages() {
+        assert!(setup_failure_message(
+            br#"{"state":"FAILED","stage":"BINARY_CHECK","password":"do-not-show"}"#
+        )
+        .unwrap()
+        .contains("BINARY_CHECK"));
+        assert!(!setup_failure_message(
+            br#"{"state":"FAILED","stage":"BINARY_CHECK","password":"do-not-show"}"#
+        )
+        .unwrap()
+        .contains("do-not-show"));
+        assert!(setup_failure_message(br#"{"state":"FAILED","stage":"unknown-secret"}"#).is_none());
+        assert!(setup_failure_message(br#"{"state":"SUCCEEDED","stage":"READY"}"#).is_none());
     }
 }

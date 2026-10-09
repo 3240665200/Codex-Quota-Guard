@@ -39,7 +39,7 @@ try {
     $env:CARGO_TARGET_DIR = $targetDirectory
     Push-Location -LiteralPath $frontendDirectory
     try {
-        & $pnpm tauri build --bundles nsis --ci
+        & $pnpm build --bundles nsis --ci
         if ($LASTEXITCODE -ne 0) {
             throw "Desktop packaging failed (exit code $LASTEXITCODE)."
         }

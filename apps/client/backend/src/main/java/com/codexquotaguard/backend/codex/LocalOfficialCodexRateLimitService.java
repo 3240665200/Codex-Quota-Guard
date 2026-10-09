@@ -59,7 +59,7 @@ public final class LocalOfficialCodexRateLimitService {
             process = builder.start();
             try (Rpc rpc = new Rpc(process, mapper)) {
                 rpc.call("initialize", Map.of("clientInfo", Map.of(
-                        "name", "codex_quota_guard", "version", "0.2.11")));
+                        "name", "codex_quota_guard", "version", "0.2.12")));
                 rpc.notifyInitialized();
                 JsonNode account = rpc.call("account/read", Map.of("refreshToken", false));
                 if (!"chatgpt".equals(account.path("account").path("type").asString(""))) {

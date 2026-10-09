@@ -346,7 +346,7 @@ dependencies = [
 
 [[package]]
 name = "codex-quota-guard"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "reqwest 0.12.28",
  "serde",

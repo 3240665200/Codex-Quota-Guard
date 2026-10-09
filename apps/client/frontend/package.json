@@ -1,6 +1,6 @@
 {
   "name": "@codex-quota-guard/client",
-  "version": "0.2.11",
+  "version": "0.2.12",
   "private": true,
   "description": "Cross-platform Codex quota dashboard with a Java Spring Boot backend",
   "type": "module",
@@ -15,6 +15,7 @@
     "build:runtime": "node prepare-java-runtime.mjs",
     "build:meter": "node prepare-meter.mjs",
     "test:backend": "mvn -f ../backend/pom.xml test",
+    "test:packaging": "node --test native-build.test.mjs",
     "typecheck": "tsc --noEmit",
     "format": "prettier --write \"src/**/*.{js,jsx,ts,tsx,css,json}\"",
     "format:check": "prettier --check \"src/**/*.{js,jsx,ts,tsx,css,json}\"",

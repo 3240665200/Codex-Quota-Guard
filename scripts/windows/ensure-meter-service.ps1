@@ -68,7 +68,10 @@ $isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administ
 $appData = Join-Path $env:APPDATA 'com.codexquotaguard.desktop'
 $connectionFile = Join-Path $appData 'meter-connection.json'
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
-$bundledBinary = Join-Path $repositoryRoot 'apps\client\frontend\src-tauri\resources\meter\quota-guard-meter.exe'
+$bundledBinary = Join-Path $PSScriptRoot 'quota-guard-meter.exe'
+if (-not (Test-Path -LiteralPath $bundledBinary -PathType Leaf)) {
+    $bundledBinary = Join-Path $repositoryRoot 'apps\client\frontend\src-tauri\resources\meter\quota-guard-meter.exe'
+}
 $bundledHash = if (Test-Path -LiteralPath $bundledBinary -PathType Leaf) {
     (Get-FileHash -LiteralPath $bundledBinary -Algorithm SHA256).Hash
 } else { '' }

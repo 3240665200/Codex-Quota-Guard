@@ -58,6 +58,10 @@ fn config_from_args() -> Result<(PathBuf, bool, bool), String> {
 }
 
 fn main() {
+    if std::env::args_os().skip(1).collect::<Vec<_>>() == [std::ffi::OsString::from("--version")] {
+        println!("quota-guard-meter {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
     let outcome = (|| {
         let (config_path, service, once) = config_from_args()?;
         if service {

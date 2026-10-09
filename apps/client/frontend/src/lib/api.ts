@@ -248,6 +248,8 @@ export const api = {
     );
     return meterStartupPromise;
   },
+  meterSetupError: () =>
+    invokeValidated("meter_setup_error", z.string().max(300).nullable()),
   status: () => invokeValidated("status", statusSchema),
   serverConfig: () => invokeValidated("server_config_get", serverConfigSchema),
   saveServerConfig: (config: ServerConfig) =>

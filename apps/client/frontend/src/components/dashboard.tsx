@@ -677,13 +677,16 @@ export function Dashboard({ session, onLogout }: DashboardProps) {
         );
         await usageStatusQuery.refetch();
       } else if (result === "NEEDS_ADMIN") {
-        toast.error("首次安装需要右键以管理员身份运行客户端。");
+        toast.error("安装或更新计费服务配置需要右键以管理员身份运行客户端。");
       } else if (result === "NOT_INSTALLED") {
         toast.warning("安装包缺少计费服务文件，请重新安装最新版客户端。");
       } else if (result === "SERVER_UNAVAILABLE") {
         toast.error("无法连接后台，请先检查服务器地址，再重试安装。");
       } else if (result === "INSTALL_FAILED") {
-        toast.error("计费服务安装失败，请检查 Windows 服务状态。");
+        toast.error(
+          (await api.meterSetupError().catch(() => null)) ??
+            "计费服务安装失败，请查看应用数据目录中的 meter-setup-status.json。",
+        );
       } else {
         toast.error("计费服务仍未运行，请检查 Windows 服务状态。");
       }
