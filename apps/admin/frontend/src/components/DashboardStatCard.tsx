@@ -7,11 +7,13 @@ export function DashboardStatCard({
   icon,
   title,
   value,
+  detail,
 }: {
   color: string;
   icon: ReactNode;
   title: string;
-  value: number;
+  value: number | string;
+  detail?: string;
 }) {
   return (
     <ProCard className="cqg-stat-card">
@@ -28,10 +30,11 @@ export function DashboardStatCard({
       <div className="cqg-stat-card-value">
         <Statistic
           className="cqg-statistic"
-          styles={{ content: { color: '#373b38', fontWeight: 650 } }}
+          styles={{ content: { fontWeight: 650 } }}
           value={value}
         />
       </div>
+      {detail ? <Typography.Text className="cqg-stat-card-detail">{detail}</Typography.Text> : null}
     </ProCard>
   );
 }
