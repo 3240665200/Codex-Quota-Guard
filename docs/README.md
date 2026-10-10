@@ -7,6 +7,7 @@
 - [当前系统架构与部署边界](architecture/current-system-architecture.md)
 - [当前方案：本机官方登录与个人 Token 统计](architecture/local-codex-token-quota.md)
 - [团队与个人额度策略](architecture/team-quota-policy.md)
+- [Token 分项统计与 USD 费用估算](architecture/usage-pricing.md)
 
 历史方案仅供追溯，不代表当前接口：
 

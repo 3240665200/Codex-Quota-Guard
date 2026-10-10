@@ -20,17 +20,52 @@ import tools.jackson.databind.ObjectMapper;
 class HttpControlPlaneGatewayTest {
 
     @Test
+    void readsAuthenticatedPersonalStatisticsInUsdWithoutUserSuppliedIdentity() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/api/v1/client/usage/analytics", exchange -> {
+            assertThat(exchange.getRequestMethod()).isEqualTo("GET");
+            assertThat(exchange.getRequestURI().getQuery()).isEqualTo("days=7");
+            assertThat(exchange.getRequestHeaders().getFirst("Authorization")).isEqualTo("Bearer session-access");
+            writeJson(exchange, """
+                    {"from":"2026-10-03T00:00:00Z","to":"2026-10-10T00:00:00Z",
+                     "currency":"USD","timezone":"UTC","granularity":"DAY","trend":[],
+                     "summary":{"eventCount":1,"totalTokens":1,"inputTokens":1,"cachedInputTokens":0,
+                     "cacheWriteInputTokens":0,"outputTokens":0,"reasoningOutputTokens":null,
+                     "breakdownEventCount":1,"costedEventCount":1,"estimatedCostUsd":0.000000000001,
+                     "cacheHitRatePercent":0}}
+                    """);
+        });
+        server.start();
+        try {
+            var gateway = gateway(server);
+            var result = gateway.usageAnalytics("session-access", 7);
+            assertThat(result.currency()).isEqualTo("USD");
+            assertThat(result.summary().estimatedCostUsd()).isEqualByComparingTo("0.000000000001");
+            assertThat(result.summary().reasoningOutputTokens()).isNull();
+            for (int days : new int[] {0, 2, 31}) {
+                assertThatThrownBy(() -> gateway.usageAnalytics("session-access", days))
+                        .isInstanceOf(ControlPlaneException.class);
+            }
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void readsOnlyTheAuthenticatedUsersPaginatedLedgerFromAFixedEndpoint() throws Exception {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/api/v1/client/usage/events", exchange -> {
             assertThat(exchange.getRequestMethod()).isEqualTo("GET");
-            assertThat(exchange.getRequestURI().getQuery()).isEqualTo("page=2&size=10&includeMetadata=true");
+            assertThat(exchange.getRequestURI().getQuery())
+                    .isEqualTo("page=2&size=10&includeMetadata=true&includeTokenBreakdown=true");
             assertThat(exchange.getRequestHeaders().getFirst("Authorization")).isEqualTo("Bearer session-access");
             writeJson(exchange, """
                     {"items":[
                     {"id":"%s","occurredAt":"2026-10-09T00:00:00Z",
                     "receivedAt":"2026-10-09T00:00:01Z","totalTokens":12500,"source":"TOKEN_USAGE_RECORD",
-                    "model":"gpt-6.1-sol","reasoningEffort":"max"},
+                    "model":"gpt-6.1-sol","reasoningEffort":"max","inputTokens":10000,"outputTokens":2500,
+                    "cachedInputTokens":5000,"cacheWriteInputTokens":0,"reasoningOutputTokens":1000,
+                    "estimatedCostUsd":0.025,"costStatus":"PRICED"},
                     {"id":"%s","occurredAt":"2026-10-09T00:01:00Z",
                     "receivedAt":"2026-10-09T00:01:01Z","totalTokens":500,"source":"TOKEN_USAGE_RECORD",
                     "model":"%s","reasoningEffort":"credential raw log"}],
@@ -44,6 +79,8 @@ class HttpControlPlaneGatewayTest {
             assertThat(result.items().get(0).totalTokens()).isEqualTo(12500);
             assertThat(result.items().get(0).model()).isEqualTo("gpt-6.1-sol");
             assertThat(result.items().get(0).reasoningEffort()).isEqualTo("max");
+            assertThat(result.items().get(0).inputTokens()).isEqualTo(10000);
+            assertThat(result.items().get(0).estimatedCostUsd()).isEqualByComparingTo("0.025");
             assertThat(result.items().get(1).totalTokens()).isEqualTo(500);
             assertThat(result.items().get(1).model()).isNull();
             assertThat(result.items().get(1).reasoningEffort()).isNull();
@@ -254,7 +291,8 @@ class HttpControlPlaneGatewayTest {
             assertThat(request).contains("codex-local-usage:v1:abc", "totalTokens", "TOKEN_USAGE_RECORD");
             assertThat(request).contains("\"model\":\"gpt-6.1-sol\"", "\"reasoningEffort\":\"max\"");
             assertThat(request).doesNotContain("codexAccountId");
-            assertThat(request).doesNotContain("inputTokens", "outputTokens", "credential");
+            assertThat(request).contains("\"inputTokens\":3", "\"outputTokens\":7", "\"cachedInputTokens\":0");
+            assertThat(request).doesNotContain("credential");
             writeJson(exchange, quotaJson(userId, accountId, teamId, true, null));
         });
         server.start();

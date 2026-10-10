@@ -93,8 +93,17 @@ final class HttpControlPlaneGateway implements ControlPlaneGateway {
             throw ControlPlaneException.invalidRequest();
         }
         return sendJson(get("/api/v1/client/usage/events?page=" + page + "&size=" + size
-                + "&includeMetadata=true", accessToken),
+                + "&includeMetadata=true&includeTokenBreakdown=true", accessToken),
                 UserUsageEventPage.class);
+    }
+
+    @Override
+    public PersonalUsageAnalytics usageAnalytics(String accessToken, int days) {
+        if (days != 1 && days != 7 && days != 30) {
+            throw ControlPlaneException.invalidRequest();
+        }
+        return sendJson(get("/api/v1/client/usage/analytics?days=" + days, accessToken),
+                PersonalUsageAnalytics.class);
     }
 
     @Override
@@ -111,7 +120,9 @@ final class HttpControlPlaneGateway implements ControlPlaneGateway {
         }
         List<UsageEventBody> eventBodies = events.stream()
                 .map(event -> new UsageEventBody(event.eventId(), event.occurredAt().toString(),
-                        event.totalTokens(), event.source().name(), event.model(), event.reasoningEffort()))
+                        event.totalTokens(), event.source().name(), event.model(), event.reasoningEffort(),
+                        event.inputTokens(), event.cachedInputTokens(), event.cacheWriteInputTokens(),
+                        event.outputTokens(), event.reasoningOutputTokens()))
                 .toList();
         HttpResponse<String> response = send(postJson("/api/v1/client/usage/events",
                 new LocalUsageEventsBody(eventBodies), accessToken));
@@ -266,7 +277,8 @@ final class HttpControlPlaneGateway implements ControlPlaneGateway {
     }
 
     private record UsageEventBody(String eventId, String occurredAt, long totalTokens, String source,
-            String model, String reasoningEffort) {
+            String model, String reasoningEffort, Long inputTokens, Long cachedInputTokens,
+            Long cacheWriteInputTokens, Long outputTokens, Long reasoningOutputTokens) {
     }
 
     private record AuthResponse(

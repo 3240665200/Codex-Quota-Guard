@@ -20,25 +20,46 @@ import org.springframework.web.bind.annotation.RestController;
 @PreAuthorize("hasAnyRole('USER', 'ADMIN')")
 public class ClientUsageAuditController {
     private final UsageEventAuditService audit;
+    private final UsageAnalyticsService analytics;
 
-    public ClientUsageAuditController(UsageEventAuditService audit) {
+    public ClientUsageAuditController(UsageEventAuditService audit, UsageAnalyticsService analytics) {
         this.audit = audit;
+        this.analytics = analytics;
+    }
+
+    @GetMapping("/analytics")
+    public ResponseEntity<UsageAnalyticsService.PersonalResponse> analytics(Authentication authentication,
+            @RequestParam(defaultValue = "7") int days) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(analytics.personalAnalytics((UUID) authentication.getPrincipal(), days));
     }
 
     @GetMapping("/events")
     public ResponseEntity<?> events(Authentication authentication,
             @RequestParam(defaultValue = "0") @Min(0) @Max(100000) int page,
             @RequestParam(defaultValue = "10") @Min(1) @Max(100) int size,
-            @RequestParam(defaultValue = "false") boolean includeMetadata) {
+            @RequestParam(defaultValue = "false") boolean includeMetadata,
+            @RequestParam(defaultValue = "false") boolean includeTokenBreakdown) {
         UsageEventAuditPage pageData = audit.list((UUID) authentication.getPrincipal(), page, size);
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
-                .body(includeMetadata ? pageData : LegacyPage.from(pageData));
+                .body(includeTokenBreakdown ? pageData
+                        : includeMetadata ? MetadataPage.from(pageData) : LegacyPage.from(pageData));
     }
 
     // Older installed bridges reject unknown JSON fields. Their existing
     // endpoint keeps its exact shape; the admin ledger always includes metadata.
     public record LegacyItem(String id, java.time.Instant occurredAt, java.time.Instant receivedAt,
             long totalTokens, String source) { }
+    public record MetadataItem(String id, java.time.Instant occurredAt, java.time.Instant receivedAt,
+            long totalTokens, String source, String model, String reasoningEffort) { }
+    public record MetadataPage(java.util.List<MetadataItem> items, int page, int size,
+            long totalElements, int totalPages) {
+        static MetadataPage from(UsageEventAuditPage value) {
+            return new MetadataPage(value.items().stream().map(item -> new MetadataItem(item.id(), item.occurredAt(),
+                    item.receivedAt(), item.totalTokens(), item.source(), item.model(), item.reasoningEffort()))
+                    .toList(), value.page(), value.size(), value.totalElements(), value.totalPages());
+        }
+    }
     public record LegacyPage(java.util.List<LegacyItem> items, int page, int size, long totalElements, int totalPages) {
         static LegacyPage from(UsageEventAuditPage value) {
             return new LegacyPage(value.items().stream().map(item -> new LegacyItem(item.id(), item.occurredAt(),

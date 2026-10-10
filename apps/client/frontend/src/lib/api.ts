@@ -154,6 +154,26 @@ const usageEventsSchema = z.object({
         totalTokens: tokenCount,
         model: usageEventModelSchema,
         reasoningEffort: usageEventReasoningEffortSchema,
+        inputTokens: tokenCount.nullable().default(null),
+        cachedInputTokens: tokenCount.nullable().default(null),
+        cacheWriteInputTokens: tokenCount.nullable().default(null),
+        outputTokens: tokenCount.nullable().default(null),
+        reasoningOutputTokens: tokenCount.nullable().default(null),
+        estimatedCostUsd: z
+          .number()
+          .finite()
+          .nonnegative()
+          .nullable()
+          .default(null),
+        costStatus: z
+          .enum([
+            "PRICED",
+            "MISSING_PRICE",
+            "MISSING_BREAKDOWN",
+            "INVALID_BREAKDOWN",
+          ])
+          .nullable()
+          .default(null),
         source: z.enum([
           "TOKEN_USAGE_RECORD",
           "CUMULATIVE_TOKEN_COUNT_FALLBACK",
@@ -166,6 +186,50 @@ const usageEventsSchema = z.object({
   totalElements: tokenCount,
   totalPages: tokenCount,
 });
+
+const usageStatsSchema = z
+  .object({
+    eventCount: tokenCount,
+    totalTokens: tokenCount,
+    inputTokens: tokenCount.nullable(),
+    cachedInputTokens: tokenCount.nullable(),
+    cacheWriteInputTokens: tokenCount.nullable(),
+    outputTokens: tokenCount.nullable(),
+    reasoningOutputTokens: tokenCount.nullable(),
+    breakdownEventCount: tokenCount,
+    costedEventCount: tokenCount,
+    estimatedCostUsd: z.number().finite().nonnegative().nullable(),
+    cacheHitRatePercent: z.number().finite().min(0).max(100).nullable(),
+  })
+  .refine(
+    (value) =>
+      value.costedEventCount <= value.breakdownEventCount &&
+      value.breakdownEventCount <= value.eventCount,
+    "统计事件数不一致。",
+  );
+const usageAnalyticsSchema = z
+  .object({
+    from: z.iso.datetime({ offset: true }),
+    to: z.iso.datetime({ offset: true }),
+    currency: z.literal("USD"),
+    timezone: z.literal("UTC"),
+    granularity: z.enum(["HOUR", "DAY"]),
+    summary: usageStatsSchema,
+    trend: z
+      .array(
+        z.object({
+          bucket: z.iso.datetime({ offset: true }),
+          stats: usageStatsSchema,
+        }),
+      )
+      .max(32),
+  })
+  .refine(
+    (value) =>
+      Date.parse(value.to) > Date.parse(value.from) &&
+      Date.parse(value.to) - Date.parse(value.from) <= 30 * 86400000,
+    "统计时间范围无效。",
+  );
 
 const meterRuntimeLogsSchema = z.object({
   state: z.enum(["READY", "NOT_AVAILABLE", "ADMIN_REQUIRED", "READ_FAILED"]),
@@ -301,6 +365,7 @@ export type QuotaUsage = z.infer<typeof quotaUsageSchema>;
 export type QuotaOverview = z.infer<typeof quotaOverviewSchema>;
 export type UsageStatus = z.infer<typeof usageStatusSchema>;
 export type UsageEventPage = z.infer<typeof usageEventsSchema>;
+export type UsageAnalytics = z.infer<typeof usageAnalyticsSchema>;
 export type MeterRuntimeLogs = z.infer<typeof meterRuntimeLogsSchema>;
 export type OfficialCodexRateLimits = z.infer<
   typeof officialCodexRateLimitsSchema
@@ -354,6 +419,10 @@ export const api = {
     z.number().int().min(1).max(100).parse(size);
     return invokeValidated("usage_events", usageEventsSchema, { page, size });
   },
+  usageAnalytics: async (days: 1 | 7 | 30 = 7) => {
+    z.union([z.literal(1), z.literal(7), z.literal(30)]).parse(days);
+    return invokeValidated("usage_analytics", usageAnalyticsSchema, { days });
+  },
   meterRuntimeLogs: () =>
     invokeValidated("meter_runtime_logs", meterRuntimeLogsSchema),
   scanUsage: () => invokeValidated("usage_scan", usageStatusSchema),
@@ -368,6 +437,7 @@ const safeBackendMessages = new Set([
   "中央后台暂不可用，请确认后台已启动且服务器地址正确。",
   "本地服务返回了无效的数据。",
   "流水分页参数无效，请刷新后重试。",
+  "统计范围须为 1、7 或 30 天。",
   "邮箱或密码不正确，请检查后重试。",
   "请先登录系统账户。",
   "中央后台拒绝请求，请检查请求内容后重试。",

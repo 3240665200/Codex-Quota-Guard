@@ -3,6 +3,7 @@ package com.codexquotaguard.backend.usage;
 import com.codexquotaguard.backend.system.MeterPairingService;
 import com.codexquotaguard.backend.system.SystemSessionService;
 import com.codexquotaguard.backend.controlplane.UserUsageEventPage;
+import com.codexquotaguard.backend.controlplane.PersonalUsageAnalytics;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import org.springframework.validation.annotation.Validated;
@@ -47,6 +48,11 @@ public class UsageStatusController {
     public RustMeterLogReader.LogPage logs() {
         session.requireLocalUserId();
         return logs.read();
+    }
+
+    @GetMapping("/analytics")
+    public PersonalUsageAnalytics analytics(@RequestParam(defaultValue = "7") int days) {
+        return session.usageAnalytics(days);
     }
 
     @PostMapping("/scan")

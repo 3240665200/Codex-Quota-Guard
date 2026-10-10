@@ -87,6 +87,28 @@ describe("Dashboard", () => {
           return status;
         case "quota_overview":
           return quota;
+        case "usage_analytics":
+          return {
+            from: "2026-10-03T00:00:00Z",
+            to: "2026-10-10T00:00:00Z",
+            currency: "USD",
+            timezone: "UTC",
+            granularity: "DAY",
+            trend: [],
+            summary: {
+              eventCount: 0,
+              totalTokens: 0,
+              inputTokens: null,
+              cachedInputTokens: null,
+              cacheWriteInputTokens: null,
+              outputTokens: null,
+              reasoningOutputTokens: null,
+              breakdownEventCount: 0,
+              costedEventCount: 0,
+              estimatedCostUsd: null,
+              cacheHitRatePercent: null,
+            },
+          };
         case "usage_events":
           return {
             items: [],
@@ -179,7 +201,7 @@ describe("Dashboard", () => {
         "quota_overview",
         "codex_rate_limits",
         "usage_status",
-        "usage_events",
+        "usage_analytics",
       ]),
     );
   });

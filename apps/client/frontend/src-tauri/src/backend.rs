@@ -34,6 +34,7 @@ pub(crate) enum ApiRoute {
     UsageScan,
     UsagePair,
     UsageEvents { page: u32, size: u32 },
+    UsageAnalytics { days: u32 },
     MeterRuntimeLogs,
     CodexRateLimits,
     SystemLogin,
@@ -51,6 +52,7 @@ impl ApiRoute {
             Self::UsageScan => "/api/v1/usage/scan",
             Self::UsagePair => "/api/v1/usage/pair",
             Self::UsageEvents { .. } => "/api/v1/usage/events",
+            Self::UsageAnalytics { .. } => "/api/v1/usage/analytics",
             Self::MeterRuntimeLogs => "/api/v1/usage/logs",
             Self::CodexRateLimits => "/api/v1/codex/rate-limits",
             Self::SystemLogin => "/api/v1/session/login",
@@ -73,6 +75,8 @@ pub(crate) enum BackendError {
     InvalidResponse,
     #[error("流水分页参数无效，请刷新后重试。")]
     InvalidPagination,
+    #[error("统计范围须为 1、7 或 30 天。")]
+    InvalidUsageRange,
     #[error("邮箱或密码不正确，请检查后重试。")]
     InvalidCredentials,
     #[error(
@@ -189,6 +193,11 @@ impl BackendState {
         self.json(Method::GET, ApiRoute::UsageEvents { page, size }).await
     }
 
+    pub(crate) async fn usage_analytics(&self, days: u32) -> Result<Value, BackendError> {
+        validate_usage_days(days)?;
+        self.json(Method::GET, ApiRoute::UsageAnalytics { days }).await
+    }
+
     /// Sends product-user credentials directly to the local Java process.
     /// The local process relays them to the fixed central origin and keeps the
     /// resulting access/refresh tokens in memory. This method never accepts
@@ -291,12 +300,14 @@ fn classify_response(route: ApiRoute, status: StatusCode) -> BackendError {
         }
         (ApiRoute::SystemLogin, StatusCode::CONFLICT) => BackendError::MeterPairingRequired,
         (
-            ApiRoute::SystemLogin | ApiRoute::SystemCurrent | ApiRoute::QuotaOverview | ApiRoute::UsageEvents { .. },
+            ApiRoute::SystemLogin | ApiRoute::SystemCurrent | ApiRoute::QuotaOverview
+                | ApiRoute::UsageEvents { .. } | ApiRoute::UsageAnalytics { .. },
             StatusCode::SERVICE_UNAVAILABLE,
         ) => BackendError::ControlPlaneUnavailable,
         (
             ApiRoute::SystemCurrent | ApiRoute::QuotaOverview | ApiRoute::CodexRateLimits
-                | ApiRoute::UsageEvents { .. } | ApiRoute::MeterRuntimeLogs,
+                | ApiRoute::UsageEvents { .. } | ApiRoute::UsageAnalytics { .. }
+                | ApiRoute::MeterRuntimeLogs,
             StatusCode::UNAUTHORIZED,
         ) => BackendError::SystemLoginRequired,
         _ => BackendError::Unavailable,
@@ -442,6 +453,7 @@ fn fixed_url(port: u16, route: ApiRoute) -> String {
     let base = format!("http://{LOOPBACK_HOST}:{port}{}", route.path());
     match route {
         ApiRoute::UsageEvents { page, size } => format!("{base}?page={page}&size={size}"),
+        ApiRoute::UsageAnalytics { days } => format!("{base}?days={days}"),
         _ => base,
     }
 }
@@ -451,6 +463,14 @@ fn validate_usage_page(page: u32, size: u32) -> Result<(), BackendError> {
         Err(BackendError::InvalidPagination)
     } else {
         Ok(())
+    }
+}
+
+fn validate_usage_days(days: u32) -> Result<(), BackendError> {
+    if matches!(days, 1 | 7 | 30) {
+        Ok(())
+    } else {
+        Err(BackendError::InvalidUsageRange)
     }
 }
 
@@ -486,6 +506,22 @@ mod tests {
             fixed_url(43117, ApiRoute::QuotaOverview),
             "http://127.0.0.1:43117/api/v1/quota/overview"
         );
+    }
+
+    #[test]
+    fn personal_analytics_accepts_only_fixed_ranges_and_no_user_override() {
+        for days in [1, 7, 30] {
+            assert!(validate_usage_days(days).is_ok());
+            assert_eq!(fixed_url(43117, ApiRoute::UsageAnalytics { days }),
+                format!("http://127.0.0.1:43117/api/v1/usage/analytics?days={days}"));
+        }
+        for days in [0, 2, 31, u32::MAX] {
+            assert!(validate_usage_days(days).is_err());
+        }
+        assert!(matches!(classify_response(ApiRoute::UsageAnalytics { days: 7 },
+            StatusCode::UNAUTHORIZED), BackendError::SystemLoginRequired));
+        assert!(matches!(classify_response(ApiRoute::UsageAnalytics { days: 7 },
+            StatusCode::SERVICE_UNAVAILABLE), BackendError::ControlPlaneUnavailable));
     }
 
     #[test]

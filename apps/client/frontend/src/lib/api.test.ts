@@ -44,6 +44,51 @@ describe("Tauri API boundary", () => {
     invokeMock.mockReset();
   });
 
+  it("requests only fixed personal statistics ranges with USD and UTC data", async () => {
+    const summary = {
+      eventCount: 1,
+      totalTokens: 1,
+      inputTokens: 1,
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      outputTokens: 0,
+      reasoningOutputTokens: 0,
+      breakdownEventCount: 1,
+      costedEventCount: 1,
+      estimatedCostUsd: 0.000000000001,
+      cacheHitRatePercent: 0,
+    };
+    const data = {
+      from: "2026-10-09T00:00:00Z",
+      to: "2026-10-10T00:00:00Z",
+      currency: "USD",
+      timezone: "UTC",
+      granularity: "HOUR",
+      summary,
+      trend: [],
+    };
+    invokeMock.mockResolvedValue(data);
+    for (const days of [1, 7, 30] as const) {
+      await expect(api.usageAnalytics(days)).resolves.toEqual(data);
+      expect(invokeMock).toHaveBeenLastCalledWith("usage_analytics", { days });
+    }
+    invokeMock.mockClear();
+    for (const invalid of [0, 2, 31, NaN]) {
+      await expect(api.usageAnalytics(invalid as 1)).rejects.toThrow();
+    }
+    expect(invokeMock).not.toHaveBeenCalled();
+    for (const invalid of [
+      { currency: "CNY" },
+      { timezone: "local" },
+      { to: data.from },
+      { summary: { ...summary, costedEventCount: 2 } },
+      { summary: { ...summary, estimatedCostUsd: -1 } },
+    ]) {
+      invokeMock.mockResolvedValue({ ...data, ...invalid });
+      await expect(api.usageAnalytics()).rejects.toThrow();
+    }
+  });
+
   it("only queries bounded numeric pagination and validates consumption records", async () => {
     invokeMock.mockResolvedValue({
       items: [],
@@ -143,6 +188,62 @@ describe("Tauri API boundary", () => {
       totalElements: 57,
       totalPages: 6,
     });
+  });
+
+  it("keeps missing breakdown unknown and validates new USD and token fields", async () => {
+    const row = {
+      id: "breakdown",
+      occurredAt: "2026-10-09T00:00:00Z",
+      receivedAt: "2026-10-09T00:00:01Z",
+      totalTokens: 1200,
+      source: "TOKEN_USAGE_RECORD",
+    };
+    const result = {
+      items: [row],
+      page: 0,
+      size: 10,
+      totalElements: 1,
+      totalPages: 1,
+    };
+    invokeMock.mockResolvedValue(result);
+    expect((await api.usageEvents()).items[0]).toMatchObject({
+      inputTokens: null,
+      outputTokens: null,
+      estimatedCostUsd: null,
+    });
+    invokeMock.mockResolvedValue({
+      ...result,
+      items: [
+        {
+          ...row,
+          inputTokens: 1000,
+          cachedInputTokens: 300,
+          cacheWriteInputTokens: 100,
+          outputTokens: 200,
+          reasoningOutputTokens: 150,
+          estimatedCostUsd: 0.00325,
+          costStatus: "PRICED",
+        },
+      ],
+    });
+    expect((await api.usageEvents()).items[0]).toMatchObject({
+      inputTokens: 1000,
+      cachedInputTokens: 300,
+      reasoningOutputTokens: 150,
+      estimatedCostUsd: 0.00325,
+      costStatus: "PRICED",
+    });
+    for (const invalid of [
+      { estimatedCostUsd: -1 },
+      { outputTokens: -1 },
+      { cachedInputTokens: 0.1 },
+    ]) {
+      invokeMock.mockResolvedValue({
+        ...result,
+        items: [{ ...row, ...invalid }],
+      });
+      await expect(api.usageEvents()).rejects.toThrow();
+    }
   });
 
   it("rejects arbitrary text masquerading as service diagnostics", async () => {

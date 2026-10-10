@@ -60,7 +60,8 @@ public class CodexUsageReportService {
             if (queued.add(key) && !events.existsById(key)) {
                 newEvents.add(new CodexUsageEvent(key, userId, user.getTeamId(),
                         event.totalTokens(), event.occurredAt(), now, event.source().name(),
-                        event.model(), event.reasoningEffort()));
+                        event.model(), event.reasoningEffort(), event.inputTokens(), event.cachedInputTokens(),
+                        event.cacheWriteInputTokens(), event.outputTokens(), event.reasoningOutputTokens()));
             }
         }
         if (!newEvents.isEmpty()) {

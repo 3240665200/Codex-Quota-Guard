@@ -202,8 +202,19 @@ export interface MeterDeviceStatus {
   online: boolean;
 }
 
-export interface UsageEventLogPage {
-  items: Array<{
+export type UsageCostStatus = 'PRICED' | 'MISSING_PRICE' | 'MISSING_BREAKDOWN' | 'INVALID_BREAKDOWN';
+
+export interface UsageTokenBreakdown {
+  inputTokens?: number | null;
+  cachedInputTokens?: number | null;
+  cacheWriteInputTokens?: number | null;
+  outputTokens?: number | null;
+  reasoningOutputTokens?: number | null;
+  estimatedCostUsd?: number | null;
+  costStatus?: UsageCostStatus;
+}
+
+export interface UsageEventLogItem extends UsageTokenBreakdown {
     id: string;
     occurredAt: string;
     receivedAt: string;
@@ -211,11 +222,118 @@ export interface UsageEventLogPage {
     source: 'TOKEN_USAGE_RECORD' | 'CUMULATIVE_TOKEN_COUNT_FALLBACK';
     model?: string | null;
     reasoningEffort?: string | null;
-  }>;
+}
+
+export interface UsageEventLogPage {
+  items: UsageEventLogItem[];
   page: number;
   size: number;
   totalElements: number;
   totalPages: number;
+}
+
+export interface UsageStats {
+  eventCount: number;
+  totalTokens: number;
+  inputTokens: number | null;
+  cachedInputTokens: number | null;
+  cacheWriteInputTokens: number | null;
+  outputTokens: number | null;
+  reasoningOutputTokens: number | null;
+  breakdownEventCount: number;
+  costedEventCount: number;
+  estimatedCostUsd: number | null;
+  cacheHitRatePercent: number | null;
+}
+
+export interface UsageGroup {
+  key: string | null;
+  label: string;
+  stats: UsageStats;
+}
+
+export interface UsageLedgerItem extends UsageEventLogItem {
+  userId: string | null;
+  userName: string | null;
+  teamId: string | null;
+  teamName: string | null;
+}
+
+export interface UsageAnalytics {
+  from: string;
+  to: string;
+  currency: 'USD';
+  timezone: 'UTC';
+  granularity: 'HOUR' | 'DAY';
+  summary: UsageStats;
+  trend: Array<{ bucket: string; stats: UsageStats }>;
+  models: UsageGroup[];
+  reasoningEfforts: UsageGroup[];
+  users: UsageGroup[];
+  teams: UsageGroup[];
+  events: Omit<UsageEventLogPage, 'items'> & { items: UsageLedgerItem[] };
+}
+
+export interface UsageAnalyticsParams {
+  from?: string;
+  to?: string;
+  granularity?: 'HOUR' | 'DAY';
+  model?: string;
+  reasoningEffort?: string;
+  userId?: string;
+  teamId?: string;
+  page?: number;
+  size?: number;
+}
+
+export interface UsageOptions {
+  models: Array<{ value: string; label: string }>;
+  users: Array<{ value: string; label: string }>;
+  teams: Array<{ value: string; label: string }>;
+}
+
+export interface UsageModelPriceInput {
+  model: string;
+  inputPrice: number;
+  outputPrice: number;
+  cacheReadPrice: number;
+  cacheWritePrice: number;
+}
+
+export interface UsageModelPrice extends UsageModelPriceInput {
+  currency: 'USD';
+  updatedAt: string;
+  priceSource: 'CC_SWITCH' | 'MANUAL';
+  sourceReference: string | null;
+  sourceCheckedAt: string | null;
+}
+
+export function getUsageAnalytics(filters: UsageAnalyticsParams): Promise<UsageAnalytics> {
+  const params = new URLSearchParams();
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value !== undefined && value !== '') params.set(key, String(value));
+  });
+  return request<UsageAnalytics>(`/api/v1/admin/usage/analytics?${params.toString()}`);
+}
+
+export function getUsageOptions(): Promise<UsageOptions> {
+  return request<UsageOptions>('/api/v1/admin/usage/options');
+}
+
+export function listUsageModelPrices(): Promise<UsageModelPrice[]> {
+  return request<UsageModelPrice[]>('/api/v1/admin/usage/model-prices');
+}
+
+export function saveUsageModelPrice(body: UsageModelPriceInput): Promise<UsageModelPrice> {
+  return request<UsageModelPrice>('/api/v1/admin/usage/model-prices', {
+    method: 'PUT', body: JSON.stringify(body),
+  });
+}
+
+export function deleteUsageModelPrice(model: string): Promise<void> {
+  return request<void>(`/api/v1/admin/usage/model-prices?${new URLSearchParams({ model })}`, {
+    method: 'DELETE',
+  });
 }
 
 export function getUserMeterDevices(id: string): Promise<MeterDeviceStatus[]> {

@@ -25,6 +25,10 @@ public interface ControlPlaneGateway {
         throw ControlPlaneException.unavailable();
     }
 
+    default PersonalUsageAnalytics usageAnalytics(String accessToken, int days) {
+        throw ControlPlaneException.unavailable();
+    }
+
     /** One-time device-scoped reporting credential, consumed only by the local pairing writer. */
     default MeterEnrollment enrollMeter(String accessToken, UUID deviceId) {
         throw ControlPlaneException.unavailable();

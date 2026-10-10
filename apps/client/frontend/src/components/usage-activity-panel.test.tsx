@@ -71,6 +71,28 @@ describe("UsageActivityPanel", () => {
     invokeMock.mockReset();
     invokeMock.mockImplementation(async (command) => {
       if (command === "usage_events") return ledger;
+      if (command === "usage_analytics")
+        return {
+          from: "2026-10-03T00:00:00Z",
+          to: "2026-10-10T00:00:00Z",
+          currency: "USD",
+          timezone: "UTC",
+          granularity: "DAY",
+          trend: [],
+          summary: {
+            eventCount: 0,
+            totalTokens: 0,
+            inputTokens: null,
+            cachedInputTokens: null,
+            cacheWriteInputTokens: null,
+            outputTokens: null,
+            reasoningOutputTokens: null,
+            breakdownEventCount: 0,
+            costedEventCount: 0,
+            estimatedCostUsd: null,
+            cacheHitRatePercent: null,
+          },
+        };
       if (command === "meter_runtime_logs")
         return {
           state: "READY",
@@ -147,6 +169,7 @@ describe("UsageActivityPanel", () => {
   });
   it("shows accepted token rows and uses the service report time instead of the empty fallback", async () => {
     render(view());
+    await userEvent.click(screen.getByRole("tab", { name: "消耗流水" }));
     expect(
       await screen.findByRole("table", { name: "个人消耗流水" }),
     ).toBeVisible();
@@ -160,7 +183,7 @@ describe("UsageActivityPanel", () => {
       size: 10,
     });
   });
-  it("appends model metadata while keeping the ledger scrollable and bounded", async () => {
+  it("keeps model metadata visible while placing all token details in one column", async () => {
     const longModel = `m${"x".repeat(95)}`;
     invokeMock.mockImplementation(async (command) => {
       if (command === "usage_events")
@@ -186,6 +209,7 @@ describe("UsageActivityPanel", () => {
     });
 
     render(view());
+    await userEvent.click(screen.getByRole("tab", { name: "消耗流水" }));
     const table = await screen.findByRole("table", { name: "个人消耗流水" });
     const headers = within(table).getAllByRole("columnheader");
     expect(headers.map((header) => header.textContent)).toEqual([
@@ -200,17 +224,87 @@ describe("UsageActivityPanel", () => {
     expect(
       headers.every((header) => header.getAttribute("scope") === "col"),
     ).toBe(true);
-    expect(table).toHaveClass("min-w-[960px]");
+    expect(table).toHaveClass("min-w-[1100px]");
     expect(table.parentElement).toHaveClass("min-w-0", "overflow-x-auto");
     expect(table.closest("section")).toHaveClass("min-w-0");
 
     const rows = within(table).getAllByRole("row");
     expect(within(rows[1]).getByTitle(longModel)).toHaveTextContent(longModel);
     expect(within(rows[1]).getByText("high")).toBeVisible();
-    expect(within(rows[2]).getAllByText("未知")).toHaveLength(2);
+    const cells = within(rows[2]).getAllByRole("cell");
+    expect(cells).toHaveLength(7);
+    expect(cells[5]).toHaveTextContent("未知");
+    expect(cells[6]).toHaveTextContent("未知");
+  });
+  it("shows token components and USD estimates without replacing total consumption", async () => {
+    invokeMock.mockResolvedValue({
+      ...ledger,
+      items: [
+        {
+          ...ledger.items[0],
+          model: "test-model",
+          reasoningEffort: "high",
+          inputTokens: 10000,
+          cachedInputTokens: 3000,
+          cacheWriteInputTokens: 0,
+          outputTokens: 2500,
+          reasoningOutputTokens: 1800,
+          estimatedCostUsd: 0.0355,
+          costStatus: "PRICED",
+        },
+      ],
+    });
+    render(view());
+    await userEvent.click(screen.getByRole("tab", { name: "消耗流水" }));
+    const table = await screen.findByRole("table", { name: "个人消耗流水" });
+    const tokenCell = within(table).getAllByRole("cell")[1];
+    for (const label of [
+      "总消耗",
+      "输入（含缓存）",
+      "输出（含思考）",
+      "缓存读",
+      "缓存写",
+      "思考",
+      "费用估算",
+    ]) {
+      expect(within(tokenCell).getByText(label)).toBeVisible();
+    }
+    for (const tokens of [12500, 10000, 3000, 0, 2500, 1800]) {
+      expect(
+        within(tokenCell).getByTitle(
+          `精确值：${tokens.toLocaleString("en-US")} Token`,
+        ),
+      ).toBeVisible();
+    }
+    expect(within(tokenCell).getByText("USD 0.0355")).toBeVisible();
+  });
+  it("does not present missing historical breakdowns as zero", async () => {
+    invokeMock.mockResolvedValue({
+      ...ledger,
+      items: [
+        {
+          ...ledger.items[0],
+          inputTokens: null,
+          cachedInputTokens: null,
+          cacheWriteInputTokens: 0,
+          outputTokens: null,
+          reasoningOutputTokens: null,
+          estimatedCostUsd: null,
+          costStatus: "MISSING_BREAKDOWN",
+        },
+      ],
+    });
+    render(view());
+    await userEvent.click(screen.getByRole("tab", { name: "消耗流水" }));
+    const table = await screen.findByRole("table", { name: "个人消耗流水" });
+    const tokenCell = within(table).getAllByRole("cell")[1];
+    expect(within(tokenCell).getAllByText("未知")).toHaveLength(4);
+    expect(within(tokenCell).getByTitle("精确值：0 Token")).toBeVisible();
+    expect(within(tokenCell).getByText("分项缺失")).toBeVisible();
   });
   it("pages through the authenticated ledger", async () => {
     render(view());
+    await userEvent.click(screen.getByRole("tab", { name: "消耗流水" }));
     await screen.findByRole("table", { name: "个人消耗流水" });
     await userEvent.click(screen.getByRole("button", { name: "下一页" }));
     await waitFor(() =>
@@ -225,6 +319,7 @@ describe("UsageActivityPanel", () => {
       "中央后台暂不可用，请确认后台已启动且服务器地址正确。",
     );
     render(view());
+    await userEvent.click(screen.getByRole("tab", { name: "消耗流水" }));
     expect(await screen.findByText("消耗流水读取失败")).toBeVisible();
     expect(screen.queryByText("暂无消耗记录")).not.toBeInTheDocument();
   });

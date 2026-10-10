@@ -40,6 +40,21 @@ public class CodexUsageEvent {
     @Column(name = "reasoning_effort", length = 24)
     private String reasoningEffort;
 
+    @Column(name = "input_tokens")
+    private Long inputTokens;
+
+    @Column(name = "cached_input_tokens")
+    private Long cachedInputTokens;
+
+    @Column(name = "cache_write_input_tokens")
+    private Long cacheWriteInputTokens;
+
+    @Column(name = "output_tokens")
+    private Long outputTokens;
+
+    @Column(name = "reasoning_output_tokens")
+    private Long reasoningOutputTokens;
+
     protected CodexUsageEvent() { }
 
     public CodexUsageEvent(String id, UUID userId,
@@ -55,6 +70,14 @@ public class CodexUsageEvent {
     public CodexUsageEvent(String id, UUID userId, UUID teamId,
             long totalTokens, Instant occurredAt, Instant receivedAt, String source,
             String model, String reasoningEffort) {
+        this(id, userId, teamId, totalTokens, occurredAt, receivedAt, source, model, reasoningEffort,
+                null, null, null, null, null);
+    }
+
+    public CodexUsageEvent(String id, UUID userId, UUID teamId,
+            long totalTokens, Instant occurredAt, Instant receivedAt, String source,
+            String model, String reasoningEffort, Long inputTokens, Long cachedInputTokens,
+            Long cacheWriteInputTokens, Long outputTokens, Long reasoningOutputTokens) {
         this.id = id;
         this.userId = userId;
         this.teamId = teamId;
@@ -64,6 +87,11 @@ public class CodexUsageEvent {
         this.source = source;
         this.model = model;
         this.reasoningEffort = reasoningEffort;
+        this.inputTokens = inputTokens;
+        this.cachedInputTokens = cachedInputTokens;
+        this.cacheWriteInputTokens = cacheWriteInputTokens;
+        this.outputTokens = outputTokens;
+        this.reasoningOutputTokens = reasoningOutputTokens;
     }
 
     public String getId() { return id; }
@@ -75,4 +103,9 @@ public class CodexUsageEvent {
     public String getSource() { return source; }
     public String getModel() { return model; }
     public String getReasoningEffort() { return reasoningEffort; }
+    public Long getInputTokens() { return inputTokens; }
+    public Long getCachedInputTokens() { return cachedInputTokens; }
+    public Long getCacheWriteInputTokens() { return cacheWriteInputTokens; }
+    public Long getOutputTokens() { return outputTokens; }
+    public Long getReasoningOutputTokens() { return reasoningOutputTokens; }
 }

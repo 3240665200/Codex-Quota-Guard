@@ -82,6 +82,11 @@ async fn usage_events(page: u32, size: u32, state: State<'_, BackendState>) -> C
 }
 
 #[tauri::command]
+async fn usage_analytics(days: u32, state: State<'_, BackendState>) -> CommandResult<Value> {
+    state.usage_analytics(days).await.map_err(command_error)
+}
+
+#[tauri::command]
 async fn meter_runtime_logs(state: State<'_, BackendState>) -> CommandResult<Value> {
     state.json(Method::GET, ApiRoute::MeterRuntimeLogs).await.map_err(command_error)
 }
@@ -161,6 +166,7 @@ fn main() {
             quota_overview,
             usage_status,
             usage_events,
+            usage_analytics,
             meter_runtime_logs,
             usage_scan,
             usage_pair,

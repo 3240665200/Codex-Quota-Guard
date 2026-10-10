@@ -16,11 +16,11 @@ import java.util.Objects;
 public record CodexUsageEvent(
         String eventId,
         Instant occurredAt,
-        long inputTokens,
-        long cachedInputTokens,
-        long cacheWriteInputTokens,
-        long outputTokens,
-        long reasoningOutputTokens,
+        Long inputTokens,
+        Long cachedInputTokens,
+        Long cacheWriteInputTokens,
+        Long outputTokens,
+        Long reasoningOutputTokens,
         long totalTokens,
         CodexUsageEventSource source,
         String model,
@@ -50,14 +50,22 @@ public record CodexUsageEvent(
                 reasoningOutputTokens, totalTokens, source, null, null);
     }
 
+    public CodexUsageEvent(String eventId, Instant occurredAt, long inputTokens, long cachedInputTokens,
+            long cacheWriteInputTokens, long outputTokens, long reasoningOutputTokens, long totalTokens,
+            CodexUsageEventSource source, String model, String reasoningEffort) {
+        this(eventId, occurredAt, Long.valueOf(inputTokens), Long.valueOf(cachedInputTokens),
+                Long.valueOf(cacheWriteInputTokens), Long.valueOf(outputTokens), Long.valueOf(reasoningOutputTokens),
+                totalTokens, source, model, reasoningEffort);
+    }
+
     CodexUsageEvent withContext(CodexExecutionContext context) {
         return context == null ? this : new CodexUsageEvent(eventId, occurredAt, inputTokens, cachedInputTokens,
                 cacheWriteInputTokens, outputTokens, reasoningOutputTokens, totalTokens, source,
                 context.model(), context.reasoningEffort());
     }
 
-    private static void requireNonNegative(long value, String name) {
-        if (value < 0) {
+    private static void requireNonNegative(Long value, String name) {
+        if (value != null && value < 0) {
             throw new IllegalArgumentException(name + " must not be negative.");
         }
     }

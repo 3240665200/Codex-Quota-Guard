@@ -19,10 +19,21 @@ public record CodexUsageReportRequest(
             @Min(0) @Max(100_000_000) long totalTokens,
             @NotNull Source source,
             @Size(max = 96) @Pattern(regexp = "[A-Za-z0-9][A-Za-z0-9._:/-]{0,95}") String model,
-            @Pattern(regexp = "none|minimal|low|medium|high|xhigh|max|ultra") String reasoningEffort
+            @Pattern(regexp = "none|minimal|low|medium|high|xhigh|max|ultra") String reasoningEffort,
+            @Min(0) @Max(100_000_000) Long inputTokens,
+            @Min(0) @Max(100_000_000) Long cachedInputTokens,
+            @Min(0) @Max(100_000_000) Long cacheWriteInputTokens,
+            @Min(0) @Max(100_000_000) Long outputTokens,
+            @Min(0) @Max(100_000_000) Long reasoningOutputTokens
     ) {
         public Event(String eventId, Instant occurredAt, long totalTokens, Source source) {
             this(eventId, occurredAt, totalTokens, source, null, null);
+        }
+
+        public Event(String eventId, Instant occurredAt, long totalTokens, Source source,
+                String model, String reasoningEffort) {
+            this(eventId, occurredAt, totalTokens, source, model, reasoningEffort,
+                    null, null, null, null, null);
         }
     }
 

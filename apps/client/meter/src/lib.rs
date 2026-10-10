@@ -251,6 +251,16 @@ pub struct UsageEvent {
     pub model: Option<String>,
     #[serde(default)]
     pub reasoning_effort: Option<String>,
+    #[serde(default)]
+    pub input_tokens: Option<u64>,
+    #[serde(default)]
+    pub cached_input_tokens: Option<u64>,
+    #[serde(default)]
+    pub cache_write_input_tokens: Option<u64>,
+    #[serde(default)]
+    pub output_tokens: Option<u64>,
+    #[serde(default)]
+    pub reasoning_output_tokens: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -458,7 +468,8 @@ fn parse_token_usage_record(
         return None;
     }
     let payload = row.get("payload")?;
-    let tokens = payload.get("usage")?.get("total_tokens")?.as_u64()?;
+    let usage = payload.get("usage")?;
+    let tokens = usage.get("total_tokens")?.as_u64()?;
     if tokens > 100_000_000 {
         return None;
     }
@@ -480,7 +491,20 @@ fn parse_token_usage_record(
         source: "TOKEN_USAGE_RECORD".to_owned(),
         model: metadata.model,
         reasoning_effort: metadata.reasoning_effort,
+        input_tokens: token_component(usage, "input_tokens", false),
+        cached_input_tokens: token_component(usage, "cached_input_tokens", true),
+        cache_write_input_tokens: token_component(usage, "cache_write_input_tokens", true),
+        output_tokens: token_component(usage, "output_tokens", false),
+        reasoning_output_tokens: token_component(usage, "reasoning_output_tokens", true),
     })
+}
+
+fn token_component(usage: &serde_json::Value, field: &str, default_zero: bool) -> Option<u64> {
+    match usage.get(field) {
+        Some(value) => value.as_u64().filter(|tokens| *tokens <= 100_000_000),
+        None if default_zero => Some(0),
+        None => None,
+    }
 }
 
 fn metadata_for_usage(payload: &serde_json::Value, cursor: Option<&FileCursor>) -> TurnMetadata {
@@ -1120,6 +1144,29 @@ mod tests {
     }
 
     #[test]
+    fn reports_token_components_without_recounting_cache_or_reasoning() {
+        let event = parse_direct_record(br#"{"type":"token_usage_record","timestamp":"2026-10-10T00:00:00Z",
+            "payload":{"response_id":"breakdown","usage":{"total_tokens":1200,"input_tokens":1000,
+            "cached_input_tokens":300,"cache_write_input_tokens":100,"output_tokens":200,
+            "reasoning_output_tokens":150}}}"#).unwrap();
+        assert_eq!(event.total_tokens, 1200);
+        assert_eq!(event.input_tokens, Some(1000));
+        assert_eq!(event.cached_input_tokens, Some(300));
+        assert_eq!(event.cache_write_input_tokens, Some(100));
+        assert_eq!(event.output_tokens, Some(200));
+        assert_eq!(event.reasoning_output_tokens, Some(150));
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["inputTokens"], 1000);
+        assert_eq!(json["reasoningOutputTokens"], 150);
+        let legacy = parse_direct_record(record_at("legacy", 42, "2026-10-10T00:00:00Z").as_bytes()).unwrap();
+        assert_eq!(legacy.input_tokens, None);
+        assert_eq!(legacy.output_tokens, None);
+        let restored: UsageEvent = serde_json::from_str(r#"{"eventId":"legacy","occurredAt":"2026-10-10T00:00:00Z",
+            "totalTokens":42,"source":"TOKEN_USAGE_RECORD"}"#).unwrap();
+        assert_eq!(restored.input_tokens, None);
+    }
+
+    #[test]
     fn baselines_history_then_reports_only_new_official_records() {
         let root = TestDir::new();
         let sessions = root.path().join(".codex/sessions/2026");
@@ -1657,6 +1704,11 @@ mod tests {
             source: "TOKEN_USAGE_RECORD".into(),
             model: None,
             reasoning_effort: None,
+            input_tokens: Some(15),
+            cached_input_tokens: Some(5),
+            cache_write_input_tokens: Some(0),
+            output_tokens: Some(5),
+            reasoning_output_tokens: Some(2),
         };
         let client = reqwest::blocking::Client::builder()
             .no_proxy()

@@ -44,8 +44,57 @@
 管理员流水新增可空的 `model` 与 `reasoningEffort`，原字段全部保留。上报事件可选携带这两项；旧客户端不传仍可正常入库。模型名称最多 96 个安全 ASCII 字符，思考等级为 `none/minimal/low/medium/high/xhigh/max/ultra`；缺失元数据不会推断默认值，历史流水不追溯改写。
 为兼容严格解析旧响应的已安装客户端，`GET /client/usage/events` 默认仍返回原五项事件字段；`includeMetadata=true` 可显式请求新增元数据。管理员接口始终返回新增字段。
 
+流水可追加 `inputTokens`、`cachedInputTokens`、`cacheWriteInputTokens`、`outputTokens`、`reasoningOutputTokens` 五个可空分项，以及 `estimatedCostUsd`、`costStatus`。管理员流水始终包含这些字段；客户端须传 `includeTokenBreakdown=true`，此选项也包含模型与思考等级。单独使用 `includeMetadata=true` 不增加分项或费用，保留旧响应兼容性。
+
+客户端与设备的 `POST .../usage/events` 均支持上述五个分项，不支持上报费用或单价。例如：
+
+```json
+{
+  "events": [{
+    "eventId": "codex-local-usage:v1:<64位十六进制摘要>",
+    "occurredAt": "2026-10-10T00:00:00Z",
+    "totalTokens": 1200,
+    "source": "TOKEN_USAGE_RECORD",
+    "model": "example-model",
+    "reasoningEffort": "high",
+    "inputTokens": 1000,
+    "cachedInputTokens": 300,
+    "cacheWriteInputTokens": 100,
+    "outputTokens": 200,
+    "reasoningOutputTokens": 150
+  }]
+}
+```
+
+分项缺失不影响原有总量入库；费用由中央后端按当前模型单价计算。状态为 `PRICED/MISSING_BREAKDOWN/INVALID_BREAKDOWN/MISSING_PRICE`，无法估价时金额为 `null`。
+
 桌面端通过固定的本机 `GET /api/v1/usage/events?page=0&size=10` 转发自己的查询，不能传入中央令牌、目标 URL 或其他用户 ID。
 本机 `GET /api/v1/usage/logs` 返回 `{state, entries, skippedLines}`，只投影固定运行摘要，不返回原始日志。两者均需要桌面桥接令牌及系统登录态；服务日志权限不足时返回 `ADMIN_REQUIRED`，缺失时返回 `NOT_AVAILABLE`，读取失败返回 `READ_FAILED`。
+
+## 用量统计与 USD 模型定价
+
+| 方法 | 路径 | 身份与说明 |
+| --- | --- | --- |
+| GET | `/admin/usage/analytics` | 管理员；汇总、UTC 趋势、Top 20 分布和分页流水 |
+| GET | `/admin/usage/options` | 管理员；模型、用户、团队筛选项，各最多 1000 项 |
+| GET | `/admin/usage/model-prices` | 管理员；当前模型单价，金额单位 USD / 百万 Token |
+| PUT | `/admin/usage/model-prices` | 管理员；按模型名称新增或覆盖四个分项单价 |
+| DELETE | `/admin/usage/model-prices?model=example-model` | 管理员；删除定价，成功返回 204 |
+| GET | `/client/usage/analytics?days=7` | 登录系统用户；只返回自己的汇总和趋势，允许 1、7、30 天 |
+
+管理统计参数：`from`、`to` 为带时区的 ISO-8601 时间；缺省为近 7 天，区间 `[from,to)`。`granularity=DAY/HOUR`，默认 `DAY`；最大查询跨度为 93 天，小时粒度最多 31 天。可选 `model`、`reasoningEffort`、`userId`、`teamId` 均精确匹配。`page` 为 0–100000，`size` 为 1–100、默认 20，仅影响流水分页，不影响汇总；流水按发生时间、接收时间、事件 ID 倒序。
+
+响应固定 `currency: "USD"`、`timezone: "UTC"`，包含 `from/to/granularity/summary/trend`。`summary` 为事件数、总 Token、五个可空分项总和、`breakdownEventCount`、`costedEventCount`、`estimatedCostUsd` 和 `cacheHitRatePercent`；`trend` 为 `{bucket, stats}[]`。管理响应另有 `models/reasoningEfforts/users/teams` 分组和 `events` 分页；个人响应不包含其他用户、团队分组或管理流水。响应禁止缓存。
+
+模型定价请求：
+
+```json
+{"model":"example-model","inputPrice":2,"outputPrice":8,"cacheReadPrice":0.5,"cacheWritePrice":3}
+```
+
+四项单价必填，范围 0–1000000，最多 6 位小数。`model` 最多 96 个安全 ASCII 字符，与用量记录精确匹配。响应包含这五项及 `currency: "USD"`、`updatedAt`、`priceSource`（`CC_SWITCH`/`MANUAL`）、可空的 `sourceReference` 与 `sourceCheckedAt`。V20 为常用 OpenAI/Codex 模型导入 CC Switch 固定版本快照，不覆盖已有定价；PUT 编辑后来源变为 `MANUAL`。修改单价按新单价重新估算历史查询，Token 额度不变；详情见 [计费口径](../architecture/usage-pricing.md)。
+
+桌面端通过固定的本机 `GET /api/v1/usage/analytics?days=7` 和 Tauri `usage_analytics` 命令查询个人统计；需要桥接令牌与系统登录态，不接受其他用户 ID、目标地址或中央令牌。
 
 ## Windows Rust 计费服务
 

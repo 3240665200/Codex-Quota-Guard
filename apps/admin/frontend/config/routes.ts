@@ -55,6 +55,13 @@ export default [
   },
   {
     access: 'canAdmin',
+    component: './usage',
+    icon: 'barChart',
+    name: '用量统计',
+    path: '/usage',
+  },
+  {
+    access: 'canAdmin',
     component: './quotas/user',
     layout: true,
     name: '用户额度',

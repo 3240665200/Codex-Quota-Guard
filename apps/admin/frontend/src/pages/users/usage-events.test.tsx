@@ -22,7 +22,9 @@ describe('Token 用量流水', () => {
   it('adds model and reasoning effort columns while keeping existing fields', async () => {
     const result = page(0, 42, 1);
     vi.mocked(getUserUsageEvents).mockResolvedValue({ ...result,
-      items: [{ ...result.items[0], model: 'gpt-6.1-sol', reasoningEffort: 'max' }] });
+      items: [{ ...result.items[0], model: 'gpt-6.1-sol', reasoningEffort: 'max',
+        inputTokens: 30, cachedInputTokens: 10, cacheWriteInputTokens: 0, outputTokens: 12,
+        reasoningOutputTokens: 5, estimatedCostUsd: 0.000155, costStatus: 'PRICED' }] });
     render(<AntApp><UsageEventsTable userId="user-1" /></AntApp>);
     expect(await screen.findByText('gpt-6.1-sol')).toBeInTheDocument();
     expect(screen.getByText('max')).toBeInTheDocument();
@@ -30,6 +32,8 @@ describe('Token 用量流水', () => {
       expect(screen.getAllByText(heading).length).toBeGreaterThan(0);
     }
     expect(screen.getByText('42 Token')).toBeInTheDocument();
+    expect(screen.getByText('30 Token')).toBeInTheDocument();
+    expect(screen.getByText('USD 0.000155')).toBeInTheDocument();
   });
 
   it('labels legacy missing metadata as unknown rather than guessing', async () => {

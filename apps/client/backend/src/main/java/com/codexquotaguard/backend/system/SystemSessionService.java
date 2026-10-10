@@ -5,6 +5,7 @@ import com.codexquotaguard.backend.controlplane.ControlPlaneException;
 import com.codexquotaguard.backend.controlplane.ControlPlaneGateway;
 import com.codexquotaguard.backend.controlplane.OfficialCodexRateLimits;
 import com.codexquotaguard.backend.controlplane.PersonalQuotaOverview;
+import com.codexquotaguard.backend.controlplane.PersonalUsageAnalytics;
 import com.codexquotaguard.backend.controlplane.MeterEnrollment;
 import com.codexquotaguard.backend.controlplane.SystemUser;
 import com.codexquotaguard.backend.controlplane.UserUsageEventPage;
@@ -73,6 +74,10 @@ public final class SystemSessionService {
 
     public UserUsageEventPage usageEvents(int page, int size) {
         return invokeAuthenticated(token -> controlPlane.usageEvents(token, page, size));
+    }
+
+    public PersonalUsageAnalytics usageAnalytics(int days) {
+        return invokeAuthenticated(token -> controlPlane.usageAnalytics(token, days));
     }
 
     public MeterEnrollment enrollMeter(UUID deviceId) {

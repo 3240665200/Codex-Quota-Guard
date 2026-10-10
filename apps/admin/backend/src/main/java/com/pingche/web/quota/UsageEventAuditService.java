@@ -3,6 +3,7 @@ package com.pingche.web.quota;
 import com.pingche.web.auth.DomainException;
 import com.pingche.web.user.UserRepository;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -12,10 +13,13 @@ import org.springframework.transaction.annotation.Transactional;
 public class UsageEventAuditService {
     private final UserRepository users;
     private final CodexUsageEventRepository events;
+    private final UsageModelPriceRepository prices;
 
-    public UsageEventAuditService(UserRepository users, CodexUsageEventRepository events) {
+    public UsageEventAuditService(UserRepository users, CodexUsageEventRepository events,
+            UsageModelPriceRepository prices) {
         this.users = users;
         this.events = events;
+        this.prices = prices;
     }
 
     @Transactional(readOnly = true)
@@ -24,6 +28,7 @@ public class UsageEventAuditService {
             throw new DomainException("USER_NOT_FOUND", "User not found", HttpStatus.NOT_FOUND);
         }
         return UsageEventAuditPage.from(events.findByUserIdOrderByReceivedAtDescIdDesc(
-                userId, PageRequest.of(page, size)));
+                userId, PageRequest.of(page, size)), prices.findAll().stream()
+                        .collect(Collectors.toMap(UsageModelPrice::getModel, price -> price)));
     }
 }

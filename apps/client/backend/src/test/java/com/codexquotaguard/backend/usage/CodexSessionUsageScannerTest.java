@@ -21,6 +21,64 @@ class CodexSessionUsageScannerTest {
     Path temporaryDirectory;
 
     @Test
+    void preservesMissingInputAndOutputInsteadOfInventingZeroCostComponents() throws Exception {
+        Path home = temporaryDirectory.resolve("partial-breakdown");
+        writeSession(home, "run.jsonl", """
+                {"type":"token_usage_record","timestamp":"2026-10-05T09:00:00Z","payload":{"response_id":"partial","usage":{"total_tokens":120}}}
+                """);
+        var first = scanner(home).scan(CodexUsageScanState.empty());
+        var event = first.events().get(0);
+        assertThat(event.totalTokens()).isEqualTo(120);
+        assertThat(event.inputTokens()).isNull();
+        assertThat(event.outputTokens()).isNull();
+        assertThat(event.cachedInputTokens()).isZero();
+        assertThat(event.cacheWriteInputTokens()).isZero();
+        assertThat(first.issues()).isEmpty();
+        assertThat(scanner(home).scan(first.nextState()).events()).isEmpty();
+        var mapper = new tools.jackson.databind.ObjectMapper();
+        assertThat(mapper.readValue(mapper.writeValueAsBytes(event), CodexUsageEvent.class)).isEqualTo(event);
+    }
+
+    @Test
+    void preservesExplicitNullComponentsButRejectsMalformedCounts() throws Exception {
+        Path home = temporaryDirectory.resolve("null-breakdown");
+        writeSession(home, "run.jsonl", """
+                {"type":"token_usage_record","timestamp":"2026-10-05T09:00:00Z","payload":{"response_id":"nulls","usage":{"total_tokens":120,"input_tokens":100,"output_tokens":20,"cached_input_tokens":null,"reasoning_output_tokens":null}}}
+                {"type":"token_usage_record","timestamp":"2026-10-05T09:01:00Z","payload":{"response_id":"invalid","usage":{"total_tokens":120,"input_tokens":-1}}}
+                """);
+        var result = scanner(home).scan(CodexUsageScanState.empty());
+        assertThat(result.events()).hasSize(1);
+        assertThat(result.events().get(0).cachedInputTokens()).isNull();
+        assertThat(result.events().get(0).reasoningOutputTokens()).isNull();
+        assertThat(result.issues()).extracting(CodexUsageScanIssue::code)
+                .containsExactly(CodexUsageScanIssueCode.INVALID_USAGE_RECORD);
+    }
+
+    @Test
+    void cumulativeDeltasRequireBothSnapshotsForEachComponentAndSurviveRestarts() throws Exception {
+        Path home = temporaryDirectory.resolve("partial-cumulative");
+        Path file = writeSession(home, "run.jsonl", """
+                {"type":"event_msg","timestamp":"2026-10-05T09:00:00Z","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":120}}}}
+                """);
+        var mapper = new tools.jackson.databind.ObjectMapper();
+        var baseline = scanner(home).scan(CodexUsageScanState.empty());
+        var restored = mapper.readValue(mapper.writeValueAsBytes(baseline.nextState()), CodexUsageScanState.class);
+        Files.writeString(file, """
+                {"type":"event_msg","timestamp":"2026-10-05T09:01:00Z","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":180,"input_tokens":150,"output_tokens":30}}}}
+                {"type":"event_msg","timestamp":"2026-10-05T09:02:00Z","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":240,"input_tokens":200,"output_tokens":40}}}}
+                """, java.nio.file.StandardOpenOption.APPEND);
+        Files.setLastModifiedTime(file, FileTime.from(NOW.minus(Duration.ofHours(1))));
+        var result = scanner(home).scan(restored);
+        assertThat(result.events()).hasSize(2);
+        assertThat(result.events()).extracting(CodexUsageEvent::totalTokens).containsExactly(60L, 60L);
+        assertThat(result.events().get(0).inputTokens()).isNull();
+        assertThat(result.events().get(0).outputTokens()).isNull();
+        assertThat(result.events().get(1).inputTokens()).isEqualTo(50);
+        assertThat(result.events().get(1).outputTokens()).isEqualTo(10);
+        assertThat(result.issues()).isEmpty();
+    }
+
+    @Test
     void associatesMetadataByTurnAcrossRestartsAndDoesNotChangeUsageOrEventIds() throws Exception {
         Path home = temporaryDirectory.resolve("metadata");
         String contexts = """

@@ -98,6 +98,28 @@ describe("ClientApp system session gate", () => {
           return { service: "codex-quota-guard", state: "online" };
         case "quota_overview":
           return quotaOverview;
+        case "usage_analytics":
+          return {
+            from: "2026-10-03T00:00:00Z",
+            to: "2026-10-10T00:00:00Z",
+            currency: "USD",
+            timezone: "UTC",
+            granularity: "DAY",
+            trend: [],
+            summary: {
+              eventCount: 0,
+              totalTokens: 0,
+              inputTokens: null,
+              cachedInputTokens: null,
+              cacheWriteInputTokens: null,
+              outputTokens: null,
+              reasoningOutputTokens: null,
+              breakdownEventCount: 0,
+              costedEventCount: 0,
+              estimatedCostUsd: null,
+              cacheHitRatePercent: null,
+            },
+          };
         case "usage_events":
           return {
             items: [],

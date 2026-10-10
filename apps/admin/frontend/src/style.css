@@ -217,6 +217,47 @@ textarea {
   margin-bottom: 16px;
 }
 
+.cqg-usage-page { min-width: 0; letter-spacing: 0; }
+.cqg-usage-muted, .cqg-cost-unknown { color: #606a75; font-size: 12px; }
+.cqg-usage-number { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cqg-usage-filters { padding: 8px 0 20px; border-bottom: 1px solid #e5e7eb; }
+.cqg-usage-filter-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)) auto; gap: 12px; align-items: end; }
+.cqg-usage-filter-grid .ant-form-item { margin-bottom: 12px; min-width: 0; }
+.cqg-usage-filter-grid .ant-select { width: 100%; }
+.cqg-usage-filter-grid > .ant-btn { margin-bottom: 12px; }
+.cqg-usage-filter-footer, .cqg-usage-section-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.cqg-usage-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-bottom: 1px solid #e5e7eb; padding: 24px 0; gap: 20px; }
+.cqg-usage-metric { display: grid; gap: 8px; min-width: 0; border-right: 1px solid #e5e7eb; padding-right: 16px; }
+.cqg-usage-metric:last-child { border-right: 0; }
+.cqg-usage-metric > span, .cqg-usage-metric small { color: #606a75; font-size: 12px; }
+.cqg-usage-metric strong { color: #18232a; font-size: 24px; line-height: 1.4; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.cqg-usage-metric:first-child strong { color: #1769c2; }
+.cqg-usage-metric:nth-child(2) strong { color: #118263; }
+.cqg-usage-breakdown { display: flex; gap: 16px 32px; flex-wrap: wrap; padding: 16px 0; }
+.cqg-usage-breakdown > div { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.cqg-usage-breakdown > div > span:first-child { color: #606a75; }
+.cqg-usage-section { padding: 24px 0; border-bottom: 1px solid #e5e7eb; min-width: 0; }
+.cqg-usage-section h2 { font-size: 16px; margin: 0; font-weight: 600; }
+.cqg-usage-section-head { margin-bottom: 16px; }
+.cqg-usage-chart { width: 100%; height: 280px; min-width: 0; }
+.cqg-usage-page .ant-table-wrapper { max-width: 100%; }
+@media (max-width: 1200px) {
+  .cqg-usage-filter-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 760px) {
+  .cqg-usage-filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cqg-usage-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cqg-usage-metric:nth-child(2) { border-right: 0; }
+  .cqg-usage-metric strong { font-size: 22px; }
+}
+@media (max-width: 420px) {
+  .cqg-usage-filter-grid { grid-template-columns: minmax(0, 1fr); }
+  .cqg-usage-metrics { gap: 20px 12px; }
+  .cqg-usage-metric { padding-right: 8px; }
+  .cqg-usage-metric strong { font-size: 20px; }
+  .cqg-usage-chart { height: 240px; }
+}
+
 .cqg-filter-form {
   display: flex;
   align-items: flex-end;

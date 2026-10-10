@@ -2,6 +2,7 @@ package com.codexquotaguard.backend.controlplane;
 
 import com.codexquotaguard.backend.usage.CodexExecutionContext;
 import java.time.Instant;
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Set;
 
@@ -17,7 +18,9 @@ public record UserUsageEventPage(List<Item> items, int page, int size,
     }
 
     public record Item(String id, String occurredAt, String receivedAt, long totalTokens, String source,
-            String model, String reasoningEffort) {
+            String model, String reasoningEffort, Long inputTokens, Long cachedInputTokens,
+            Long cacheWriteInputTokens, Long outputTokens, Long reasoningOutputTokens,
+            BigDecimal estimatedCostUsd, String costStatus) {
         public Item {
             if (id == null || !id.matches("[a-zA-Z0-9-]{1,128}") || totalTokens < 0
                     || !Set.of("TOKEN_USAGE_RECORD", "CUMULATIVE_TOKEN_COUNT_FALLBACK").contains(source)) {
@@ -28,10 +31,27 @@ public record UserUsageEventPage(List<Item> items, int page, int size,
             CodexExecutionContext metadata = new CodexExecutionContext(model, reasoningEffort);
             model = metadata.model();
             reasoningEffort = metadata.reasoningEffort();
+            for (Long tokens : new Long[] {inputTokens, cachedInputTokens, cacheWriteInputTokens,
+                    outputTokens, reasoningOutputTokens}) {
+                if (tokens != null && tokens < 0) throw new IllegalArgumentException("Invalid token breakdown.");
+            }
+            if (estimatedCostUsd != null && estimatedCostUsd.signum() < 0) {
+                throw new IllegalArgumentException("Invalid estimated USD cost.");
+            }
+            if (costStatus != null && !Set.of("PRICED", "MISSING_PRICE", "MISSING_BREAKDOWN",
+                    "INVALID_BREAKDOWN").contains(costStatus)) {
+                throw new IllegalArgumentException("Invalid cost status.");
+            }
         }
 
         public Item(String id, String occurredAt, String receivedAt, long totalTokens, String source) {
             this(id, occurredAt, receivedAt, totalTokens, source, null, null);
+        }
+
+        public Item(String id, String occurredAt, String receivedAt, long totalTokens, String source,
+                String model, String reasoningEffort) {
+            this(id, occurredAt, receivedAt, totalTokens, source, model, reasoningEffort,
+                    null, null, null, null, null, null, null);
         }
     }
 }

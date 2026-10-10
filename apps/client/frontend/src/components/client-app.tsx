@@ -69,6 +69,7 @@ export function ClientApp() {
           "usage-status",
           "quota-overview",
           "usage-events",
+          "usage-analytics",
           "meter-runtime-logs",
         ]) {
           void queryClient.invalidateQueries({ queryKey: [key] });

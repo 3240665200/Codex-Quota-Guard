@@ -4,13 +4,14 @@ import { useEffect, useState } from 'react';
 
 import { getErrorMessage } from '../../components/AdminState';
 import { TokenAmount } from '../../components/TokenAmount';
+import { UsageCost, UsageTokens } from '../../components/UsageAmounts';
 import { getUserUsageEvents } from '../../services/api';
 import type { UsageEventLogPage } from '../../services/api';
 
 const PAGE_SIZE = 10;
 type UsageEvent = UsageEventLogPage['items'][number];
 
-const columns: TableColumnsType<UsageEvent> = [
+export const usageEventColumns = [
   { title: '服务端收到', dataIndex: 'receivedAt',
     render: (value: string) => new Date(value).toLocaleString('zh-CN') },
   { title: '本机发生', dataIndex: 'occurredAt',
@@ -24,7 +25,14 @@ const columns: TableColumnsType<UsageEvent> = [
     render: (value: string | null | undefined) => value ?? '未知' },
   { title: '思考等级', dataIndex: 'reasoningEffort', width: 100,
     render: (value: string | null | undefined) => value ?? '未知' },
-];
+  { title: '输入 Token', dataIndex: 'inputTokens', width: 130, render: (value) => <UsageTokens value={value} /> },
+  { title: '缓存读 Token', dataIndex: 'cachedInputTokens', width: 130, render: (value) => <UsageTokens value={value} /> },
+  { title: '缓存写 Token', dataIndex: 'cacheWriteInputTokens', width: 130, render: (value) => <UsageTokens value={value} /> },
+  { title: '输出 Token', dataIndex: 'outputTokens', width: 130, render: (value) => <UsageTokens value={value} /> },
+  { title: '思考 Token', dataIndex: 'reasoningOutputTokens', width: 130, render: (value) => <UsageTokens value={value} /> },
+  { title: '估算费用 (USD)', dataIndex: 'estimatedCostUsd', width: 180,
+    render: (value, item) => <UsageCost value={value} status={item.costStatus} /> },
+] satisfies TableColumnsType<UsageEvent>;
 
 export function UsageEventsTable({ userId }: { userId: string }) {
   const [page, setPage] = useState(0);
@@ -56,7 +64,7 @@ export function UsageEventsTable({ userId }: { userId: string }) {
       </Typography.Paragraph>
       {error ? <Alert showIcon type="error" title="用量流水读取失败" description={error} /> : null}
       <Table<UsageEvent>
-        columns={columns}
+        columns={usageEventColumns}
         dataSource={data?.items ?? []}
         loading={loading}
         locale={{ emptyText: '暂无已接收的 Token 事件' }}
@@ -64,7 +72,7 @@ export function UsageEventsTable({ userId }: { userId: string }) {
           total: data?.totalElements ?? 0, showSizeChanger: false,
           onChange: (nextPage) => setPage(nextPage - 1) }}
         rowKey="id"
-        scroll={{ x: 930 }}
+        scroll={{ x: 1770 }}
         size="small"
       />
     </section>

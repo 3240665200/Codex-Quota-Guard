@@ -5,10 +5,13 @@ import {
   api,
   getApiErrorMessage,
   type MeterRuntimeLogs,
+  type UsageEventPage,
   type UsageStatus,
 } from "@/lib/api";
 import { formatCompactTokenCount, formatTokenCount } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { UsageStatistics } from "@/components/usage-statistics";
+import { formatUsd } from "@/lib/usage-format";
 
 const serviceLabels: Record<UsageStatus["service"]["state"], string> = {
   NOT_INSTALLED: "计费服务未安装",
@@ -50,6 +53,85 @@ const scannerIssueDescriptions: Record<string, string> = {
     "累计计数下降时只重置基线，不会将下降值算作新用量。",
 };
 const MAX_VISIBLE_ISSUE_TYPES = 20;
+const costLabels = {
+  MISSING_PRICE: "未定价",
+  MISSING_BREAKDOWN: "分项缺失",
+  INVALID_BREAKDOWN: "分项不一致",
+  PRICED: "已估算",
+};
+
+function TokenBreakdown({ value }: { value: number | null }) {
+  return value === null ? (
+    <span className="text-muted-foreground" title="该记录未提供此项用量">
+      未知
+    </span>
+  ) : (
+    <span
+      className="font-medium tabular-nums"
+      title={`精确值：${formatTokenCount(value)} Token`}
+    >
+      {formatTokenCount(value)}
+    </span>
+  );
+}
+
+function TokenDetailRow({
+  label,
+  value,
+}: {
+  label: string;
+  value: number | null;
+}) {
+  return (
+    <div className="flex items-baseline justify-between gap-3">
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd className="text-right">
+        <TokenBreakdown value={value} />
+      </dd>
+    </div>
+  );
+}
+
+function UsageTokens({ item }: { item: UsageEventPage["items"][number] }) {
+  return (
+    <div className="rounded-lg border border-border/70 bg-muted/25 px-3 py-2.5">
+      <div className="flex items-baseline justify-between gap-3 border-b border-border/60 pb-2">
+        <span className="text-xs font-medium text-muted-foreground">
+          总消耗
+        </span>
+        <span className="text-teal-800 dark:text-teal-300">
+          <Tokens value={item.totalTokens} />
+        </span>
+      </div>
+      <dl className="mt-2 space-y-1.5 text-xs">
+        <TokenDetailRow label="输入（含缓存）" value={item.inputTokens} />
+        <TokenDetailRow label="输出（含思考）" value={item.outputTokens} />
+        <TokenDetailRow label="缓存读" value={item.cachedInputTokens} />
+        <TokenDetailRow label="缓存写" value={item.cacheWriteInputTokens} />
+        <TokenDetailRow label="思考" value={item.reasoningOutputTokens} />
+      </dl>
+      <div className="mt-2 flex items-baseline justify-between gap-3 border-t border-border/60 pt-2 text-xs">
+        <span className="text-muted-foreground">费用估算</span>
+        <EstimatedCost item={item} />
+      </div>
+    </div>
+  );
+}
+
+function EstimatedCost({ item }: { item: UsageEventPage["items"][number] }) {
+  const value = item.estimatedCostUsd;
+  if (value === null)
+    return (
+      <span className="text-xs text-muted-foreground">
+        {item.costStatus ? costLabels[item.costStatus] : "分项缺失"}
+      </span>
+    );
+  return (
+    <span className="tabular-nums" title={`USD ${value} · 当前配置单价估算`}>
+      USD {formatUsd(value)}
+    </span>
+  );
+}
 
 function summarizeScannerIssues(fallback: UsageStatus["fallback"]) {
   const counts = fallback.issueCounts;
@@ -145,7 +227,9 @@ export function UsageActivityPanel({
   onPair: () => void;
   onStart: () => void;
 }) {
-  const [tab, setTab] = useState<"ledger" | "diagnostics">("ledger");
+  const [tab, setTab] = useState<"overview" | "ledger" | "diagnostics">(
+    "overview",
+  );
   const [page, setPage] = useState(0);
   const id = useId();
   const tabs = useRef<(HTMLButtonElement | null)[]>([]);
@@ -186,9 +270,18 @@ export function UsageActivityPanel({
     page === 0 ? (ledger.data?.items[0]?.receivedAt ?? measuredAt) : measuredAt;
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ["usage-status"] });
-    void (tab === "ledger" ? ledger.refetch() : logs.refetch());
+    if (tab === "overview")
+      void queryClient.invalidateQueries({
+        queryKey: ["usage-analytics", userId],
+      });
+    else void (tab === "ledger" ? ledger.refetch() : logs.refetch());
   };
-  const fetching = tab === "ledger" ? ledger.isFetching : logs.isFetching;
+  const fetching =
+    tab === "overview"
+      ? false
+      : tab === "ledger"
+        ? ledger.isFetching
+        : logs.isFetching;
 
   return (
     <section
@@ -239,39 +332,49 @@ export function UsageActivityPanel({
           role="tablist"
           aria-label="计费记录视图"
         >
-          {(["ledger", "diagnostics"] as const).map((value, index) => (
-            <button
-              key={value}
-              ref={(element) => {
-                tabs.current[index] = element;
-              }}
-              type="button"
-              id={`${id}-${value}-tab`}
-              role="tab"
-              aria-selected={tab === value}
-              aria-controls={`${id}-${value}`}
-              tabIndex={tab === value ? 0 : -1}
-              className={`rounded-md px-3 py-1.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${tab === value ? "bg-background font-medium shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
-              onClick={() => setTab(value)}
-              onKeyDown={(event) => {
-                if (
-                  ["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)
-                ) {
-                  event.preventDefault();
-                  const next =
-                    event.key === "Home"
-                      ? 0
-                      : event.key === "End"
-                        ? 1
-                        : 1 - index;
-                  setTab(next === 0 ? "ledger" : "diagnostics");
-                  tabs.current[next]?.focus();
-                }
-              }}
-            >
-              {value === "ledger" ? "消耗流水" : "运行诊断"}
-            </button>
-          ))}
+          {(["overview", "ledger", "diagnostics"] as const).map(
+            (value, index) => (
+              <button
+                key={value}
+                ref={(element) => {
+                  tabs.current[index] = element;
+                }}
+                type="button"
+                id={`${id}-${value}-tab`}
+                role="tab"
+                aria-selected={tab === value}
+                aria-controls={`${id}-${value}`}
+                tabIndex={tab === value ? 0 : -1}
+                className={`rounded-md px-3 py-1.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${tab === value ? "bg-background font-medium shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                onClick={() => setTab(value)}
+                onKeyDown={(event) => {
+                  if (
+                    ["ArrowLeft", "ArrowRight", "Home", "End"].includes(
+                      event.key,
+                    )
+                  ) {
+                    event.preventDefault();
+                    const next =
+                      event.key === "Home"
+                        ? 0
+                        : event.key === "End"
+                          ? 2
+                          : (index + (event.key === "ArrowLeft" ? 2 : 1)) % 3;
+                    setTab(
+                      (["overview", "ledger", "diagnostics"] as const)[next],
+                    );
+                    tabs.current[next]?.focus();
+                  }
+                }}
+              >
+                {value === "overview"
+                  ? "用量统计"
+                  : value === "ledger"
+                    ? "消耗流水"
+                    : "运行诊断"}
+              </button>
+            ),
+          )}
         </div>
         <div className="flex flex-wrap gap-2">
           <Button
@@ -324,7 +427,15 @@ export function UsageActivityPanel({
           ) : null}
         </div>
       </div>
-      {tab === "ledger" ? (
+      {tab === "overview" ? (
+        <div
+          id={`${id}-overview`}
+          role="tabpanel"
+          aria-labelledby={`${id}-overview-tab`}
+        >
+          <UsageStatistics key={userId} userId={userId} />
+        </div>
+      ) : tab === "ledger" ? (
         <div
           id={`${id}-ledger`}
           role="tabpanel"
@@ -332,7 +443,7 @@ export function UsageActivityPanel({
           className="pt-4"
         >
           <p className="mb-3 text-xs text-muted-foreground">
-            当前系统用户的已接收用量；未上报或上报失败的记录不会显示为已入账。
+            当前系统用户的已接收用量；未上报或上报失败的记录不会显示为已入账。输入含缓存，输出含思考，分项不要重复相加。
           </p>
           {ledger.isError ? (
             <div
@@ -358,9 +469,18 @@ export function UsageActivityPanel({
               {ledger.data.items.length ? (
                 <div className="min-w-0 overflow-x-auto">
                   <table
-                    className="w-full min-w-[960px] table-fixed whitespace-nowrap text-left text-sm"
+                    className="w-full min-w-[1100px] table-fixed whitespace-nowrap text-left text-sm"
                     aria-label="个人消耗流水"
                   >
+                    <colgroup>
+                      <col className="w-[174px]" />
+                      <col className="w-[278px]" />
+                      <col className="w-[112px]" />
+                      <col className="w-[174px]" />
+                      <col className="w-[76px]" />
+                      <col className="w-[190px]" />
+                      <col className="w-[96px]" />
+                    </colgroup>
                     <thead className="border-b text-xs text-muted-foreground">
                       <tr>
                         <th className="pb-3 pr-5 font-medium" scope="col">
@@ -392,8 +512,8 @@ export function UsageActivityPanel({
                           <td className="py-3 pr-5 tabular-nums">
                             {time(item.occurredAt)}
                           </td>
-                          <td className="py-3 pr-5">
-                            <Tokens value={item.totalTokens} />
+                          <td className="py-2 pr-5">
+                            <UsageTokens item={item} />
                           </td>
                           <td className="py-3 pr-5 text-xs text-muted-foreground">
                             {item.source === "TOKEN_USAGE_RECORD"

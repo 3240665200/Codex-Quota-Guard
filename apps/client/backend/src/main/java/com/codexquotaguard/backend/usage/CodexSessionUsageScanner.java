@@ -468,15 +468,18 @@ public final class CodexSessionUsageScanner {
         if (totalTokens == null) {
             return null;
         }
-        Long inputTokens = optionalNonNegativeLong(node, "input_tokens");
+        for (String field : List.of("input_tokens", "cached_input_tokens", "cache_write_input_tokens",
+                "output_tokens", "reasoning_output_tokens")) {
+            JsonNode value = node.get(field);
+            if (value != null && !value.isNull() && nonNegativeLong(node, field) == null) {
+                return null;
+            }
+        }
+        Long inputTokens = nonNegativeLong(node, "input_tokens");
         Long cachedInputTokens = optionalNonNegativeLong(node, "cached_input_tokens");
         Long cacheWriteInputTokens = optionalNonNegativeLong(node, "cache_write_input_tokens");
-        Long outputTokens = optionalNonNegativeLong(node, "output_tokens");
+        Long outputTokens = nonNegativeLong(node, "output_tokens");
         Long reasoningOutputTokens = optionalNonNegativeLong(node, "reasoning_output_tokens");
-        if (inputTokens == null || cachedInputTokens == null || cacheWriteInputTokens == null
-                || outputTokens == null || reasoningOutputTokens == null) {
-            return null;
-        }
         return new CodexCumulativeUsage(
                 inputTokens,
                 cachedInputTokens,
@@ -501,7 +504,7 @@ public final class CodexSessionUsageScanner {
 
     private Long optionalNonNegativeLong(JsonNode node, String field) {
         JsonNode value = node.get(field);
-        if (value == null || value.isNull()) {
+        if (value == null) {
             return 0L;
         }
         return nonNegativeLong(node, field);
@@ -546,7 +549,9 @@ public final class CodexSessionUsageScanner {
                 usage.outputTokens(),
                 usage.reasoningOutputTokens(),
                 usage.totalTokens(),
-                source
+                source,
+                null,
+                null
         );
     }
 
