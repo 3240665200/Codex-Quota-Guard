@@ -20,6 +20,63 @@ import tools.jackson.databind.ObjectMapper;
 class HttpControlPlaneGatewayTest {
 
     @Test
+    void readsOnlyTheAuthenticatedUsersPaginatedLedgerFromAFixedEndpoint() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/api/v1/client/usage/events", exchange -> {
+            assertThat(exchange.getRequestMethod()).isEqualTo("GET");
+            assertThat(exchange.getRequestURI().getQuery()).isEqualTo("page=2&size=10&includeMetadata=true");
+            assertThat(exchange.getRequestHeaders().getFirst("Authorization")).isEqualTo("Bearer session-access");
+            writeJson(exchange, """
+                    {"items":[
+                    {"id":"%s","occurredAt":"2026-10-09T00:00:00Z",
+                    "receivedAt":"2026-10-09T00:00:01Z","totalTokens":12500,"source":"TOKEN_USAGE_RECORD",
+                    "model":"gpt-6.1-sol","reasoningEffort":"max"},
+                    {"id":"%s","occurredAt":"2026-10-09T00:01:00Z",
+                    "receivedAt":"2026-10-09T00:01:01Z","totalTokens":500,"source":"TOKEN_USAGE_RECORD",
+                    "model":"%s","reasoningEffort":"credential raw log"}],
+                    "page":2,"size":10,"totalElements":21,"totalPages":3}
+                    """.formatted("a".repeat(64), "b".repeat(64), "x".repeat(97)));
+        });
+        server.start();
+        try {
+            var gateway = gateway(server);
+            var result = gateway.usageEvents("session-access", 2, 10);
+            assertThat(result.items().get(0).totalTokens()).isEqualTo(12500);
+            assertThat(result.items().get(0).model()).isEqualTo("gpt-6.1-sol");
+            assertThat(result.items().get(0).reasoningEffort()).isEqualTo("max");
+            assertThat(result.items().get(1).totalTokens()).isEqualTo(500);
+            assertThat(result.items().get(1).model()).isNull();
+            assertThat(result.items().get(1).reasoningEffort()).isNull();
+            assertThat(result.toString()).doesNotContain("credential raw log", "x".repeat(97));
+            assertThat(result.totalElements()).isEqualTo(21);
+            assertThatThrownBy(() -> gateway.usageEvents("session-access", -1, 10))
+                    .isInstanceOf(ControlPlaneException.class);
+            assertThatThrownBy(() -> gateway.usageEvents("session-access", 0, 101))
+                    .isInstanceOf(ControlPlaneException.class);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void acceptsLedgerPagesFromOlderControlPlanesWithoutMetadata() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/api/v1/client/usage/events", exchange -> writeJson(exchange, """
+                {"items":[{"id":"%s","occurredAt":"2026-10-09T00:00:00Z",
+                "receivedAt":"2026-10-09T00:00:01Z","totalTokens":12500,"source":"TOKEN_USAGE_RECORD"}],
+                "page":0,"size":10,"totalElements":1,"totalPages":1}
+                """.formatted("a".repeat(64))));
+        server.start();
+        try {
+            var item = gateway(server).usageEvents("session-access", 0, 10).items().get(0);
+            assertThat(item.model()).isNull();
+            assertThat(item.reasoningEffort()).isNull();
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void enrollsADeviceWithoutReturningMeterTokenToTheRenderer() throws Exception {
         UUID deviceId = UUID.randomUUID();
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
@@ -195,6 +252,7 @@ class HttpControlPlaneGatewayTest {
             assertThat(exchange.getRequestMethod()).isEqualTo("POST");
             assertThat(exchange.getRequestHeaders().getFirst("Authorization")).isEqualTo("Bearer session-access");
             assertThat(request).contains("codex-local-usage:v1:abc", "totalTokens", "TOKEN_USAGE_RECORD");
+            assertThat(request).contains("\"model\":\"gpt-6.1-sol\"", "\"reasoningEffort\":\"max\"");
             assertThat(request).doesNotContain("codexAccountId");
             assertThat(request).doesNotContain("inputTokens", "outputTokens", "credential");
             writeJson(exchange, quotaJson(userId, accountId, teamId, true, null));
@@ -211,7 +269,7 @@ class HttpControlPlaneGatewayTest {
                     7L,
                     0L,
                     10L,
-                    CodexUsageEventSource.TOKEN_USAGE_RECORD
+                    CodexUsageEventSource.TOKEN_USAGE_RECORD, "gpt-6.1-sol", "max"
             );
 
             assertThat(gateway.reportUsage("session-access", List.of(event)).allowed()).isTrue();

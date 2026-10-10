@@ -19,6 +19,26 @@ function page(index: number, tokens: number, totalElements: number) {
 describe('Token 用量流水', () => {
   beforeEach(() => vi.clearAllMocks());
 
+  it('adds model and reasoning effort columns while keeping existing fields', async () => {
+    const result = page(0, 42, 1);
+    vi.mocked(getUserUsageEvents).mockResolvedValue({ ...result,
+      items: [{ ...result.items[0], model: 'gpt-6.1-sol', reasoningEffort: 'max' }] });
+    render(<AntApp><UsageEventsTable userId="user-1" /></AntApp>);
+    expect(await screen.findByText('gpt-6.1-sol')).toBeInTheDocument();
+    expect(screen.getByText('max')).toBeInTheDocument();
+    for (const heading of ['服务端收到', '本机发生', 'Token', '来源', '模型名称', '思考等级']) {
+      expect(screen.getAllByText(heading).length).toBeGreaterThan(0);
+    }
+    expect(screen.getByText('42 Token')).toBeInTheDocument();
+  });
+
+  it('labels legacy missing metadata as unknown rather than guessing', async () => {
+    vi.mocked(getUserUsageEvents).mockResolvedValue(page(0, 42, 1));
+    render(<AntApp><UsageEventsTable userId="user-1" /></AntApp>);
+    await screen.findByText('42 Token');
+    expect(screen.getAllByText('未知')).toHaveLength(2);
+  });
+
   it('pages accepted events without switching users', async () => {
     vi.mocked(getUserUsageEvents)
       .mockResolvedValueOnce(page(0, 42, 11))

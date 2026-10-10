@@ -3,6 +3,7 @@
 mod backend;
 mod meter_service;
 mod server_config;
+mod tray;
 
 use backend::{ApiRoute, BackendState};
 use reqwest::Method;
@@ -22,7 +23,7 @@ fn meter_setup_error(app: tauri::AppHandle) -> Option<String> {
 #[tauri::command]
 async fn meter_service_ensure(app: tauri::AppHandle) -> meter_service::MeterStartOutcome {
     tauri::async_runtime::spawn_blocking(move || {
-        *METER_STARTUP.get_or_init(|| meter_service::ensure_running_or_install(&app))
+        *METER_STARTUP.get_or_init(|| tray::ensure_meter_serialized(&app))
     })
     .await
     .unwrap_or(meter_service::MeterStartOutcome::Failed)
@@ -30,7 +31,7 @@ async fn meter_service_ensure(app: tauri::AppHandle) -> meter_service::MeterStar
 
 #[tauri::command]
 async fn meter_service_retry(app: tauri::AppHandle) -> meter_service::MeterStartOutcome {
-    tauri::async_runtime::spawn_blocking(move || meter_service::ensure_running_or_install(&app))
+    tauri::async_runtime::spawn_blocking(move || tray::ensure_meter_serialized(&app))
         .await
         .unwrap_or(meter_service::MeterStartOutcome::Failed)
 }
@@ -73,6 +74,16 @@ async fn usage_status(state: State<'_, BackendState>) -> CommandResult<Value> {
         .json(Method::GET, ApiRoute::UsageStatus)
         .await
         .map_err(command_error)
+}
+
+#[tauri::command]
+async fn usage_events(page: u32, size: u32, state: State<'_, BackendState>) -> CommandResult<Value> {
+    state.usage_events(page, size).await.map_err(command_error)
+}
+
+#[tauri::command]
+async fn meter_runtime_logs(state: State<'_, BackendState>) -> CommandResult<Value> {
+    state.json(Method::GET, ApiRoute::MeterRuntimeLogs).await.map_err(command_error)
 }
 
 #[tauri::command]
@@ -130,6 +141,14 @@ async fn system_logout(state: State<'_, BackendState>) -> CommandResult<()> {
 fn main() {
     let builder = tauri::Builder::default()
         .setup(|app| {
+            app.manage(tray::TrayState::default());
+            let tray_available = tray::install(app).is_ok();
+            app.state::<tray::TrayState>()
+                .set_available(tray_available);
+            if !tray_available {
+                eprintln!("Unable to initialize the desktop tray; closing the main window will exit the client.");
+            }
+
             let state = BackendState::launch(app.handle())?;
             app.manage(state);
             Ok(())
@@ -141,6 +160,8 @@ fn main() {
             status,
             quota_overview,
             usage_status,
+            usage_events,
+            meter_runtime_logs,
             usage_scan,
             usage_pair,
             codex_rate_limits,
@@ -162,18 +183,29 @@ fn main() {
     app.run(|app_handle, event| match event {
         RunEvent::WindowEvent {
             label,
-            event: tauri::WindowEvent::CloseRequested { .. },
+            event: tauri::WindowEvent::CloseRequested { api, .. },
             ..
         } if label == "main" => {
-            if let Some(state) = app_handle.try_state::<BackendState>() {
-                state.stop();
-            }
-            app_handle.exit(0);
+            let tray_available = app_handle
+                .try_state::<tray::TrayState>()
+                .is_some_and(|state| state.is_available());
+            let mut ops = tray::TauriCloseRequestOps {
+                app: app_handle.clone(),
+                api: &api,
+            };
+            tray::handle_close_request(tray_available, &mut ops);
         }
-        RunEvent::ExitRequested { .. } | RunEvent::Exit => {
-            if let Some(state) = app_handle.try_state::<BackendState>() {
-                state.stop();
-            }
+        RunEvent::ExitRequested { .. } => {
+            let mut ops = tray::TauriExitEventOps {
+                app: app_handle.clone(),
+            };
+            tray::handle_exit_event(tray::AppExitEvent::ExitRequested, &mut ops);
+        }
+        RunEvent::Exit => {
+            let mut ops = tray::TauriExitEventOps {
+                app: app_handle.clone(),
+            };
+            tray::handle_exit_event(tray::AppExitEvent::Exit, &mut ops);
         }
         _ => {}
     });

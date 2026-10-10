@@ -66,6 +66,31 @@ class SystemSessionServiceTest {
     }
 
     @Test
+    void classifiesCentralInvalidRequestsAsRejectedInsteadOfUnavailable() {
+        var alice = user("Alice");
+        var gateway = new FakeGateway(new ControlPlaneAuthSession(ACCESS_ONE, REFRESH_ONE, alice));
+        gateway.reportFailure = ControlPlaneException.invalidRequest();
+        var service = new SystemSessionService(gateway);
+        service.login("alice@example.com", "password");
+
+        assertThatThrownBy(() -> service.reportUsage(alice.id(), List.of()))
+                .isInstanceOf(ControlPlaneRequestRejectedException.class)
+                .hasMessage("CONTROL_PLANE_REQUEST_REJECTED")
+                .isNotInstanceOf(ControlPlaneUnavailableException.class);
+        assertThat(gateway.reportCalls).isEqualTo(1);
+    }
+
+    @Test
+    void returnsOnlyAFixedBadRequestCodeForRejectedControlPlaneRequests() {
+        var response = new LocalSessionExceptionHandler().controlPlaneRequestRejected();
+
+        assertThat(response.getStatusCode().value()).isEqualTo(400);
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().code()).isEqualTo("CONTROL_PLANE_REQUEST_REJECTED");
+        assertThat(response.getBody().message()).isEqualTo("中央后台拒绝请求，请检查请求内容后重试。");
+    }
+
+    @Test
     void refreshesTheInMemorySessionAfterTheCentralServiceRejectsAnExpiredAccessToken() {
         var user = user("Alice");
         var gateway = new FakeGateway(new ControlPlaneAuthSession(ACCESS_ONE, REFRESH_ONE, user));
@@ -191,6 +216,7 @@ class SystemSessionServiceTest {
         private boolean rejectRefresh;
         private boolean logoutFailure;
         private boolean rejectFirstLogout;
+        private ControlPlaneException reportFailure;
         private int currentCalls;
         private int quotaOverviewCalls;
         private int reportCalls;
@@ -248,6 +274,9 @@ class SystemSessionServiceTest {
         public PersonalQuotaOverview reportUsage(String accessToken, List<CodexUsageEvent> events) {
             reportCalls++;
             lastAccessToken = accessToken;
+            if (reportFailure != null) {
+                throw reportFailure;
+            }
             return overview(loginSession.user());
         }
 

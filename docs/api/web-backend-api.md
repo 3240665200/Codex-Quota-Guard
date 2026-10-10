@@ -29,6 +29,7 @@
 | GET | `/admin/users/{id}/quota-overview` | 管理员查看指定用户个人额度 |
 | GET | `/admin/users/{id}/usage-events?page=0&size=20` | 管理员分页查看该用户已入库的 Token 用量流水；`size` 为 1–100，按服务端接收时间倒序 |
 | POST | `/client/usage/events` | 客户端幂等上报本机 Codex 会话中的 Token 事件 |
+| GET | `/client/usage/events?page=0&size=10` | 登录用户分页查看自己的已接收流水；`page` 为 0–100000，`size` 为 1–100，不接受用户 ID 切换查询归属，响应 `Cache-Control: no-store` |
 
 `POST /client/usage/events` 只接受当前系统用户的事件，不接受账户 ID 或用户 ID。请求示例：
 
@@ -39,6 +40,12 @@
 中央服务按系统用户加事件 ID 去重，校验时间后按事件发生时间计算滚动 5 小时和 7 天用量。事件记录接收时所属团队；个人剩余只扣个人上限，团队剩余单独扣全体成员共享上限，团队累计总额从上次重置后计算。5 小时 `null` 表示不设限；7 天基础上限仍须配置。`GET /admin/teams/{id}/quota-overview` 返回团队三档上限、已用、剩余、成员数和最近上报时间；用户的 `/client/quota/overview` 与管理员用户额度接口同时返回 `teamQuota`。数据来自客户端日志，不是官方精确账单；`allowed` 仅表示本系统额度状态，不会阻断官方应用。
 管理员可通过 `POST /admin/users/{id}/quota-reset` 和 `POST /admin/teams/{id}/quota-reset` 分别重置个人或团队共享用量。响应为 204，不接受请求体。服务端只更新统计起点，不删除流水，也不修改 Token 上限；计费窗口同时要求事件发生和服务端接收时间晚于重置点，防止重置前事件迟到后重新扣额。团队重置不会清除成员个人用量，个人重置也不会清除团队用量。
 流水接口只返回安全摘要：服务端散列事件 ID、`occurredAt`、`receivedAt`、`totalTokens`、`source` 及分页信息；不返回原始响应 ID、会话内容或任何登录令牌。普通用户不可查询管理员流水接口，响应禁止缓存。管理页在“额度查看 → 用户详情”中分页显示。
+
+管理员流水新增可空的 `model` 与 `reasoningEffort`，原字段全部保留。上报事件可选携带这两项；旧客户端不传仍可正常入库。模型名称最多 96 个安全 ASCII 字符，思考等级为 `none/minimal/low/medium/high/xhigh/max/ultra`；缺失元数据不会推断默认值，历史流水不追溯改写。
+为兼容严格解析旧响应的已安装客户端，`GET /client/usage/events` 默认仍返回原五项事件字段；`includeMetadata=true` 可显式请求新增元数据。管理员接口始终返回新增字段。
+
+桌面端通过固定的本机 `GET /api/v1/usage/events?page=0&size=10` 转发自己的查询，不能传入中央令牌、目标 URL 或其他用户 ID。
+本机 `GET /api/v1/usage/logs` 返回 `{state, entries, skippedLines}`，只投影固定运行摘要，不返回原始日志。两者均需要桌面桥接令牌及系统登录态；服务日志权限不足时返回 `ADMIN_REQUIRED`，缺失时返回 `NOT_AVAILABLE`，读取失败返回 `READ_FAILED`。
 
 ## Windows Rust 计费服务
 

@@ -3,4 +3,5 @@ The setup itself does not register the service. The installed app installs it on
 The Windows meter executable statically includes its C runtime; it needs no separate Visual C++ runtime. Packaging rejects executables that import unbundled VC++ DLLs.
 Failed installation steps are recorded without credentials in the user's app data meter-setup-status.json. A retry can repair a registered service that cannot start, preserving its device identity and scanning state.
 After saving a new server origin and restarting the app elevated, the service configuration is synchronized even if the service is already running.
+The installer uses Windows-known directories and the adjacent bundled executable. It never probes a hardcoded drive or compiles source code on the target PC. Diagnostics include distinct stages and fixed reason codes for invalid URLs, unavailable directories, missing bundled files, and existing profile mismatches.
 An administrator can use show-meter-logs.ps1 to view safe rotated service records after installation.

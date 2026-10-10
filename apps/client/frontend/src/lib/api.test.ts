@@ -44,6 +44,126 @@ describe("Tauri API boundary", () => {
     invokeMock.mockReset();
   });
 
+  it("only queries bounded numeric pagination and validates consumption records", async () => {
+    invokeMock.mockResolvedValue({
+      items: [],
+      page: 0,
+      size: 10,
+      totalElements: 0,
+      totalPages: 0,
+    });
+    await expect(api.usageEvents(0, 10)).resolves.toHaveProperty("items", []);
+    expect(invokeMock).toHaveBeenCalledWith("usage_events", {
+      page: 0,
+      size: 10,
+    });
+    invokeMock.mockClear();
+    await expect(api.usageEvents(-1, 10)).rejects.toThrow();
+    await expect(api.usageEvents(0, 101)).rejects.toThrow();
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("normalizes optional usage metadata without dropping valid ledger events", async () => {
+    const efforts = [
+      "none",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra",
+    ];
+    const event = (id: string, metadata?: Record<string, unknown>) => ({
+      id,
+      occurredAt: "2026-10-09T00:00:00Z",
+      receivedAt: "2026-10-09T00:00:01Z",
+      totalTokens: 42,
+      source: "TOKEN_USAGE_RECORD",
+      ...metadata,
+    });
+    const longestModel = `m${"x".repeat(95)}`;
+    const items = [
+      event("known", { model: "gpt-5-codex", reasoningEffort: "xhigh" }),
+      event("explicit-null", { model: null, reasoningEffort: null }),
+      event("missing-metadata"),
+      event("invalid-metadata", {
+        model: "m".repeat(97),
+        reasoningEffort: "experimental",
+      }),
+      event("longest-model", { model: longestModel, reasoningEffort: "high" }),
+      ...efforts.map((reasoningEffort, index) =>
+        event(`effort-${index}`, { model: null, reasoningEffort }),
+      ),
+    ];
+    invokeMock.mockResolvedValue({
+      items,
+      page: 4,
+      size: 10,
+      totalElements: 57,
+      totalPages: 6,
+    });
+
+    const result = await api.usageEvents(4, 10);
+
+    expect(result.items).toHaveLength(items.length);
+    expect(result.items[0]).toMatchObject({
+      id: "known",
+      model: "gpt-5-codex",
+      reasoningEffort: "xhigh",
+    });
+    expect(result.items[1]).toMatchObject({
+      id: "explicit-null",
+      model: null,
+      reasoningEffort: null,
+    });
+    expect(result.items[2]).toMatchObject({
+      id: "missing-metadata",
+      model: null,
+      reasoningEffort: null,
+    });
+    expect(result.items[3]).toMatchObject({
+      id: "invalid-metadata",
+      totalTokens: 42,
+      source: "TOKEN_USAGE_RECORD",
+      model: null,
+      reasoningEffort: null,
+    });
+    expect(result.items[4]).toMatchObject({
+      id: "longest-model",
+      model: longestModel,
+      reasoningEffort: "high",
+    });
+    expect(result.items.slice(5).map((item) => item.reasoningEffort)).toEqual(
+      efforts,
+    );
+    expect(result).toMatchObject({
+      page: 4,
+      size: 10,
+      totalElements: 57,
+      totalPages: 6,
+    });
+  });
+
+  it("rejects arbitrary text masquerading as service diagnostics", async () => {
+    invokeMock.mockResolvedValue({
+      state: "READY",
+      skippedLines: 0,
+      entries: [
+        {
+          atEpochSeconds: 1,
+          kind: "ERROR",
+          state: "ERROR",
+          reportedEvents: 0,
+          reportedTokens: 0,
+          heartbeatSent: false,
+          errorCode: "refresh_token=private-canary",
+        },
+      ],
+    });
+    await expect(api.meterRuntimeLogs()).rejects.toThrow();
+  });
+
   it("validates a status response and calls the fixed command", async () => {
     invokeMock.mockResolvedValue({
       service: "codex-quota-guard",
@@ -145,6 +265,46 @@ describe("Tauri API boundary", () => {
     expect(invokeMock).toHaveBeenCalledWith("usage_status");
     expect(invokeMock).toHaveBeenCalledWith("usage_scan");
     expect(invokeMock).toHaveBeenCalledWith("usage_pair");
+  });
+
+  it("accepts bounded scanner issue counts and rejects unsafe diagnostic keys", async () => {
+    const status = {
+      fallback: {
+        state: "UP_TO_DATE",
+        lastScannedAt: "2026-10-07T00:00:00Z",
+        lastReportedAt: null,
+        lastReportedEvents: 0,
+        issues: ["OVERSIZED_JSONL_RECORD"],
+        issueCounts: { OVERSIZED_JSONL_RECORD: 500 },
+      },
+      service: {
+        state: "NOT_INSTALLED",
+        lastScanEpochSeconds: null,
+        lastReportEpochSeconds: null,
+        reportedEvents: 0,
+        errorCode: null,
+      },
+      pairingState: "NOT_INSTALLED",
+    };
+    invokeMock.mockResolvedValue(status);
+
+    await expect(api.usageStatus()).resolves.toMatchObject({
+      fallback: { issueCounts: { OVERSIZED_JSONL_RECORD: 500 } },
+    });
+
+    invokeMock.mockResolvedValue({
+      ...status,
+      fallback: { ...status.fallback, issueCounts: { refresh_token: 1 } },
+    });
+    await expect(api.usageStatus()).rejects.toThrow();
+  });
+
+  it("allows only the fixed safe message for a rejected control-plane request", () => {
+    const safeMessage = "中央后台拒绝请求，请检查请求内容后重试。";
+    expect(getApiErrorMessage(safeMessage)).toBe(safeMessage);
+    expect(getApiErrorMessage("refresh_token=private-canary")).not.toContain(
+      "private-canary",
+    );
   });
 
   it("accepts a missing five-hour personal limit when weekly quota remains usable", async () => {

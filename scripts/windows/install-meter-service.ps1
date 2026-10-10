@@ -1,9 +1,8 @@
 #requires -Version 5.1
 [CmdletBinding()]
 param(
-    [string]$ServerUrl = 'http://192.168.0.102:8080',
+    [string]$ServerUrl = 'http://127.0.0.1:8080',
     [string]$InstallDirectory = '',
-    [string]$TargetDirectory = '',
     [string]$BinaryPath = ''
 )
 
@@ -25,21 +24,67 @@ function Test-MeterBinary([string]$Path) {
     }
 }
 
-function Write-MeterSetupStatus([string]$State, [string]$Stage) {
+function Write-MeterSetupStatus([string]$State, [string]$Stage, [string]$Reason = '') {
     $directory = Join-Path $env:APPDATA 'com.codexquotaguard.desktop'
     New-Item -ItemType Directory -Path $directory -Force | Out-Null
-    $summary = @{state = $State; stage = $Stage; at = [DateTimeOffset]::UtcNow.ToString('o')}
+    $summary = @{state = $State; stage = $Stage; reason = $Reason; at = [DateTimeOffset]::UtcNow.ToString('o')}
     [IO.File]::WriteAllText((Join-Path $directory 'meter-setup-status.json'),
         ($summary | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+}
+
+function Resolve-MeterServerUri([string]$Url) {
+    $parsed = $null
+    if (-not [Uri]::TryCreate($Url.Trim(), [UriKind]::Absolute, [ref]$parsed) -or
+        $parsed.Scheme -notin @('http', 'https') -or -not $parsed.Host -or
+        $parsed.AbsolutePath -ne '/' -or $parsed.UserInfo -or $parsed.Query -or $parsed.Fragment) {
+        throw 'ServerUrl must be an HTTP or HTTPS origin.'
+    }
+    if ($parsed.Host -eq '0.0.0.0') {
+        $builder = [UriBuilder]::new($parsed)
+        $builder.Host = '127.0.0.1'
+        $parsed = $builder.Uri
+    }
+    return $parsed
+}
+
+function Resolve-MeterInstallDirectory([string]$Requested) {
+    if (-not $Requested) {
+        $programFilesRoot = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
+        if (-not $programFilesRoot) { $programFilesRoot = $env:ProgramFiles }
+        if (-not $programFilesRoot) { throw 'Windows Program Files directory is unavailable.' }
+        $Requested = Join-Path $programFilesRoot 'CodexQuotaGuard\Meter'
+    }
+    $resolved = [IO.Path]::GetFullPath($Requested)
+    if ($resolved -eq [IO.Path]::GetPathRoot($resolved)) {
+        throw 'A drive root cannot be used as a service directory.'
+    }
+    if (-not (Test-Path -LiteralPath ([IO.Path]::GetPathRoot($resolved)) -PathType Container -ErrorAction SilentlyContinue)) {
+        throw 'The selected install drive is unavailable.'
+    }
+    return $resolved
+}
+
+function Resolve-MeterBundledBinary([string]$Requested, [string]$ScriptDirectory) {
+    if ($Requested) {
+        $resolved = [IO.Path]::GetFullPath($Requested)
+        if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) {
+            throw 'The bundled meter executable was not found.'
+        }
+        return $resolved
+    }
+    $adjacent = Join-Path $ScriptDirectory 'quota-guard-meter.exe'
+    if (Test-Path -LiteralPath $adjacent -PathType Leaf) { return [IO.Path]::GetFullPath($adjacent) }
+    return $null
 }
 
 # Loading these helpers for regression checks never touches a service or config.
 if ($MyInvocation.InvocationName -eq '.') { return }
 
 $setupStage = 'ADMIN_CHECK'
+$setupReason = ''
 trap {
-    try { Write-MeterSetupStatus 'FAILED' $setupStage } catch { }
-    Write-Host "Meter setup failed at $setupStage. See meter-setup-status.json in the app data directory."
+    try { Write-MeterSetupStatus 'FAILED' $setupStage $setupReason } catch { }
+    Write-Host "Meter setup failed at $setupStage ($setupReason). See meter-setup-status.json in the app data directory."
     exit 1
 }
 Write-MeterSetupStatus 'RUNNING' $setupStage
@@ -50,77 +95,27 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
     throw 'Run this script from an elevated Administrator PowerShell.'
 }
 
-$setupStage = 'CONFIG_VALIDATE'
-$uri = $null
-if (-not [Uri]::TryCreate($ServerUrl, [UriKind]::Absolute, [ref]$uri)) {
-    throw 'ServerUrl must be an absolute URL.'
-}
-if ($uri.Scheme -notin @('http', 'https') -or -not $uri.Host -or
-    $uri.AbsolutePath -ne '/' -or $uri.UserInfo -or $uri.Query -or $uri.Fragment) {
-    throw 'ServerUrl must be an HTTP or HTTPS origin.'
-}
-if ($uri.Host -eq '0.0.0.0') {
-    $builder = [UriBuilder]::new($uri)
-    $builder.Host = '127.0.0.1'
-    $uri = $builder.Uri
-}
+$setupStage = 'SERVER_URL_VALIDATE'
+$setupReason = 'SERVER_URL_INVALID'
+$uri = Resolve-MeterServerUri $ServerUrl
 
-$hasBuildDrive = Test-Path -LiteralPath 'D:\' -PathType Container
-if (-not $InstallDirectory) {
-    $InstallDirectory = Join-Path $env:ProgramFiles 'CodexQuotaGuard\Meter'
-}
-if (-not $TargetDirectory) {
-    $TargetDirectory = if ($hasBuildDrive) { 'D:\BuildCache\pingche\meter-target' }
-        else { Join-Path $env:TEMP 'CodexQuotaGuard-MeterBuild' }
-}
-$repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
-$meterManifest = Join-Path $repositoryRoot 'apps\client\meter\Cargo.toml'
-$target = [IO.Path]::GetFullPath($TargetDirectory)
-$install = [IO.Path]::GetFullPath($InstallDirectory)
-if ($install -eq [IO.Path]::GetPathRoot($install) -or $target -eq [IO.Path]::GetPathRoot($target)) {
-    throw 'A drive root cannot be used as a service or build directory.'
-}
-if (-not (Test-Path -LiteralPath ([IO.Path]::GetPathRoot($install)) -PathType Container)) {
-    throw 'The selected install drive is unavailable.'
-}
+$setupStage = 'INSTALL_DIRECTORY'
+$setupReason = 'INSTALL_DIRECTORY_UNAVAILABLE'
+$install = Resolve-MeterInstallDirectory $InstallDirectory
 
-if (-not $BinaryPath -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'quota-guard-meter.exe') -PathType Leaf)) {
-    $BinaryPath = Join-Path $PSScriptRoot 'quota-guard-meter.exe'
+$setupStage = 'SOURCE_BINARY'
+$setupReason = 'BUNDLED_BINARY_MISSING'
+$sourceBinary = Resolve-MeterBundledBinary $BinaryPath $PSScriptRoot
+if (-not $sourceBinary) {
+    throw 'No bundled meter executable was found. Source-tree operators must build it first and pass -BinaryPath.'
 }
-if (-not $BinaryPath) {
-    if (-not (Test-Path -LiteralPath $meterManifest -PathType Leaf)) {
-        throw 'No bundled Rust meter executable or source manifest was found.'
-    }
-    $cargo = Get-Command cargo.exe -ErrorAction Stop | Select-Object -First 1
-    New-Item -ItemType Directory -Path $target -Force | Out-Null
-    $previous = [Environment]::GetEnvironmentVariable('CARGO_TARGET_DIR', 'Process')
-    $previousRustFlags = [Environment]::GetEnvironmentVariable('RUSTFLAGS', 'Process')
-    $previousEncodedFlags = [Environment]::GetEnvironmentVariable('CARGO_ENCODED_RUSTFLAGS', 'Process')
-    try {
-        $env:CARGO_TARGET_DIR = $target
-        if ($previousEncodedFlags) {
-            $env:CARGO_ENCODED_RUSTFLAGS = $previousEncodedFlags + [char]31 + '-C' + [char]31 + 'target-feature=+crt-static'
-        } else {
-            $env:RUSTFLAGS = ($previousRustFlags + ' -C target-feature=+crt-static').Trim()
-        }
-        Push-Location -LiteralPath $repositoryRoot
-        try {
-            & $cargo.Source build --offline --release --manifest-path $meterManifest
-            if ($LASTEXITCODE -ne 0) { throw 'Rust meter build failed.' }
-        } finally { Pop-Location }
-    } finally {
-        [Environment]::SetEnvironmentVariable('CARGO_TARGET_DIR', $previous, 'Process')
-        [Environment]::SetEnvironmentVariable('RUSTFLAGS', $previousRustFlags, 'Process')
-        [Environment]::SetEnvironmentVariable('CARGO_ENCODED_RUSTFLAGS', $previousEncodedFlags, 'Process')
-    }
-    $BinaryPath = Join-Path $target 'release\quota-guard-meter.exe'
-}
-$sourceBinary = [IO.Path]::GetFullPath($BinaryPath)
+$sourceBinary = [IO.Path]::GetFullPath($sourceBinary)
 if (-not (Test-Path -LiteralPath $sourceBinary -PathType Leaf)) {
     throw 'The Rust meter executable was not found.'
 }
 
 $setupStage = 'BINARY_CHECK'
+$setupReason = ''
 Test-MeterBinary $sourceBinary
 
 $setupStage = 'PREPARE_FILES'
@@ -145,6 +140,7 @@ $configPath = Join-Path $install 'meter-config.json'
 $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
 $existingConfiguration = $null
 if ($service) {
+    $setupStage = 'EXISTING_SERVICE_CHECK'
     $registered = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
     if ($registered.PathName -notmatch '^\s*"?(.+?quota-guard-meter\.exe)"?\s+service\s+--config\s+(?:"([^"]+)"|(.+?))\s*$') {
         throw 'The existing meter service has an unexpected command line.'
@@ -153,11 +149,15 @@ if ($service) {
     if ((Get-Item -LiteralPath $existingConfigPath).Length -gt 8192) {
         throw 'The existing meter configuration is invalid.'
     }
+    $setupReason = 'EXISTING_CONFIGURATION_INVALID'
     $existingConfiguration = Get-Content -LiteralPath $existingConfigPath -Raw | ConvertFrom-Json
+    $setupReason = 'WINDOWS_PROFILE_MISMATCH'
     if ([IO.Path]::GetDirectoryName([string]$existingConfiguration.statusFile) -ne [IO.Path]::GetFullPath($appData) -or
         [string]$existingConfiguration.deviceId -ne $deviceId.ToString()) {
         throw 'This meter service belongs to another Windows profile or device.'
     }
+    $setupStage = 'PREPARE_FILES'
+    $setupReason = ''
 }
 if ($service -and $service.Status -ne 'Stopped') {
     Stop-Service -Name $serviceName -ErrorAction Stop

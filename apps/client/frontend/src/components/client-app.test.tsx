@@ -6,13 +6,20 @@ import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type EventCallback } from "@tauri-apps/api/event";
+import { toast } from "sonner";
 
 import { ClientApp } from "@/components/client-app";
 import i18n from "@/lib/i18n";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
+vi.mock("sonner", () => ({
+  toast: { success: vi.fn(), warning: vi.fn(), error: vi.fn() },
+}));
 
 const invokeMock = vi.mocked(invoke);
+const listenMock = vi.mocked(listen);
 
 const signedOut = {
   authenticated: false,
@@ -55,17 +62,22 @@ function renderClientApp() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
-  return render(
+  const result = render(
     <I18nextProvider i18n={i18n}>
       <QueryClientProvider client={queryClient}>
         <ClientApp />
       </QueryClientProvider>
     </I18nextProvider>,
   );
+  return { ...result, queryClient };
 }
 
 describe("ClientApp system session gate", () => {
   beforeEach(() => {
+    listenMock.mockReset();
+    listenMock.mockResolvedValue(vi.fn());
+    vi.mocked(toast.warning).mockClear();
+    vi.mocked(toast.success).mockClear();
     invokeMock.mockImplementation(async (command) => {
       switch (command) {
         case "system_current":
@@ -86,12 +98,30 @@ describe("ClientApp system session gate", () => {
           return { service: "codex-quota-guard", state: "online" };
         case "quota_overview":
           return quotaOverview;
+        case "usage_events":
+          return {
+            items: [],
+            page: 0,
+            size: 10,
+            totalElements: 0,
+            totalPages: 0,
+          };
         case "usage_status":
           return {
-            fallback: { state: "UP_TO_DATE", lastScannedAt: "2026-10-07T00:00:00Z",
-              lastReportedAt: null, lastReportedEvents: 0, issues: [] },
-            service: { state: "NOT_INSTALLED", lastScanEpochSeconds: null,
-              lastReportEpochSeconds: null, reportedEvents: 0, errorCode: null },
+            fallback: {
+              state: "UP_TO_DATE",
+              lastScannedAt: "2026-10-07T00:00:00Z",
+              lastReportedAt: null,
+              lastReportedEvents: 0,
+              issues: [],
+            },
+            service: {
+              state: "NOT_INSTALLED",
+              lastScanEpochSeconds: null,
+              lastReportEpochSeconds: null,
+              reportedEvents: 0,
+              errorCode: null,
+            },
             pairingState: "NOT_INSTALLED",
           };
         case "codex_rate_limits":
@@ -106,9 +136,54 @@ describe("ClientApp system session gate", () => {
     renderClientApp();
 
     expect(await screen.findByText("登录 Quota Guard")).toBeVisible();
-    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("meter_service_ensure"));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("meter_service_ensure"),
+    );
     expect(screen.queryByText("登录 Codex")).toBeNull();
     expect(screen.queryByText("上传 Codex 凭证")).toBeNull();
+  });
+
+  it("shows signed-out tray scan feedback without bypassing the login gate", async () => {
+    renderClientApp();
+    await screen.findByText("登录 Quota Guard");
+    const callback = listenMock.mock.calls[0][1] as EventCallback<unknown>;
+    callback({
+      event: "cqg-tray-feedback",
+      id: 1,
+      payload: { action: "scan", outcome: "signed_out" },
+    });
+    await waitFor(() =>
+      expect(toast.warning).toHaveBeenCalledWith(
+        "请先登录系统账户，再扫描用量。",
+      ),
+    );
+    expect(screen.queryByRole("heading", { name: "额度仪表盘" })).toBeNull();
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "system_login",
+      expect.anything(),
+    );
+  });
+
+  it("refreshes quota, ledger and diagnostics after a tray action", async () => {
+    const { queryClient } = renderClientApp();
+    await screen.findByText("登录 Quota Guard");
+    const invalidation = vi.spyOn(queryClient, "invalidateQueries");
+    const callback = listenMock.mock.calls[0][1] as EventCallback<unknown>;
+    callback({
+      event: "cqg-tray-feedback",
+      id: 1,
+      payload: { action: "meter", outcome: "running" },
+    });
+    expect(toast.success).toHaveBeenCalledWith("计费服务正在运行。");
+    for (const key of [
+      "usage-status",
+      "quota-overview",
+      "usage-events",
+      "meter-runtime-logs",
+    ]) {
+      expect(invalidation).toHaveBeenCalledWith({ queryKey: [key] });
+    }
+    expect(invokeMock).not.toHaveBeenCalledWith("system_logout");
   });
 
   it("toggles password visibility without changing the entered value", async () => {
@@ -131,14 +206,21 @@ describe("ClientApp system session gate", () => {
     render(
       <StrictMode>
         <I18nextProvider i18n={i18n}>
-          <QueryClientProvider client={queryClient}><ClientApp /></QueryClientProvider>
+          <QueryClientProvider client={queryClient}>
+            <ClientApp />
+          </QueryClientProvider>
         </I18nextProvider>
       </StrictMode>,
     );
     await screen.findByText("登录 Quota Guard");
-    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("meter_service_ensure"));
-    expect(invokeMock.mock.calls.filter(([command]) => command === "meter_service_ensure"))
-      .toHaveLength(1);
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("meter_service_ensure"),
+    );
+    expect(
+      invokeMock.mock.calls.filter(
+        ([command]) => command === "meter_service_ensure",
+      ),
+    ).toHaveLength(1);
   });
 
   it("opens the personal quota dashboard only after the system login succeeds", async () => {

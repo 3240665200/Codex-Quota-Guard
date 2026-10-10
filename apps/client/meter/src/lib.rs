@@ -1,7 +1,7 @@
 use chrono::{DateTime, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -12,6 +12,7 @@ use audit::{AuditKind, AuditLog};
 
 const MAX_RECORD_BYTES: usize = 4 * 1024 * 1024;
 const PREFIX_BYTES: usize = 4096;
+const MAX_CACHED_TURNS: usize = 256;
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -142,11 +143,101 @@ pub struct ScanState {
     files: BTreeMap<String, FileCursor>,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 struct FileCursor {
     offset: u64,
     prefix_len: usize,
     prefix_hash: String,
+    #[serde(default)]
+    current_metadata: TurnMetadata,
+    #[serde(default)]
+    turn_metadata: BTreeMap<String, TurnMetadata>,
+    #[serde(default)]
+    turn_metadata_order: VecDeque<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+struct TurnMetadata {
+    model: Option<String>,
+    reasoning_effort: Option<String>,
+}
+
+#[derive(Default)]
+struct MetadataOverrides {
+    model: Option<Option<String>>,
+    reasoning_effort: Option<Option<String>>,
+}
+
+impl FileCursor {
+    fn remember_turn_metadata(&mut self, turn_id: &str, metadata: TurnMetadata) {
+        let turn_hash = hex_digest(turn_id.as_bytes());
+        self.turn_metadata_order
+            .retain(|cached_hash| cached_hash != &turn_hash);
+        self.turn_metadata
+            .insert(turn_hash.clone(), metadata.sanitized());
+        self.turn_metadata_order.push_back(turn_hash);
+        while self.turn_metadata_order.len() > MAX_CACHED_TURNS {
+            if let Some(evicted_hash) = self.turn_metadata_order.pop_front() {
+                self.turn_metadata.remove(&evicted_hash);
+            }
+        }
+    }
+
+    fn sanitize_metadata_cache(&mut self) {
+        self.current_metadata = self.current_metadata.sanitized();
+        let stored_metadata = std::mem::take(&mut self.turn_metadata);
+        let stored_order = std::mem::take(&mut self.turn_metadata_order);
+        let mut turn_metadata = BTreeMap::new();
+        let mut turn_metadata_order = VecDeque::new();
+
+        for turn_hash in stored_order {
+            if is_turn_hash(&turn_hash) && !turn_metadata.contains_key(&turn_hash) {
+                if let Some(metadata) = stored_metadata.get(&turn_hash) {
+                    turn_metadata.insert(turn_hash.clone(), metadata.sanitized());
+                    turn_metadata_order.push_back(turn_hash);
+                }
+            }
+        }
+        for (turn_hash, metadata) in stored_metadata {
+            if is_turn_hash(&turn_hash) && !turn_metadata.contains_key(&turn_hash) {
+                turn_metadata.insert(turn_hash.clone(), metadata.sanitized());
+                turn_metadata_order.push_back(turn_hash);
+            }
+        }
+        while turn_metadata_order.len() > MAX_CACHED_TURNS {
+            if let Some(evicted_hash) = turn_metadata_order.pop_front() {
+                turn_metadata.remove(&evicted_hash);
+            }
+        }
+
+        self.turn_metadata = turn_metadata;
+        self.turn_metadata_order = turn_metadata_order;
+    }
+}
+
+impl ScanState {
+    fn sanitize_metadata_caches(&mut self) {
+        for cursor in self.files.values_mut() {
+            cursor.sanitize_metadata_cache();
+        }
+    }
+}
+
+impl TurnMetadata {
+    fn sanitized(&self) -> Self {
+        Self {
+            model: self
+                .model
+                .as_deref()
+                .and_then(validate_model)
+                .map(str::to_owned),
+            reasoning_effort: self
+                .reasoning_effort
+                .as_deref()
+                .and_then(validate_reasoning_effort)
+                .map(str::to_owned),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -156,6 +247,10 @@ pub struct UsageEvent {
     pub occurred_at: String,
     pub total_tokens: u64,
     pub source: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Debug)]
@@ -167,6 +262,7 @@ pub struct ScanOutcome {
 pub fn scan(codex_home: &Path, previous: &ScanState) -> Result<ScanOutcome, String> {
     let sessions = codex_home.join("sessions");
     let mut next_state = previous.clone();
+    next_state.sanitize_metadata_caches();
     let mut events = Vec::new();
     if !sessions.is_dir() {
         return Ok(ScanOutcome { events, next_state });
@@ -184,7 +280,7 @@ pub fn scan(codex_home: &Path, previous: &ScanState) -> Result<ScanOutcome, Stri
         }
         let prefix_len = (metadata.len() as usize).min(PREFIX_BYTES);
         let prefix_hash = hash_file_prefix(&file, prefix_len)?;
-        let prior = previous.files.get(&key);
+        let prior = next_state.files.get(&key);
         let start = match prior {
             Some(cursor)
                 if metadata.len() >= cursor.offset
@@ -202,6 +298,12 @@ pub fn scan(codex_home: &Path, previous: &ScanState) -> Result<ScanOutcome, Stri
         } else {
             (prefix_len, prefix_hash)
         };
+        let mut cursor = if start == 0 {
+            FileCursor::default()
+        } else {
+            prior.cloned().unwrap_or_default()
+        };
+        cursor.sanitize_metadata_cache();
         let mut input = File::open(&file).map_err(|_| "SESSION_READ_UNAVAILABLE")?;
         input
             .seek(SeekFrom::Start(start))
@@ -224,19 +326,15 @@ pub fn scan(codex_home: &Path, previous: &ScanState) -> Result<ScanOutcome, Stri
             while matches!(line.last(), Some(b'\n' | b'\r')) {
                 line.pop();
             }
-            if let Some(event) = parse_direct_record(&line) {
+            if let Some(event) = process_session_record(&line, &mut cursor) {
                 events.push(event);
             }
         }
 
-        next_state.files.insert(
-            key,
-            FileCursor {
-                offset: complete_offset,
-                prefix_len: retained_prefix_len,
-                prefix_hash: retained_prefix_hash,
-            },
-        );
+        cursor.offset = complete_offset;
+        cursor.prefix_len = retained_prefix_len;
+        cursor.prefix_hash = retained_prefix_hash;
+        next_state.files.insert(key, cursor);
     }
     Ok(ScanOutcome { events, next_state })
 }
@@ -273,6 +371,7 @@ pub fn baseline_codex_home(codex_home: &Path) -> Result<ScanState, String> {
                 offset: metadata.len(),
                 prefix_len,
                 prefix_hash: hash_file_prefix(&file, prefix_len)?,
+                ..FileCursor::default()
             },
         );
     }
@@ -313,6 +412,48 @@ fn hash_file_prefix(file: &Path, length: usize) -> Result<String, String> {
 
 fn parse_direct_record(line: &[u8]) -> Option<UsageEvent> {
     let row: serde_json::Value = serde_json::from_slice(line).ok()?;
+    parse_token_usage_record(&row, line, None)
+}
+
+fn process_session_record(line: &[u8], cursor: &mut FileCursor) -> Option<UsageEvent> {
+    let row: serde_json::Value = serde_json::from_slice(line).ok()?;
+    match row.get("type")?.as_str()? {
+        "turn_context" => {
+            update_turn_context(&row, cursor);
+            None
+        }
+        "token_usage_record" => {
+            let mut event = parse_direct_record(line)?;
+            let metadata = metadata_for_usage(row.get("payload")?, Some(cursor));
+            event.model = metadata.model;
+            event.reasoning_effort = metadata.reasoning_effort;
+            Some(event)
+        }
+        _ => None,
+    }
+}
+
+fn update_turn_context(row: &serde_json::Value, cursor: &mut FileCursor) {
+    let Some(payload) = row.get("payload") else {
+        cursor.current_metadata = TurnMetadata::default();
+        return;
+    };
+    let metadata = metadata_from_payload(payload);
+    cursor.current_metadata = metadata.clone();
+    if let Some(turn_id) = payload
+        .get("turn_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|turn_id| !turn_id.is_empty())
+    {
+        cursor.remember_turn_metadata(turn_id, metadata);
+    }
+}
+
+fn parse_token_usage_record(
+    row: &serde_json::Value,
+    line: &[u8],
+    cursor: Option<&FileCursor>,
+) -> Option<UsageEvent> {
     if row.get("type")?.as_str()? != "token_usage_record" {
         return None;
     }
@@ -331,12 +472,96 @@ fn parse_direct_record(line: &[u8]) -> Option<UsageEvent> {
         .filter(|id| !id.is_empty())
         .map(|id| format!("response:{id}"))
         .unwrap_or_else(|| format!("record:{}", String::from_utf8_lossy(line)));
+    let metadata = metadata_for_usage(payload, cursor);
     Some(UsageEvent {
         event_id: format!("codex-local-usage:v1:{}", hex_digest(identity.as_bytes())),
         occurred_at: timestamp.to_owned(),
         total_tokens: tokens,
         source: "TOKEN_USAGE_RECORD".to_owned(),
+        model: metadata.model,
+        reasoning_effort: metadata.reasoning_effort,
     })
+}
+
+fn metadata_for_usage(payload: &serde_json::Value, cursor: Option<&FileCursor>) -> TurnMetadata {
+    let mut metadata = match payload.get("turn_id") {
+        Some(turn_id) => turn_id
+            .as_str()
+            .filter(|turn_id| !turn_id.is_empty())
+            .and_then(|turn_id| {
+                let turn_hash = hex_digest(turn_id.as_bytes());
+                cursor?.turn_metadata.get(&turn_hash).cloned()
+            })
+            .unwrap_or_default(),
+        None => cursor
+            .map(|cursor| cursor.current_metadata.clone())
+            .unwrap_or_default(),
+    };
+    let overrides = metadata_overrides(payload);
+    if let Some(model) = overrides.model {
+        metadata.model = model;
+    }
+    if let Some(reasoning_effort) = overrides.reasoning_effort {
+        metadata.reasoning_effort = reasoning_effort;
+    }
+    metadata.sanitized()
+}
+
+fn metadata_from_payload(payload: &serde_json::Value) -> TurnMetadata {
+    let overrides = metadata_overrides(payload);
+    TurnMetadata {
+        model: overrides.model.flatten(),
+        reasoning_effort: overrides.reasoning_effort.flatten(),
+    }
+    .sanitized()
+}
+
+fn metadata_overrides(payload: &serde_json::Value) -> MetadataOverrides {
+    let model = payload
+        .get("model")
+        .map(|value| value.as_str().and_then(validate_model).map(str::to_owned));
+    let reasoning_effort = payload
+        .get("reasoning_effort")
+        .or_else(|| payload.get("effort"))
+        .map(|value| {
+            value
+                .as_str()
+                .and_then(validate_reasoning_effort)
+                .map(str::to_owned)
+        });
+    MetadataOverrides {
+        model,
+        reasoning_effort,
+    }
+}
+
+fn validate_model(value: &str) -> Option<&str> {
+    let bytes = value.as_bytes();
+    let (&first, rest) = bytes.split_first()?;
+    if bytes.len() > 96
+        || !first.is_ascii_alphanumeric()
+        || !rest
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._:/-".contains(byte))
+    {
+        return None;
+    }
+    Some(value)
+}
+
+fn validate_reasoning_effort(value: &str) -> Option<&str> {
+    matches!(
+        value,
+        "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra"
+    )
+    .then_some(value)
+}
+
+fn is_turn_hash(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn hex_digest(bytes: &[u8]) -> String {
@@ -354,9 +579,9 @@ pub fn load_state(path: &Path) -> Result<Option<ScanState>, String> {
     if bytes.len() > 16 * 1024 * 1024 {
         return Err("METER_STATE_TOO_LARGE".into());
     }
-    serde_json::from_slice(&bytes)
-        .map(Some)
-        .map_err(|_| "METER_STATE_INVALID".into())
+    let mut state: ScanState = serde_json::from_slice(&bytes).map_err(|_| "METER_STATE_INVALID")?;
+    state.sanitize_metadata_caches();
+    Ok(Some(state))
 }
 
 pub fn save_state(path: &Path, state: &ScanState) -> Result<(), String> {
@@ -728,6 +953,164 @@ mod tests {
 
     fn record(response_id: &str, tokens: u64) -> String {
         record_at(response_id, tokens, &TEST_TIMESTAMP)
+    }
+
+    #[test]
+    fn metadata_is_turn_scoped_persistent_optional_and_does_not_change_event_identity() {
+        let root = TestDir::new();
+        let home = root.path().join(".codex");
+        fs::create_dir_all(home.join("sessions")).unwrap();
+        let file = home.join("sessions/run.jsonl");
+        fs::write(&file, concat!(
+            "{\"type\":\"turn_context\",\"payload\":{\"turn_id\":\"a\",\"model\":\"gpt-6.1-sol\",\"effort\":\"max\"}}\n",
+            "{\"type\":\"turn_context\",\"payload\":{\"turn_id\":\"b\",\"model\":\"gpt-6-sol\",\"effort\":\"high\"}}\n")).unwrap();
+        let first = scan(&home, &ScanState::default()).unwrap();
+        let restored: ScanState =
+            serde_json::from_slice(&serde_json::to_vec(&first.next_state).unwrap()).unwrap();
+        let usage = record("metadata-response", 15)
+            .replace("\"response_id\":", "\"turn_id\":\"a\",\"response_id\":");
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&file)
+            .unwrap()
+            .write_all(usage.as_bytes())
+            .unwrap();
+        let event = &scan(&home, &restored).unwrap().events[0];
+        assert_eq!(event.model.as_deref(), Some("gpt-6.1-sol"));
+        assert_eq!(event.reasoning_effort.as_deref(), Some("max"));
+        assert_eq!(event.total_tokens, 15);
+        let plain = parse_direct_record(usage.as_bytes()).unwrap();
+        assert_eq!(plain.event_id, event.event_id);
+        assert_eq!(plain.model, None);
+    }
+
+    #[test]
+    fn direct_metadata_overrides_turn_metadata_and_reasoning_effort_wins_over_effort() {
+        let root = TestDir::new();
+        let home = root.path().join(".codex");
+        fs::create_dir_all(home.join("sessions")).unwrap();
+        let log = home.join("sessions/run.jsonl");
+        let usage = record("direct-response", 21)
+            .replace("\"response_id\":", "\"turn_id\":\"turn-1\",\"response_id\":")
+            .replace(
+                "\"usage\":",
+                "\"model\":\"vendor/model:custom\",\"reasoning_effort\":\"xhigh\",\"effort\":\"max\",\"usage\":",
+            );
+        let effort_alias = record("effort-alias-response", 22)
+            .replace(
+                "\"response_id\":",
+                "\"turn_id\":\"turn-1\",\"response_id\":",
+            )
+            .replace("\"usage\":", "\"effort\":\"ultra\",\"usage\":");
+        fs::write(
+            &log,
+            concat!("{\"type\":\"turn_context\",\"payload\":{\"turn_id\":\"turn-1\",\"model\":\"gpt-6.1-sol\",\"effort\":\"low\"}}\n")
+                .to_owned()
+                + &usage
+                + &effort_alias,
+        )
+        .unwrap();
+
+        let outcome = scan(&home, &ScanState::default()).unwrap();
+        assert_eq!(outcome.events.len(), 2);
+        assert_eq!(
+            outcome.events[0].model.as_deref(),
+            Some("vendor/model:custom")
+        );
+        assert_eq!(outcome.events[0].reasoning_effort.as_deref(), Some("xhigh"));
+        assert_eq!(outcome.events[0].total_tokens, 21);
+        assert_eq!(outcome.events[1].model.as_deref(), Some("gpt-6.1-sol"));
+        assert_eq!(outcome.events[1].reasoning_effort.as_deref(), Some("ultra"));
+        assert_eq!(outcome.events[1].total_tokens, 22);
+    }
+
+    #[test]
+    fn missing_or_unsupported_metadata_stays_null_without_dropping_token_events() {
+        let root = TestDir::new();
+        let home = root.path().join(".codex");
+        fs::create_dir_all(home.join("sessions")).unwrap();
+        let log = home.join("sessions/run.jsonl");
+        let invalid = record("invalid-direct", 11)
+            .replace("\"response_id\":", "\"turn_id\":\"known\",\"response_id\":")
+            .replace(
+                "\"usage\":",
+                "\"model\":\"gpt 6.1\",\"effort\":\"thinking\",\"usage\":",
+            );
+        let unknown = record("unknown-turn", 12).replace(
+            "\"response_id\":",
+            "\"turn_id\":\"not-cached\",\"response_id\":",
+        );
+        let without_turn_id = record("current-turn", 13);
+        fs::write(
+            &log,
+            concat!("{\"type\":\"turn_context\",\"payload\":{\"turn_id\":\"known\",\"model\":\"gpt-6.1-sol\",\"effort\":\"max\"}}\n")
+                .to_owned()
+                + &invalid
+                + &unknown
+                + &without_turn_id,
+        )
+        .unwrap();
+
+        let events = scan(&home, &ScanState::default()).unwrap().events;
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].total_tokens, 11);
+        assert_eq!(events[0].model, None);
+        assert_eq!(events[0].reasoning_effort, None);
+        assert_eq!(events[1].total_tokens, 12);
+        assert_eq!(events[1].model, None);
+        assert_eq!(events[1].reasoning_effort, None);
+        assert_eq!(events[2].total_tokens, 13);
+        assert_eq!(events[2].model.as_deref(), Some("gpt-6.1-sol"));
+        assert_eq!(events[2].reasoning_effort.as_deref(), Some("max"));
+
+        let json = serde_json::to_value(&events[1]).unwrap();
+        assert!(json["model"].is_null());
+        assert!(json["reasoningEffort"].is_null());
+        assert!(json.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn old_file_cursors_deserialize_without_metadata() {
+        let state: ScanState = serde_json::from_str(
+            r#"{"files":{"run.jsonl":{"offset":12,"prefix_len":8,"prefix_hash":"old-hash"}}}"#,
+        )
+        .unwrap();
+        let cursor = &state.files["run.jsonl"];
+        assert_eq!(cursor.offset, 12);
+        assert_eq!(cursor.current_metadata, TurnMetadata::default());
+        assert!(cursor.turn_metadata.is_empty());
+        assert!(cursor.turn_metadata_order.is_empty());
+    }
+
+    #[test]
+    fn turn_metadata_cache_is_bounded_and_keeps_only_hashed_turn_ids() {
+        let root = TestDir::new();
+        let home = root.path().join(".codex");
+        fs::create_dir_all(home.join("sessions")).unwrap();
+        let log = home.join("sessions/run.jsonl");
+        let contexts = (0..MAX_CACHED_TURNS + 1)
+            .map(|index| {
+                format!(
+                    "{{\"type\":\"turn_context\",\"payload\":{{\"turn_id\":\"turn-{index}\",\"model\":\"gpt-6.1-sol\",\"effort\":\"max\"}}}}\n"
+                )
+            })
+            .collect::<String>();
+        fs::write(&log, contexts).unwrap();
+
+        let state = scan(&home, &ScanState::default()).unwrap().next_state;
+        let cursor = &state.files["run.jsonl"];
+        assert_eq!(cursor.turn_metadata.len(), MAX_CACHED_TURNS);
+        assert_eq!(cursor.turn_metadata_order.len(), MAX_CACHED_TURNS);
+        assert!(cursor
+            .turn_metadata
+            .keys()
+            .all(|turn_hash| is_turn_hash(turn_hash)));
+        assert!(!cursor.turn_metadata.contains_key(&hex_digest(b"turn-0")));
+        assert!(cursor.turn_metadata.contains_key(&hex_digest(b"turn-256")));
+        assert_eq!(
+            cursor.current_metadata.model.as_deref(),
+            Some("gpt-6.1-sol")
+        );
     }
 
     fn record_at(response_id: &str, tokens: u64, timestamp: &str) -> String {
@@ -1272,6 +1655,8 @@ mod tests {
             occurred_at: "2026-10-07T00:00:00Z".into(),
             total_tokens: 20,
             source: "TOKEN_USAGE_RECORD".into(),
+            model: None,
+            reasoning_effort: None,
         };
         let client = reqwest::blocking::Client::builder()
             .no_proxy()

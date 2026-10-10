@@ -26,6 +26,18 @@ class LocalApiSecurityIntegrationTest {
     private MockMvc mockMvc;
 
     @Test
+    void ledgerAndRuntimeLogsRequireBothDesktopBearerAndProductLogin() throws Exception {
+        for (String path : java.util.List.of("/api/v1/usage/events", "/api/v1/usage/logs")) {
+            mockMvc.perform(get(path)).andExpect(status().isUnauthorized());
+            mockMvc.perform(get(path).header(HttpHeaders.AUTHORIZATION, "Bearer " + TOKEN))
+                    .andExpect(status().isUnauthorized());
+        }
+        mockMvc.perform(get("/api/v1/usage/events?page=-1")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + TOKEN))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
     void onlyServesTheStatusEndpointToTheDesktopProcessWithItsBearerToken() throws Exception {
         mockMvc.perform(get("/api/v1/status"))
                 .andExpect(status().isUnauthorized());

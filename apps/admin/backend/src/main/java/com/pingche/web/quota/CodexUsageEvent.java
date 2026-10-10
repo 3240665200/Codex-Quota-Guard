@@ -34,6 +34,12 @@ public class CodexUsageEvent {
     @Column(nullable = false, length = 48)
     private String source;
 
+    @Column(length = 96)
+    private String model;
+
+    @Column(name = "reasoning_effort", length = 24)
+    private String reasoningEffort;
+
     protected CodexUsageEvent() { }
 
     public CodexUsageEvent(String id, UUID userId,
@@ -43,6 +49,12 @@ public class CodexUsageEvent {
 
     public CodexUsageEvent(String id, UUID userId, UUID teamId,
             long totalTokens, Instant occurredAt, Instant receivedAt, String source) {
+        this(id, userId, teamId, totalTokens, occurredAt, receivedAt, source, null, null);
+    }
+
+    public CodexUsageEvent(String id, UUID userId, UUID teamId,
+            long totalTokens, Instant occurredAt, Instant receivedAt, String source,
+            String model, String reasoningEffort) {
         this.id = id;
         this.userId = userId;
         this.teamId = teamId;
@@ -50,6 +62,8 @@ public class CodexUsageEvent {
         this.occurredAt = occurredAt;
         this.receivedAt = receivedAt;
         this.source = source;
+        this.model = model;
+        this.reasoningEffort = reasoningEffort;
     }
 
     public String getId() { return id; }
@@ -59,4 +73,6 @@ public class CodexUsageEvent {
     public Instant getOccurredAt() { return occurredAt; }
     public Instant getReceivedAt() { return receivedAt; }
     public String getSource() { return source; }
+    public String getModel() { return model; }
+    public String getReasoningEffort() { return reasoningEffort; }
 }

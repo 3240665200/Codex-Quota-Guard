@@ -21,6 +21,10 @@ public interface ControlPlaneGateway {
 
     PersonalQuotaOverview quotaOverview(String accessToken);
 
+    default UserUsageEventPage usageEvents(String accessToken, int page, int size) {
+        throw ControlPlaneException.unavailable();
+    }
+
     /** One-time device-scoped reporting credential, consumed only by the local pairing writer. */
     default MeterEnrollment enrollMeter(String accessToken, UUID deviceId) {
         throw ControlPlaneException.unavailable();

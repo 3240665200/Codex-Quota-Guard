@@ -346,11 +346,12 @@ dependencies = [
 
 [[package]]
 name = "codex-quota-guard"
-version = "0.2.12"
+version = "0.2.18"
 dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "thiserror 2.0.20",

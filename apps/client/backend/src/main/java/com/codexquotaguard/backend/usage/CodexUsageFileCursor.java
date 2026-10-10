@@ -15,7 +15,9 @@ public record CodexUsageFileCursor(
         long nextByteOffset,
         boolean directUsageRecordObserved,
         CodexCumulativeUsage cumulativeUsage,
-        List<CodexPendingUsageEvent> pendingFallbackEvents
+        List<CodexPendingUsageEvent> pendingFallbackEvents,
+        CodexExecutionContext currentContext,
+        java.util.Map<String, CodexExecutionContext> turnContexts
 ) {
 
     public CodexUsageFileCursor {
@@ -28,6 +30,14 @@ public record CodexUsageFileCursor(
             throw new IllegalArgumentException("nextByteOffset must not be negative.");
         }
         pendingFallbackEvents = List.copyOf(Objects.requireNonNull(pendingFallbackEvents, "pendingFallbackEvents is required."));
+        turnContexts = java.util.Collections.unmodifiableMap(new java.util.LinkedHashMap<>(turnContexts == null ? java.util.Map.of() : turnContexts));
+    }
+
+    public CodexUsageFileCursor(String fileIdentityDigest, int prefixLength, String prefixDigest, long nextByteOffset,
+            boolean directUsageRecordObserved, CodexCumulativeUsage cumulativeUsage,
+            List<CodexPendingUsageEvent> pendingFallbackEvents) {
+        this(fileIdentityDigest, prefixLength, prefixDigest, nextByteOffset, directUsageRecordObserved,
+                cumulativeUsage, pendingFallbackEvents, null, java.util.Map.of());
     }
 
     private static void requireText(String value, String name) {

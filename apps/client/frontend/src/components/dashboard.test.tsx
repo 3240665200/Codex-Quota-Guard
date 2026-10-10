@@ -87,6 +87,14 @@ describe("Dashboard", () => {
           return status;
         case "quota_overview":
           return quota;
+        case "usage_events":
+          return {
+            items: [],
+            page: 0,
+            size: 10,
+            totalElements: 0,
+            totalPages: 0,
+          };
         case "codex_rate_limits":
           return {
             planType: "pro",
@@ -171,6 +179,7 @@ describe("Dashboard", () => {
         "quota_overview",
         "codex_rate_limits",
         "usage_status",
+        "usage_events",
       ]),
     );
   });

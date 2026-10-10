@@ -28,6 +28,23 @@ class CodexUsageReportServiceTest {
             events, overview, Clock.fixed(NOW, ZoneOffset.UTC));
 
     @Test
+    void persistsOptionalModelMetadataWithoutChangingUsageDeduplication() {
+        UUID userId = UUID.randomUUID();
+        activeUser(userId);
+        var event = new CodexUsageReportRequest.Event(EVENT_ID, NOW, 120,
+                CodexUsageReportRequest.Source.TOKEN_USAGE_RECORD, "gpt-6.1-sol", "max");
+        service.report(userId, new CodexUsageReportRequest(List.of(event, event)));
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<CodexUsageEvent>> captor = ArgumentCaptor.forClass(List.class);
+        verify(events).saveAllAndFlush(captor.capture());
+        org.assertj.core.api.Assertions.assertThat(captor.getValue()).hasSize(1);
+        var stored = captor.getValue().get(0);
+        org.assertj.core.api.Assertions.assertThat(stored.getModel()).isEqualTo("gpt-6.1-sol");
+        org.assertj.core.api.Assertions.assertThat(stored.getReasoningEffort()).isEqualTo("max");
+        org.assertj.core.api.Assertions.assertThat(stored.getTotalTokens()).isEqualTo(120);
+    }
+
+    @Test
     void deduplicatesRepeatedLocalEventWithinOneReport() {
         UUID userId = UUID.randomUUID();
         activeUser(userId);

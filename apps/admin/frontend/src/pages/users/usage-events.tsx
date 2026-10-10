@@ -20,6 +20,10 @@ const columns: TableColumnsType<UsageEvent> = [
   { title: '来源', dataIndex: 'source',
     render: (value: UsageEvent['source']) => value === 'TOKEN_USAGE_RECORD'
       ? 'Codex 用量记录' : '旧日志累计差值' },
+  { title: '模型名称', dataIndex: 'model', width: 190, ellipsis: true,
+    render: (value: string | null | undefined) => value ?? '未知' },
+  { title: '思考等级', dataIndex: 'reasoningEffort', width: 100,
+    render: (value: string | null | undefined) => value ?? '未知' },
 ];
 
 export function UsageEventsTable({ userId }: { userId: string }) {
@@ -42,7 +46,7 @@ export function UsageEventsTable({ userId }: { userId: string }) {
   }, [userId, page, reload]);
 
   return (
-    <section aria-label="Token 用量流水" style={{ width: '100%' }}>
+    <section aria-label="Token 用量流水" style={{ width: '100%', minWidth: 0 }}>
       <Space align="center" style={{ justifyContent: 'space-between', width: '100%' }}>
         <Typography.Title level={5}>Token 用量流水</Typography.Title>
         <Button onClick={() => setReload((value) => value + 1)} size="small">刷新流水</Button>
@@ -60,7 +64,7 @@ export function UsageEventsTable({ userId }: { userId: string }) {
           total: data?.totalElements ?? 0, showSizeChanger: false,
           onChange: (nextPage) => setPage(nextPage - 1) }}
         rowKey="id"
-        scroll={{ x: 640 }}
+        scroll={{ x: 930 }}
         size="small"
       />
     </section>

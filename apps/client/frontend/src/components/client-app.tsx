@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { api, getApiErrorMessage, type SystemSession } from "@/lib/api";
 import { Dashboard } from "@/components/dashboard";
 import { SystemLoginPage } from "@/components/system-login";
+import { subscribeToTrayFeedback, trayFeedbackNotice } from "@/lib/tray-events";
 
 const signedOutSession: SystemSession = {
   authenticated: false,
@@ -58,6 +59,26 @@ export function ClientApp() {
     retry: false,
     refetchInterval: 30_000,
   });
+
+  useEffect(
+    () =>
+      subscribeToTrayFeedback((feedback) => {
+        const notice = trayFeedbackNotice(feedback);
+        toast[notice.kind](notice.message);
+        for (const key of [
+          "usage-status",
+          "quota-overview",
+          "usage-events",
+          "meter-runtime-logs",
+        ]) {
+          void queryClient.invalidateQueries({ queryKey: [key] });
+        }
+        if (feedback.action === "scan" && feedback.outcome === "signed_out") {
+          void queryClient.invalidateQueries({ queryKey: ["system-session"] });
+        }
+      }),
+    [queryClient],
+  );
 
   useEffect(() => {
     // React StrictMode replays effects during development. The API boundary

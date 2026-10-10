@@ -22,10 +22,14 @@ public record CodexUsageEvent(
         long outputTokens,
         long reasoningOutputTokens,
         long totalTokens,
-        CodexUsageEventSource source
+        CodexUsageEventSource source,
+        String model,
+        String reasoningEffort
 ) {
 
     public CodexUsageEvent {
+        model = CodexExecutionContext.safeModel(model);
+        reasoningEffort = CodexExecutionContext.safeEffort(reasoningEffort);
         if (eventId == null || eventId.isBlank()) {
             throw new IllegalArgumentException("eventId is required.");
         }
@@ -37,6 +41,19 @@ public record CodexUsageEvent(
         requireNonNegative(outputTokens, "outputTokens");
         requireNonNegative(reasoningOutputTokens, "reasoningOutputTokens");
         requireNonNegative(totalTokens, "totalTokens");
+    }
+
+    public CodexUsageEvent(String eventId, Instant occurredAt, long inputTokens, long cachedInputTokens,
+            long cacheWriteInputTokens, long outputTokens, long reasoningOutputTokens, long totalTokens,
+            CodexUsageEventSource source) {
+        this(eventId, occurredAt, inputTokens, cachedInputTokens, cacheWriteInputTokens, outputTokens,
+                reasoningOutputTokens, totalTokens, source, null, null);
+    }
+
+    CodexUsageEvent withContext(CodexExecutionContext context) {
+        return context == null ? this : new CodexUsageEvent(eventId, occurredAt, inputTokens, cachedInputTokens,
+                cacheWriteInputTokens, outputTokens, reasoningOutputTokens, totalTokens, source,
+                context.model(), context.reasoningEffort());
     }
 
     private static void requireNonNegative(long value, String name) {

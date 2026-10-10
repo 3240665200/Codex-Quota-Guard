@@ -1,5 +1,34 @@
 use serde::Serialize;
 
+fn connection_needs_configuration(bytes: &[u8], server_url: &str, bundled_hash: &str) -> bool {
+    if bytes.len() > 4096 || !is_sha256_hex(bundled_hash) {
+        return true;
+    }
+    let Ok(connection) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+        return true;
+    };
+    let Some(configured_url) = connection
+        .get("serverUrl")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return true;
+    };
+    let Some(configured_hash) = connection
+        .get("binaryHash")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return true;
+    };
+
+    configured_url != server_url
+        || !is_sha256_hex(configured_hash)
+        || !configured_hash.eq_ignore_ascii_case(bundled_hash)
+}
+
+fn is_sha256_hex(hash: &str) -> bool {
+    hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 fn setup_failure_message(bytes: &[u8]) -> Option<String> {
     if bytes.len() > 4096 {
         return None;
@@ -9,9 +38,51 @@ fn setup_failure_message(bytes: &[u8]) -> Option<String> {
         return None;
     }
     let stage = status.get("stage")?.as_str()?;
+    if !matches!(
+        stage,
+        "ADMIN_CHECK"
+            | "CONFIG_VALIDATE"
+            | "SERVER_URL_VALIDATE"
+            | "INSTALL_DIRECTORY"
+            | "SOURCE_BINARY"
+            | "EXISTING_SERVICE_CHECK"
+            | "BINARY_CHECK"
+            | "PREPARE_FILES"
+            | "PROTECT_FILES"
+            | "SERVICE_REGISTER"
+            | "SERVICE_RECOVERY"
+            | "SERVICE_START"
+            | "SCRIPT_START"
+            | "INSTALL_TIMEOUT"
+    ) {
+        return None;
+    }
+    let reason = status
+        .get("reason")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let specific = match reason {
+        "SERVER_URL_INVALID" => Some("服务器地址格式无效，请填写完整的 http 或 https 地址。"),
+        "INSTALL_DIRECTORY_UNAVAILABLE" => {
+            Some("无法访问 Windows 提供的服务安装目录，请检查目录权限。")
+        }
+        "BUNDLED_BINARY_MISSING" => Some("安装包中的计费程序未找到，请重新安装完整安装包。"),
+        "EXISTING_CONFIGURATION_INVALID" => Some("无法读取现有计费服务配置，请检查服务安装目录。"),
+        "WINDOWS_PROFILE_MISMATCH" => {
+            Some("现有计费服务属于其他 Windows 用户或设备，不能直接改绑。")
+        }
+        _ => None,
+    };
+    if let Some(message) = specific {
+        return Some(format!("{message}（{stage}/{reason}）"));
+    }
     let message = match stage {
         "ADMIN_CHECK" => "安装需要管理员权限，请右键以管理员身份运行客户端。",
         "CONFIG_VALIDATE" => "安装配置无效，请检查服务器地址或现有服务的用户归属。",
+        "SERVER_URL_VALIDATE" => "安装程序无法解析服务器地址，请检查已保存的地址。",
+        "INSTALL_DIRECTORY" => "Windows 服务安装目录不可用，请检查系统目录权限。",
+        "SOURCE_BINARY" => "无法找到随包计费程序，请重新安装完整安装包。",
+        "EXISTING_SERVICE_CHECK" => "现有计费服务配置无法读取，请检查服务安装目录。",
         "BINARY_CHECK" => "计费程序无法在这台电脑运行，请重新安装最新版客户端。",
         "PREPARE_FILES" => "无法准备计费服务文件，请检查安装目录权限与设备绑定。",
         "PROTECT_FILES" => "无法设置计费服务目录权限，请检查 Windows 安全策略。",
@@ -170,12 +241,14 @@ pub(crate) fn ensure_running_or_install(_app: &tauri::AppHandle) -> MeterStartOu
 #[cfg(windows)]
 mod windows {
     use super::{InstallOps, ServiceOps, ServiceState, StartAttempt};
+    use sha2::{Digest, Sha256};
     use std::ffi::{OsStr, OsString};
     use std::fs;
+    use std::io::Read;
     use std::mem::size_of;
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
     use std::os::windows::process::CommandExt;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::process::Command;
     use std::ptr;
     use std::thread;
@@ -239,6 +312,20 @@ mod windows {
         }
     }
 
+    fn sha256_file_hex(path: &Path) -> Option<String> {
+        let mut file = fs::File::open(path).ok()?;
+        let mut hasher = Sha256::new();
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let bytes_read = file.read(&mut buffer).ok()?;
+            if bytes_read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..bytes_read]);
+        }
+        Some(format!("{:x}", hasher.finalize()))
+    }
+
     impl InstallOps for WindowsInstaller {
         fn bundle_ready(&self) -> bool {
             self.resource("install-meter-service.ps1").is_some()
@@ -246,6 +333,12 @@ mod windows {
         }
 
         fn needs_configuration(&self) -> bool {
+            let Some(binary) = self.resource("quota-guard-meter.exe") else {
+                return true;
+            };
+            let Some(bundled_hash) = sha256_file_hex(&binary) else {
+                return true;
+            };
             let Ok(directory) = self.app.path().app_data_dir() else {
                 return true;
             };
@@ -259,13 +352,7 @@ mod windows {
             let Ok(bytes) = fs::read(file) else {
                 return true;
             };
-            let Ok(connection) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-                return true;
-            };
-            connection
-                .get("serverUrl")
-                .and_then(serde_json::Value::as_str)
-                != Some(self.server_url.as_str())
+            super::connection_needs_configuration(&bytes, &self.server_url, &bundled_hash)
         }
 
         fn has_admin_rights(&self) -> bool {
@@ -521,6 +608,7 @@ mod tests {
     struct FakeInstaller {
         bundled: bool,
         needs_configuration: bool,
+        connection: Option<(Vec<u8>, String, String)>,
         admin: bool,
         install_succeeds: bool,
         installs: Cell<u32>,
@@ -531,6 +619,7 @@ mod tests {
             Self {
                 bundled: true,
                 needs_configuration: false,
+                connection: None,
                 admin: true,
                 install_succeeds: true,
                 installs: Cell::new(0),
@@ -543,7 +632,11 @@ mod tests {
             self.bundled
         }
         fn needs_configuration(&self) -> bool {
-            self.needs_configuration
+            self.connection
+                .as_ref()
+                .map_or(self.needs_configuration, |(bytes, server_url, hash)| {
+                    connection_needs_configuration(bytes, server_url, hash)
+                })
         }
         fn has_admin_rights(&self) -> bool {
             self.admin
@@ -720,6 +813,112 @@ mod tests {
     }
 
     #[test]
+    fn a_matching_url_and_bundled_hash_does_not_require_service_reconfiguration() {
+        let url = "http://127.0.0.1:8080";
+        let hash = "0123456789abcdef".repeat(4);
+        let bytes = connection_bytes(url, Some(&hash.to_uppercase()));
+
+        assert!(!connection_needs_configuration(&bytes, url, &hash));
+    }
+
+    #[test]
+    fn missing_invalid_or_mismatched_binary_hash_requires_service_reconfiguration() {
+        let url = "http://127.0.0.1:8080";
+        let bundled_hash = "0123456789abcdef".repeat(4);
+        let stale_hash = "fedcba9876543210".repeat(4);
+
+        assert!(connection_needs_configuration(
+            &connection_bytes(url, None),
+            url,
+            &bundled_hash
+        ));
+        assert!(connection_needs_configuration(
+            &connection_bytes(url, Some("not-a-sha256")),
+            url,
+            &bundled_hash
+        ));
+        assert!(connection_needs_configuration(
+            &connection_bytes(url, Some(&stale_hash)),
+            url,
+            &bundled_hash
+        ));
+        assert!(connection_needs_configuration(
+            b"{invalid",
+            url,
+            &bundled_hash
+        ));
+        assert!(connection_needs_configuration(
+            &connection_bytes(url, Some(&bundled_hash)),
+            url,
+            "invalid-bundled-hash"
+        ));
+    }
+
+    #[test]
+    fn a_changed_server_url_requires_service_reconfiguration_even_when_hash_matches() {
+        let current_url = "http://127.0.0.1:8080";
+        let previous_url = "https://quota.example.com";
+        let hash = "0123456789abcdef".repeat(4);
+
+        assert!(connection_needs_configuration(
+            &connection_bytes(previous_url, Some(&hash)),
+            current_url,
+            &hash
+        ));
+    }
+
+    #[test]
+    fn a_running_service_with_the_same_url_and_old_hash_requires_admin_then_installs() {
+        let running = FakeOps::new(ServiceState::Running);
+        let url = "http://127.0.0.1:8080";
+        let bundled_hash = "0123456789abcdef".repeat(4);
+        let old_hash = "fedcba9876543210".repeat(4);
+        let mut installer = FakeInstaller::ready();
+        installer.connection = Some((
+            connection_bytes(url, Some(&old_hash)),
+            url.to_owned(),
+            bundled_hash,
+        ));
+        installer.admin = false;
+
+        assert_eq!(
+            ensure_with_install(&running, &installer),
+            MeterStartOutcome::NeedsAdmin
+        );
+        assert_eq!(installer.installs.get(), 0);
+
+        installer.admin = true;
+        assert_eq!(
+            ensure_with_install(&running, &installer),
+            MeterStartOutcome::Installed
+        );
+        assert_eq!(installer.installs.get(), 1);
+    }
+
+    #[test]
+    fn a_running_service_with_the_current_url_and_hash_is_not_reinstalled() {
+        let running = FakeOps::new(ServiceState::Running);
+        let url = "http://127.0.0.1:8080";
+        let hash = "0123456789abcdef".repeat(4);
+        let mut installer = FakeInstaller::ready();
+        installer.connection = Some((connection_bytes(url, Some(&hash)), url.to_owned(), hash));
+
+        assert_eq!(
+            ensure_with_install(&running, &installer),
+            MeterStartOutcome::Running
+        );
+        assert_eq!(installer.installs.get(), 0);
+    }
+
+    fn connection_bytes(server_url: &str, binary_hash: Option<&str>) -> Vec<u8> {
+        let mut connection = serde_json::json!({ "serverUrl": server_url });
+        if let Some(binary_hash) = binary_hash {
+            connection["binaryHash"] = serde_json::Value::String(binary_hash.to_owned());
+        }
+        serde_json::to_vec(&connection).unwrap()
+    }
+
+    #[test]
     fn failed_installation_is_never_reported_as_running() {
         let missing = FakeOps::new(ServiceState::Missing);
         let mut installer = FakeInstaller::ready();
@@ -745,5 +944,18 @@ mod tests {
         .contains("do-not-show"));
         assert!(setup_failure_message(br#"{"state":"FAILED","stage":"unknown-secret"}"#).is_none());
         assert!(setup_failure_message(br#"{"state":"SUCCEEDED","stage":"READY"}"#).is_none());
+    }
+
+    #[test]
+    fn installation_diagnostics_distinguish_directory_failures_from_server_errors() {
+        let error = setup_failure_message(br#"{"state":"FAILED","stage":"INSTALL_DIRECTORY","reason":"INSTALL_DIRECTORY_UNAVAILABLE"}"#).unwrap();
+        assert!(error.contains("安装目录"));
+        assert!(!error.contains("服务器地址"));
+        let error = setup_failure_message(
+            br#"{"state":"FAILED","stage":"SOURCE_BINARY","reason":"BUNDLED_BINARY_MISSING"}"#,
+        )
+        .unwrap();
+        assert!(error.contains("计费程序未找到"));
+        assert!(!error.contains("服务器地址"));
     }
 }

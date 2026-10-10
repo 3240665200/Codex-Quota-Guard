@@ -17,7 +17,6 @@ import {
   type OfficialCodexRateLimits,
   type QuotaOverview,
   type SystemSession,
-  type UsageStatus,
 } from "@/lib/api";
 import {
   formatCompactTokenCount,
@@ -30,6 +29,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
+import { UsageActivityPanel } from "@/components/usage-activity-panel";
 
 function describeBlockReason(reason: string | null): string {
   switch (reason) {
@@ -333,145 +333,6 @@ function UsageCard({ overview }: { overview: QuotaOverview }) {
   );
 }
 
-function UsageDiagnosticsCard({
-  status,
-  scanning,
-  pairing,
-  starting,
-  onScan,
-  onPair,
-  onStart,
-}: {
-  status: UsageStatus | undefined;
-  scanning: boolean;
-  pairing: boolean;
-  starting: boolean;
-  onScan: () => void;
-  onPair: () => void;
-  onStart: () => void;
-}) {
-  const serviceState = status?.service.state;
-  const serviceLabel =
-    serviceState === "NOT_INSTALLED"
-      ? "计费服务未安装"
-      : serviceState === "OFFLINE"
-        ? "计费服务离线"
-        : serviceState === "UNPAIRED"
-          ? "计费服务待配对"
-          : serviceState === "ERROR"
-            ? "计费服务异常"
-            : serviceState
-              ? "计费服务运行中"
-              : "正在检查计费服务…";
-  const fallbackState = status?.fallback.state;
-  const fallbackLabel =
-    fallbackState === "BASELINE_READY"
-      ? "本机扫描已建立基线"
-      : fallbackState === "REPORTED"
-        ? `本机扫描刚上报 ${status?.fallback.lastReportedEvents ?? 0} 条事件`
-        : fallbackState === "REPORT_FAILED"
-          ? "本机扫描发现用量，但上报失败，稍后会重试"
-          : fallbackState === "WAITING_FOR_SESSIONS"
-            ? "尚未找到官方 Codex 会话目录"
-            : fallbackState === "SIGNED_OUT"
-              ? "请先登录本系统账户"
-              : fallbackState === "SCAN_FAILED"
-                ? "本机扫描失败，请检查服务状态"
-                : "本机扫描暂无新事件";
-  const serviceHealthy =
-    serviceState === "UP_TO_DATE" || serviceState === "REPORTED";
-  const servicePending =
-    serviceState === "UNPAIRED" || serviceState === "BASELINE_READY";
-  return (
-    <section
-      className="cqg-surface min-w-0 p-5"
-      aria-labelledby="meter-heading"
-    >
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 id="meter-heading" className="text-base font-semibold">
-            计费状态
-          </h2>
-          <p className="mt-1 text-xs text-muted-foreground">{serviceLabel}</p>
-        </div>
-        <span
-          className={`inline-flex items-center gap-2 text-xs ${serviceHealthy ? "text-teal-700 dark:text-teal-400" : servicePending ? "text-amber-700 dark:text-amber-400" : "text-red-700 dark:text-red-400"}`}
-        >
-          <span
-            className={`size-2 rounded-full ${serviceHealthy ? "bg-teal-600" : servicePending ? "bg-amber-500" : "bg-red-500"}`}
-          />
-          {serviceHealthy ? "正常" : servicePending ? "待处理" : "需检查"}
-        </span>
-      </div>
-      <div className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
-        <div>
-          <p className="text-xs text-muted-foreground">本机扫描</p>
-          <p className="mt-1">{fallbackLabel}</p>
-        </div>
-        <div>
-          <p className="text-xs text-muted-foreground">最近上报</p>
-          <p className="mt-1 tabular-nums">
-            {status?.fallback.lastReportedAt
-              ? new Date(status.fallback.lastReportedAt).toLocaleString("zh-CN")
-              : "暂无上报记录"}
-          </p>
-        </div>
-      </div>
-      <div className="mt-3 text-xs">
-        {status?.service.errorCode ? (
-          <p className="text-destructive">
-            服务诊断码：{status.service.errorCode}
-          </p>
-        ) : null}
-        {status?.pairingState === "PAIRING_FAILED" ? (
-          <p className="text-destructive">
-            设备配对失败，请确认后台在线后重试。
-          </p>
-        ) : null}
-      </div>
-      <div className="mt-4 flex flex-wrap gap-2 border-t pt-4">
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={scanning}
-          onClick={onScan}
-        >
-          <RefreshCw
-            data-icon="inline-start"
-            className={scanning ? "animate-spin" : undefined}
-          />
-          {scanning ? "正在扫描…" : "立即扫描"}
-        </Button>
-        {serviceState === "UNPAIRED" ||
-        status?.pairingState === "PAIRING_FAILED" ? (
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={pairing}
-            onClick={onPair}
-          >
-            {pairing ? "正在配对…" : "重新配对"}
-          </Button>
-        ) : null}
-        {serviceState === "OFFLINE" || serviceState === "NOT_INSTALLED" ? (
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={starting}
-            onClick={onStart}
-          >
-            {starting
-              ? "正在处理…"
-              : serviceState === "NOT_INSTALLED"
-                ? "安装计费服务"
-                : "启动计费服务"}
-          </Button>
-        ) : null}
-      </div>
-    </section>
-  );
-}
-
 function OfficialRateLimitWindow({
   label,
   window,
@@ -640,6 +501,12 @@ export function Dashboard({ session, onLogout }: DashboardProps) {
     mutationFn: api.scanUsage,
     onSuccess: async (status) => {
       queryClient.setQueryData(["usage-status"], status);
+      void queryClient.invalidateQueries({
+        queryKey: ["usage-events", session.user?.id],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["meter-runtime-logs", session.user?.id],
+      });
       await quotaQuery.refetch();
       toast[
         status.fallback.state === "REPORT_FAILED" ||
@@ -819,7 +686,10 @@ export function Dashboard({ session, onLogout }: DashboardProps) {
                 failed={rateLimitsQuery.isError}
               />
             </div>
-            <UsageDiagnosticsCard
+            <UsageActivityPanel
+              key={session.user!.id}
+              userId={session.user!.id}
+              measuredAt={overview.usage.measuredAt}
               status={usageStatusQuery.data}
               scanning={scanMutation.isPending}
               pairing={pairMutation.isPending}

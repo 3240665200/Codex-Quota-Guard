@@ -17,8 +17,14 @@ public record CodexUsageReportRequest(
             @Pattern(regexp = "codex-local-(usage|cumulative):v1:[0-9a-f]{64}") String eventId,
             @NotNull Instant occurredAt,
             @Min(0) @Max(100_000_000) long totalTokens,
-            @NotNull Source source
-    ) { }
+            @NotNull Source source,
+            @Size(max = 96) @Pattern(regexp = "[A-Za-z0-9][A-Za-z0-9._:/-]{0,95}") String model,
+            @Pattern(regexp = "none|minimal|low|medium|high|xhigh|max|ultra") String reasoningEffort
+    ) {
+        public Event(String eventId, Instant occurredAt, long totalTokens, Source source) {
+            this(eventId, occurredAt, totalTokens, source, null, null);
+        }
+    }
 
     public enum Source {
         TOKEN_USAGE_RECORD,

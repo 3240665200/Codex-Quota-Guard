@@ -149,6 +149,26 @@ public final class CodexSessionUsageScanner {
         return result(events, nextFiles, emittedEventIds, issues);
     }
 
+    /** Lightweight metadata/prefix check; legacy deltas must still be collected by Java. */
+    boolean canDelegateToDirectMeter(CodexUsageScanState state) {
+        if (!Files.isDirectory(sessionsDirectory, LinkOption.NOFOLLOW_LINKS)) return false;
+        try (Stream<Path> paths = Files.walk(sessionsDirectory)) {
+            List<Path> files = paths.filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS))
+                    .filter(this::isJsonl).toList();
+            if (files.isEmpty()) return false;
+            for (Path file : files) {
+                CodexUsageFileCursor cursor = state.files().get(relativePath(file));
+                if (cursor == null || !cursor.pendingFallbackEvents().isEmpty()) return false;
+                BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+                if (isReplacementOrTruncation(cursor, signature(file, attributes, cursor), attributes.size())) return false;
+                if (!cursor.directUsageRecordObserved() && attributes.size() != cursor.nextByteOffset()) return false;
+            }
+            return true;
+        } catch (IOException ignored) {
+            return false;
+        }
+    }
+
     private CodexUsageScanResult result(
             List<CodexUsageEvent> events,
             Map<String, CodexUsageFileCursor> files,
@@ -313,6 +333,19 @@ public final class CodexSessionUsageScanner {
         }
 
         String type = text(record, "type");
+        if ("turn_context".equals(type)) {
+            JsonNode payload = record.path("payload");
+            CodexExecutionContext context = CodexExecutionContext.from(payload);
+            cursor.currentContext = context;
+            String turnId = text(payload, "turn_id");
+            if (turnId != null && turnId.length() <= 128) {
+                cursor.turnContexts.put(digest(turnId.getBytes(StandardCharsets.UTF_8)), context);
+                while (cursor.turnContexts.size() > 256) {
+                    cursor.turnContexts.remove(cursor.turnContexts.keySet().iterator().next());
+                }
+            }
+            return;
+        }
         if ("token_usage_record".equals(type)) {
             processDirectUsageRecord(record, line, cursor, emittedEventIds, newEventIds, events, issues);
             return;
@@ -344,7 +377,7 @@ public final class CodexSessionUsageScanner {
         String responseId = text(payload, "response_id");
         String eventIdentity = responseId == null ? "record:" + line : "response:" + responseId;
         CodexUsageEvent event = event("codex-local-usage:v1:" + digest(eventIdentity.getBytes(StandardCharsets.UTF_8)), occurredAt, usage,
-                CodexUsageEventSource.TOKEN_USAGE_RECORD);
+                CodexUsageEventSource.TOKEN_USAGE_RECORD).withContext(executionContext(payload, cursor));
         appendIfNew(event, emittedEventIds, newEventIds, events);
     }
 
@@ -390,7 +423,7 @@ public final class CodexSessionUsageScanner {
                 occurredAt,
                 delta,
                 CodexUsageEventSource.CUMULATIVE_TOKEN_COUNT_FALLBACK
-        );
+        ).withContext(executionContext(record.path("payload"), cursor));
         if (!emittedEventIds.contains(event.eventId()) && pendingEventIds.add(event.eventId())) {
             cursor.pendingFallbackEvents.add(new CodexPendingUsageEvent(event));
         }
@@ -517,6 +550,15 @@ public final class CodexSessionUsageScanner {
         );
     }
 
+    private CodexExecutionContext executionContext(JsonNode payload, MutableCursor cursor) {
+        String turnId = text(payload, "turn_id");
+        CodexExecutionContext stored = payload.get("turn_id") == null ? cursor.currentContext
+                : (turnId == null || turnId.length() > 128 ? null : cursor.turnContexts.get(digest(turnId.getBytes(StandardCharsets.UTF_8))));
+        CodexExecutionContext direct = CodexExecutionContext.from(payload);
+        return new CodexExecutionContext(payload.get("model") != null ? direct.model() : stored == null ? null : stored.model(),
+                CodexExecutionContext.hasEffort(payload) ? direct.reasoningEffort() : stored == null ? null : stored.reasoningEffort());
+    }
+
     private Set<String> pendingEventIds(Map<String, CodexUsageFileCursor> files) {
         Set<String> result = new LinkedHashSet<>();
         for (CodexUsageFileCursor cursor : files.values()) {
@@ -589,6 +631,8 @@ public final class CodexSessionUsageScanner {
         private boolean directUsageRecordObserved;
         private CodexCumulativeUsage cumulativeUsage;
         private final List<CodexPendingUsageEvent> pendingFallbackEvents;
+        private CodexExecutionContext currentContext;
+        private final Map<String, CodexExecutionContext> turnContexts = new LinkedHashMap<>();
 
         private MutableCursor(
                 String fileIdentityDigest,
@@ -615,7 +659,7 @@ public final class CodexSessionUsageScanner {
         private static MutableCursor from(CodexUsageFileCursor cursor, FileSignature signature) {
             int prefixLength = cursor.prefixLength() == 0 ? signature.prefixLength() : cursor.prefixLength();
             String prefixDigest = cursor.prefixLength() == 0 ? signature.prefixDigest() : cursor.prefixDigest();
-            return new MutableCursor(
+            MutableCursor result = new MutableCursor(
                     signature.identityDigest(),
                     prefixLength,
                     prefixDigest,
@@ -624,6 +668,9 @@ public final class CodexSessionUsageScanner {
                     cursor.cumulativeUsage(),
                     cursor.pendingFallbackEvents()
             );
+            result.currentContext = cursor.currentContext();
+            result.turnContexts.putAll(cursor.turnContexts());
+            return result;
         }
 
         private CodexUsageFileCursor toImmutable() {
@@ -634,7 +681,9 @@ public final class CodexSessionUsageScanner {
                     nextByteOffset,
                     directUsageRecordObserved,
                     cumulativeUsage,
-                    pendingFallbackEvents
+                    pendingFallbackEvents,
+                    currentContext,
+                    turnContexts
             );
         }
     }

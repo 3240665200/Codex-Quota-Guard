@@ -7,6 +7,7 @@ import com.codexquotaguard.backend.controlplane.OfficialCodexRateLimits;
 import com.codexquotaguard.backend.controlplane.PersonalQuotaOverview;
 import com.codexquotaguard.backend.controlplane.MeterEnrollment;
 import com.codexquotaguard.backend.controlplane.SystemUser;
+import com.codexquotaguard.backend.controlplane.UserUsageEventPage;
 import com.codexquotaguard.backend.usage.CodexUsageEvent;
 import jakarta.annotation.PreDestroy;
 import java.util.List;
@@ -68,6 +69,10 @@ public final class SystemSessionService {
 
     public PersonalQuotaOverview quotaOverview() {
         return invokeAuthenticated(controlPlane::quotaOverview);
+    }
+
+    public UserUsageEventPage usageEvents(int page, int size) {
+        return invokeAuthenticated(token -> controlPlane.usageEvents(token, page, size));
     }
 
     public MeterEnrollment enrollMeter(UUID deviceId) {
@@ -244,7 +249,8 @@ public final class SystemSessionService {
         return switch (exception.reason()) {
             case UNAUTHORIZED -> new SystemSessionRequiredException();
             case ACCESS_DENIED -> new CodexAccessDeniedException();
-            case INVALID_REQUEST, UNAVAILABLE -> new ControlPlaneUnavailableException();
+            case INVALID_REQUEST -> new ControlPlaneRequestRejectedException();
+            case UNAVAILABLE -> new ControlPlaneUnavailableException();
         };
     }
 

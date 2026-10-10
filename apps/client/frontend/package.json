@@ -1,6 +1,6 @@
 {
   "name": "@codex-quota-guard/client",
-  "version": "0.2.12",
+  "version": "0.2.18",
   "private": true,
   "description": "Cross-platform Codex quota dashboard with a Java Spring Boot backend",
   "type": "module",

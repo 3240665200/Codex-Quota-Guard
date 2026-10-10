@@ -21,6 +21,86 @@ class CodexSessionUsageScannerTest {
     Path temporaryDirectory;
 
     @Test
+    void associatesMetadataByTurnAcrossRestartsAndDoesNotChangeUsageOrEventIds() throws Exception {
+        Path home = temporaryDirectory.resolve("metadata");
+        String contexts = """
+                {"type":"turn_context","payload":{"turn_id":"a","model":"gpt-6.1-sol","effort":"max"}}
+                {"type":"turn_context","payload":{"turn_id":"b","model":"gpt-6-sol","effort":"high"}}
+                """;
+        Path file = writeSession(home, "run.jsonl", contexts);
+        var first = scanner(home).scan(CodexUsageScanState.empty());
+        var mapper = new tools.jackson.databind.ObjectMapper();
+        var restored = mapper.readValue(mapper.writeValueAsBytes(first.nextState()), CodexUsageScanState.class);
+        String usage = usageRecord("metadata-response", 10, 0, 0, 5, 0, 15)
+                .replace("\"response_id\":", "\"turn_id\":\"a\",\"response_id\":");
+        Files.writeString(file, usage, java.nio.file.StandardOpenOption.APPEND);
+        var event = scanner(home).scan(restored).events().get(0);
+        assertThat(event.model()).isEqualTo("gpt-6.1-sol");
+        assertThat(event.reasoningEffort()).isEqualTo("max");
+        assertThat(event.totalTokens()).isEqualTo(15);
+        Path plain = temporaryDirectory.resolve("plain");
+        writeSession(plain, "run.jsonl", usage);
+        var withoutContext = scanner(plain).scan(CodexUsageScanState.empty()).events().get(0);
+        assertThat(withoutContext.model()).isNull();
+        assertThat(withoutContext.eventId()).isEqualTo(event.eventId());
+    }
+
+    @Test
+    void invalidMetadataDoesNotBlockUsageAndOnlySafeSelectionFieldsArePersisted() throws Exception {
+        Path home = temporaryDirectory.resolve("safe-metadata");
+        String context = """
+                {"type":"turn_context","payload":{"turn_id":"a","model":"gpt-6.1-sol","effort":"max","summary":"private-canary"}}
+                """;
+        String usage = usageRecord("safe", 10, 0, 0, 5, 0, 15)
+                .replace("\"response_id\":", "\"turn_id\":\"unknown\",\"model\":\"gpt-6-sol\",\"effort\":\"HIGH\",\"response_id\":");
+        writeSession(home, "run.jsonl", context + usage);
+        var result = scanner(home).scan(CodexUsageScanState.empty());
+        assertThat(result.events().get(0).model()).isEqualTo("gpt-6-sol");
+        assertThat(result.events().get(0).reasoningEffort()).isEqualTo("high");
+        assertThat(new tools.jackson.databind.ObjectMapper().writeValueAsString(result.nextState()))
+                .doesNotContain("private-canary");
+        Path invalid = temporaryDirectory.resolve("invalid-metadata");
+        writeSession(invalid, "run.jsonl", """
+                {"type":"turn_context","payload":{"model":"<invalid-model>","effort":"private-canary"}}
+                """ + usageRecord("invalid", 10, 0, 0, 5, 0, 15));
+        var event = scanner(invalid).scan(CodexUsageScanState.empty()).events().get(0);
+        assertThat(event.totalTokens()).isEqualTo(15);
+        assertThat(event.model()).isNull();
+        assertThat(event.reasoningEffort()).isNull();
+    }
+
+    @Test
+    void oldCursorJsonWithoutContextFieldsRemainsReadable() {
+        var mapper = new tools.jackson.databind.ObjectMapper();
+        var cursor = mapper.readValue("""
+                {"fileIdentityDigest":"a","prefixLength":0,"prefixDigest":"b","nextByteOffset":0,
+                "directUsageRecordObserved":false,"cumulativeUsage":null,"pendingFallbackEvents":[]}
+                """, CodexUsageFileCursor.class);
+        assertThat(cursor.currentContext()).isNull();
+        assertThat(cursor.turnContexts()).isEmpty();
+    }
+
+    @Test
+    void unknownOrInvalidTurnMetadataIsNeverBorrowedFromTheLatestDifferentTurn() throws Exception {
+        Path home = temporaryDirectory.resolve("unknown-turn");
+        String context = """
+                {"type":"turn_context","payload":{"turn_id":"known","model":"gpt-6.1-sol","effort":"max"}}
+                """;
+        String unknown = usageRecord("unknown", 10, 0, 0, 5, 0, 15)
+                .replace("\"response_id\":", "\"turn_id\":\"other\",\"response_id\":");
+        String invalid = usageRecord("invalid-direct", 10, 0, 0, 5, 0, 15)
+                .replace("\"response_id\":", "\"turn_id\":\"known\",\"model\":null,\"effort\":\"unsupported\",\"response_id\":");
+        writeSession(home, "run.jsonl", context + unknown + invalid);
+        var events = scanner(home).scan(CodexUsageScanState.empty()).events();
+        assertThat(events).hasSize(2);
+        assertThat(events).allSatisfy(event -> {
+            assertThat(event.model()).isNull();
+            assertThat(event.reasoningEffort()).isNull();
+            assertThat(event.totalTokens()).isEqualTo(15);
+        });
+    }
+
+    @Test
     void extractsMeasuredPerResponseUsageOnlyFromTheConfiguredSessionsDirectory() throws Exception {
         Path codexHome = temporaryDirectory.resolve("isolated-codex-home");
         writeSession(codexHome, "2026/10/05/rollout.jsonl", usageRecord("response-one", 100, 80, 10, 20, 5, 120));

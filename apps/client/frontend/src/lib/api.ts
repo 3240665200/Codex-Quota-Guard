@@ -96,11 +96,20 @@ const usageStatusSchema = z.object({
       "REPORTED",
       "REPORT_FAILED",
       "SCAN_FAILED",
+      "SERVICE_ACTIVE",
     ]),
     lastScannedAt: isoInstant.nullable(),
     lastReportedAt: isoInstant.nullable(),
     lastReportedEvents: tokenCount,
     issues: z.array(z.string().min(1)),
+    issueCounts: z
+      .record(z.string().regex(/^[A-Z_]{1,64}$/), tokenCount.min(1))
+      .optional(),
+    errorCode: z
+      .string()
+      .regex(/^[A-Z_]{1,64}$/)
+      .nullable()
+      .optional(),
   }),
   service: z.object({
     state: z.enum([
@@ -115,9 +124,85 @@ const usageStatusSchema = z.object({
     lastScanEpochSeconds: tokenCount.nullable(),
     lastReportEpochSeconds: tokenCount.nullable(),
     reportedEvents: tokenCount,
-    errorCode: z.string().nullable(),
+    errorCode: z
+      .string()
+      .regex(/^[A-Z_]{1,64}$/)
+      .nullable(),
   }),
   pairingState: z.enum(["NOT_INSTALLED", "PAIRING_SENT", "PAIRING_FAILED"]),
+});
+
+const usageEventModelSchema = z
+  .string()
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,95}$/)
+  .nullable()
+  .catch(null)
+  .default(null);
+const usageEventReasoningEffortSchema = z
+  .enum(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"])
+  .nullable()
+  .catch(null)
+  .default(null);
+
+const usageEventsSchema = z.object({
+  items: z
+    .array(
+      z.object({
+        id: z.string().regex(/^[a-zA-Z0-9-]{1,128}$/),
+        occurredAt: z.iso.datetime({ offset: true }),
+        receivedAt: z.iso.datetime({ offset: true }),
+        totalTokens: tokenCount,
+        model: usageEventModelSchema,
+        reasoningEffort: usageEventReasoningEffortSchema,
+        source: z.enum([
+          "TOKEN_USAGE_RECORD",
+          "CUMULATIVE_TOKEN_COUNT_FALLBACK",
+        ]),
+      }),
+    )
+    .max(100),
+  page: tokenCount,
+  size: tokenCount.min(1).max(100),
+  totalElements: tokenCount,
+  totalPages: tokenCount,
+});
+
+const meterRuntimeLogsSchema = z.object({
+  state: z.enum(["READY", "NOT_AVAILABLE", "ADMIN_REQUIRED", "READ_FAILED"]),
+  skippedLines: tokenCount,
+  entries: z
+    .array(
+      z.object({
+        atEpochSeconds: tokenCount.min(1),
+        kind: z.enum([
+          "SERVICE_STARTED",
+          "SERVICE_STOPPED",
+          "BASELINE_READY",
+          "UNPAIRED",
+          "USAGE_REPORTED",
+          "HEARTBEAT",
+          "ERROR",
+          "STATUS_CHANGE",
+        ]),
+        state: z
+          .enum([
+            "BASELINE_READY",
+            "UNPAIRED",
+            "UP_TO_DATE",
+            "REPORTED",
+            "ERROR",
+          ])
+          .nullable(),
+        reportedEvents: tokenCount,
+        reportedTokens: tokenCount,
+        heartbeatSent: z.boolean(),
+        errorCode: z
+          .string()
+          .regex(/^[A-Z_]{1,64}$/)
+          .nullable(),
+      }),
+    )
+    .max(50),
 });
 
 const officialCodexRateLimitWindowSchema = z.object({
@@ -215,6 +300,8 @@ export type QuotaPolicy = z.infer<typeof quotaPolicySchema>;
 export type QuotaUsage = z.infer<typeof quotaUsageSchema>;
 export type QuotaOverview = z.infer<typeof quotaOverviewSchema>;
 export type UsageStatus = z.infer<typeof usageStatusSchema>;
+export type UsageEventPage = z.infer<typeof usageEventsSchema>;
+export type MeterRuntimeLogs = z.infer<typeof meterRuntimeLogsSchema>;
 export type OfficialCodexRateLimits = z.infer<
   typeof officialCodexRateLimitsSchema
 >;
@@ -262,6 +349,13 @@ export const api = {
   },
   quotaOverview: () => invokeValidated("quota_overview", quotaOverviewSchema),
   usageStatus: () => invokeValidated("usage_status", usageStatusSchema),
+  usageEvents: async (page = 0, size = 10) => {
+    z.number().int().min(0).max(100000).parse(page);
+    z.number().int().min(1).max(100).parse(size);
+    return invokeValidated("usage_events", usageEventsSchema, { page, size });
+  },
+  meterRuntimeLogs: () =>
+    invokeValidated("meter_runtime_logs", meterRuntimeLogsSchema),
   scanUsage: () => invokeValidated("usage_scan", usageStatusSchema),
   pairMeter: () => invokeValidated("usage_pair", usageStatusSchema),
   codexRateLimits: () =>
@@ -269,12 +363,14 @@ export const api = {
 };
 
 const safeBackendMessages = new Set([
-  "本地服务启动失败，请确认已安装 Java 17 后重试。",
+  "本地服务启动失败，安装包可能不完整，请重新安装。",
   "本地服务暂时不可用，请稍后重试。",
   "中央后台暂不可用，请确认后台已启动且服务器地址正确。",
   "本地服务返回了无效的数据。",
+  "流水分页参数无效，请刷新后重试。",
   "邮箱或密码不正确，请检查后重试。",
   "请先登录系统账户。",
+  "中央后台拒绝请求，请检查请求内容后重试。",
   "请输入完整的服务器地址，例如 http://192.168.0.102:8080。",
   "服务器地址缺少主机名。",
   "服务器地址只能填写协议、主机和端口。",

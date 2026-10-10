@@ -16,6 +16,9 @@ use uuid::Uuid;
 
 use crate::server_config;
 
+#[cfg(windows)]
+mod windows_job;
+
 const LOOPBACK_HOST: &str = "127.0.0.1";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -30,6 +33,8 @@ pub(crate) enum ApiRoute {
     UsageStatus,
     UsageScan,
     UsagePair,
+    UsageEvents { page: u32, size: u32 },
+    MeterRuntimeLogs,
     CodexRateLimits,
     SystemLogin,
     SystemCurrent,
@@ -45,6 +50,8 @@ impl ApiRoute {
             Self::UsageStatus => "/api/v1/usage/status",
             Self::UsageScan => "/api/v1/usage/scan",
             Self::UsagePair => "/api/v1/usage/pair",
+            Self::UsageEvents { .. } => "/api/v1/usage/events",
+            Self::MeterRuntimeLogs => "/api/v1/usage/logs",
             Self::CodexRateLimits => "/api/v1/codex/rate-limits",
             Self::SystemLogin => "/api/v1/session/login",
             Self::SystemCurrent => "/api/v1/session/current",
@@ -64,6 +71,8 @@ pub(crate) enum BackendError {
     ControlPlaneUnavailable,
     #[error("本地服务返回了无效的数据。")]
     InvalidResponse,
+    #[error("流水分页参数无效，请刷新后重试。")]
+    InvalidPagination,
     #[error("邮箱或密码不正确，请检查后重试。")]
     InvalidCredentials,
     #[error(
@@ -92,6 +101,8 @@ struct RunningBackend {
     child: Child,
     port: u16,
     token: BearerToken,
+    #[cfg(windows)]
+    _job: windows_job::ChildJob,
 }
 
 pub(crate) struct BackendState {
@@ -137,6 +148,16 @@ impl BackendState {
             .spawn()
             .map_err(|_| BackendError::Startup)?;
 
+        #[cfg(windows)]
+        let job = match windows_job::ChildJob::assign(&child) {
+            Ok(job) => job,
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(BackendError::Startup);
+            }
+        };
+
         if !wait_until_listening(port, &mut child) {
             let _ = child.kill();
             let _ = child.wait();
@@ -144,7 +165,13 @@ impl BackendState {
         }
 
         Ok(Self {
-            process: Mutex::new(Some(RunningBackend { child, port, token })),
+            process: Mutex::new(Some(RunningBackend {
+                child,
+                port,
+                token,
+                #[cfg(windows)]
+                _job: job,
+            })),
             client: Client::new(),
         })
     }
@@ -155,6 +182,11 @@ impl BackendState {
         route: ApiRoute,
     ) -> Result<Value, BackendError> {
         self.json_request(method, route, None).await
+    }
+
+    pub(crate) async fn usage_events(&self, page: u32, size: u32) -> Result<Value, BackendError> {
+        validate_usage_page(page, size)?;
+        self.json(Method::GET, ApiRoute::UsageEvents { page, size }).await
     }
 
     /// Sends product-user credentials directly to the local Java process.
@@ -181,7 +213,8 @@ impl BackendState {
         body: Option<Value>,
     ) -> Result<Value, BackendError> {
         let (url, token) = self.request_target(route)?;
-        let mut request = self.client.request(method, url).bearer_auth(token);
+        let mut request = self.client.request(method, url).bearer_auth(token)
+            .timeout(Duration::from_secs(35));
         if let Some(body) = body {
             request = request.json(&body);
         }
@@ -258,11 +291,12 @@ fn classify_response(route: ApiRoute, status: StatusCode) -> BackendError {
         }
         (ApiRoute::SystemLogin, StatusCode::CONFLICT) => BackendError::MeterPairingRequired,
         (
-            ApiRoute::SystemLogin | ApiRoute::SystemCurrent | ApiRoute::QuotaOverview,
+            ApiRoute::SystemLogin | ApiRoute::SystemCurrent | ApiRoute::QuotaOverview | ApiRoute::UsageEvents { .. },
             StatusCode::SERVICE_UNAVAILABLE,
         ) => BackendError::ControlPlaneUnavailable,
         (
-            ApiRoute::SystemCurrent | ApiRoute::QuotaOverview | ApiRoute::CodexRateLimits,
+            ApiRoute::SystemCurrent | ApiRoute::QuotaOverview | ApiRoute::CodexRateLimits
+                | ApiRoute::UsageEvents { .. } | ApiRoute::MeterRuntimeLogs,
             StatusCode::UNAUTHORIZED,
         ) => BackendError::SystemLoginRequired,
         _ => BackendError::Unavailable,
@@ -405,12 +439,38 @@ fn wait_until_listening(port: u16, child: &mut Child) -> bool {
 }
 
 fn fixed_url(port: u16, route: ApiRoute) -> String {
-    format!("http://{LOOPBACK_HOST}:{port}{}", route.path())
+    let base = format!("http://{LOOPBACK_HOST}:{port}{}", route.path());
+    match route {
+        ApiRoute::UsageEvents { page, size } => format!("{base}?page={page}&size={size}"),
+        _ => base,
+    }
+}
+
+fn validate_usage_page(page: u32, size: u32) -> Result<(), BackendError> {
+    if page > 100000 || !(1..=100).contains(&size) {
+        Err(BackendError::InvalidPagination)
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usage_history_accepts_only_bounded_numeric_pagination() {
+        assert!(validate_usage_page(0, 10).is_ok());
+        assert!(validate_usage_page(100001, 10).is_err());
+        assert!(validate_usage_page(0, 0).is_err());
+        assert!(validate_usage_page(0, 101).is_err());
+        assert_eq!(fixed_url(43117, ApiRoute::UsageEvents { page: 2, size: 10 }),
+            "http://127.0.0.1:43117/api/v1/usage/events?page=2&size=10");
+        assert!(matches!(classify_response(ApiRoute::UsageEvents { page: 0, size: 10 },
+            StatusCode::UNAUTHORIZED), BackendError::SystemLoginRequired));
+        assert!(matches!(classify_response(ApiRoute::MeterRuntimeLogs,
+            StatusCode::UNAUTHORIZED), BackendError::SystemLoginRequired));
+    }
 
     #[test]
     fn only_known_routes_generate_urls() {

@@ -27,7 +27,7 @@
    - `GET /api/v1/quota/overview`
    - `GET /api/v1/account/overview`
    - `POST /api/v1/system/shutdown`（仅由 Tauri 在退出时调用）
-5. 窗口关闭时终止由当前实例启动的 Java 子进程。
+5. 关闭主窗口时隐藏到系统托盘；托盘菜单真正退出时终止由当前实例启动的 Java 子进程。托盘初始化失败时关闭窗口仍退出应用。Windows 使用 Job Object 防止客户端意外退出后遗留本地 Java 子进程。
 
 ## Tauri command 契约
 

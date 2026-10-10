@@ -20,6 +20,17 @@ public final class LocalSessionExceptionHandler {
         return response(HttpStatus.UNAUTHORIZED, "SYSTEM_SESSION_REQUIRED", "请先登录系统账户。");
     }
 
+    @ExceptionHandler(ControlPlaneRequestRejectedException.class)
+    public ResponseEntity<ErrorBody> controlPlaneRequestRejected() {
+        return response(HttpStatus.BAD_REQUEST, "CONTROL_PLANE_REQUEST_REJECTED",
+                "中央后台拒绝请求，请检查请求内容后重试。");
+    }
+
+    @ExceptionHandler(jakarta.validation.ConstraintViolationException.class)
+    public ResponseEntity<ErrorBody> invalidParameters() {
+        return response(HttpStatus.BAD_REQUEST, "INVALID_PARAMETERS", "请求参数无效，请刷新后重试。");
+    }
+
     @ExceptionHandler(ControlPlaneUnavailableException.class)
     public ResponseEntity<ErrorBody> controlPlaneUnavailable() {
         return response(HttpStatus.SERVICE_UNAVAILABLE, "CONTROL_PLANE_UNAVAILABLE", "系统服务暂时不可用，请稍后重试。");

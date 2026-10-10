@@ -209,6 +209,8 @@ export interface UsageEventLogPage {
     receivedAt: string;
     totalTokens: number;
     source: 'TOKEN_USAGE_RECORD' | 'CUMULATIVE_TOKEN_COUNT_FALLBACK';
+    model?: string | null;
+    reasoningEffort?: string | null;
   }>;
   page: number;
   size: number;

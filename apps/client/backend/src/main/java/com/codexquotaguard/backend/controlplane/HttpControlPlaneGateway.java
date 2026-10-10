@@ -88,6 +88,16 @@ final class HttpControlPlaneGateway implements ControlPlaneGateway {
     }
 
     @Override
+    public UserUsageEventPage usageEvents(String accessToken, int page, int size) {
+        if (page < 0 || page > 100000 || size < 1 || size > 100) {
+            throw ControlPlaneException.invalidRequest();
+        }
+        return sendJson(get("/api/v1/client/usage/events?page=" + page + "&size=" + size
+                + "&includeMetadata=true", accessToken),
+                UserUsageEventPage.class);
+    }
+
+    @Override
     public MeterEnrollment enrollMeter(String accessToken, UUID deviceId) {
         if (deviceId == null) throw ControlPlaneException.invalidRequest();
         return sendJson(postJson("/api/v1/client/meter/enroll", new MeterDeviceBody(deviceId), accessToken),
@@ -101,7 +111,7 @@ final class HttpControlPlaneGateway implements ControlPlaneGateway {
         }
         List<UsageEventBody> eventBodies = events.stream()
                 .map(event -> new UsageEventBody(event.eventId(), event.occurredAt().toString(),
-                        event.totalTokens(), event.source().name()))
+                        event.totalTokens(), event.source().name(), event.model(), event.reasoningEffort()))
                 .toList();
         HttpResponse<String> response = send(postJson("/api/v1/client/usage/events",
                 new LocalUsageEventsBody(eventBodies), accessToken));
@@ -255,7 +265,8 @@ final class HttpControlPlaneGateway implements ControlPlaneGateway {
     private record MeterDeviceBody(UUID deviceId) {
     }
 
-    private record UsageEventBody(String eventId, String occurredAt, long totalTokens, String source) {
+    private record UsageEventBody(String eventId, String occurredAt, long totalTokens, String source,
+            String model, String reasoningEffort) {
     }
 
     private record AuthResponse(

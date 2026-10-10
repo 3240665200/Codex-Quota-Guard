@@ -14,10 +14,10 @@ public record UsageEventAuditPage(List<Item> items, int page, int size,
     }
 
     public record Item(String id, Instant occurredAt, Instant receivedAt,
-            long totalTokens, String source) {
+            long totalTokens, String source, String model, String reasoningEffort) {
         static Item from(CodexUsageEvent event) {
             return new Item(event.getId(), event.getOccurredAt(), event.getReceivedAt(),
-                    event.getTotalTokens(), event.getSource());
+                    event.getTotalTokens(), event.getSource(), event.getModel(), event.getReasoningEffort());
         }
     }
 }
