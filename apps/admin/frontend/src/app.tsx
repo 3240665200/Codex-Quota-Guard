@@ -1,10 +1,34 @@
-import { LogoutOutlined, SafetyCertificateFilled, UserOutlined } from '@ant-design/icons';
+import {
+  DesktopOutlined,
+  LogoutOutlined,
+  MoonOutlined,
+  SafetyCertificateFilled,
+  SunOutlined,
+  UserOutlined,
+} from '@ant-design/icons';
 import type { RequestConfig, RunTimeLayoutConfig } from '@umijs/max';
 import { history, Link } from '@umijs/max';
 import type { RequestOptions } from '@@/plugin-request/types';
-import { App as AntApp, Button, ConfigProvider, Result, Tooltip, Typography } from 'antd';
+import {
+  App as AntApp,
+  Button,
+  ConfigProvider,
+  Dropdown,
+  Result,
+  theme as antdTheme,
+  Tooltip,
+  Typography,
+} from 'antd';
 import zhCN from 'antd/locale/zh_CN';
-import { useEffect, type ReactNode } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react';
 
 import {
   ApiError,
@@ -19,6 +43,34 @@ import type { UserResponse } from './services/api';
 import './style.css';
 
 const loginPath = '/user/login';
+const themePreferenceKey = 'cqg-admin-theme-preference';
+
+type ThemePreference = 'light' | 'dark' | 'system';
+
+const ThemePreferenceContext = createContext<{
+  preference: ThemePreference;
+  setPreference: (preference: ThemePreference) => void;
+}>({
+  preference: 'system',
+  setPreference: () => undefined,
+});
+
+function readThemePreference(): ThemePreference {
+  if (typeof window === 'undefined') return 'system';
+  try {
+    const stored = window.localStorage.getItem(themePreferenceKey);
+    return stored === 'light' || stored === 'dark' || stored === 'system'
+      ? stored
+      : 'system';
+  } catch {
+    return 'system';
+  }
+}
+
+function readSystemDarkMode(): boolean {
+  return typeof window !== 'undefined'
+    && window.matchMedia?.('(prefers-color-scheme: dark)').matches === true;
+}
 
 export interface InitialState {
   currentUser?: UserResponse;
@@ -71,6 +123,7 @@ export async function getInitialState(): Promise<InitialState> {
 
 export const layout: RunTimeLayoutConfig = ({ initialState, setInitialState }) => ({
   actionsRender: () => [
+    <ThemeSwitcher key="theme" />,
     <Tooltip key="logout" title="退出登录">
       <Button
         aria-label="退出登录"
@@ -155,6 +208,50 @@ export const layout: RunTimeLayoutConfig = ({ initialState, setInitialState }) =
   ),
 });
 
+function ThemeSwitcher() {
+  const { preference, setPreference } = useContext(ThemePreferenceContext);
+  const labels: Record<ThemePreference, string> = {
+    light: '浅色',
+    dark: '深色',
+    system: '跟随系统',
+  };
+  const icon = preference === 'dark'
+    ? <MoonOutlined />
+    : preference === 'light'
+      ? <SunOutlined />
+      : <DesktopOutlined />;
+
+  return (
+    <Dropdown
+      menu={{
+        selectedKeys: [preference],
+        items: [
+          { key: 'light', icon: <SunOutlined />, label: '浅色' },
+          { key: 'dark', icon: <MoonOutlined />, label: '深色' },
+          { key: 'system', icon: <DesktopOutlined />, label: '跟随系统' },
+        ],
+        onClick: ({ key }) => {
+          if (key === 'light' || key === 'dark' || key === 'system') {
+            setPreference(key);
+          }
+        },
+      }}
+      placement="bottomRight"
+      trigger={['click']}
+    >
+      <Button
+        aria-label={`主题模式：${labels[preference]}`}
+        className="cqg-theme-button"
+        icon={icon}
+        title={`主题模式：${labels[preference]}`}
+        type="text"
+      >
+        <span className="cqg-theme-label">主题</span>
+      </Button>
+    </Dropdown>
+  );
+}
+
 /** Keep the official request runtime hook available for future Umi requests. */
 export const request: RequestConfig = {
   requestInterceptors: [
@@ -188,18 +285,73 @@ function SessionExpiryBoundary({
 
 export function rootContainer(container: ReactNode): ReactNode {
   return (
-    <ConfigProvider
-      locale={zhCN}
-      theme={{
-        token: {
-          borderRadius: 10,
-          colorPrimary: '#2563eb',
-          fontFamily:
-            'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif',
-        },
-      }}
-    >
-      <AntApp>{container}</AntApp>
-    </ConfigProvider>
+    <AdminThemeProvider>{container}</AdminThemeProvider>
+  );
+}
+
+function AdminThemeProvider({ children }: { children: ReactNode }) {
+  const [preference, setPreferenceState] = useState<ThemePreference>(readThemePreference);
+  const [systemDark, setSystemDark] = useState(readSystemDarkMode);
+  const isDark = preference === 'dark' || (preference === 'system' && systemDark);
+
+  const setPreference = useCallback((nextPreference: ThemePreference) => {
+    setPreferenceState(nextPreference);
+    try {
+      window.localStorage.setItem(themePreferenceKey, nextPreference);
+    } catch {
+      // Keep the current session usable when browser storage is unavailable.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    const syncSystemTheme = () => setSystemDark(media.matches);
+    syncSystemTheme();
+    media.addEventListener('change', syncSystemTheme);
+    return () => media.removeEventListener('change', syncSystemTheme);
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.dataset.cqgTheme = isDark ? 'dark' : 'light';
+    document.documentElement.style.colorScheme = isDark ? 'dark' : 'light';
+  }, [isDark]);
+
+  const contextValue = useMemo(
+    () => ({ preference, setPreference }),
+    [preference, setPreference],
+  );
+
+  return (
+    <ThemePreferenceContext.Provider value={contextValue}>
+      <ConfigProvider
+        locale={zhCN}
+        theme={{
+          algorithm: isDark ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
+          token: {
+            borderRadius: 12,
+            colorPrimary: isDark ? '#72b8b0' : '#4a9d9a',
+            colorSuccess: isDark ? '#8db8a7' : '#6b8e8e',
+            colorWarning: isDark ? '#dfb86e' : '#b78234',
+            colorError: isDark ? '#df9282' : '#c17767',
+            colorInfo: isDark ? '#82b9b3' : '#6b8e8e',
+            colorBgLayout: isDark ? '#171b18' : '#faf8f5',
+            colorBgContainer: isDark ? '#222723' : '#ffffff',
+            colorText: isDark ? '#e7e9e4' : '#373b38',
+            colorTextSecondary: isDark ? '#a2aba2' : '#747a74',
+            colorBorder: isDark ? '#39413b' : '#e9e4dc',
+            colorBorderSecondary: isDark ? '#303832' : '#f0ede7',
+            controlHeight: 40,
+            boxShadowSecondary: isDark
+              ? '0 16px 40px rgb(0 0 0 / 28%)'
+              : '0 16px 40px rgb(61 66 57 / 8%)',
+            fontFamily:
+              'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif',
+          },
+        }}
+      >
+        <AntApp>{children}</AntApp>
+      </ConfigProvider>
+    </ThemePreferenceContext.Provider>
   );
 }

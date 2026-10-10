@@ -5,7 +5,7 @@ import {
   TeamOutlined,
   UserOutlined,
 } from '@ant-design/icons';
-import { Alert, Button, Row } from 'antd';
+import { Alert, Button } from 'antd';
 import { PageContainer } from '@ant-design/pro-components';
 import { useCallback, useEffect, useState } from 'react';
 
@@ -37,7 +37,7 @@ export default function DashboardPage() {
 
   return (
     <PageContainer
-      content="实时查看 Codex Quota Guard 的用户与管理员账号概况。"
+      content="系统用户、账户状态与管理员权限概览。"
       title="概览"
     >
       {loading && !data ? <LoadingState label="概览加载中" /> : null}
@@ -55,38 +55,38 @@ export default function DashboardPage() {
               type="error"
             />
           ) : null}
-          <Row gutter={[16, 16]}>
+          <div className="cqg-dashboard-stat-grid">
             <DashboardStatCard
-              color="#2563eb"
+              color="#4a9d9a"
               icon={<TeamOutlined />}
               title="用户总数"
               value={data.totalUsers}
             />
             <DashboardStatCard
-              color="#16a34a"
+              color="#6b8e8e"
               icon={<CheckCircleOutlined />}
               title="活跃用户"
               value={data.activeUsers}
             />
             <DashboardStatCard
-              color="#dc2626"
+              color="#c17767"
               icon={<StopOutlined />}
               title="已禁用"
               value={data.disabledUsers}
             />
             <DashboardStatCard
-              color="#7c3aed"
+              color="#668477"
               icon={<SafetyCertificateOutlined />}
               title="管理员"
               value={data.adminUsers}
             />
             <DashboardStatCard
-              color="#ea580c"
+              color="#bd8b47"
               icon={<UserOutlined />}
               title="近 7 天新增"
               value={data.newUsersLast7Days}
             />
-          </Row>
+          </div>
         </>
       ) : null}
     </PageContainer>

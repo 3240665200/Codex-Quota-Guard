@@ -1,5 +1,5 @@
 import { ProCard } from '@ant-design/pro-components';
-import { Col, Statistic } from 'antd';
+import { Statistic, Typography } from 'antd';
 import type { ReactNode } from 'react';
 
 export function DashboardStatCard({
@@ -14,15 +14,24 @@ export function DashboardStatCard({
   value: number;
 }) {
   return (
-    <Col lg={8} md={12} sm={12} xs={24}>
-      <ProCard className="cqg-stat-card">
+    <ProCard className="cqg-stat-card">
+      <div className="cqg-stat-card-heading">
+        <Typography.Text className="cqg-stat-card-label">{title}</Typography.Text>
+        <span
+          aria-hidden="true"
+          className="cqg-stat-card-icon"
+          style={{ color, backgroundColor: `${color}1a` }}
+        >
+          {icon}
+        </span>
+      </div>
+      <div className="cqg-stat-card-value">
         <Statistic
-          prefix={<span style={{ color }}>{icon}</span>}
-          styles={{ content: { color: '#172033', fontWeight: 700 } }}
-          title={title}
+          className="cqg-statistic"
+          styles={{ content: { color: '#373b38', fontWeight: 650 } }}
           value={value}
         />
-      </ProCard>
-    </Col>
+      </div>
+    </ProCard>
   );
 }
