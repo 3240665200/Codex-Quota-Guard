@@ -16,7 +16,6 @@ import {
   Dropdown,
   Result,
   theme as antdTheme,
-  Tooltip,
   Typography,
 } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
@@ -124,25 +123,25 @@ export async function getInitialState(): Promise<InitialState> {
 export const layout: RunTimeLayoutConfig = ({ initialState, setInitialState }) => ({
   actionsRender: () => [
     <ThemeSwitcher key="theme" />,
-    <Tooltip key="logout" title="退出登录">
-      <Button
-        aria-label="退出登录"
-        className="cqg-logout-button"
-        icon={<LogoutOutlined />}
-        onClick={() => {
-          void logout().finally(() => {
-            setInitialState((previous) => ({
-              ...previous,
-              currentUser: undefined,
-              notice: '',
-            }));
-            history.replace(loginPath);
-          });
-        }}
-        shape="circle"
-        type="text"
-      />
-    </Tooltip>,
+    <Button
+      key="logout"
+      aria-label="退出登录"
+      title="退出登录"
+      className="cqg-logout-button"
+      icon={<LogoutOutlined />}
+      onClick={() => {
+        void logout().finally(() => {
+          setInitialState((previous) => ({
+            ...previous,
+            currentUser: undefined,
+            notice: '',
+          }));
+          history.replace(loginPath);
+        });
+      }}
+      shape="circle"
+      type="text"
+    />,
   ],
   avatarProps: {
     className: 'cqg-admin-avatar',
@@ -185,7 +184,7 @@ export const layout: RunTimeLayoutConfig = ({ initialState, setInitialState }) =
   menuHeaderRender: (logo) => (
     <div className="cqg-menu-header">
       {logo}
-      <span>
+      <span className="cqg-menu-header-text">
         <Typography.Text strong>Quota Guard</Typography.Text>
         <Typography.Text type="secondary">管理中心</Typography.Text>
       </span>

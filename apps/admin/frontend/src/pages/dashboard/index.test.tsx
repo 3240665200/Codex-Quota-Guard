@@ -27,6 +27,7 @@ const stats: UsageStats = {
   cacheWriteInputTokens: 50, outputTokens: 1000, reasoningOutputTokens: 300,
   breakdownEventCount: 120, costedEventCount: 110, estimatedCostUsd: 0.25, cacheHitRatePercent: 24,
 };
+const occurredAt = '2026-10-10T11:59:00.000Z';
 
 function analytics(summary = stats): UsageAnalytics {
   return {
@@ -36,7 +37,7 @@ function analytics(summary = stats): UsageAnalytics {
     events: {
       page: 0, size: 8, totalElements: 1, totalPages: 1,
       items: [{ id: 'event-1', userId: 'user-1', userName: 'Alice', teamId: 'team-1', teamName: 'Team A',
-        occurredAt: '2026-10-10T11:59:00.000Z', receivedAt: '2026-10-10T11:59:01.000Z', totalTokens: 6000,
+        occurredAt, receivedAt: '2026-10-10T11:59:01.000Z', totalTokens: 6000,
         source: 'TOKEN_USAGE_RECORD', model: 'gpt-test', reasoningEffort: 'high', inputTokens: 5000,
         cachedInputTokens: 1200, cacheWriteInputTokens: 50, outputTokens: 1000,
         reasoningOutputTokens: 300, estimatedCostUsd: 0.25, costStatus: 'PRICED' }],
@@ -64,6 +65,10 @@ describe('dashboard overview', () => {
     expect(screen.getByText('模型用量排行')).toBeVisible();
     expect(screen.getAllByText('gpt-test').length).toBeGreaterThan(0);
     expect(screen.getByText('Alice')).toBeVisible();
+    const formattedOccurredAt = new Intl.DateTimeFormat('zh-CN', {
+      dateStyle: 'long', timeStyle: 'medium', hourCycle: 'h23',
+    }).format(new Date(occurredAt));
+    expect(screen.getByText(formattedOccurredAt)).toBeVisible();
     expect(screen.getByText(/官方 API 网关请求/)).toBeVisible();
     expect(screen.getByRole('img', { name: '近 24 小时QPS趋势图' })).toBeVisible();
 

@@ -84,9 +84,9 @@ function modelColumns(totalTokens: number): TableColumnsType<UsageAnalytics['mod
 
 const recentEventColumns: TableColumnsType<UsageLedgerItem> = [
   {
-    title: '时间', dataIndex: 'occurredAt', width: 116,
+    title: '时间', dataIndex: 'occurredAt', width: 180,
     render: (value: string) => new Intl.DateTimeFormat('zh-CN', {
-      month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+      dateStyle: 'long', timeStyle: 'medium', hourCycle: 'h23',
     }).format(new Date(value)),
   },
   {
@@ -249,7 +249,7 @@ export default function DashboardPage() {
                 <Typography.Text className="cqg-dashboard-data-note">费用根据当前模型单价估算，非官方账单</Typography.Text>
               </div>
               <Table rowKey="id" columns={recentEventColumns} dataSource={recentEvents} size="small" pagination={false}
-                scroll={{ x: 720 }} locale={{ emptyText: loading ? '用量数据加载中' : '近 24 小时暂无用量流水' }} />
+                scroll={{ x: 780 }} locale={{ emptyText: loading ? '用量数据加载中' : '近 24 小时暂无用量流水' }} />
             </section>
           </section>
         </>

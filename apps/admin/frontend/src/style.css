@@ -156,7 +156,6 @@ textarea {
 
 .ant-pro-layout .ant-menu-item,
 .ant-pro-layout .ant-menu-submenu-title {
-  margin-inline: 10px;
   border-radius: 10px;
   color: #626960;
   transition: color 150ms ease, background-color 150ms ease;
@@ -176,6 +175,54 @@ textarea {
 
 .ant-pro-layout .ant-menu-item-selected::after {
   display: none;
+}
+
+/* The sider already supplies horizontal gutters. Keep each hit area and its
+   nested ProLayout link on the same center instead of adding a second gutter. */
+.ant-pro-layout .ant-pro-sider .ant-menu-item,
+.ant-pro-layout .ant-pro-sider .ant-menu-submenu-title {
+  width: 100%;
+  height: 44px;
+  margin-inline: 0;
+  line-height: 44px;
+}
+
+.ant-pro-layout .ant-pro-sider .ant-menu-title-content,
+.ant-pro-layout .ant-pro-sider .ant-menu-title-content > a {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+}
+
+.ant-pro-layout .ant-pro-sider-collapsed .ant-menu-item,
+.ant-pro-layout .ant-pro-sider-collapsed .ant-menu-submenu-title {
+  width: 44px;
+  margin-inline: auto;
+}
+
+.ant-pro-layout .ant-pro-sider-collapsed .ant-pro-base-menu-vertical-item-title {
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  justify-content: center;
+}
+
+.ant-pro-layout .ant-pro-sider-actions-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.ant-pro-layout .ant-pro-sider-actions-collapsed {
+  padding-inline: 0;
+}
+
+.ant-pro-layout .ant-pro-sider-actions-collapsed .ant-pro-sider-actions-list,
+.ant-pro-layout .ant-pro-sider-actions-collapsed .ant-space-item {
+  width: 100%;
 }
 
 .ant-pro-page-container .ant-pro-page-container-warp {
@@ -251,18 +298,40 @@ textarea {
   font-size: 13px;
 }
 
+.ant-pro-sider-collapsed .cqg-theme-button {
+  width: 40px;
+  min-width: 40px;
+  padding-inline: 0;
+  gap: 0;
+}
+
+.ant-pro-sider-collapsed .cqg-theme-label,
+.ant-pro-sider-collapsed .cqg-menu-header-text {
+  display: none;
+}
+
 .cqg-menu-header {
   display: flex;
   align-items: center;
   gap: 10px;
-  min-height: 56px;
-  padding: 10px 16px;
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
 }
 
-.cqg-menu-header > span {
+.cqg-menu-header-text {
   display: grid;
   gap: 1px;
   min-width: 0;
+}
+
+.ant-pro-layout .ant-pro-sider-logo-collapsed {
+  padding-inline: 0;
+}
+
+.ant-pro-sider-collapsed .cqg-menu-header {
+  justify-content: center;
+  gap: 0;
 }
 
 .cqg-menu-header .ant-typography {
