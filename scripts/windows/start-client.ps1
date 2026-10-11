@@ -3,10 +3,53 @@
 param(
     [string]$LogDirectory = 'D:\BuildCache\pingche\logs',
     [string]$ControlPlaneUrl = 'http://127.0.0.1:8080',
-    [ValidateRange(30, 600)][int]$StartupTimeoutSeconds = 240
+    [ValidateRange(30, 600)][int]$StartupTimeoutSeconds = 240,
+    [string]$ExpectedUserSid = '',
+    [bool]$MeterInstallDecisionMade = $false,
+    [bool]$InstallMeter = $false
 )
 
 $ErrorActionPreference = 'Stop'
+
+function Assert-ClientExpectedUser([string]$CurrentSid, [string]$ExpectedSid) {
+    if ($ExpectedSid -and $CurrentSid -ne $ExpectedSid) {
+        throw 'Administrator approval must use the same Windows user as the desktop client.'
+    }
+}
+
+function New-ClientElevationCommand([string]$ScriptPath, [hashtable]$Parameters) {
+    $payload = @{ scriptPath = $ScriptPath; parameters = $Parameters } | ConvertTo-Json -Compress
+    $encodedPayload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($payload))
+    $command = @'
+$ErrorActionPreference = 'Stop'
+$payload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__PAYLOAD__')) | ConvertFrom-Json
+$parameters = @{}
+foreach ($property in $payload.parameters.PSObject.Properties) {
+    $parameters[$property.Name] = $property.Value
+}
+& ([string]$payload.scriptPath) @parameters
+'@.Replace('__PAYLOAD__', $encodedPayload)
+    return [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+}
+
+function Resolve-ClientMeterInstallDecision([bool]$MeterInstalled, [string]$Answer) {
+    if ($MeterInstalled) { return $false }
+    if ($Answer -and $Answer -notmatch '^(y|yes)$') {
+        throw 'Meter installation was cancelled; the desktop client was not started.'
+    }
+    return $true
+}
+
+function Get-ClientElevationFailureMessage([int]$ExitCode) {
+    if ($ExitCode -eq 23) {
+        return 'Administrator approval must use the same Windows user as the desktop client.'
+    }
+    return "Elevated desktop client startup failed (exit code $ExitCode)."
+}
+
+# Dot-sourcing exposes the elevation policy to tests without starting the client.
+if ($MyInvocation.InvocationName -eq '.') { return }
+
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
 $appData = Join-Path $env:APPDATA 'com.codexquotaguard.desktop'
 $serverConfigFile = Join-Path $appData 'server-config.json'
@@ -36,6 +79,64 @@ if ($controlPlaneUri.Host -eq '0.0.0.0') {
     $ControlPlaneUrl = $builder.Uri.GetLeftPart([UriPartial]::Authority)
 }
 $ControlPlaneUrl = ([Uri]$ControlPlaneUrl).GetLeftPart([UriPartial]::Authority)
+
+$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$currentSid = $identity.User.Value
+$differentUserExitCode = 23
+try {
+    Assert-ClientExpectedUser $currentSid $ExpectedUserSid
+} catch {
+    if ($ExpectedUserSid) {
+        [Console]::Error.WriteLine($_.Exception.Message)
+        exit $differentUserExitCode
+    }
+    throw
+}
+
+$runningClient = Get-Process -Name 'codex-quota-guard' -ErrorAction SilentlyContinue |
+    Where-Object MainWindowHandle -NE 0 | Sort-Object StartTime -Descending | Select-Object -First 1
+if ($null -ne $runningClient) {
+    try { (New-Object -ComObject WScript.Shell).AppActivate($runningClient.Id) | Out-Null } catch { }
+    Write-Host "Desktop client is already running (PID $($runningClient.Id))."
+    return
+}
+
+if (-not $MeterInstallDecisionMade) {
+    $meter = Get-Service -Name 'CodexQuotaGuardMeter' -ErrorAction SilentlyContinue
+    if ($null -eq $meter) {
+        Write-Host 'The always-on Rust meter service is not installed.'
+        $answer = Read-Host 'Install it now? Windows will request administrator approval. [Y/n]'
+        $InstallMeter = Resolve-ClientMeterInstallDecision $false $answer
+    }
+    $MeterInstallDecisionMade = $true
+}
+
+$principal = [Security.Principal.WindowsPrincipal]::new($identity)
+if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    $parameters = @{
+        ExpectedUserSid = $currentSid
+        MeterInstallDecisionMade = $true
+        InstallMeter = $InstallMeter
+    }
+    foreach ($name in @('LogDirectory', 'ControlPlaneUrl', 'StartupTimeoutSeconds')) {
+        if ($PSBoundParameters.ContainsKey($name)) { $parameters[$name] = $PSBoundParameters[$name] }
+    }
+    $encodedCommand = New-ClientElevationCommand $PSCommandPath $parameters
+    $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    Write-Host 'Administrator approval is required to start the desktop client.'
+    try {
+        $elevated = Start-Process -FilePath $powershell `
+            -ArgumentList @('-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encodedCommand) `
+            -WorkingDirectory $repositoryRoot -Verb RunAs -WindowStyle Hidden -Wait -PassThru
+    } catch {
+        throw 'Administrator approval was not completed; the desktop client was not started.'
+    }
+    if ($elevated.ExitCode -ne 0) {
+        throw (Get-ClientElevationFailureMessage $elevated.ExitCode)
+    }
+    return
+}
+
 if ($PSBoundParameters.ContainsKey('ControlPlaneUrl')) {
     New-Item -ItemType Directory -Path $appData -Force | Out-Null
     [IO.File]::WriteAllText($serverConfigFile,
@@ -48,14 +149,6 @@ function Require-Command([string]$Name) {
         throw "Required command was not found: $Name"
     }
     return $command.Source
-}
-
-$runningClient = Get-Process -Name 'codex-quota-guard' -ErrorAction SilentlyContinue |
-    Where-Object MainWindowHandle -NE 0 | Sort-Object StartTime -Descending | Select-Object -First 1
-if ($null -ne $runningClient) {
-    try { (New-Object -ComObject WScript.Shell).AppActivate($runningClient.Id) | Out-Null } catch { }
-    Write-Host "Desktop client is already running (PID $($runningClient.Id))."
-    return
 }
 
 $rendererListener = Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue |
@@ -76,17 +169,7 @@ try {
 }
 
 # Prepare the independent meter before compiling or opening the desktop UI.
-$meter = Get-Service -Name 'CodexQuotaGuardMeter' -ErrorAction SilentlyContinue
-$installMeter = $false
-if ($null -eq $meter) {
-    Write-Host 'The always-on Rust meter service is not installed.'
-    $answer = Read-Host 'Install it now? Windows will request administrator approval. [Y/n]'
-    if ($answer -and $answer -notmatch '^(y|yes)$') {
-        throw 'Meter installation was cancelled; the desktop client was not started.'
-    }
-    $installMeter = $true
-}
-& (Join-Path $PSScriptRoot 'ensure-meter-service.ps1') -ServerUrl $ControlPlaneUrl -InstallIfMissing:$installMeter
+& (Join-Path $PSScriptRoot 'ensure-meter-service.ps1') -ServerUrl $ControlPlaneUrl -InstallIfMissing:$InstallMeter
 
 $javaHome = Split-Path -Parent (Split-Path -Parent $java)
 $javaw = Join-Path $javaHome 'bin\javaw.exe'

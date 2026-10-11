@@ -23,10 +23,60 @@ function Normalize-MeterServerUrl([string]$Url) {
     return $parsed.GetLeftPart([UriPartial]::Authority)
 }
 
+function Get-MeterBinaryVersion([string]$Path) {
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $Path
+    $startInfo.Arguments = '--version'
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $probe = [Diagnostics.Process]::Start($startInfo)
+    try {
+        if (-not $probe.WaitForExit(10000)) {
+            $probe.Kill()
+            $probe.WaitForExit()
+            throw 'The bundled meter executable did not finish its startup check.'
+        }
+        if ($probe.ExitCode -ne 0) {
+            throw 'The bundled meter executable cannot run on this computer.'
+        }
+        $output = $probe.StandardOutput.ReadToEnd().Trim()
+        if ($output -notmatch '^quota-guard-meter (\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$') {
+            throw 'The bundled meter executable did not report a valid version.'
+        }
+        return $Matches[1]
+    } finally {
+        $probe.Dispose()
+    }
+}
+
+function Get-MeterBinaryIdentity([string]$Path) {
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw 'The meter executable was not found.'
+    }
+    return @{
+        binaryHash = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+        binaryVersion = Get-MeterBinaryVersion $Path
+    }
+}
+
+function Write-MeterConnection([string]$Path, [string]$Url, $Identity) {
+    $record = @{
+        serverUrl = $Url
+        binaryHash = $Identity.binaryHash
+        binaryVersion = $Identity.binaryVersion
+    }
+    [IO.File]::WriteAllText($Path, ($record | ConvertTo-Json -Compress),
+        [Text.UTF8Encoding]::new($false))
+}
+
 function Get-MeterStartupAction([string]$State, [string]$InstalledUrl, [string]$SelectedUrl,
-        [string]$InstalledHash = '', [string]$BundledHash = '') {
+        [string]$InstalledHash = '', [string]$BundledHash = '', [string]$VerifiedInstalledHash = '') {
     if (-not $State) { return 'INSTALL' }
-    if ($BundledHash -and $InstalledHash -ne $BundledHash) { return 'UPGRADE' }
+    if (-not $InstalledUrl) { return 'CONFIGURE' }
+    if ($BundledHash -and (($VerifiedInstalledHash -and $VerifiedInstalledHash -ne $BundledHash) -or
+            (-not $VerifiedInstalledHash -and $InstalledHash -ne $BundledHash))) { return 'UPGRADE' }
     if ($InstalledUrl -ne $SelectedUrl) { return 'CONFIGURE' }
     if ($State -eq 'Running') { return 'READY' }
     return 'START'
@@ -72,9 +122,10 @@ $bundledBinary = Join-Path $PSScriptRoot 'quota-guard-meter.exe'
 if (-not (Test-Path -LiteralPath $bundledBinary -PathType Leaf)) {
     $bundledBinary = Join-Path $repositoryRoot 'apps\client\frontend\src-tauri\resources\meter\quota-guard-meter.exe'
 }
-$bundledHash = if (Test-Path -LiteralPath $bundledBinary -PathType Leaf) {
-    (Get-FileHash -LiteralPath $bundledBinary -Algorithm SHA256).Hash
-} else { '' }
+$bundledIdentity = if (Test-Path -LiteralPath $bundledBinary -PathType Leaf) {
+    Get-MeterBinaryIdentity $bundledBinary
+} else { $null }
+$bundledHash = if ($bundledIdentity) { $bundledIdentity.binaryHash } else { '' }
 $installedUrl = ''
 $installedHash = ''
 if (Test-Path -LiteralPath $connectionFile -PathType Leaf) {
@@ -88,8 +139,29 @@ if (Test-Path -LiteralPath $connectionFile -PathType Leaf) {
 }
 $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
 $state = if ($service) { [string]$service.Status } else { '' }
-$action = Get-MeterStartupAction $state $installedUrl $ServerUrl $installedHash $bundledHash
+$verifiedInstalledHash = ''
+$registered = $null
+$binaryPath = ''
+$configPath = ''
+if ($service -and $bundledHash) {
+    try {
+        $registeredImage = (Get-CimInstance Win32_Service -Filter "Name='$serviceName'").PathName
+        if ($registeredImage -match '^\s*"?(.+?quota-guard-meter\.exe)"?\s+service\s+--config\s+') {
+            $actualBinary = [IO.Path]::GetFullPath($Matches[1])
+            $verifiedInstalledHash = (Get-FileHash -LiteralPath $actualBinary -Algorithm SHA256).Hash
+            $installedHash = $verifiedInstalledHash
+        }
+    } catch {
+        # A standard user may not read the protected binary. Retain the last
+        # installation record until the elevated installer can verify it.
+    }
+}
+$action = Get-MeterStartupAction $state $installedUrl $ServerUrl $installedHash $bundledHash $verifiedInstalledHash
 if ($action -eq 'READY') {
+    if ($bundledIdentity -and $verifiedInstalledHash -eq $bundledHash -and
+        [string]$connection.binaryVersion -ne $bundledIdentity.binaryVersion) {
+        Write-MeterConnection $connectionFile $ServerUrl $bundledIdentity
+    }
     Write-Host "Meter service is running: $serviceName ($ServerUrl)"
     return
 }
@@ -128,9 +200,9 @@ if (-not $isAdmin) {
 if ($action -eq 'INSTALL') {
     $installer = Join-Path $PSScriptRoot 'install-meter-service.ps1'
     if (Test-Path -LiteralPath $bundledBinary -PathType Leaf) {
-        & $installer -ServerUrl $ServerUrl -BinaryPath $bundledBinary
+        & $installer -ServerUrl $ServerUrl -BinaryPath $bundledBinary -ExpectedUserSid $ExpectedUserSid
     } else {
-        & $installer -ServerUrl $ServerUrl
+        & $installer -ServerUrl $ServerUrl -ExpectedUserSid $ExpectedUserSid
     }
 } else {
     $registered = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
@@ -151,7 +223,7 @@ if ($action -eq 'INSTALL') {
         throw 'This meter service belongs to a different Windows profile.'
     }
     if ($action -eq 'UPGRADE') {
-        & (Join-Path $PSScriptRoot 'install-meter-service.ps1') -ServerUrl $ServerUrl -BinaryPath $bundledBinary
+        & (Join-Path $PSScriptRoot 'install-meter-service.ps1') -ServerUrl $ServerUrl -BinaryPath $bundledBinary -ExpectedUserSid $ExpectedUserSid
         Write-Host 'Meter service executable updated.'
     } else {
         $oldConfig = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
@@ -180,7 +252,15 @@ if ($action -eq 'INSTALL') {
 }
 
 New-Item -ItemType Directory -Path $appData -Force | Out-Null
-[IO.File]::WriteAllText($connectionFile,
-    (@{serverUrl = $ServerUrl; binaryHash = $bundledHash} | ConvertTo-Json -Compress),
-    [Text.UTF8Encoding]::new($false))
+if ($action -eq 'INSTALL') {
+    # The installer already wrote the identity of the binary it actually installed.
+    Write-Host "Meter service is running: $serviceName ($ServerUrl)"
+    return
+}
+$recordedIdentity = if ($bundledIdentity) { $bundledIdentity } else {
+    # Source-tree runs may have an existing service without a packaged binary.
+    # Record the installed executable instead of erasing its hash and version.
+    Get-MeterBinaryIdentity $binaryPath
+}
+Write-MeterConnection $connectionFile $ServerUrl $recordedIdentity
 Write-Host "Meter service is running: $serviceName ($ServerUrl)"

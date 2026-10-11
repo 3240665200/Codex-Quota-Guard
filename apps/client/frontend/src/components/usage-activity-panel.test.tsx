@@ -22,11 +22,16 @@ const status = {
     lastScanEpochSeconds: 1791504000,
     lastReportEpochSeconds: 1791504000,
     reportedEvents: 2,
+    version: "0.1.1",
     errorCode: null,
   },
   pairingState: "PAIRING_SENT",
 } as const;
-function view(userId = "user-a", override?: UsageStatus) {
+function view(
+  userId = "user-a",
+  override?: UsageStatus,
+  onStart: () => void = vi.fn(),
+) {
   return (
     <QueryClientProvider
       client={
@@ -46,7 +51,7 @@ function view(userId = "user-a", override?: UsageStatus) {
         starting={false}
         onScan={vi.fn()}
         onPair={vi.fn()}
-        onStart={vi.fn()}
+        onStart={onStart}
       />
     </QueryClientProvider>
   );
@@ -70,6 +75,13 @@ describe("UsageActivityPanel", () => {
   beforeEach(() => {
     invokeMock.mockReset();
     invokeMock.mockImplementation(async (command) => {
+      if (command === "meter_service_version")
+        return {
+          installedVersion: "0.1.1",
+          bundledVersion: "0.1.1",
+          needsUpgrade: false,
+          status: "CURRENT",
+        };
       if (command === "usage_events") return ledger;
       if (command === "usage_analytics")
         return {
@@ -106,6 +118,7 @@ describe("UsageActivityPanel", () => {
               reportedTokens: 12500,
               heartbeatSent: false,
               errorCode: null,
+              ccSwitchGuard: null,
             },
           ],
         };
@@ -132,6 +145,130 @@ describe("UsageActivityPanel", () => {
     expect(
       screen.queryByText(/OVERSIZED_JSONL_RECORD、OVERSIZED_JSONL_RECORD/),
     ).not.toBeInTheDocument();
+  });
+
+  it("shows CC Switch guard actions in the runtime log", async () => {
+    const original = invokeMock.getMockImplementation();
+    invokeMock.mockImplementation(async (command, args) => {
+      if (command === "meter_runtime_logs") {
+        return {
+          state: "READY",
+          skippedLines: 0,
+          entries: [
+            {
+              atEpochSeconds: 1791504000,
+              kind: "GUARD_TERMINATED",
+              state: null,
+              reportedEvents: 0,
+              reportedTokens: 0,
+              heartbeatSent: false,
+              errorCode: null,
+              ccSwitchGuard: "TERMINATED",
+            },
+          ],
+        };
+      }
+      return original?.(command, args);
+    });
+    render(view());
+    await userEvent.click(screen.getByRole("tab", { name: "运行诊断" }));
+    expect(await screen.findByText("已结束 CC Switch")).toBeVisible();
+    expect(screen.getByText(/守卫：TERMINATED/)).toBeVisible();
+  });
+
+  it("warns when the installed statistics program is older than the bundled version", async () => {
+    const onStart = vi.fn();
+    invokeMock.mockImplementation(async (command) => {
+      if (command === "meter_service_version")
+        return {
+          installedVersion: "0.1.0",
+          bundledVersion: "0.1.1",
+          needsUpgrade: true,
+          status: "UPGRADE_REQUIRED",
+        };
+      throw new Error("Unexpected command");
+    });
+    render(view("user-a", undefined, onStart));
+    const warning = (await screen.findByText("统计程序需要更新")).closest(
+      '[role="alert"]',
+    );
+    expect(warning).toHaveTextContent("运行版本 0.1.1");
+    expect(warning).toHaveTextContent("已安装版本 0.1.0");
+    expect(warning).toHaveTextContent("安装包版本 0.1.1");
+    await userEvent.click(screen.getByRole("button", { name: "更新统计程序" }));
+    expect(onStart).toHaveBeenCalledOnce();
+    await userEvent.click(screen.getByRole("tab", { name: "运行诊断" }));
+    expect(screen.getByText("0.1.0")).toBeVisible();
+    expect(screen.getAllByText("0.1.1")).toHaveLength(2);
+  });
+
+  it("does not treat an unknown installed version as current", async () => {
+    const onStart = vi.fn();
+    invokeMock.mockImplementation(async (command) => {
+      if (command === "meter_service_version")
+        return {
+          installedVersion: null,
+          bundledVersion: "0.1.1",
+          needsUpgrade: null,
+          status: "UNKNOWN",
+        };
+      throw new Error("Unexpected command");
+    });
+    render(view("user-a", undefined, onStart));
+    expect(await screen.findByText("统计程序运行版本待确认")).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "检查并修复" }));
+    expect(onStart).toHaveBeenCalledOnce();
+    await userEvent.click(screen.getByRole("tab", { name: "运行诊断" }));
+    expect(await screen.findByText(/无法确认当前版本/)).toBeVisible();
+    expect(screen.queryByText("统计程序需要更新")).not.toBeInTheDocument();
+  });
+
+  it("requests an update when hashes differ even if version numbers match", async () => {
+    invokeMock.mockImplementation(async (command) => {
+      if (command === "meter_service_version")
+        return {
+          installedVersion: "0.1.1",
+          bundledVersion: "0.1.1",
+          needsUpgrade: true,
+          status: "UPGRADE_REQUIRED",
+        };
+      throw new Error("Unexpected command");
+    });
+    render(view());
+    const warning = (await screen.findByText("统计程序需要更新")).closest(
+      '[role="alert"]',
+    );
+    expect(warning).toHaveTextContent("版本号相同，但程序文件校验不一致");
+    expect(screen.getByText("需升级")).toBeVisible();
+  });
+
+  it("does not mark a healthy-looking old process as current without its runtime version", async () => {
+    render(
+      view("user-a", {
+        ...status,
+        fallback: { ...status.fallback, issues: [] },
+        service: { ...status.service, version: null },
+      }),
+    );
+    expect(await screen.findByText("统计程序运行版本待确认")).toBeVisible();
+    expect(screen.getByText(/后台尚未收到运行版本/)).toBeVisible();
+    await userEvent.click(screen.getByRole("tab", { name: "运行诊断" }));
+    expect(screen.getByText("旧版/未知")).toBeVisible();
+  });
+
+  it("detects an old running process even when the installed file is current", async () => {
+    render(
+      view("user-a", {
+        ...status,
+        fallback: { ...status.fallback, issues: [] },
+        service: { ...status.service, version: "0.1.0" },
+      }),
+    );
+    expect(await screen.findByText("统计程序运行版本待确认")).toBeVisible();
+    expect(screen.getByText(/运行版本 0.1.0 与已安装版本 0.1.1/)).toBeVisible();
+    await userEvent.click(screen.getByRole("tab", { name: "运行诊断" }));
+    expect(screen.getByText("0.1.0")).toBeVisible();
+    expect(screen.getAllByText("0.1.1")).toHaveLength(2);
   });
 
   it("explains a rejected usage request without reporting a network outage", async () => {

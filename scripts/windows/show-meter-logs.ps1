@@ -9,7 +9,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath($LogDirectory)
 if (-not (Test-Path -LiteralPath $root -PathType Container)) {
-    throw '计费服务日志目录不存在；请确认已安装并启动带日志功能的新版 Rust 服务。'
+    throw '统计程序日志目录不存在；请确认已安装并启动带日志功能的新版 Rust 服务。'
 }
 
 $files = @()
@@ -18,8 +18,10 @@ for ($index = 5; $index -ge 1; $index--) {
 }
 $files += Join-Path $root 'meter.jsonl'
 $allowedKinds = @('SERVICE_STARTED', 'SERVICE_STOPPED', 'BASELINE_READY',
-    'UNPAIRED', 'USAGE_REPORTED', 'HEARTBEAT', 'ERROR', 'STATUS_CHANGE')
+    'UNPAIRED', 'USAGE_REPORTED', 'HEARTBEAT', 'ERROR', 'STATUS_CHANGE',
+    'GUARD_ACTIVE', 'GUARD_INACTIVE', 'GUARD_DETECTED', 'GUARD_TERMINATED', 'GUARD_ERROR')
 $allowedStates = @('BASELINE_READY', 'UNPAIRED', 'UP_TO_DATE', 'REPORTED', 'ERROR')
+$allowedGuards = @('INACTIVE', 'CLEAR', 'TERMINATED', 'ERROR')
 $recent = [System.Collections.Generic.Queue[object]]::new()
 $skipped = 0
 $found = $false
@@ -30,7 +32,7 @@ foreach ($path in $files) {
     try {
         $lines = Get-Content -LiteralPath $path -ErrorAction Stop
     } catch {
-        throw '无法读取计费服务日志；请以管理员身份运行 PowerShell。'
+        throw '无法读取统计程序日志；请以管理员身份运行 PowerShell。'
     }
     foreach ($line in $lines) {
         if (-not $line -or $line.Length -gt 4096) { $skipped++; continue }
@@ -39,9 +41,11 @@ foreach ($path in $files) {
             $kind = [string]$entry.kind
             $timestamp = [long]$entry.atEpochSeconds
             if ($kind -notin $allowedKinds -or $timestamp -le 0) { throw 'invalid entry' }
-            if ($ErrorsOnly -and $kind -ne 'ERROR') { continue }
+            if ($ErrorsOnly -and $kind -notin @('ERROR', 'GUARD_ERROR')) { continue }
             $state = [string]$entry.state
             if ($state -notin $allowedStates) { $state = '' }
+            $guard = [string]$entry.ccSwitchGuard
+            if ($guard -notin $allowedGuards) { $guard = '' }
             $errorCode = [string]$entry.errorCode
             if ($errorCode -notmatch '^[A-Z_]{1,64}$') { $errorCode = '' }
             $count = [long]$entry.reportedEvents
@@ -52,6 +56,7 @@ foreach ($path in $files) {
                 Time = $when.ToString('yyyy-MM-dd HH:mm:ss zzz')
                 Kind = $kind
                 State = $state
+                CcSwitchGuard = $guard
                 Events = $count
                 Tokens = $tokens
                 Heartbeat = [bool]$entry.heartbeatSent
@@ -64,6 +69,6 @@ foreach ($path in $files) {
     }
 }
 
-if (-not $found) { Write-Warning '尚无计费服务日志。' }
+if (-not $found) { Write-Warning '尚无统计程序日志。' }
 if ($skipped -gt 0) { Write-Warning "已跳过 $skipped 条损坏或不支持的日志记录。" }
 $recent.ToArray()

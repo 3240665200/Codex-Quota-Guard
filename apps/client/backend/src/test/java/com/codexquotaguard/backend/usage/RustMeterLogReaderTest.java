@@ -45,6 +45,22 @@ class RustMeterLogReaderTest {
         assertThat(result.skippedLines()).isEqualTo(2);
     }
 
+    @Test
+    void exposesOnlyFixedGuardEventsAndStatesWithoutRawProcessDetails() throws Exception {
+        Files.writeString(directory.resolve("meter.jsonl"),
+                "{\"atEpochSeconds\":100,\"kind\":\"GUARD_TERMINATED\",\"reportedEvents\":0,"
+                + "\"reportedTokens\":0,\"ccSwitchGuard\":\"TERMINATED\","
+                + "\"processPath\":\"C:/secret/cc-switch.exe\"}\n"
+                + "{\"atEpochSeconds\":101,\"kind\":\"GUARD_ERROR\",\"reportedEvents\":0,"
+                + "\"reportedTokens\":0,\"ccSwitchGuard\":\"untrusted-value\"}\n");
+        var result = new RustMeterLogReader(new ObjectMapper(), directory.toString()).read();
+        assertThat(result.entries()).hasSize(2);
+        assertThat(result.entries().get(1).kind()).isEqualTo("GUARD_TERMINATED");
+        assertThat(result.entries().get(1).ccSwitchGuard()).isEqualTo("TERMINATED");
+        assertThat(result.entries().get(0).ccSwitchGuard()).isNull();
+        assertThat(new ObjectMapper().writeValueAsString(result)).doesNotContain("C:/secret", "untrusted-value");
+    }
+
     private static String entry(int at, String kind, long tokens, String error) {
         return "{\"atEpochSeconds\":" + at + ",\"kind\":\"" + kind
                 + "\",\"state\":\"REPORTED\",\"reportedEvents\":1,\"reportedTokens\":" + tokens

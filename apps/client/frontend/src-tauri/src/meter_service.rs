@@ -48,6 +48,10 @@ fn setup_failure_message(bytes: &[u8]) -> Option<String> {
             | "EXISTING_SERVICE_CHECK"
             | "BINARY_CHECK"
             | "PREPARE_FILES"
+            | "STAGE_BINARY"
+            | "SERVICE_STOP"
+            | "REPLACE_BINARY"
+            | "VERIFY_INSTALL"
             | "PROTECT_FILES"
             | "SERVICE_REGISTER"
             | "SERVICE_RECOVERY"
@@ -62,14 +66,20 @@ fn setup_failure_message(bytes: &[u8]) -> Option<String> {
         .and_then(serde_json::Value::as_str)
         .unwrap_or("");
     let specific = match reason {
+        "SERVICE_VERIFICATION_FAILED" => {
+            Some("统计程序升级后的服务路径、版本或校验值未通过核验，请重试更新。")
+        }
         "SERVER_URL_INVALID" => Some("服务器地址格式无效，请填写完整的 http 或 https 地址。"),
         "INSTALL_DIRECTORY_UNAVAILABLE" => {
             Some("无法访问 Windows 提供的服务安装目录，请检查目录权限。")
         }
-        "BUNDLED_BINARY_MISSING" => Some("安装包中的计费程序未找到，请重新安装完整安装包。"),
-        "EXISTING_CONFIGURATION_INVALID" => Some("无法读取现有计费服务配置，请检查服务安装目录。"),
+        "ROLLBACK_FAILED" => Some(
+            "升级失败且旧版统计程序未能自动恢复，请在 Windows 服务中检查 CodexQuotaGuardMeter。",
+        ),
+        "BUNDLED_BINARY_MISSING" => Some("安装包中的统计程序未找到，请重新安装完整安装包。"),
+        "EXISTING_CONFIGURATION_INVALID" => Some("无法读取现有统计程序配置，请检查服务安装目录。"),
         "WINDOWS_PROFILE_MISMATCH" => {
-            Some("现有计费服务属于其他 Windows 用户或设备，不能直接改绑。")
+            Some("现有统计程序属于其他 Windows 用户或设备，不能直接改绑。")
         }
         _ => None,
     };
@@ -81,16 +91,19 @@ fn setup_failure_message(bytes: &[u8]) -> Option<String> {
         "CONFIG_VALIDATE" => "安装配置无效，请检查服务器地址或现有服务的用户归属。",
         "SERVER_URL_VALIDATE" => "安装程序无法解析服务器地址，请检查已保存的地址。",
         "INSTALL_DIRECTORY" => "Windows 服务安装目录不可用，请检查系统目录权限。",
-        "SOURCE_BINARY" => "无法找到随包计费程序，请重新安装完整安装包。",
-        "EXISTING_SERVICE_CHECK" => "现有计费服务配置无法读取，请检查服务安装目录。",
-        "BINARY_CHECK" => "计费程序无法在这台电脑运行，请重新安装最新版客户端。",
-        "PREPARE_FILES" => "无法准备计费服务文件，请检查安装目录权限与设备绑定。",
-        "PROTECT_FILES" => "无法设置计费服务目录权限，请检查 Windows 安全策略。",
+        "SOURCE_BINARY" => "无法找到随包统计程序，请重新安装完整安装包。",
+        "EXISTING_SERVICE_CHECK" => "现有统计程序配置无法读取，请检查服务安装目录。",
+        "BINARY_CHECK" => "统计程序无法在这台电脑运行，请重新安装最新版客户端。",
+        "PREPARE_FILES" => "无法准备统计程序文件，请检查安装目录权限与设备绑定。",
+        "STAGE_BINARY" => "无法准备新版统计程序文件，旧版未受影响。",
+        "SERVICE_STOP" => "无法停止旧版统计程序，请检查 Windows 服务状态。",
+        "REPLACE_BINARY" => "无法替换旧版统计程序，请检查安装目录权限。",
+        "PROTECT_FILES" => "无法设置统计程序目录权限，请检查 Windows 安全策略。",
         "SERVICE_REGISTER" => "Windows 服务注册失败，请检查管理员权限及安全软件拦截。",
-        "SERVICE_RECOVERY" => "无法设置计费服务的自动恢复，请检查 Windows 服务策略。",
-        "SERVICE_START" => "计费服务已注册但启动失败，请重新安装最新版后点击重试。",
+        "SERVICE_RECOVERY" => "无法设置统计程序的自动恢复，请检查 Windows 服务策略。",
+        "SERVICE_START" => "统计程序已注册但启动失败，请重新安装最新版后点击重试。",
         "SCRIPT_START" => "无法运行安装程序，请检查 Windows PowerShell 是否被禁用。",
-        "INSTALL_TIMEOUT" => "计费服务安装超时，请检查 Windows 服务状态后重试。",
+        "INSTALL_TIMEOUT" => "统计程序安装超时，请检查 Windows 服务状态后重试。",
         _ => return None,
     };
     Some(format!("{message}（{stage}）"))
@@ -108,6 +121,41 @@ pub(crate) fn setup_error(app: &tauri::AppHandle) -> Option<String> {
         return None;
     }
     setup_failure_message(&std::fs::read(file).ok()?)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub(crate) enum MeterVersionState {
+    Current,
+    UpgradeRequired,
+    NotInstalled,
+    Unknown,
+    #[cfg(not(windows))]
+    Unsupported,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MeterVersionStatus {
+    pub installed_version: Option<String>,
+    pub bundled_version: Option<String>,
+    pub needs_upgrade: Option<bool>,
+    pub status: MeterVersionState,
+}
+
+#[cfg(windows)]
+pub(crate) fn version_status(app: &tauri::AppHandle) -> MeterVersionStatus {
+    windows::version_status(app)
+}
+
+#[cfg(not(windows))]
+pub(crate) fn version_status(_app: &tauri::AppHandle) -> MeterVersionStatus {
+    MeterVersionStatus {
+        installed_version: None,
+        bundled_version: None,
+        needs_upgrade: None,
+        status: MeterVersionState::Unsupported,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -157,6 +205,9 @@ trait InstallOps {
     }
     fn has_admin_rights(&self) -> bool;
     fn install(&self) -> bool;
+    fn install_elevated(&self) -> Result<bool, ()> {
+        Err(())
+    }
 }
 
 fn ensure_with_install(ops: &impl ServiceOps, installer: &impl InstallOps) -> MeterStartOutcome {
@@ -172,9 +223,15 @@ fn ensure_with_install(ops: &impl ServiceOps, installer: &impl InstallOps) -> Me
         return MeterStartOutcome::NotInstalled;
     }
     if !installer.has_admin_rights() {
-        return MeterStartOutcome::NeedsAdmin;
+        return match installer.install_elevated() {
+            Ok(true) if ops.wait_running() && !installer.needs_configuration() => {
+                MeterStartOutcome::Installed
+            }
+            Ok(_) => MeterStartOutcome::InstallFailed,
+            Err(()) => MeterStartOutcome::NeedsAdmin,
+        };
     }
-    if !installer.install() || !ops.wait_running() {
+    if !installer.install() || !ops.wait_running() || installer.needs_configuration() {
         return MeterStartOutcome::InstallFailed;
     }
     MeterStartOutcome::Installed
@@ -240,7 +297,9 @@ pub(crate) fn ensure_running_or_install(_app: &tauri::AppHandle) -> MeterStartOu
 
 #[cfg(windows)]
 mod windows {
-    use super::{InstallOps, ServiceOps, ServiceState, StartAttempt};
+    use super::{
+        InstallOps, MeterVersionState, MeterVersionStatus, ServiceOps, ServiceState, StartAttempt,
+    };
     use sha2::{Digest, Sha256};
     use std::ffi::{OsStr, OsString};
     use std::fs;
@@ -249,28 +308,37 @@ mod windows {
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
     use std::os::windows::process::CommandExt;
     use std::path::{Path, PathBuf};
-    use std::process::Command;
+    use std::process::{Command, Stdio};
     use std::ptr;
     use std::thread;
     use std::time::{Duration, Instant};
     use tauri::{path::BaseDirectory, AppHandle, Manager};
     use windows_sys::Win32::Foundation::{
-        GetLastError, ERROR_ACCESS_DENIED, ERROR_SERVICE_ALREADY_RUNNING,
-        ERROR_SERVICE_DOES_NOT_EXIST,
+        CloseHandle, GetLastError, LocalFree, ERROR_ACCESS_DENIED, ERROR_CANCELLED,
+        ERROR_SERVICE_ALREADY_RUNNING, ERROR_SERVICE_DOES_NOT_EXIST, WAIT_OBJECT_0,
     };
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
     use windows_sys::Win32::System::Services::{
-        CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatusEx, StartServiceW,
-        SC_HANDLE, SC_MANAGER_CONNECT, SC_MANAGER_CREATE_SERVICE, SC_STATUS_PROCESS_INFO,
+        CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceConfigW,
+        QueryServiceStatusEx, StartServiceW, QUERY_SERVICE_CONFIGW, SC_HANDLE, SC_MANAGER_CONNECT,
+        SC_MANAGER_CREATE_SERVICE, SC_STATUS_PROCESS_INFO, SERVICE_QUERY_CONFIG,
         SERVICE_QUERY_STATUS, SERVICE_RUNNING, SERVICE_START, SERVICE_START_PENDING,
         SERVICE_STATUS_PROCESS, SERVICE_STOPPED, SERVICE_STOP_PENDING,
     };
     use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
-    use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
-    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcess, GetExitCodeProcess, OpenProcessToken, WaitForSingleObject,
+        CREATE_NO_WINDOW,
+    };
+    use windows_sys::Win32::UI::Shell::{
+        ShellExecuteExW, ShellExecuteW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
+    };
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
     const SERVICE_NAME: &str = "CodexQuotaGuardMeter";
     const WAIT_TIMEOUT: Duration = Duration::from_secs(12);
+    const VERSION_TIMEOUT: Duration = Duration::from_secs(2);
 
     pub(super) struct WindowsServiceOps;
 
@@ -312,6 +380,117 @@ mod windows {
         }
     }
 
+    fn valid_version(version: &str) -> bool {
+        if version.is_empty()
+            || version.len() > 40
+            || !version
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+'))
+        {
+            return false;
+        }
+        let core = version.split(['-', '+']).next().unwrap_or("");
+        let parts: Vec<_> = core.split('.').collect();
+        parts.len() == 3
+            && parts
+                .iter()
+                .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+    }
+
+    fn parse_binary_version(output: &[u8]) -> Option<String> {
+        let stdout = std::str::from_utf8(output).ok()?.trim();
+        let version = stdout.strip_prefix("quota-guard-meter ")?;
+        valid_version(version).then(|| version.to_owned())
+    }
+
+    fn binary_version(path: &Path) -> Option<String> {
+        let mut child = Command::new(path)
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .ok()?;
+        let deadline = Instant::now() + VERSION_TIMEOUT;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(20)),
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+            }
+        };
+        if !status.success() {
+            return None;
+        }
+        let mut output = Vec::new();
+        child
+            .stdout
+            .take()?
+            .take(129)
+            .read_to_end(&mut output)
+            .ok()?;
+        (output.len() <= 128)
+            .then(|| parse_binary_version(&output))
+            .flatten()
+    }
+
+    fn compare_versions(
+        service_state: ServiceState,
+        installed_hash: Option<&str>,
+        bundled_hash: Option<&str>,
+    ) -> (Option<bool>, MeterVersionState) {
+        match service_state {
+            ServiceState::Missing => (None, MeterVersionState::NotInstalled),
+            _ => match installed_hash.zip(bundled_hash) {
+                Some((installed, bundled)) if !installed.eq_ignore_ascii_case(bundled) => {
+                    (Some(true), MeterVersionState::UpgradeRequired)
+                }
+                Some(_) if service_state == ServiceState::Failed => {
+                    (None, MeterVersionState::Unknown)
+                }
+                Some(_) => (Some(false), MeterVersionState::Current),
+                None => (None, MeterVersionState::Unknown),
+            },
+        }
+    }
+
+    pub(super) fn version_status(app: &AppHandle) -> MeterVersionStatus {
+        let installer = WindowsInstaller::new(app);
+        let bundled = installer.resource("quota-guard-meter.exe");
+        let bundled_version = bundled.as_deref().and_then(binary_version);
+        let bundled_hash = bundled.as_deref().and_then(sha256_file_hex);
+        let service_state = WindowsServiceOps.state();
+        if service_state == ServiceState::Missing {
+            return MeterVersionStatus {
+                installed_version: None,
+                bundled_version,
+                needs_upgrade: None,
+                status: MeterVersionState::NotInstalled,
+            };
+        }
+        // Read the registered service executable itself instead of trusting a
+        // cached install record: the file may have been replaced independently.
+        let installed_binary = service_binary_path();
+        let installed_version = installed_binary.as_deref().and_then(binary_version);
+        let installed_hash = installed_binary.as_deref().and_then(sha256_file_hex);
+        let (needs_upgrade, status) = compare_versions(
+            service_state,
+            installed_hash.as_deref(),
+            bundled_hash.as_deref(),
+        );
+        MeterVersionStatus {
+            installed_version,
+            bundled_version,
+            needs_upgrade,
+            status,
+        }
+    }
+
     fn sha256_file_hex(path: &Path) -> Option<String> {
         let mut file = fs::File::open(path).ok()?;
         let mut hasher = Sha256::new();
@@ -324,6 +503,86 @@ mod windows {
             hasher.update(&buffer[..bytes_read]);
         }
         Some(format!("{:x}", hasher.finalize()))
+    }
+
+    fn system_powershell() -> Option<PathBuf> {
+        let mut path = system_directory()?;
+        path.push("WindowsPowerShell");
+        path.push("v1.0");
+        path.push("powershell.exe");
+        path.is_file().then_some(path)
+    }
+
+    fn current_user_sid() -> Option<String> {
+        let mut token = ptr::null_mut();
+        // SAFETY: GetCurrentProcess returns a pseudo-handle valid for this call.
+        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+            return None;
+        }
+        let result = (|| {
+            let mut length = 0u32;
+            // SAFETY: The first call only requests the required buffer length.
+            unsafe { GetTokenInformation(token, TokenUser, ptr::null_mut(), 0, &mut length) };
+            if length < size_of::<TOKEN_USER>() as u32 || length > 4096 {
+                return None;
+            }
+            let words = (length as usize).div_ceil(size_of::<usize>());
+            let mut buffer = vec![0usize; words];
+            // SAFETY: The aligned buffer is at least `length` bytes long.
+            if unsafe {
+                GetTokenInformation(
+                    token,
+                    TokenUser,
+                    buffer.as_mut_ptr().cast(),
+                    length,
+                    &mut length,
+                )
+            } == 0
+            {
+                return None;
+            }
+            // SAFETY: A successful TokenUser query writes this structure into the buffer.
+            let user = unsafe { &*(buffer.as_ptr().cast::<TOKEN_USER>()) };
+            let mut sid_text = ptr::null_mut();
+            // SAFETY: The returned SID points into `buffer`; the API allocates sid_text.
+            if unsafe { ConvertSidToStringSidW(user.User.Sid, &mut sid_text) } == 0 {
+                return None;
+            }
+            let mut count = 0usize;
+            // SAFETY: ConvertSidToStringSidW returns a NUL-terminated string.
+            while count < 256 && unsafe { *sid_text.add(count) } != 0 {
+                count += 1;
+            }
+            let parsed = (count < 256).then(|| {
+                // SAFETY: `count` was bounded by the NUL terminator above.
+                String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(sid_text, count) })
+            });
+            // SAFETY: sid_text was allocated by ConvertSidToStringSidW.
+            unsafe { LocalFree(sid_text.cast()) };
+            parsed.filter(|sid| sid.starts_with("S-1-") && sid.len() < 256)
+        })();
+        // SAFETY: token was opened successfully above.
+        unsafe { CloseHandle(token) };
+        result
+    }
+
+    fn powershell_quote(value: &str) -> String {
+        format!("\"{}\"", value.replace('"', "\\\""))
+    }
+
+    fn powershell_install_parameters(
+        script: &Path,
+        binary: &Path,
+        server_url: &str,
+        expected_user_sid: &str,
+    ) -> String {
+        format!(
+            "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {} -BinaryPath {} -ServerUrl {} -ExpectedUserSid {}",
+            powershell_quote(&script.to_string_lossy()),
+            powershell_quote(&binary.to_string_lossy()),
+            powershell_quote(server_url),
+            powershell_quote(expected_user_sid)
+        )
     }
 
     impl InstallOps for WindowsInstaller {
@@ -339,6 +598,15 @@ mod windows {
             let Some(bundled_hash) = sha256_file_hex(&binary) else {
                 return true;
             };
+            let Some(installed_binary) = service_binary_path() else {
+                return true;
+            };
+            let Some(installed_hash) = sha256_file_hex(&installed_binary) else {
+                return true;
+            };
+            if !installed_hash.eq_ignore_ascii_case(&bundled_hash) {
+                return true;
+            }
             let Ok(directory) = self.app.path().app_data_dir() else {
                 return true;
             };
@@ -368,20 +636,13 @@ mod windows {
         }
 
         fn install(&self) -> bool {
-            let (Some(script), Some(binary), Some(mut powershell)) = (
+            let (Some(script), Some(binary), Some(powershell)) = (
                 self.resource("install-meter-service.ps1"),
                 self.resource("quota-guard-meter.exe"),
-                system_directory(),
+                system_powershell(),
             ) else {
                 return false;
             };
-            powershell.push("WindowsPowerShell");
-            powershell.push("v1.0");
-            powershell.push("powershell.exe");
-            if !powershell.is_file() {
-                self.record_failure("SCRIPT_START");
-                return false;
-            }
             let Ok(mut child) = Command::new(powershell)
                 .args([
                     "-NoLogo",
@@ -403,7 +664,7 @@ mod windows {
                 return false;
             };
 
-            let deadline = Instant::now() + Duration::from_secs(90);
+            let deadline = Instant::now() + Duration::from_secs(120);
             loop {
                 match child.try_wait() {
                     Ok(Some(status)) => return status.success(),
@@ -418,6 +679,66 @@ mod windows {
                     }
                 }
             }
+        }
+
+        fn install_elevated(&self) -> Result<bool, ()> {
+            let (Some(script), Some(binary), Some(powershell)) = (
+                self.resource("install-meter-service.ps1"),
+                self.resource("quota-guard-meter.exe"),
+                system_powershell(),
+            ) else {
+                self.record_failure("SCRIPT_START");
+                return Ok(false);
+            };
+            let Some(user_sid) = current_user_sid() else {
+                self.record_failure("ADMIN_CHECK");
+                return Ok(false);
+            };
+            let parameters =
+                powershell_install_parameters(&script, &binary, &self.server_url, &user_sid);
+            let verb = wide(OsStr::new("runas"));
+            let file = wide(powershell.as_os_str());
+            let parameters = wide(OsStr::new(&parameters));
+            let mut info = SHELLEXECUTEINFOW {
+                cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
+                fMask: SEE_MASK_NOCLOSEPROCESS,
+                hwnd: ptr::null_mut(),
+                lpVerb: verb.as_ptr(),
+                lpFile: file.as_ptr(),
+                lpParameters: parameters.as_ptr(),
+                lpDirectory: ptr::null(),
+                nShow: SW_HIDE,
+                ..Default::default()
+            };
+            // SAFETY: All pointers reference NUL-terminated strings and remain valid
+            // until ShellExecuteExW returns. Only the fixed system PowerShell and
+            // resource-relative installer are elevated.
+            let result = unsafe { ShellExecuteExW(&mut info) };
+            if result == 0 {
+                // A cancelled UAC dialog does not mean the bundled installer failed.
+                return if unsafe { GetLastError() } == ERROR_CANCELLED {
+                    Err(())
+                } else {
+                    self.record_failure("SCRIPT_START");
+                    Ok(false)
+                };
+            }
+            if info.hProcess.is_null() {
+                self.record_failure("SCRIPT_START");
+                return Ok(false);
+            }
+            // SAFETY: hProcess is returned by ShellExecuteExW when the mask requests it.
+            let wait = unsafe { WaitForSingleObject(info.hProcess, 120_000) };
+            let mut exit_code = u32::MAX;
+            let exited_successfully = wait == WAIT_OBJECT_0
+                && unsafe { GetExitCodeProcess(info.hProcess, &mut exit_code) } != 0
+                && exit_code == 0;
+            // SAFETY: hProcess is an owned process handle returned by ShellExecuteExW.
+            unsafe { CloseHandle(info.hProcess) };
+            if wait != WAIT_OBJECT_0 {
+                self.record_failure("INSTALL_TIMEOUT");
+            }
+            Ok(exited_successfully)
         }
     }
 
@@ -458,6 +779,56 @@ mod windows {
             return Err(error);
         }
         Ok(ServiceHandles { manager, service })
+    }
+
+    fn service_binary_path() -> Option<PathBuf> {
+        let handles = open_service(SERVICE_QUERY_CONFIG).ok()?;
+        let mut required = 0u32;
+        // SAFETY: The first call asks SCM for the required output size only.
+        unsafe { QueryServiceConfigW(handles.service, ptr::null_mut(), 0, &mut required) };
+        if required < size_of::<QUERY_SERVICE_CONFIGW>() as u32 || required > 1024 * 1024 {
+            return None;
+        }
+        let mut buffer = vec![0usize; (required as usize).div_ceil(size_of::<usize>())];
+        // SAFETY: The aligned output buffer is at least `required` bytes long.
+        if unsafe {
+            QueryServiceConfigW(
+                handles.service,
+                buffer.as_mut_ptr().cast(),
+                required,
+                &mut required,
+            )
+        } == 0
+        {
+            return None;
+        }
+        // SAFETY: QueryServiceConfigW populated this structure in `buffer`.
+        let config = unsafe { &*(buffer.as_ptr().cast::<QUERY_SERVICE_CONFIGW>()) };
+        if config.lpBinaryPathName.is_null() {
+            return None;
+        }
+        let mut length = 0usize;
+        // SAFETY: SCM returns a NUL-terminated string within the supplied buffer.
+        while length < 32768 && unsafe { *config.lpBinaryPathName.add(length) } != 0 {
+            length += 1;
+        }
+        if length == 0 || length == 32768 {
+            return None;
+        }
+        // SAFETY: `length` stopped at the terminator and remains in the SCM buffer.
+        let command_line = String::from_utf16_lossy(unsafe {
+            std::slice::from_raw_parts(config.lpBinaryPathName, length)
+        });
+        let command_line = command_line.trim_start();
+        let executable = if let Some(quoted) = command_line.strip_prefix('"') {
+            let end = quoted.find('"')?;
+            quoted.get(..end)?
+        } else {
+            command_line
+                .split_once(char::is_whitespace)
+                .map_or(command_line, |(path, _)| path)
+        };
+        (!executable.is_empty()).then(|| PathBuf::from(executable))
     }
 
     fn query_state() -> Result<u32, u32> {
@@ -591,6 +962,45 @@ mod windows {
     }
 
     #[test]
+    fn version_output_requires_expected_program_and_semver() {
+        assert_eq!(
+            parse_binary_version(b"quota-guard-meter 0.2.0\r\n"),
+            Some("0.2.0".into())
+        );
+        assert_eq!(parse_binary_version(b"other 0.2.0\n"), None);
+        assert_eq!(parse_binary_version(b"quota-guard-meter invalid\n"), None);
+        assert_eq!(
+            parse_binary_version(b"quota-guard-meter 0.2.0\nextra"),
+            None
+        );
+    }
+
+    #[test]
+    fn version_comparison_never_marks_failed_service_as_current() {
+        let hash = "0123456789abcdef".repeat(4);
+        assert_eq!(
+            compare_versions(ServiceState::Failed, Some(&hash), Some(&hash)),
+            (None, MeterVersionState::Unknown)
+        );
+        assert_eq!(
+            compare_versions(ServiceState::Failed, Some(&hash), Some("different")),
+            (Some(true), MeterVersionState::UpgradeRequired)
+        );
+        assert_eq!(
+            compare_versions(ServiceState::Missing, Some(&hash), Some(&hash)),
+            (None, MeterVersionState::NotInstalled)
+        );
+        assert_eq!(
+            compare_versions(ServiceState::Running, Some(&hash), Some(&hash)),
+            (Some(false), MeterVersionState::Current)
+        );
+        assert_eq!(
+            compare_versions(ServiceState::Stopped, Some(&hash), Some("different")),
+            (Some(true), MeterVersionState::UpgradeRequired)
+        );
+    }
+
+    #[test]
     #[ignore = "requires an installed service intentionally stopped by the operator"]
     fn stopped_installed_service_is_started_by_the_native_bridge() {
         let ops = WindowsServiceOps;
@@ -611,7 +1021,10 @@ mod tests {
         connection: Option<(Vec<u8>, String, String)>,
         admin: bool,
         install_succeeds: bool,
+        elevated_result: Result<bool, ()>,
         installs: Cell<u32>,
+        elevated_installs: Cell<u32>,
+        installed: Cell<bool>,
     }
 
     impl FakeInstaller {
@@ -622,7 +1035,10 @@ mod tests {
                 connection: None,
                 admin: true,
                 install_succeeds: true,
+                elevated_result: Err(()),
                 installs: Cell::new(0),
+                elevated_installs: Cell::new(0),
+                installed: Cell::new(false),
             }
         }
     }
@@ -632,6 +1048,9 @@ mod tests {
             self.bundled
         }
         fn needs_configuration(&self) -> bool {
+            if self.installed.get() {
+                return false;
+            }
             self.connection
                 .as_ref()
                 .map_or(self.needs_configuration, |(bytes, server_url, hash)| {
@@ -643,7 +1062,15 @@ mod tests {
         }
         fn install(&self) -> bool {
             self.installs.set(self.installs.get() + 1);
+            self.installed.set(self.install_succeeds);
             self.install_succeeds
+        }
+        fn install_elevated(&self) -> Result<bool, ()> {
+            self.elevated_installs.set(self.elevated_installs.get() + 1);
+            if self.elevated_result == Ok(true) {
+                self.installed.set(true);
+            }
+            self.elevated_result
         }
     }
 
@@ -782,6 +1209,49 @@ mod tests {
     }
 
     #[test]
+    fn outdated_running_service_requests_one_elevated_install() {
+        let running = FakeOps::new(ServiceState::Running);
+        let mut installer = FakeInstaller::ready();
+        installer.needs_configuration = true;
+        installer.admin = false;
+        installer.elevated_result = Ok(true);
+        assert_eq!(
+            ensure_with_install(&running, &installer),
+            MeterStartOutcome::Installed
+        );
+        assert_eq!(installer.elevated_installs.get(), 1);
+        assert_eq!(installer.installs.get(), 0);
+        installer.needs_configuration = false;
+        assert_eq!(
+            ensure_with_install(&running, &installer),
+            MeterStartOutcome::Running
+        );
+        assert_eq!(installer.elevated_installs.get(), 1);
+    }
+
+    #[test]
+    fn elevated_install_requires_running_service_and_updated_identity() {
+        let mut missing = FakeOps::new(ServiceState::Missing);
+        let mut installer = FakeInstaller::ready();
+        installer.admin = false;
+        installer.elevated_result = Ok(true);
+        assert_eq!(
+            ensure_with_install(&missing, &installer),
+            MeterStartOutcome::Installed
+        );
+        missing.running = false;
+        assert_eq!(
+            ensure_with_install(&missing, &installer),
+            MeterStartOutcome::InstallFailed
+        );
+        installer.elevated_result = Err(());
+        assert_eq!(
+            ensure_with_install(&missing, &installer),
+            MeterStartOutcome::NeedsAdmin
+        );
+    }
+
+    #[test]
     fn a_registered_service_that_cannot_start_is_repaired_with_the_bundle() {
         let mut stopped = FakeOps::new(ServiceState::Stopped);
         stopped.start = StartAttempt::Failed;
@@ -807,7 +1277,7 @@ mod tests {
         installer.admin = false;
         assert_eq!(
             ensure_with_install(&running, &installer),
-            MeterStartOutcome::NeedsAdmin
+            MeterStartOutcome::Running
         );
         assert_eq!(installer.installs.get(), 1);
     }
@@ -944,6 +1414,11 @@ mod tests {
         .contains("do-not-show"));
         assert!(setup_failure_message(br#"{"state":"FAILED","stage":"unknown-secret"}"#).is_none());
         assert!(setup_failure_message(br#"{"state":"SUCCEEDED","stage":"READY"}"#).is_none());
+        assert!(setup_failure_message(
+            br#"{"state":"FAILED","stage":"VERIFY_INSTALL","reason":"SERVICE_VERIFICATION_FAILED"}"#
+        )
+        .unwrap()
+        .contains("校验值未通过核验"));
     }
 
     #[test]
@@ -955,7 +1430,7 @@ mod tests {
             br#"{"state":"FAILED","stage":"SOURCE_BINARY","reason":"BUNDLED_BINARY_MISSING"}"#,
         )
         .unwrap();
-        assert!(error.contains("计费程序未找到"));
+        assert!(error.contains("统计程序未找到"));
         assert!(!error.contains("服务器地址"));
     }
 }

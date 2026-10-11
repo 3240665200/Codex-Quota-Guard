@@ -25,8 +25,10 @@ import tools.jackson.databind.ObjectMapper;
 public final class RustMeterLogReader {
     private static final int MAX_TAIL_BYTES = 65536;
     private static final Set<String> KINDS = Set.of("SERVICE_STARTED", "SERVICE_STOPPED", "BASELINE_READY",
-            "UNPAIRED", "USAGE_REPORTED", "HEARTBEAT", "ERROR", "STATUS_CHANGE");
+            "UNPAIRED", "USAGE_REPORTED", "HEARTBEAT", "ERROR", "STATUS_CHANGE",
+            "GUARD_ACTIVE", "GUARD_INACTIVE", "GUARD_DETECTED", "GUARD_TERMINATED", "GUARD_ERROR");
     private static final Set<String> STATES = Set.of("BASELINE_READY", "UNPAIRED", "UP_TO_DATE", "REPORTED", "ERROR");
+    private static final Set<String> GUARD_STATES = Set.of("INACTIVE", "CLEAR", "TERMINATED", "ERROR");
     private final ObjectMapper mapper;
     private final Path directory;
 
@@ -101,15 +103,17 @@ public final class RustMeterLogReader {
             String state = node.path("state").asString("");
             String error = node.path("errorCode").asString("");
             if (!error.isEmpty() && !error.matches("[A-Z_]{1,64}")) error = "METER_ERROR_REDACTED";
+            String guard = node.path("ccSwitchGuard").asString("");
             return new Entry(at, kind, STATES.contains(state) ? state : null, count, tokens,
-                    node.path("heartbeatSent").asBoolean(false), error.isEmpty() ? null : error);
+                    node.path("heartbeatSent").asBoolean(false), error.isEmpty() ? null : error,
+                    GUARD_STATES.contains(guard) ? guard : null);
         } catch (RuntimeException ignored) {
             return null;
         }
     }
 
     public record Entry(long atEpochSeconds, String kind, String state, int reportedEvents,
-            long reportedTokens, boolean heartbeatSent, String errorCode) { }
+            long reportedTokens, boolean heartbeatSent, String errorCode, String ccSwitchGuard) { }
 
     public record LogPage(String state, List<Entry> entries, int skippedLines) {
         public LogPage { entries = List.copyOf(entries); }

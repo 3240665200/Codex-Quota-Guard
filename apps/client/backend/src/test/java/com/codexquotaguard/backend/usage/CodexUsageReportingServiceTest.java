@@ -237,7 +237,7 @@ class CodexUsageReportingServiceTest {
         String before = Files.readString(cursor);
         gateway.reportedEventIds.clear();
         Files.writeString(log, record("newer", 30), StandardOpenOption.APPEND);
-        meter.set(new MeterServiceStatus("UP_TO_DATE", java.time.Instant.now().getEpochSecond(), null, 0, null));
+        meter.set(new MeterServiceStatus("UP_TO_DATE", java.time.Instant.now().getEpochSecond(), null, 0, null, null));
         reporter.scanAndReportNow();
         assertThat(reporter.currentStatus().state()).isEqualTo("SERVICE_ACTIVE");
         assertThat(gateway.reportedEventIds).isEmpty();
@@ -265,7 +265,7 @@ class CodexUsageReportingServiceTest {
         Files.writeString(direct, record("new", 20), StandardOpenOption.APPEND);
         reporter.scanAndReportNow();
         gateway.reportedEventIds.clear();
-        meter.set(new MeterServiceStatus("UP_TO_DATE", java.time.Instant.now().getEpochSecond(), null, 0, null));
+        meter.set(new MeterServiceStatus("UP_TO_DATE", java.time.Instant.now().getEpochSecond(), null, 0, null, null));
         Path legacy = direct.resolveSibling("legacy.jsonl");
         Files.writeString(legacy, legacySnapshot(10) + legacySnapshot(20));
         reporter.scanAndReportNow();

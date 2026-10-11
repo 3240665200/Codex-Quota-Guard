@@ -3,17 +3,34 @@
 mod backend;
 mod meter_service;
 mod server_config;
+mod startup_gate;
 mod tray;
 
 use backend::{ApiRoute, BackendState};
 use reqwest::Method;
 use serde_json::Value;
 use server_config::ServerConfig;
-use std::sync::OnceLock;
 use tauri::{Manager, RunEvent, State};
 
 type CommandResult<T> = Result<T, String>;
-static METER_STARTUP: OnceLock<meter_service::MeterStartOutcome> = OnceLock::new();
+
+#[tauri::command]
+async fn startup_gate_check(app: tauri::AppHandle) -> startup_gate::GateResult {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<startup_gate::StartupGate>().check(&app)
+    })
+    .await
+    .unwrap_or(startup_gate::GateResult::failed())
+}
+
+#[tauri::command]
+async fn startup_guard_status(app: tauri::AppHandle) -> startup_gate::GateResult {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<startup_gate::StartupGate>().status(&app)
+    })
+    .await
+    .unwrap_or(startup_gate::GateResult::failed())
+}
 
 #[tauri::command]
 fn meter_setup_error(app: tauri::AppHandle) -> Option<String> {
@@ -21,12 +38,19 @@ fn meter_setup_error(app: tauri::AppHandle) -> Option<String> {
 }
 
 #[tauri::command]
+async fn meter_service_version(
+    app: tauri::AppHandle,
+) -> Result<meter_service::MeterVersionStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || meter_service::version_status(&app))
+        .await
+        .map_err(|_| "统计程序版本查询失败".to_string())
+}
+
+#[tauri::command]
 async fn meter_service_ensure(app: tauri::AppHandle) -> meter_service::MeterStartOutcome {
-    tauri::async_runtime::spawn_blocking(move || {
-        *METER_STARTUP.get_or_init(|| tray::ensure_meter_serialized(&app))
-    })
-    .await
-    .unwrap_or(meter_service::MeterStartOutcome::Failed)
+    tauri::async_runtime::spawn_blocking(move || tray::ensure_meter_serialized(&app))
+        .await
+        .unwrap_or(meter_service::MeterStartOutcome::Failed)
 }
 
 #[tauri::command]
@@ -77,7 +101,11 @@ async fn usage_status(state: State<'_, BackendState>) -> CommandResult<Value> {
 }
 
 #[tauri::command]
-async fn usage_events(page: u32, size: u32, state: State<'_, BackendState>) -> CommandResult<Value> {
+async fn usage_events(
+    page: u32,
+    size: u32,
+    state: State<'_, BackendState>,
+) -> CommandResult<Value> {
     state.usage_events(page, size).await.map_err(command_error)
 }
 
@@ -88,7 +116,10 @@ async fn usage_analytics(days: u32, state: State<'_, BackendState>) -> CommandRe
 
 #[tauri::command]
 async fn meter_runtime_logs(state: State<'_, BackendState>) -> CommandResult<Value> {
-    state.json(Method::GET, ApiRoute::MeterRuntimeLogs).await.map_err(command_error)
+    state
+        .json(Method::GET, ApiRoute::MeterRuntimeLogs)
+        .await
+        .map_err(command_error)
 }
 
 #[tauri::command]
@@ -147,6 +178,20 @@ fn main() {
     let builder = tauri::Builder::default()
         .setup(|app| {
             app.manage(tray::TrayState::default());
+            app.manage(startup_gate::StartupGate::default());
+            let guard_app = app.handle().clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                let Some(gate) = guard_app.try_state::<startup_gate::StartupGate>() else {
+                    break;
+                };
+                if !gate.should_monitor() {
+                    break;
+                }
+                if gate.is_ready() {
+                    let _ = gate.status(&guard_app);
+                }
+            });
             let tray_available = tray::install(app).is_ok();
             app.state::<tray::TrayState>()
                 .set_available(tray_available);
@@ -154,14 +199,15 @@ fn main() {
                 eprintln!("Unable to initialize the desktop tray; closing the main window will exit the client.");
             }
 
-            let state = BackendState::launch(app.handle())?;
-            app.manage(state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            startup_gate_check,
+            startup_guard_status,
             meter_service_ensure,
             meter_service_retry,
             meter_setup_error,
+            meter_service_version,
             status,
             quota_overview,
             usage_status,
@@ -202,12 +248,18 @@ fn main() {
             tray::handle_close_request(tray_available, &mut ops);
         }
         RunEvent::ExitRequested { .. } => {
+            if let Some(gate) = app_handle.try_state::<startup_gate::StartupGate>() {
+                gate.stop();
+            }
             let mut ops = tray::TauriExitEventOps {
                 app: app_handle.clone(),
             };
             tray::handle_exit_event(tray::AppExitEvent::ExitRequested, &mut ops);
         }
         RunEvent::Exit => {
+            if let Some(gate) = app_handle.try_state::<startup_gate::StartupGate>() {
+                gate.stop();
+            }
             let mut ops = tray::TauriExitEventOps {
                 app: app_handle.clone(),
             };

@@ -3,6 +3,7 @@ use serde::Serialize;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 const MAX_LOG_BYTES: u64 = 2 * 1024 * 1024;
 const LOG_BACKUPS: usize = 5;
@@ -18,6 +19,11 @@ pub(super) enum AuditKind {
     Heartbeat,
     Error,
     StatusChange,
+    GuardActive,
+    GuardInactive,
+    GuardDetected,
+    GuardTerminated,
+    GuardError,
 }
 
 #[derive(Serialize)]
@@ -30,12 +36,15 @@ struct AuditEntry<'a> {
     reported_tokens: u64,
     heartbeat_sent: bool,
     error_code: Option<&'a str>,
+    cc_switch_guard: Option<&'a str>,
 }
 
+#[derive(Clone)]
 pub(super) struct AuditLog {
     directory: PathBuf,
     max_bytes: u64,
     backups: usize,
+    write_lock: Arc<Mutex<()>>,
 }
 
 impl AuditLog {
@@ -56,6 +65,7 @@ impl AuditLog {
             directory: directory.to_path_buf(),
             max_bytes,
             backups,
+            write_lock: Arc::new(Mutex::new(())),
         })
     }
 
@@ -76,7 +86,29 @@ impl AuditLog {
             error_code: status
                 .and_then(|value| value.error_code.as_deref())
                 .map(safe_error),
+            cc_switch_guard: status.map(|value| safe_guard(&value.cc_switch_guard)),
         };
+        self.append_entry(entry)
+    }
+
+    pub(super) fn append_guard(&self, kind: AuditKind, guard_state: &str) -> Result<(), String> {
+        self.append_entry(AuditEntry {
+            at_epoch_seconds: epoch_seconds(),
+            kind,
+            state: None,
+            reported_events: 0,
+            reported_tokens: 0,
+            heartbeat_sent: false,
+            error_code: None,
+            cc_switch_guard: Some(safe_guard(guard_state)),
+        })
+    }
+
+    fn append_entry(&self, entry: AuditEntry<'_>) -> Result<(), String> {
+        let _write_guard = self
+            .write_lock
+            .lock()
+            .map_err(|_| "METER_LOG_WRITE_FAILED")?;
         let mut line = serde_json::to_vec(&entry).map_err(|_| "METER_LOG_WRITE_FAILED")?;
         line.push(b'\n');
         if line.len() as u64 > self.max_bytes {
@@ -137,6 +169,13 @@ impl AuditLog {
     }
 }
 
+fn safe_guard(value: &str) -> &str {
+    match value {
+        "INACTIVE" | "CLEAR" | "TERMINATED" | "ERROR" => value,
+        _ => "ERROR",
+    }
+}
+
 fn safe_state(value: &str) -> &str {
     match value {
         "BASELINE_READY" | "UNPAIRED" | "UP_TO_DATE" | "REPORTED" | "ERROR" => value,
@@ -171,10 +210,14 @@ mod tests {
     fn test_status(state: &str, error: Option<&str>) -> MeterStatus {
         MeterStatus {
             state: state.into(),
+            version: env!("CARGO_PKG_VERSION").into(),
             last_scan_epoch_seconds: 1,
             last_report_epoch_seconds: None,
             reported_events: 2,
             error_code: error.map(str::to_owned),
+            cc_switch_guard: "INACTIVE".into(),
+            cc_switch_guard_checked_at: 1,
+            cc_switch_guard_lease_id: None,
         }
     }
 

@@ -171,8 +171,8 @@ export function UserQuotaDetail({ userId }: { userId: string }) {
             { key: 'at', label: '客户端最近上报', children: new Date(official.receivedAt).toLocaleString('zh-CN') },
           ]} /> : <Typography.Text type="secondary">暂无客户端上报的官方额度</Typography.Text>}
         </section>
-        <section aria-label="计费服务">
-          <Typography.Title level={4}>计费服务</Typography.Title>
+        <section aria-label="统计程序">
+          <Typography.Title level={4}>统计程序</Typography.Title>
           <Table<MeterDeviceStatus> rowKey="deviceId" size="small" columns={deviceColumns}
             dataSource={devices} pagination={false} locale={{ emptyText: '未配对设备' }} />
         </section>

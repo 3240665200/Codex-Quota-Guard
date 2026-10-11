@@ -39,7 +39,7 @@ public final class LocalSessionExceptionHandler {
     @ExceptionHandler(MeterPairingRequiredException.class)
     public ResponseEntity<ErrorBody> meterPairingRequired() {
         return response(HttpStatus.CONFLICT, "METER_PAIRING_REQUIRED",
-                "计费服务配对失败；当前 Windows 用户可能已绑定其他系统账户，请联系管理员检查设备绑定。");
+                "统计程序配对失败；当前 Windows 用户可能已绑定其他系统账户，请联系管理员检查设备绑定。");
     }
 
     @ExceptionHandler(OfficialCodexRateLimitsUnavailableException.class)

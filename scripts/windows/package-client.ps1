@@ -23,6 +23,7 @@ function Require-Command([string]$Name) {
 }
 
 $pnpm = Require-Command 'pnpm.cmd'
+$node = Require-Command 'node.exe'
 Require-Command 'mvn.cmd' | Out-Null
 Require-Command 'java.exe' | Out-Null
 Require-Command 'cargo.exe' | Out-Null
@@ -59,6 +60,14 @@ $javaLauncher = Join-Path $frontendDirectory 'src-tauri\resources\java\bin\javaw
 if (-not (Test-Path -LiteralPath $javaLauncher -PathType Leaf)) {
     throw "Packaging finished without the bundled Java runtime: $javaLauncher"
 }
+$meterManifest = Join-Path $repositoryRoot 'apps\client\meter\Cargo.toml'
+$meterResource = Join-Path $frontendDirectory 'src-tauri\resources\meter\quota-guard-meter.exe'
+$builtMeter = Join-Path $targetDirectory 'release\quota-guard-meter.exe'
+$meterVerifier = Join-Path $frontendDirectory 'meter-package-verification.mjs'
+& $node $meterVerifier $meterManifest $meterResource $builtMeter
+if ($LASTEXITCODE -ne 0) {
+    throw 'Packaging finished with a missing or outdated Rust meter resource.'
+}
 $installers = @(
     Get-ChildItem -LiteralPath $bundleDirectory -Filter '*.exe' -File -ErrorAction SilentlyContinue |
         Where-Object { $_.LastWriteTime -ge $startedAt.AddSeconds(-3) } |
@@ -76,4 +85,4 @@ foreach ($installer in $installers) {
 Write-Host 'The installer includes a verified Eclipse Temurin Java 17 runtime and offline WebView2 installer.'
 Write-Host 'The target PC does not need Java, Maven, Node.js, pnpm, or Rust installed.'
 Write-Host 'The Rust meter executable, install script, and safe log viewer are bundled in the app meter directory.'
-Write-Host 'After setup, save the server address, restart, then run the installed app as Administrator once for automatic meter-service installation.'
+Write-Host 'Run the installed app as Administrator on every launch. The startup page lets you save the server address and retry automatic meter-service installation or upgrade.'

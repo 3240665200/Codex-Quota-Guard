@@ -68,7 +68,7 @@ pub(crate) const TRAY_MENU_ITEMS: [MenuItemSpec; 5] = [
     },
     MenuItemSpec {
         id: "meter",
-        label: "检查计费服务",
+        label: "检查统计程序",
         separator_before: false,
         action: MenuAction::CheckBillingService,
     },
@@ -322,6 +322,10 @@ fn hide_main_window(app: &AppHandle) -> bool {
 
 fn request_usage_scan(app: &AppHandle) {
     show_main_window(app);
+    if app.try_state::<BackendState>().is_none() {
+        emit_feedback(app, FeedbackAction::Scan, FeedbackOutcome::Error);
+        return;
+    }
     let Some(state) = app.try_state::<TrayState>() else {
         emit_feedback(app, FeedbackAction::Scan, FeedbackOutcome::Error);
         return;
@@ -333,10 +337,11 @@ fn request_usage_scan(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let _busy = busy;
-        let result = app
-            .state::<BackendState>()
-            .json(Method::POST, ApiRoute::UsageScan)
-            .await;
+        let Some(backend) = app.try_state::<BackendState>() else {
+            emit_feedback(&app, FeedbackAction::Scan, FeedbackOutcome::Error);
+            return;
+        };
+        let result = backend.json(Method::POST, ApiRoute::UsageScan).await;
         let outcome = match result {
             Ok(response) => classify_scan_outcome(&response),
             Err(error) => classify_backend_error(&error),
@@ -572,7 +577,7 @@ mod tests {
                 ("scan", "立即扫描用量", false, MenuAction::ScanUsage),
                 (
                     "meter",
-                    "检查计费服务",
+                    "检查统计程序",
                     false,
                     MenuAction::CheckBillingService
                 ),

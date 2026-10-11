@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { I18nextProvider } from "react-i18next";
 import { StrictMode } from "react";
@@ -74,16 +74,25 @@ function renderClientApp() {
 
 describe("ClientApp system session gate", () => {
   beforeEach(() => {
+    invokeMock.mockClear();
     listenMock.mockReset();
     listenMock.mockResolvedValue(vi.fn());
     vi.mocked(toast.warning).mockClear();
     vi.mocked(toast.success).mockClear();
     invokeMock.mockImplementation(async (command) => {
       switch (command) {
+        case "startup_gate_check":
+        case "startup_guard_status":
+          return { state: "READY", ccSwitchTerminated: false };
         case "system_current":
           return signedOut;
-        case "meter_service_ensure":
-          return "RUNNING";
+        case "meter_service_version":
+          return {
+            installedVersion: null,
+            bundledVersion: "0.1.1",
+            needsUpgrade: null,
+            status: "NOT_INSTALLED",
+          };
         case "server_config_get":
           return { url: "http://127.0.0.1:8080" };
         case "server_config_save":
@@ -154,15 +163,92 @@ describe("ClientApp system session gate", () => {
     });
   });
 
+  it("blocks Java-backed session requests until native startup conditions pass", async () => {
+    invokeMock.mockImplementation(async (command) => {
+      if (command === "startup_gate_check") {
+        return { state: "ADMIN_REQUIRED", ccSwitchTerminated: false };
+      }
+      if (command === "server_config_get") {
+        return { url: "http://127.0.0.1:8080" };
+      }
+      throw new Error(`Unexpected command: ${command}`);
+    });
+    renderClientApp();
+
+    expect(await screen.findByText("启动条件尚未满足")).toBeVisible();
+    expect(screen.getByText(/以管理员身份运行/)).toBeVisible();
+    expect(screen.queryByText("登录 Quota Guard")).toBeNull();
+    expect(invokeMock).not.toHaveBeenCalledWith("system_current");
+  });
+
+  it("keeps server settings available while the startup gate is blocked", async () => {
+    const user = userEvent.setup();
+    invokeMock.mockImplementation(async (command) => {
+      if (command === "startup_gate_check") {
+        return { state: "METER_UNAVAILABLE", ccSwitchTerminated: false };
+      }
+      if (command === "server_config_get") {
+        return { url: "http://127.0.0.1:8080" };
+      }
+      if (command === "server_config_save") {
+        return { url: "http://192.168.0.102:8080" };
+      }
+      throw new Error(`Unexpected command: ${command}`);
+    });
+    renderClientApp();
+
+    const address = await screen.findByLabelText("中央服务器地址");
+    await user.clear(address);
+    await user.type(address, "http://192.168.0.102:8080");
+    await user.click(screen.getByRole("button", { name: "保存地址" }));
+    expect(invokeMock).toHaveBeenCalledWith("server_config_save", {
+      config: { url: "http://192.168.0.102:8080" },
+    });
+    expect(await screen.findByText(/点击“重新检查”以应用新地址/)).toBeVisible();
+    expect(invokeMock).not.toHaveBeenCalledWith("system_current");
+  });
+
   it("requires the product system account before rendering the dashboard", async () => {
     renderClientApp();
 
     expect(await screen.findByText("登录 Quota Guard")).toBeVisible();
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("meter_service_ensure"),
+      expect(invokeMock).toHaveBeenCalledWith("startup_gate_check"),
     );
     expect(screen.queryByText("登录 Codex")).toBeNull();
     expect(screen.queryByText("上传 Codex 凭证")).toBeNull();
+  });
+
+  it("keeps polling after a busy native check and still blocks a later guard failure", async () => {
+    const interval = vi.spyOn(window, "setInterval");
+    try {
+      renderClientApp();
+      await screen.findByText("登录 Quota Guard");
+      const poll = interval.mock.calls.find((call) => call[1] === 3_000)?.[0];
+      expect(typeof poll).toBe("function");
+
+      invokeMock.mockResolvedValueOnce({
+        state: "CHECKING",
+        ccSwitchTerminated: false,
+      });
+      await act(async () => {
+        (poll as () => void)();
+      });
+      expect(screen.getByText("登录 Quota Guard")).toBeVisible();
+      expect(screen.queryByText("正在检查启动条件")).toBeNull();
+
+      invokeMock.mockResolvedValueOnce({
+        state: "GUARD_ERROR",
+        ccSwitchTerminated: false,
+      });
+      await act(async () => {
+        (poll as () => void)();
+      });
+      expect(await screen.findByText("启动条件尚未满足")).toBeVisible();
+      expect(screen.queryByText("登录 Quota Guard")).toBeNull();
+    } finally {
+      interval.mockRestore();
+    }
   });
 
   it("shows signed-out tray scan feedback without bypassing the login gate", async () => {
@@ -196,12 +282,13 @@ describe("ClientApp system session gate", () => {
       id: 1,
       payload: { action: "meter", outcome: "running" },
     });
-    expect(toast.success).toHaveBeenCalledWith("计费服务正在运行。");
+    expect(toast.success).toHaveBeenCalledWith("统计程序正在运行。");
     for (const key of [
       "usage-status",
       "quota-overview",
       "usage-events",
       "meter-runtime-logs",
+      "meter-service-version",
     ]) {
       expect(invalidation).toHaveBeenCalledWith({ queryKey: [key] });
     }
@@ -236,11 +323,11 @@ describe("ClientApp system session gate", () => {
     );
     await screen.findByText("登录 Quota Guard");
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("meter_service_ensure"),
+      expect(invokeMock).toHaveBeenCalledWith("startup_gate_check"),
     );
     expect(
       invokeMock.mock.calls.filter(
-        ([command]) => command === "meter_service_ensure",
+        ([command]) => command === "startup_gate_check",
       ),
     ).toHaveLength(1);
   });
@@ -303,9 +390,9 @@ describe("ClientApp system session gate", () => {
         },
       });
     });
-    expect(await screen.findByRole("status")).toHaveTextContent(
-      "重新打开客户端",
-    );
+    expect(
+      await screen.findByText(/从系统托盘退出客户端后重新启动/),
+    ).toBeVisible();
     expect(screen.getByRole("button", { name: "登录系统" })).toBeDisabled();
   });
 });

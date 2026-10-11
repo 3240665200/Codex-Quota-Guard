@@ -6,13 +6,14 @@ public record MeterServiceStatus(
         Long lastScanEpochSeconds,
         Long lastReportEpochSeconds,
         int reportedEvents,
-        String errorCode
+        String errorCode,
+        String version
 ) {
     public static MeterServiceStatus notInstalled() {
-        return new MeterServiceStatus("NOT_INSTALLED", null, null, 0, null);
+        return new MeterServiceStatus("NOT_INSTALLED", null, null, 0, null, null);
     }
 
     public static MeterServiceStatus offline() {
-        return new MeterServiceStatus("OFFLINE", null, null, 0, null);
+        return new MeterServiceStatus("OFFLINE", null, null, 0, null, null);
     }
 }

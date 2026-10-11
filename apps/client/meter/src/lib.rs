@@ -5,14 +5,21 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod audit;
 use audit::{AuditKind, AuditLog};
+#[cfg(windows)]
+mod ccswitch_guard;
 
 const MAX_RECORD_BYTES: usize = 4 * 1024 * 1024;
 const PREFIX_BYTES: usize = 4096;
 const MAX_CACHED_TURNS: usize = 256;
+const GUARD_STATUS_FILE: &str = "ccswitch-guard-status.json";
+const GUARD_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const GUARD_STATUS_FRESH: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -23,6 +30,8 @@ pub struct MeterConfig {
     pub state_dir: PathBuf,
     pub status_file: PathBuf,
     pub device_id: uuid::Uuid,
+    #[serde(default)]
+    pub owner_user_sid: Option<String>,
 }
 
 impl MeterConfig {
@@ -45,6 +54,16 @@ impl MeterConfig {
             || !self.status_file.is_absolute()
         {
             return Err("METER_PATH_INVALID".into());
+        }
+        if self.owner_user_sid.as_deref().is_some_and(|sid| {
+            sid.len() > 184
+                || !sid.starts_with("S-1-")
+                || sid
+                    .split('-')
+                    .skip(2)
+                    .any(|part| part.is_empty() || !part.bytes().all(|c| c.is_ascii_digit()))
+        }) {
+            return Err("METER_OWNER_SID_INVALID".into());
         }
         Ok(())
     }
@@ -634,12 +653,37 @@ pub fn scan_report_and_commit<F>(
     codex_home: &Path,
     state_path: &Path,
     previous: &ScanState,
-    mut report: F,
+    report: F,
 ) -> Result<ScanOutcome, String>
 where
     F: FnMut(&[UsageEvent]) -> Result<(), String>,
 {
+    scan_report_and_commit_guarded(
+        codex_home,
+        state_path,
+        previous,
+        || Ok(()),
+        report,
+        |state| save_state(state_path, state),
+    )
+}
+
+fn scan_report_and_commit_guarded<F, G, C>(
+    codex_home: &Path,
+    state_path: &Path,
+    previous: &ScanState,
+    mut ensure_allowed: G,
+    mut report: F,
+    mut commit: C,
+) -> Result<ScanOutcome, String>
+where
+    F: FnMut(&[UsageEvent]) -> Result<(), String>,
+    G: FnMut() -> Result<(), String>,
+    C: FnMut(&ScanState) -> Result<(), String>,
+{
+    ensure_allowed()?;
     let outcome = scan(codex_home, previous)?;
+    ensure_allowed()?;
     let now = Utc::now();
     let events: Vec<_> = outcome
         .events
@@ -647,10 +691,14 @@ where
         .filter(|event| reportable_at(event, now))
         .collect();
     for batch in events.chunks(100) {
+        ensure_allowed()?;
         report(batch)?;
     }
+    // A completed HTTP request cannot be undone, but a failed guard must stop
+    // later batches and prevent the accounting cursor from moving forward.
+    ensure_allowed()?;
     if &outcome.next_state != previous || !state_path.exists() {
-        save_state(state_path, &outcome.next_state)?;
+        commit(&outcome.next_state)?;
     }
     Ok(ScanOutcome {
         events,
@@ -710,14 +758,312 @@ pub fn send_heartbeat(
     }
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MeterStatus {
     pub state: String,
+    pub version: String,
     pub last_scan_epoch_seconds: u64,
     pub last_report_epoch_seconds: Option<u64>,
     pub reported_events: usize,
     pub error_code: Option<String>,
+    pub cc_switch_guard: String,
+    pub cc_switch_guard_checked_at: u64,
+    pub cc_switch_guard_lease_id: Option<uuid::Uuid>,
+}
+
+#[derive(Clone)]
+struct GuardSnapshot {
+    state: &'static str,
+    checked_at: u64,
+    lease_id: Option<uuid::Uuid>,
+    error_code: Option<String>,
+    detected: bool,
+}
+
+impl GuardSnapshot {
+    #[cfg(test)]
+    fn inactive() -> Self {
+        Self {
+            state: "INACTIVE",
+            checked_at: epoch_seconds(),
+            lease_id: None,
+            error_code: None,
+            detected: false,
+        }
+    }
+
+    #[cfg(test)]
+    fn error(code: impl Into<String>) -> Self {
+        Self {
+            state: "ERROR",
+            checked_at: epoch_seconds(),
+            lease_id: None,
+            error_code: Some(code.into()),
+            detected: false,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GuardStatus {
+    cc_switch_guard: &'static str,
+    cc_switch_guard_checked_at: u64,
+    cc_switch_guard_lease_id: Option<uuid::Uuid>,
+}
+
+fn guard_status_path(config: &MeterConfig) -> Result<PathBuf, String> {
+    config
+        .status_file
+        .parent()
+        .map(|parent| parent.join(GUARD_STATUS_FILE))
+        .ok_or_else(|| "METER_STATUS_PATH_INVALID".into())
+}
+
+fn write_guard_status(path: &Path, guard: &GuardSnapshot) -> Result<(), String> {
+    let parent = path.parent().ok_or("METER_STATUS_PATH_INVALID")?;
+    fs::create_dir_all(parent).map_err(|_| "METER_STATUS_WRITE_FAILED")?;
+    let status = GuardStatus {
+        cc_switch_guard: guard.state,
+        cc_switch_guard_checked_at: guard.checked_at,
+        cc_switch_guard_lease_id: guard.lease_id,
+    };
+    let bytes = serde_json::to_vec(&status).map_err(|_| "METER_STATUS_WRITE_FAILED")?;
+    let temporary = parent.join(format!(
+        ".ccswitch-guard-status-{}.tmp",
+        uuid::Uuid::new_v4()
+    ));
+    let result: Result<(), &str> = (|| {
+        let mut output = File::create_new(&temporary).map_err(|_| "METER_STATUS_WRITE_FAILED")?;
+        output
+            .write_all(&bytes)
+            .map_err(|_| "METER_STATUS_WRITE_FAILED")?;
+        output.sync_all().map_err(|_| "METER_STATUS_WRITE_FAILED")?;
+        fs::rename(&temporary, path).map_err(|_| "METER_STATUS_WRITE_FAILED")
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result.map_err(str::to_owned)
+}
+
+fn check_guard(config: &MeterConfig) -> GuardSnapshot {
+    #[cfg(windows)]
+    {
+        let check = ccswitch_guard::check(config);
+        GuardSnapshot {
+            state: check.state.as_str(),
+            checked_at: check.checked_at,
+            lease_id: check.lease_id,
+            error_code: check.error_code(),
+            detected: check.detected,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = config;
+        GuardSnapshot {
+            state: "INACTIVE",
+            checked_at: epoch_seconds(),
+            lease_id: None,
+            error_code: None,
+            detected: false,
+        }
+    }
+}
+
+#[derive(Default)]
+struct GuardAuditState {
+    last_state: Option<String>,
+    last_lease_id: Option<uuid::Uuid>,
+}
+
+impl GuardAuditState {
+    fn record(&mut self, audit: &AuditLog, guard: &GuardSnapshot) -> Result<(), String> {
+        let changed =
+            self.last_state.as_deref() != Some(guard.state) || self.last_lease_id != guard.lease_id;
+        if guard.detected {
+            audit.append_guard(AuditKind::GuardDetected, guard.state)?;
+        }
+        if (changed && (guard.state != "INACTIVE" || self.last_state.is_some()))
+            || guard.state == "TERMINATED"
+        {
+            let kind = match guard.state {
+                "CLEAR" => AuditKind::GuardActive,
+                "TERMINATED" => AuditKind::GuardTerminated,
+                "ERROR" => AuditKind::GuardError,
+                _ => AuditKind::GuardInactive,
+            };
+            audit.append_guard(kind, guard.state)?;
+        }
+        self.last_state = Some(guard.state.into());
+        self.last_lease_id = guard.lease_id;
+        Ok(())
+    }
+}
+
+type GuardChecker = dyn Fn(&MeterConfig) -> GuardSnapshot + Send + Sync;
+
+struct GuardSupervisor {
+    snapshot: Arc<Mutex<GuardSnapshot>>,
+    stop: Arc<(Mutex<bool>, Condvar)>,
+    worker: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl GuardSupervisor {
+    fn start(
+        config: &MeterConfig,
+        audit: &AuditLog,
+        checker: Arc<GuardChecker>,
+        interval: Duration,
+    ) -> Result<Self, String> {
+        let status_path = guard_status_path(config)?;
+        let mut audit_state = GuardAuditState::default();
+        let initial =
+            publish_guard_snapshot(checker(config), audit, &mut audit_state, &status_path);
+        let snapshot = Arc::new(Mutex::new(initial));
+        let stop = Arc::new((Mutex::new(false), Condvar::new()));
+        let thread_snapshot = Arc::clone(&snapshot);
+        let thread_stop = Arc::clone(&stop);
+        let thread_config = config.clone();
+        let thread_audit = audit.clone();
+        let thread_checker = checker;
+        let thread_status_path = status_path;
+        let worker = thread::Builder::new()
+            .name("quota-guard-ccswitch-check".into())
+            .spawn(move || loop {
+                let (stop_lock, wake) = &*thread_stop;
+                let stopped = stop_lock
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let (stopped, _) = wake
+                    .wait_timeout_while(stopped, interval, |stopped| !*stopped)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if *stopped {
+                    break;
+                }
+                drop(stopped);
+
+                let checked = thread_checker(&thread_config);
+                let Ok(mut current) = thread_snapshot.lock() else {
+                    break;
+                };
+                let next = publish_guard_snapshot(
+                    checked,
+                    &thread_audit,
+                    &mut audit_state,
+                    &thread_status_path,
+                );
+                *current = next;
+            })
+            .map_err(|_| "METER_GUARD_THREAD_UNAVAILABLE")?;
+        Ok(Self {
+            snapshot,
+            stop,
+            worker: Mutex::new(Some(worker)),
+        })
+    }
+
+    fn snapshot(&self) -> GuardSnapshot {
+        let mut snapshot = self
+            .snapshot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        if let Some(code) = self.snapshot_error(&snapshot) {
+            snapshot.state = "ERROR";
+            snapshot.error_code = Some(code);
+            snapshot.checked_at = epoch_seconds();
+        }
+        snapshot
+    }
+
+    fn snapshot_error(&self, snapshot: &GuardSnapshot) -> Option<String> {
+        if let Some(code) = &snapshot.error_code {
+            return Some(code.clone());
+        }
+        let worker_finished = self
+            .worker
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .is_some_and(JoinHandle::is_finished);
+        let stopping = *self
+            .stop
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if worker_finished && !stopping {
+            return Some("METER_GUARD_CHECK_UNAVAILABLE".into());
+        }
+        let stale = snapshot.checked_at == 0
+            || epoch_seconds().saturating_sub(snapshot.checked_at) > GUARD_STATUS_FRESH.as_secs()
+            || snapshot.checked_at > epoch_seconds().saturating_add(2);
+        if stale {
+            return Some("METER_GUARD_CHECK_STALE".into());
+        }
+        None
+    }
+
+    fn ensure_allowed(&self) -> Result<(), String> {
+        self.snapshot().error_code.map_or(Ok(()), Err)
+    }
+
+    fn with_allowed<R>(&self, action: impl FnOnce() -> Result<R, String>) -> Result<R, String> {
+        let snapshot = self
+            .snapshot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(code) = self.snapshot_error(&snapshot) {
+            return Err(code);
+        }
+        action()
+    }
+
+    fn stop(&self) {
+        let mut stopped = self
+            .stop
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *stopped = true;
+        self.stop.1.notify_all();
+        drop(stopped);
+        if let Some(worker) = self
+            .worker
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
+            let _ = worker.join();
+        }
+    }
+}
+
+impl Drop for GuardSupervisor {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+fn publish_guard_snapshot(
+    mut guard: GuardSnapshot,
+    audit: &AuditLog,
+    audit_state: &mut GuardAuditState,
+    status_path: &Path,
+) -> GuardSnapshot {
+    if let Err(code) = audit_state.record(audit, &guard) {
+        guard.state = "ERROR";
+        guard.error_code = Some(code);
+    }
+    if write_guard_status(status_path, &guard).is_err() {
+        guard.state = "ERROR";
+        guard.error_code = Some("METER_STATUS_WRITE_FAILED".into());
+        // An older CLEAR record must not remain readable after publication fails.
+        let _ = fs::remove_file(status_path);
+    }
+    guard
 }
 
 pub struct MeterRuntime {
@@ -729,10 +1075,20 @@ pub struct MeterRuntime {
     last_logged_epoch_seconds: Option<u64>,
     last_heartbeat: Option<Instant>,
     last_report_epoch_seconds: Option<u64>,
+    guard: GuardSupervisor,
+    last_public_status: Option<MeterStatus>,
 }
 
 impl MeterRuntime {
     pub fn new(config: MeterConfig) -> Result<Self, String> {
+        Self::new_with_guard_checker(config, Arc::new(check_guard), GUARD_POLL_INTERVAL)
+    }
+
+    fn new_with_guard_checker(
+        config: MeterConfig,
+        checker: Arc<GuardChecker>,
+        guard_interval: Duration,
+    ) -> Result<Self, String> {
         config.validate()?;
         let client = reqwest::blocking::Client::builder()
             .no_proxy()
@@ -742,6 +1098,7 @@ impl MeterRuntime {
             .map_err(|_| "METER_HTTP_UNAVAILABLE")?;
         let audit = AuditLog::new(&config.state_dir)?;
         audit.append(AuditKind::ServiceStarted, None, 0, false)?;
+        let guard = GuardSupervisor::start(&config, &audit, checker, guard_interval)?;
         Ok(Self {
             config,
             client,
@@ -751,31 +1108,77 @@ impl MeterRuntime {
             last_logged_epoch_seconds: None,
             last_heartbeat: None,
             last_report_epoch_seconds: None,
+            guard,
+            last_public_status: None,
         })
+    }
+
+    #[cfg(test)]
+    fn new_for_test(config: MeterConfig) -> Result<Self, String> {
+        Self::new_with_guard_checker(
+            config,
+            Arc::new(|_: &MeterConfig| GuardSnapshot::inactive()),
+            GUARD_POLL_INTERVAL,
+        )
     }
 
     pub fn tick(&mut self) -> MeterStatus {
         let now = epoch_seconds();
-        let outcome = self.tick_inner();
+        // The independent supervisor publishes every guard check. Keep this
+        // tick's public status compatible while never delaying checks for IO.
+        let mut guard = self.guard.snapshot();
+        let prepublish = self.publish_guard_status(&guard);
+        if let Err(code) = &prepublish {
+            guard.state = "ERROR";
+            guard.error_code = Some(code.clone());
+        }
+        let outcome = if let Err(code) = prepublish {
+            Err(code)
+        } else if let Some(error) = guard.error_code.clone() {
+            Err(error)
+        } else {
+            self.tick_inner()
+        };
         let mut status = match outcome {
             Ok((state, reported_events)) => MeterStatus {
                 state: state.into(),
+                version: env!("CARGO_PKG_VERSION").into(),
                 last_scan_epoch_seconds: now,
                 last_report_epoch_seconds: self.last_report_epoch_seconds,
                 reported_events,
                 error_code: None,
+                cc_switch_guard: guard.state.into(),
+                cc_switch_guard_checked_at: guard.checked_at,
+                cc_switch_guard_lease_id: guard.lease_id,
             },
             Err(code) => MeterStatus {
                 state: "ERROR".into(),
+                version: env!("CARGO_PKG_VERSION").into(),
                 last_scan_epoch_seconds: now,
                 last_report_epoch_seconds: self.last_report_epoch_seconds,
                 reported_events: 0,
                 error_code: Some(code),
+                cc_switch_guard: guard.state.into(),
+                cc_switch_guard_checked_at: guard.checked_at,
+                cc_switch_guard_lease_id: guard.lease_id,
             },
         };
+        let latest_guard = self.guard.snapshot();
+        status.cc_switch_guard = latest_guard.state.into();
+        status.cc_switch_guard_checked_at = latest_guard.checked_at;
+        status.cc_switch_guard_lease_id = latest_guard.lease_id;
+        if status.state != "ERROR" {
+            if let Some(code) = latest_guard.error_code {
+                status.state = "ERROR".into();
+                status.error_code = Some(code);
+                status.reported_events = 0;
+            }
+        }
         if write_public_status(&self.config.status_file, &status).is_err() {
             status.state = "ERROR".into();
             status.error_code = Some("METER_STATUS_WRITE_FAILED".into());
+        } else {
+            self.last_public_status = Some(status.clone());
         }
         let kind = audit_kind_for_status(
             &status,
@@ -788,7 +1191,9 @@ impl MeterRuntime {
             if self.audit.append(kind, Some(&status), 0, false).is_err() {
                 status.state = "ERROR".into();
                 status.error_code = Some("METER_LOG_WRITE_FAILED".into());
-                let _ = write_public_status(&self.config.status_file, &status);
+                if write_public_status(&self.config.status_file, &status).is_ok() {
+                    self.last_public_status = Some(status.clone());
+                }
             } else {
                 self.last_logged_state = Some(status.state.clone());
                 self.last_logged_error = status.error_code.clone();
@@ -799,10 +1204,34 @@ impl MeterRuntime {
     }
 
     pub fn shutdown(&self) -> Result<(), String> {
+        self.guard.stop();
         self.audit.append(AuditKind::ServiceStopped, None, 0, false)
     }
 
+    fn publish_guard_status(&mut self, guard: &GuardSnapshot) -> Result<(), String> {
+        let mut status = self.last_public_status.clone().unwrap_or(MeterStatus {
+            state: "ERROR".into(),
+            version: env!("CARGO_PKG_VERSION").into(),
+            last_scan_epoch_seconds: 0,
+            last_report_epoch_seconds: None,
+            reported_events: 0,
+            error_code: None,
+            cc_switch_guard: "INACTIVE".into(),
+            cc_switch_guard_checked_at: 0,
+            cc_switch_guard_lease_id: None,
+        });
+        status.cc_switch_guard = guard.state.into();
+        status.cc_switch_guard_checked_at = guard.checked_at;
+        status.cc_switch_guard_lease_id = guard.lease_id;
+        if let Some(code) = &guard.error_code {
+            status.state = "ERROR".into();
+            status.error_code = Some(code.clone());
+        }
+        write_public_status(&self.config.status_file, &status)
+    }
+
     fn tick_inner(&mut self) -> Result<(&'static str, usize), String> {
+        self.guard.ensure_allowed()?;
         let state_path = self.config.state_dir.join("scan-state.json");
         let first_pairing = load_credential(&self.config.state_dir)?.is_none()
             && self.config.pairing_inbox.exists();
@@ -813,8 +1242,10 @@ impl MeterRuntime {
         };
         let paired = consume_pairing(&self.config)?;
         if paired && first_pairing {
-            if let Err(code) =
-                save_state(&state_path, &fresh_baseline.ok_or("METER_STATE_INVALID")?)
+            let baseline = fresh_baseline.ok_or("METER_STATE_INVALID")?;
+            if let Err(code) = self
+                .guard
+                .with_allowed(|| save_state(&state_path, &baseline))
             {
                 let _ = fs::remove_file(credential_file(&self.config.state_dir));
                 return Err(code);
@@ -826,7 +1257,8 @@ impl MeterRuntime {
             // Existing official activity has unknown ownership until this OS
             // profile is paired. Establish a byte cursor without charging it.
             let baseline = baseline_codex_home(&self.config.codex_home)?;
-            save_state(&state_path, &baseline)?;
+            self.guard
+                .with_allowed(|| save_state(&state_path, &baseline))?;
             return Ok(("BASELINE_READY", 0));
         }
         let Some(credential) = load_credential(&self.config.state_dir)? else {
@@ -835,24 +1267,34 @@ impl MeterRuntime {
         if credential.device_id != self.config.device_id {
             return Err("METER_CREDENTIAL_INVALID".into());
         }
-        let reported = scan_report_and_commit(
+        let reported = scan_report_and_commit_guarded(
             &self.config.codex_home,
             &state_path,
             &previous.unwrap(),
-            |events| send_events(&self.client, &self.config, &credential, events),
+            || self.guard.ensure_allowed(),
+            |events| {
+                self.guard.ensure_allowed()?;
+                send_events(&self.client, &self.config, &credential, events)
+            },
+            |state| self.guard.with_allowed(|| save_state(&state_path, state)),
         )?;
         if !reported.events.is_empty() {
             self.last_report_epoch_seconds = Some(epoch_seconds());
+            let guard = self.guard.snapshot();
             let tokens = reported
                 .events
                 .iter()
                 .fold(0u64, |sum, event| sum.saturating_add(event.total_tokens));
             let status = MeterStatus {
                 state: "REPORTED".into(),
+                version: env!("CARGO_PKG_VERSION").into(),
                 last_scan_epoch_seconds: epoch_seconds(),
                 last_report_epoch_seconds: self.last_report_epoch_seconds,
                 reported_events: reported.events.len(),
                 error_code: None,
+                cc_switch_guard: guard.state.into(),
+                cc_switch_guard_checked_at: guard.checked_at,
+                cc_switch_guard_lease_id: guard.lease_id,
             };
             self.audit
                 .append(AuditKind::UsageReported, Some(&status), tokens, false)?;
@@ -861,8 +1303,10 @@ impl MeterRuntime {
             .last_heartbeat
             .is_none_or(|last| last.elapsed() >= Duration::from_secs(30))
         {
+            self.guard.ensure_allowed()?;
             send_heartbeat(&self.client, &self.config, &credential)?;
             self.last_heartbeat = Some(Instant::now());
+            let guard = self.guard.snapshot();
             let status = MeterStatus {
                 state: if reported.events.is_empty() {
                     "UP_TO_DATE"
@@ -870,10 +1314,14 @@ impl MeterRuntime {
                     "REPORTED"
                 }
                 .into(),
+                version: env!("CARGO_PKG_VERSION").into(),
                 last_scan_epoch_seconds: epoch_seconds(),
                 last_report_epoch_seconds: self.last_report_epoch_seconds,
                 reported_events: 0,
                 error_code: None,
+                cc_switch_guard: guard.state.into(),
+                cc_switch_guard_checked_at: guard.checked_at,
+                cc_switch_guard_lease_id: guard.lease_id,
             };
             self.audit
                 .append(AuditKind::Heartbeat, Some(&status), 0, true)?;
@@ -1143,12 +1591,47 @@ mod tests {
         )
     }
 
+    fn read_http_request(stream: &mut std::net::TcpStream) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let mut buffer = [0u8; 4096];
+        loop {
+            let header_end = bytes
+                .windows(4)
+                .position(|part| part == b"\r\n\r\n")
+                .map(|position| position + 4);
+            if let Some(header_end) = header_end {
+                let header = String::from_utf8_lossy(&bytes[..header_end]);
+                let content_length = header
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .starts_with("content-length:")
+                            .then(|| {
+                                line.split_once(':')
+                                    .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+                            })
+                            .flatten()
+                    })
+                    .unwrap_or(0);
+                if bytes.len() >= header_end + content_length {
+                    return bytes;
+                }
+            }
+            let count = stream.read(&mut buffer).unwrap();
+            assert!(count > 0, "HTTP request ended before its declared body");
+            bytes.extend_from_slice(&buffer[..count]);
+        }
+    }
+
     #[test]
     fn reports_token_components_without_recounting_cache_or_reasoning() {
-        let event = parse_direct_record(br#"{"type":"token_usage_record","timestamp":"2026-10-10T00:00:00Z",
+        let event = parse_direct_record(
+            br#"{"type":"token_usage_record","timestamp":"2026-10-10T00:00:00Z",
             "payload":{"response_id":"breakdown","usage":{"total_tokens":1200,"input_tokens":1000,
             "cached_input_tokens":300,"cache_write_input_tokens":100,"output_tokens":200,
-            "reasoning_output_tokens":150}}}"#).unwrap();
+            "reasoning_output_tokens":150}}}"#,
+        )
+        .unwrap();
         assert_eq!(event.total_tokens, 1200);
         assert_eq!(event.input_tokens, Some(1000));
         assert_eq!(event.cached_input_tokens, Some(300));
@@ -1158,11 +1641,16 @@ mod tests {
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json["inputTokens"], 1000);
         assert_eq!(json["reasoningOutputTokens"], 150);
-        let legacy = parse_direct_record(record_at("legacy", 42, "2026-10-10T00:00:00Z").as_bytes()).unwrap();
+        let legacy =
+            parse_direct_record(record_at("legacy", 42, "2026-10-10T00:00:00Z").as_bytes())
+                .unwrap();
         assert_eq!(legacy.input_tokens, None);
         assert_eq!(legacy.output_tokens, None);
-        let restored: UsageEvent = serde_json::from_str(r#"{"eventId":"legacy","occurredAt":"2026-10-10T00:00:00Z",
-            "totalTokens":42,"source":"TOKEN_USAGE_RECORD"}"#).unwrap();
+        let restored: UsageEvent = serde_json::from_str(
+            r#"{"eventId":"legacy","occurredAt":"2026-10-10T00:00:00Z",
+            "totalTokens":42,"source":"TOKEN_USAGE_RECORD"}"#,
+        )
+        .unwrap();
         assert_eq!(restored.input_tokens, None);
     }
 
@@ -1280,6 +1768,7 @@ mod tests {
             state_dir: root.path().join("state"),
             status_file: root.path().join("status.json"),
             device_id: uuid::Uuid::new_v4(),
+            owner_user_sid: None,
         };
         for url in [
             "http://149.88.90.196:8080",
@@ -1312,6 +1801,7 @@ mod tests {
             state_dir: root.path().join("state"),
             status_file: root.path().join("status.json"),
             device_id: uuid::Uuid::new_v4(),
+            owner_user_sid: None,
         };
         let token = "A".repeat(43);
         fs::write(
@@ -1353,6 +1843,7 @@ mod tests {
             state_dir: state_dir.clone(),
             status_file: root.path().join("status.json"),
             device_id: uuid::Uuid::new_v4(),
+            owner_user_sid: None,
         };
         fs::write(
             &config.pairing_inbox,
@@ -1364,7 +1855,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut runtime = MeterRuntime::new(config).unwrap();
+        let mut runtime = MeterRuntime::new_for_test(config).unwrap();
         let first = runtime.tick();
         assert_eq!(first.state, "BASELINE_READY");
         assert_eq!(first.reported_events, 0);
@@ -1407,6 +1898,7 @@ mod tests {
             state_dir: state_dir.clone(),
             status_file: root.path().join("status.json"),
             device_id,
+            owner_user_sid: None,
         };
         fs::write(
             &config.pairing_inbox,
@@ -1418,7 +1910,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut runtime = MeterRuntime::new(config).unwrap();
+        let mut runtime = MeterRuntime::new_for_test(config).unwrap();
         assert_eq!(runtime.tick().state, "ERROR");
         let pending = scan(&home, &load_state(&state_path).unwrap().unwrap()).unwrap();
         assert_eq!(pending.events.len(), 1);
@@ -1435,8 +1927,9 @@ mod tests {
             state_dir: root.path().join("state"),
             status_file: root.path().join("status.json"),
             device_id: uuid::Uuid::new_v4(),
+            owner_user_sid: None,
         };
-        let mut runtime = MeterRuntime::new(config).unwrap();
+        let mut runtime = MeterRuntime::new_for_test(config).unwrap();
         assert_eq!(runtime.tick().state, "BASELINE_READY");
         assert_eq!(runtime.tick().state, "UNPAIRED");
 
@@ -1465,8 +1958,9 @@ mod tests {
             state_dir: root.path().join("state"),
             status_file: root.path().join("status.json"),
             device_id: uuid::Uuid::new_v4(),
+            owner_user_sid: None,
         };
-        let runtime = MeterRuntime::new(config).unwrap();
+        let runtime = MeterRuntime::new_for_test(config).unwrap();
         runtime.shutdown().unwrap();
         let content = fs::read_to_string(root.path().join("state/logs/meter.jsonl")).unwrap();
         let last: serde_json::Value =
@@ -1484,9 +1978,10 @@ mod tests {
             state_dir: root.path().join("state"),
             status_file: root.path().join("status.json"),
             device_id: uuid::Uuid::new_v4(),
+            owner_user_sid: None,
         };
         fs::write(&config.pairing_inbox, "private-canary-not-json").unwrap();
-        let mut runtime = MeterRuntime::new(config).unwrap();
+        let mut runtime = MeterRuntime::new_for_test(config).unwrap();
         assert_eq!(
             runtime.tick().error_code.as_deref(),
             Some("METER_PAIRING_INVALID")
@@ -1507,8 +2002,9 @@ mod tests {
             state_dir: root.path().join("state"),
             status_file: root.path().join("status.json"),
             device_id: uuid::Uuid::new_v4(),
+            owner_user_sid: None,
         };
-        let mut runtime = MeterRuntime::new(config).unwrap();
+        let mut runtime = MeterRuntime::new_for_test(config).unwrap();
         fs::remove_dir_all(root.path().join("state/logs")).unwrap();
         fs::write(root.path().join("state/logs"), b"blocked").unwrap();
 
@@ -1518,16 +2014,21 @@ mod tests {
         let public: serde_json::Value =
             serde_json::from_slice(&fs::read(root.path().join("status.json")).unwrap()).unwrap();
         assert_eq!(public["errorCode"], "METER_LOG_WRITE_FAILED");
+        assert_eq!(public["version"], env!("CARGO_PKG_VERSION"));
     }
 
     #[test]
     fn repeated_service_errors_are_logged_periodically_without_flooding() {
         let status = MeterStatus {
             state: "ERROR".into(),
+            version: env!("CARGO_PKG_VERSION").into(),
             last_scan_epoch_seconds: 1_000,
             last_report_epoch_seconds: None,
             reported_events: 0,
             error_code: Some("METER_BACKEND_UNAVAILABLE".into()),
+            cc_switch_guard: "INACTIVE".into(),
+            cc_switch_guard_checked_at: 1_000,
+            cc_switch_guard_lease_id: None,
         };
         assert!(audit_kind_for_status(
             &status,
@@ -1558,8 +2059,9 @@ mod tests {
             state_dir: root.path().join("state"),
             status_file: root.path().join("blocked/status.json"),
             device_id: uuid::Uuid::new_v4(),
+            owner_user_sid: None,
         };
-        let mut runtime = MeterRuntime::new(config).unwrap();
+        let mut runtime = MeterRuntime::new_for_test(config).unwrap();
 
         let status = runtime.tick();
         assert_eq!(
@@ -1568,6 +2070,229 @@ mod tests {
         );
         let content = fs::read_to_string(root.path().join("state/logs/meter.jsonl")).unwrap();
         assert!(content.contains("METER_STATUS_WRITE_FAILED"));
+    }
+
+    #[test]
+    fn guard_status_is_published_before_reporting_without_advancing_scan_state() {
+        let root = TestDir::new();
+        let config = MeterConfig {
+            server_url: "http://127.0.0.1:1".into(),
+            codex_home: root.path().join(".codex"),
+            pairing_inbox: root.path().join("pairing.json"),
+            state_dir: root.path().join("state"),
+            status_file: root.path().join("status.json"),
+            device_id: uuid::Uuid::new_v4(),
+            owner_user_sid: None,
+        };
+        let guard = GuardSnapshot {
+            state: "CLEAR",
+            checked_at: epoch_seconds(),
+            lease_id: Some(uuid::Uuid::new_v4()),
+            error_code: None,
+            detected: false,
+        };
+        let published_guard = guard.clone();
+        let mut runtime = MeterRuntime::new_with_guard_checker(
+            config,
+            Arc::new(move |_| published_guard.clone()),
+            GUARD_POLL_INTERVAL,
+        )
+        .unwrap();
+        runtime.publish_guard_status(&guard).unwrap();
+        let interim: MeterStatus =
+            serde_json::from_slice(&fs::read(root.path().join("status.json")).unwrap()).unwrap();
+        assert_eq!(interim.cc_switch_guard, "CLEAR");
+        assert_eq!(interim.cc_switch_guard_lease_id, guard.lease_id);
+        assert_eq!(interim.last_scan_epoch_seconds, 0);
+        let independent: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.path().join(GUARD_STATUS_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(independent["ccSwitchGuard"], "CLEAR");
+        assert_eq!(
+            independent["ccSwitchGuardLeaseId"],
+            guard.lease_id.unwrap().to_string()
+        );
+        assert!(!root.path().join("state/scan-state.json").exists());
+        assert_eq!(runtime.tick().state, "BASELINE_READY");
+        let final_status: MeterStatus =
+            serde_json::from_slice(&fs::read(root.path().join("status.json")).unwrap()).unwrap();
+        assert_eq!(final_status.state, "BASELINE_READY");
+        assert!(final_status.last_scan_epoch_seconds > 0);
+    }
+
+    #[test]
+    fn guard_audit_failure_stops_scan_before_cursor_is_created() {
+        let root = TestDir::new();
+        let config = MeterConfig {
+            server_url: "http://127.0.0.1:1".into(),
+            codex_home: root.path().join(".codex"),
+            pairing_inbox: root.path().join("pairing.json"),
+            state_dir: root.path().join("state"),
+            status_file: root.path().join("status.json"),
+            device_id: uuid::Uuid::new_v4(),
+            owner_user_sid: None,
+        };
+        let runtime = MeterRuntime::new_for_test(config).unwrap();
+        fs::remove_dir_all(root.path().join("state/logs")).unwrap();
+        fs::write(root.path().join("state/logs"), b"blocked").unwrap();
+        let guard = GuardSnapshot {
+            state: "CLEAR",
+            checked_at: 123,
+            lease_id: Some(uuid::Uuid::new_v4()),
+            error_code: None,
+            detected: false,
+        };
+        let mut audit_state = GuardAuditState::default();
+        assert_eq!(
+            audit_state.record(&runtime.audit, &guard),
+            Err("METER_LOG_WRITE_FAILED".into())
+        );
+        assert!(!root.path().join("state/scan-state.json").exists());
+    }
+
+    #[test]
+    fn guard_refreshes_during_slow_upload_and_blocks_next_batch_and_cursor_commit() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let root = TestDir::new();
+        let home = root.path().join(".codex");
+        let sessions = home.join("sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        let log = sessions.join("run.jsonl");
+        let initial_log = record("baseline", 1);
+        fs::write(&log, &initial_log).unwrap();
+        let state_dir = root.path().join("state");
+        let state_path = state_dir.join("scan-state.json");
+        save_state(&state_path, &baseline_codex_home(&home).unwrap()).unwrap();
+        let mut with_pending = initial_log;
+        for index in 0..101 {
+            with_pending.push_str(&record(&format!("slow-{index}"), 10));
+        }
+        fs::write(&log, with_pending).unwrap();
+        let previous_bytes = fs::read(&state_path).unwrap();
+        let device_id = uuid::Uuid::new_v4();
+        save_credential(
+            &state_dir,
+            &MeterCredential {
+                device_id,
+                device_token: "A".repeat(43),
+            },
+        )
+        .unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).unwrap();
+        let in_flight = Arc::new(AtomicBool::new(false));
+        let checker_in_flight = Arc::clone(&in_flight);
+        let lease_id = uuid::Uuid::new_v4();
+        let checker = Arc::new(move |_: &MeterConfig| {
+            if checker_in_flight.load(Ordering::Acquire) {
+                GuardSnapshot::error("METER_CC_SWITCH_GUARD_FAILED")
+            } else {
+                GuardSnapshot {
+                    state: "CLEAR",
+                    checked_at: epoch_seconds(),
+                    lease_id: Some(lease_id),
+                    error_code: None,
+                    detected: false,
+                }
+            }
+        });
+        let guard_status_path = root.path().join(GUARD_STATUS_FILE);
+        let receiver = std::thread::spawn(move || {
+            let accept_deadline = Instant::now() + Duration::from_secs(5);
+            let (mut stream, _) = loop {
+                match listener.accept() {
+                    Ok(accepted) => break accepted,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            Instant::now() < accept_deadline,
+                            "HTTP request was not sent"
+                        );
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("listener failed: {error}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let request = read_http_request(&mut stream);
+            assert!(request.starts_with(b"POST /api/v1/meter/usage/events HTTP/1.1"));
+            in_flight.store(true, Ordering::Release);
+
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let mut observed_guard_error = false;
+            while Instant::now() < deadline {
+                if fs::read(&guard_status_path)
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                    .is_some_and(|status| status["ccSwitchGuard"] == "ERROR")
+                {
+                    observed_guard_error = true;
+                    break;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            use std::io::Write;
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+                .unwrap();
+
+            let deadline = Instant::now() + Duration::from_millis(250);
+            let mut second_request_seen = false;
+            while Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((_, _)) => {
+                        second_request_seen = true;
+                        break;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("listener failed: {error}"),
+                }
+            }
+            (observed_guard_error, second_request_seen)
+        });
+
+        let config = MeterConfig {
+            server_url: format!("http://127.0.0.1:{port}"),
+            codex_home: home,
+            pairing_inbox: root.path().join("pairing.json"),
+            state_dir: state_dir.clone(),
+            status_file: root.path().join("status.json"),
+            device_id,
+            owner_user_sid: None,
+        };
+        let mut runtime =
+            MeterRuntime::new_with_guard_checker(config, checker, Duration::from_millis(20))
+                .unwrap();
+        let status = runtime.tick();
+        let (observed_guard_error, second_request_seen) = receiver.join().unwrap();
+        runtime.shutdown().unwrap();
+
+        assert!(
+            observed_guard_error,
+            "guard status did not refresh during HTTP"
+        );
+        assert!(
+            !second_request_seen,
+            "a second batch was sent after guard failure"
+        );
+        assert_eq!(status.state, "ERROR");
+        assert_eq!(
+            status.error_code.as_deref(),
+            Some("METER_CC_SWITCH_GUARD_FAILED")
+        );
+        assert_eq!(fs::read(&state_path).unwrap(), previous_bytes);
+
+        let log_contents = fs::read_to_string(state_dir.join("logs/meter.jsonl")).unwrap();
+        for line in log_contents.lines() {
+            serde_json::from_str::<serde_json::Value>(line).unwrap();
+        }
+        assert!(log_contents.contains("GUARD_ERROR"));
     }
 
     #[test]
@@ -1602,9 +2327,19 @@ mod tests {
 
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
+        let public_status_path = root.path().join("status.json");
+        let status_during_requests = public_status_path.clone();
         let receiver = std::thread::spawn(move || {
+            let mut observed_prepublish = false;
             for _ in 0..2 {
                 let (mut stream, _) = listener.accept().unwrap();
+                let public: serde_json::Value =
+                    serde_json::from_slice(&fs::read(&status_during_requests).unwrap()).unwrap();
+                observed_prepublish |= public["ccSwitchGuard"] == "INACTIVE"
+                    && public["ccSwitchGuardCheckedAt"]
+                        .as_u64()
+                        .is_some_and(|at| at > 0)
+                    && public["lastScanEpochSeconds"] == 0;
                 stream
                     .set_read_timeout(Some(Duration::from_secs(5)))
                     .unwrap();
@@ -1624,6 +2359,7 @@ mod tests {
                     )
                     .unwrap();
             }
+            observed_prepublish
         });
         let config = MeterConfig {
             server_url: format!("http://127.0.0.1:{port}"),
@@ -1632,10 +2368,14 @@ mod tests {
             state_dir: state_dir.clone(),
             status_file: root.path().join("status.json"),
             device_id,
+            owner_user_sid: None,
         };
-        let mut runtime = MeterRuntime::new(config).unwrap();
+        let mut runtime = MeterRuntime::new_for_test(config).unwrap();
         let status = runtime.tick();
-        receiver.join().unwrap();
+        assert!(
+            receiver.join().unwrap(),
+            "guard status was not visible before HTTP reporting"
+        );
         assert_eq!(status.state, "REPORTED");
 
         let content = fs::read_to_string(state_dir.join("logs/meter.jsonl")).unwrap();
@@ -1692,6 +2432,7 @@ mod tests {
             state_dir: root.path().join("state"),
             status_file: root.path().join("status.json"),
             device_id: uuid::Uuid::new_v4(),
+            owner_user_sid: None,
         };
         let credential = MeterCredential {
             device_id: config.device_id,

@@ -513,7 +513,7 @@ export function Dashboard({ session, onLogout }: DashboardProps) {
         status.fallback.state === "SCAN_FAILED"
           ? "error"
           : "success"
-      ]("扫描完成，请查看计费程序状态。");
+      ]("扫描完成，请查看统计程序状态。");
     },
     onError: (error) => toast.error(`扫描失败：${getApiErrorMessage(error)}`),
   });
@@ -523,8 +523,8 @@ export function Dashboard({ session, onLogout }: DashboardProps) {
       queryClient.setQueryData(["usage-status"], status);
       toast[status.pairingState === "PAIRING_SENT" ? "success" : "error"](
         status.pairingState === "PAIRING_SENT"
-          ? "设备配对已发送，计费服务会在几秒内接收。"
-          : "设备配对未完成，请检查计费服务与后台连接。",
+          ? "设备配对已发送，统计程序会在几秒内接收。"
+          : "设备配对未完成，请检查统计程序与后台连接。",
       );
     },
     onError: (error) => toast.error(`配对失败：${getApiErrorMessage(error)}`),
@@ -539,26 +539,42 @@ export function Dashboard({ session, onLogout }: DashboardProps) {
       ) {
         toast.success(
           result === "INSTALLED"
-            ? "计费服务已安装并启动。"
-            : "计费服务已启动，会在关闭客户端后继续运行。",
+            ? "统计程序已安装或更新并启动。"
+            : "统计程序已启动，会在关闭客户端后继续运行。",
         );
-        await usageStatusQuery.refetch();
+        await Promise.all([
+          usageStatusQuery.refetch(),
+          queryClient.invalidateQueries({
+            queryKey: ["meter-service-version"],
+          }),
+        ]);
       } else if (result === "NEEDS_ADMIN") {
-        toast.error("安装或更新计费服务配置需要右键以管理员身份运行客户端。");
+        toast.error(
+          "请从托盘退出客户端，再右键以管理员身份运行，然后重试更新统计程序。",
+        );
       } else if (result === "NOT_INSTALLED") {
-        toast.warning("安装包缺少计费服务文件，请重新安装最新版客户端。");
+        toast.warning("安装包缺少统计程序文件，请重新安装最新版客户端。");
       } else if (result === "SERVER_UNAVAILABLE") {
         toast.error("无法连接后台，请先检查服务器地址，再重试安装。");
       } else if (result === "INSTALL_FAILED") {
         toast.error(
           (await api.meterSetupError().catch(() => null)) ??
-            "计费服务安装失败，请查看应用数据目录中的 meter-setup-status.json。",
+            "统计程序安装失败，请查看应用数据目录中的 meter-setup-status.json。",
         );
       } else {
-        toast.error("计费服务仍未运行，请检查 Windows 服务状态。");
+        toast.error("统计程序仍未运行，请检查 Windows 服务状态。");
+      }
+      if (
+        result !== "RUNNING" &&
+        result !== "STARTED" &&
+        result !== "INSTALLED"
+      ) {
+        void queryClient.invalidateQueries({
+          queryKey: ["meter-service-version"],
+        });
       }
     },
-    onError: () => toast.error("计费服务启动请求失败，请稍后重试。"),
+    onError: () => toast.error("统计程序启动请求失败，请稍后重试。"),
   });
   const overview = quotaQuery.data;
   const rateLimitsQuery = useQuery({

@@ -44,10 +44,14 @@ public final class RustMeterStatusReader {
                     .contains(state)) state = "ERROR";
             String error = node.path("errorCode").asString("");
             if (!error.matches("[A-Z_]{1,64}")) error = null;
+            String version = node.path("version").asString("");
+            if (version.length() > 64 || !version.matches("[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?")) {
+                version = null;
+            }
             long lastReport = node.path("lastReportEpochSeconds").asLong(0);
             int reported = node.path("reportedEvents").asInt(0);
             return new MeterServiceStatus(state, lastScan, lastReport <= 0 ? null : lastReport,
-                    Math.max(0, reported), error);
+                    Math.max(0, reported), error, version);
         } catch (Exception ignored) {
             return MeterServiceStatus.offline();
         }

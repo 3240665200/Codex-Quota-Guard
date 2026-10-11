@@ -14,8 +14,13 @@ try {
         reportedEvents = 0; reportedTokens = 0; heartbeatSent = $false
         errorCode = 'METER_BACKEND_UNAVAILABLE'; secretCanary = 'never-display-this-value'
     }
+    $guard = [ordered]@{
+        atEpochSeconds = 1791300015; kind = 'GUARD_TERMINATED'; state = $null
+        reportedEvents = 0; reportedTokens = 0; heartbeatSent = $false
+        errorCode = $null; ccSwitchGuard = 'TERMINATED'; secretCanary = 'never-display-this-value'
+    }
     [IO.File]::WriteAllText((Join-Path $tempRoot 'meter.1.jsonl'),
-        (($old | ConvertTo-Json -Compress) + "`n"))
+        (($old | ConvertTo-Json -Compress) + "`n" + ($guard | ConvertTo-Json -Compress) + "`n"))
     [IO.File]::WriteAllText((Join-Path $tempRoot 'meter.jsonl'),
         (($recent | ConvertTo-Json -Compress) + "`n" + 'malformed-row' + "`n"))
 
@@ -27,11 +32,13 @@ try {
     if (($latest | Out-String) -match 'never-display-this-value') {
         throw 'The viewer exposed an unknown log property.'
     }
-    $all = @(& $viewer -LogDirectory $tempRoot -Tail 2 -WarningAction SilentlyContinue)
-    if ($all.Count -ne 2 -or $all[0].Kind -ne 'HEARTBEAT' -or $all[1].Kind -ne 'ERROR') {
+    $all = @(& $viewer -LogDirectory $tempRoot -Tail 3 -WarningAction SilentlyContinue)
+    if ($all.Count -ne 3 -or $all[0].Kind -ne 'HEARTBEAT' -or
+            $all[0].CcSwitchGuard -ne '' -or $all[1].Kind -ne 'GUARD_TERMINATED' -or
+            $all[1].CcSwitchGuard -ne 'TERMINATED' -or $all[2].Kind -ne 'ERROR') {
         throw 'The viewer did not preserve rotated log order.'
     }
-    $errors = @(& $viewer -LogDirectory $tempRoot -Tail 2 -ErrorsOnly -WarningAction SilentlyContinue)
+    $errors = @(& $viewer -LogDirectory $tempRoot -Tail 3 -ErrorsOnly -WarningAction SilentlyContinue)
     if ($errors.Count -ne 1 -or $errors[0].Kind -ne 'ERROR') {
         throw 'The error-only filter returned an unexpected entry.'
     }

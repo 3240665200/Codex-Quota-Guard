@@ -3,7 +3,10 @@ use std::{
     net::{SocketAddr, TcpListener, TcpStream},
     path::PathBuf,
     process::{Child, Command, Stdio},
-    sync::Mutex,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -80,7 +83,7 @@ pub(crate) enum BackendError {
     #[error("邮箱或密码不正确，请检查后重试。")]
     InvalidCredentials,
     #[error(
-        "计费服务配对失败；当前 Windows 用户可能已绑定其他系统账户，请联系管理员检查设备绑定。"
+        "统计程序配对失败；当前 Windows 用户可能已绑定其他系统账户，请联系管理员检查设备绑定。"
     )]
     MeterPairingRequired,
     #[error("请先登录系统账户。")]
@@ -112,10 +115,14 @@ struct RunningBackend {
 pub(crate) struct BackendState {
     process: Mutex<Option<RunningBackend>>,
     client: Client,
+    guard_ready: Arc<AtomicBool>,
 }
 
 impl BackendState {
-    pub(crate) fn launch(app: &AppHandle) -> Result<Self, BackendError> {
+    pub(crate) fn launch(
+        app: &AppHandle,
+        guard_ready: Arc<AtomicBool>,
+    ) -> Result<Self, BackendError> {
         let jar = resolve_backend_jar(app)?;
         let port = reserve_loopback_port()?;
         let token = BearerToken::generate();
@@ -177,7 +184,27 @@ impl BackendState {
                 _job: job,
             })),
             client: Client::new(),
+            guard_ready,
         })
+    }
+
+    pub(crate) fn restart(&self, app: &AppHandle) -> Result<(), BackendError> {
+        self.stop();
+        let mut replacement = Self::launch(app, Arc::clone(&self.guard_ready))?;
+        let process = replacement
+            .process
+            .get_mut()
+            .map_err(|_| BackendError::Startup)?
+            .take()
+            .ok_or(BackendError::Startup)?;
+        let Ok(mut slot) = self.process.lock() else {
+            let mut process = process;
+            let _ = process.child.kill();
+            let _ = process.child.wait();
+            return Err(BackendError::Startup);
+        };
+        *slot = Some(process);
+        Ok(())
     }
 
     pub(crate) async fn json(
@@ -190,12 +217,14 @@ impl BackendState {
 
     pub(crate) async fn usage_events(&self, page: u32, size: u32) -> Result<Value, BackendError> {
         validate_usage_page(page, size)?;
-        self.json(Method::GET, ApiRoute::UsageEvents { page, size }).await
+        self.json(Method::GET, ApiRoute::UsageEvents { page, size })
+            .await
     }
 
     pub(crate) async fn usage_analytics(&self, days: u32) -> Result<Value, BackendError> {
         validate_usage_days(days)?;
-        self.json(Method::GET, ApiRoute::UsageAnalytics { days }).await
+        self.json(Method::GET, ApiRoute::UsageAnalytics { days })
+            .await
     }
 
     /// Sends product-user credentials directly to the local Java process.
@@ -222,7 +251,10 @@ impl BackendState {
         body: Option<Value>,
     ) -> Result<Value, BackendError> {
         let (url, token) = self.request_target(route)?;
-        let mut request = self.client.request(method, url).bearer_auth(token)
+        let mut request = self
+            .client
+            .request(method, url)
+            .bearer_auth(token)
             .timeout(Duration::from_secs(35));
         if let Some(body) = body {
             request = request.json(&body);
@@ -276,6 +308,9 @@ impl BackendState {
     }
 
     fn request_target(&self, route: ApiRoute) -> Result<(String, String), BackendError> {
+        if !self.guard_ready.load(Ordering::Acquire) {
+            return Err(BackendError::Unavailable);
+        }
         let mut process = self.process.lock().map_err(|_| BackendError::Unavailable)?;
         let process = process.as_mut().ok_or(BackendError::Unavailable)?;
         if process
@@ -300,14 +335,20 @@ fn classify_response(route: ApiRoute, status: StatusCode) -> BackendError {
         }
         (ApiRoute::SystemLogin, StatusCode::CONFLICT) => BackendError::MeterPairingRequired,
         (
-            ApiRoute::SystemLogin | ApiRoute::SystemCurrent | ApiRoute::QuotaOverview
-                | ApiRoute::UsageEvents { .. } | ApiRoute::UsageAnalytics { .. },
+            ApiRoute::SystemLogin
+            | ApiRoute::SystemCurrent
+            | ApiRoute::QuotaOverview
+            | ApiRoute::UsageEvents { .. }
+            | ApiRoute::UsageAnalytics { .. },
             StatusCode::SERVICE_UNAVAILABLE,
         ) => BackendError::ControlPlaneUnavailable,
         (
-            ApiRoute::SystemCurrent | ApiRoute::QuotaOverview | ApiRoute::CodexRateLimits
-                | ApiRoute::UsageEvents { .. } | ApiRoute::UsageAnalytics { .. }
-                | ApiRoute::MeterRuntimeLogs,
+            ApiRoute::SystemCurrent
+            | ApiRoute::QuotaOverview
+            | ApiRoute::CodexRateLimits
+            | ApiRoute::UsageEvents { .. }
+            | ApiRoute::UsageAnalytics { .. }
+            | ApiRoute::MeterRuntimeLogs,
             StatusCode::UNAUTHORIZED,
         ) => BackendError::SystemLoginRequired,
         _ => BackendError::Unavailable,
@@ -345,11 +386,9 @@ fn request_graceful_shutdown(process: &mut RunningBackend) -> bool {
 }
 
 fn bundled_java_relative_path() -> PathBuf {
-    PathBuf::from("java").join("bin").join(if cfg!(windows) {
-        "javaw.exe"
-    } else {
-        "java"
-    })
+    PathBuf::from("java")
+        .join("bin")
+        .join(if cfg!(windows) { "javaw.exe" } else { "java" })
 }
 
 fn java_executable(app: &AppHandle) -> Result<PathBuf, BackendError> {
@@ -484,12 +523,21 @@ mod tests {
         assert!(validate_usage_page(100001, 10).is_err());
         assert!(validate_usage_page(0, 0).is_err());
         assert!(validate_usage_page(0, 101).is_err());
-        assert_eq!(fixed_url(43117, ApiRoute::UsageEvents { page: 2, size: 10 }),
-            "http://127.0.0.1:43117/api/v1/usage/events?page=2&size=10");
-        assert!(matches!(classify_response(ApiRoute::UsageEvents { page: 0, size: 10 },
-            StatusCode::UNAUTHORIZED), BackendError::SystemLoginRequired));
-        assert!(matches!(classify_response(ApiRoute::MeterRuntimeLogs,
-            StatusCode::UNAUTHORIZED), BackendError::SystemLoginRequired));
+        assert_eq!(
+            fixed_url(43117, ApiRoute::UsageEvents { page: 2, size: 10 }),
+            "http://127.0.0.1:43117/api/v1/usage/events?page=2&size=10"
+        );
+        assert!(matches!(
+            classify_response(
+                ApiRoute::UsageEvents { page: 0, size: 10 },
+                StatusCode::UNAUTHORIZED
+            ),
+            BackendError::SystemLoginRequired
+        ));
+        assert!(matches!(
+            classify_response(ApiRoute::MeterRuntimeLogs, StatusCode::UNAUTHORIZED),
+            BackendError::SystemLoginRequired
+        ));
     }
 
     #[test]
@@ -512,16 +560,28 @@ mod tests {
     fn personal_analytics_accepts_only_fixed_ranges_and_no_user_override() {
         for days in [1, 7, 30] {
             assert!(validate_usage_days(days).is_ok());
-            assert_eq!(fixed_url(43117, ApiRoute::UsageAnalytics { days }),
-                format!("http://127.0.0.1:43117/api/v1/usage/analytics?days={days}"));
+            assert_eq!(
+                fixed_url(43117, ApiRoute::UsageAnalytics { days }),
+                format!("http://127.0.0.1:43117/api/v1/usage/analytics?days={days}")
+            );
         }
         for days in [0, 2, 31, u32::MAX] {
             assert!(validate_usage_days(days).is_err());
         }
-        assert!(matches!(classify_response(ApiRoute::UsageAnalytics { days: 7 },
-            StatusCode::UNAUTHORIZED), BackendError::SystemLoginRequired));
-        assert!(matches!(classify_response(ApiRoute::UsageAnalytics { days: 7 },
-            StatusCode::SERVICE_UNAVAILABLE), BackendError::ControlPlaneUnavailable));
+        assert!(matches!(
+            classify_response(
+                ApiRoute::UsageAnalytics { days: 7 },
+                StatusCode::UNAUTHORIZED
+            ),
+            BackendError::SystemLoginRequired
+        ));
+        assert!(matches!(
+            classify_response(
+                ApiRoute::UsageAnalytics { days: 7 },
+                StatusCode::SERVICE_UNAVAILABLE
+            ),
+            BackendError::ControlPlaneUnavailable
+        ));
     }
 
     #[test]
@@ -555,7 +615,10 @@ mod tests {
         let path = bundled_java_relative_path();
         assert!(path.starts_with("java"));
         assert_eq!(path.parent(), Some(std::path::Path::new("java/bin")));
-        assert_eq!(path.file_name().unwrap(), if cfg!(windows) { "javaw.exe" } else { "java" });
+        assert_eq!(
+            path.file_name().unwrap(),
+            if cfg!(windows) { "javaw.exe" } else { "java" }
+        );
     }
 
     #[test]

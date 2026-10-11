@@ -14,13 +14,13 @@ import { UsageStatistics } from "@/components/usage-statistics";
 import { formatUsd } from "@/lib/usage-format";
 
 const serviceLabels: Record<UsageStatus["service"]["state"], string> = {
-  NOT_INSTALLED: "计费服务未安装",
-  OFFLINE: "计费服务离线",
-  BASELINE_READY: "服务基线已建立",
-  UNPAIRED: "计费服务待配对",
-  UP_TO_DATE: "计费服务运行中",
-  REPORTED: "计费服务运行中",
-  ERROR: "计费服务异常",
+  NOT_INSTALLED: "统计程序未安装",
+  OFFLINE: "统计程序离线",
+  BASELINE_READY: "统计基线已建立",
+  UNPAIRED: "统计程序待配对",
+  UP_TO_DATE: "统计程序运行中",
+  REPORTED: "统计程序运行中",
+  ERROR: "统计程序异常",
 };
 const fallbackLabels: Record<UsageStatus["fallback"]["state"], string> = {
   SIGNED_OUT: "请先登录本系统账户",
@@ -148,14 +148,19 @@ function summarizeScannerIssues(fallback: UsageStatus["fallback"]) {
 }
 
 const logLabels: Record<MeterRuntimeLogs["entries"][number]["kind"], string> = {
-  SERVICE_STARTED: "计费服务启动",
-  SERVICE_STOPPED: "计费服务停止",
+  SERVICE_STARTED: "统计程序启动",
+  SERVICE_STOPPED: "统计程序停止",
   BASELINE_READY: "扫描基线建立",
   UNPAIRED: "等待设备配对",
   USAGE_REPORTED: "用量上报成功",
   HEARTBEAT: "后台心跳成功",
   ERROR: "服务处理失败",
   STATUS_CHANGE: "服务状态变化",
+  GUARD_ACTIVE: "CC Switch 检测已启用",
+  GUARD_INACTIVE: "CC Switch 检测已停用",
+  GUARD_DETECTED: "发现 CC Switch 冲突",
+  GUARD_TERMINATED: "已结束 CC Switch",
+  GUARD_ERROR: "CC Switch 检测失败",
 };
 function explainError(code: string | null | undefined) {
   switch (code) {
@@ -183,6 +188,12 @@ function explainError(code: string | null | undefined) {
       return "服务状态无法写入，请检查当前 Windows 用户的数据目录权限。";
     case "METER_LOG_WRITE_FAILED":
       return "服务日志无法写入，请检查 ProgramData 目录权限和磁盘空间。";
+    case "METER_CC_SWITCH_GUARD_FAILED":
+      return "无法确认 CC Switch 冲突已解除，请退出 CC Switch 并检查统计程序。";
+    case "METER_GUARD_THREAD_UNAVAILABLE":
+    case "METER_GUARD_CHECK_UNAVAILABLE":
+    case "METER_GUARD_CHECK_STALE":
+      return "CC Switch 检测线程未响应，请重启统计程序后重新检查启动条件。";
     default:
       return code ? `诊断码：${code}，请联系管理员检查服务日志。` : null;
   }
@@ -251,8 +262,35 @@ export function UsageActivityPanel({
     enabled: tab === "diagnostics",
     refetchInterval: 10000,
   });
+  const meterVersion = useQuery({
+    queryKey: ["meter-service-version"],
+    queryFn: api.meterServiceVersion,
+    retry: false,
+    refetchInterval: 30000,
+  });
   const serviceState = status?.service.state;
   const healthy = serviceState === "UP_TO_DATE" || serviceState === "REPORTED";
+  const upgradeRequired =
+    meterVersion.data?.status === "UPGRADE_REQUIRED" ||
+    meterVersion.data?.needsUpgrade === true;
+  const runtimeVersion = status?.service.version;
+  const runtimeVersionMismatch =
+    !!runtimeVersion &&
+    !!meterVersion.data?.installedVersion &&
+    runtimeVersion !== meterVersion.data.installedVersion;
+  const runtimeVersionUnknown = healthy && !runtimeVersion;
+  const versionUnverified =
+    meterVersion.data?.status === "UNKNOWN" ||
+    meterVersion.isError ||
+    runtimeVersionUnknown;
+  const versionNeedsAttention =
+    upgradeRequired || runtimeVersionMismatch || versionUnverified;
+  const showVersionAction =
+    versionNeedsAttention && serviceState !== "NOT_INSTALLED";
+  const sameVersionDifferentBinary =
+    upgradeRequired &&
+    !!meterVersion.data?.installedVersion &&
+    meterVersion.data.installedVersion === meterVersion.data.bundledVersion;
   const fallbackFailed =
     status?.fallback.state === "REPORT_FAILED" ||
     status?.fallback.state === "SCAN_FAILED";
@@ -270,6 +308,7 @@ export function UsageActivityPanel({
     page === 0 ? (ledger.data?.items[0]?.receivedAt ?? measuredAt) : measuredAt;
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ["usage-status"] });
+    void meterVersion.refetch();
     if (tab === "overview")
       void queryClient.invalidateQueries({
         queryKey: ["usage-analytics", userId],
@@ -296,23 +335,95 @@ export function UsageActivityPanel({
           />
           <div>
             <h2 id={`${id}-heading`} className="text-base font-semibold">
-              计费与消耗记录
+              统计与消耗记录
             </h2>
             <p className="mt-1 text-xs text-muted-foreground">
-              {serviceState ? serviceLabels[serviceState] : "正在检查计费服务…"}{" "}
+              {serviceState ? serviceLabels[serviceState] : "正在检查统计程序…"}{" "}
               · 每 10 秒更新记录
             </p>
           </div>
         </div>
         <span
-          className={`text-xs font-medium ${healthy && !fallbackFailed ? "text-teal-700 dark:text-teal-400" : "text-amber-700 dark:text-amber-400"}`}
+          className={`text-xs font-medium ${healthy && !fallbackFailed && !versionNeedsAttention ? "text-teal-700 dark:text-teal-400" : "text-amber-700 dark:text-amber-400"}`}
         >
-          {fallbackFailed ? "回退上报异常" : healthy ? "正常" : "需检查"}
+          {upgradeRequired
+            ? "需升级"
+            : fallbackFailed
+              ? "回退上报异常"
+              : runtimeVersionMismatch || versionUnverified
+                ? "版本待确认"
+                : healthy
+                  ? "正常"
+                  : "需检查"}
         </span>
       </div>
+      {upgradeRequired ? (
+        <div
+          role="alert"
+          className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-200"
+        >
+          <p className="font-medium">统计程序需要更新</p>
+          <p className="mt-1 text-xs">
+            运行版本 {runtimeVersion ?? "未知"}，已安装版本{" "}
+            {meterVersion.data?.installedVersion ?? "未知"}，安装包版本{" "}
+            {meterVersion.data?.bundledVersion ?? "未知"}。
+            {sameVersionDifferentBinary
+              ? "版本号相同，但程序文件校验不一致，仍需更新。"
+              : "已安装程序与安装包不一致，旧版可能缺少输入、输出等 Token 分项。"}
+            点击更新以安装随客户端打包的版本；如提示权限不足，请从托盘退出客户端，再以管理员身份重新打开。已入库的旧流水不会自动补齐。
+          </p>
+          {showVersionAction ? (
+            <Button
+              size="sm"
+              variant="outline"
+              className="mt-3"
+              disabled={starting}
+              onClick={onStart}
+            >
+              <RefreshCw
+                aria-hidden="true"
+                className={starting ? "animate-spin" : undefined}
+              />
+              {starting ? "正在更新…" : "更新统计程序"}
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+      {!upgradeRequired && (runtimeVersionMismatch || versionUnverified) ? (
+        <div
+          role="alert"
+          className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-200"
+        >
+          <p className="font-medium">统计程序运行版本待确认</p>
+          <p className="mt-1 text-xs">
+            {runtimeVersionMismatch
+              ? `运行版本 ${runtimeVersion} 与已安装版本 ${meterVersion.data?.installedVersion} 不一致，请重新启动统计程序。`
+              : meterVersion.isError
+                ? "无法读取安装版本，请刷新后重试。"
+                : meterVersion.data?.status === "UNKNOWN"
+                  ? "安装版本无法通过程序文件校验，不能确认已是最新版；请检查安装状态。"
+                  : "后台尚未收到运行版本，可能仍在运行旧版统计程序或旧版后端。请检查安装与服务状态。"}
+          </p>
+          {showVersionAction ? (
+            <Button
+              size="sm"
+              variant="outline"
+              className="mt-3"
+              disabled={starting}
+              onClick={onStart}
+            >
+              <RefreshCw
+                aria-hidden="true"
+                className={starting ? "animate-spin" : undefined}
+              />
+              {starting ? "正在检查…" : "检查并修复"}
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
       <dl className="mt-5 grid gap-3 rounded-lg border bg-slate-50/70 p-4 text-sm dark:bg-slate-900/50 sm:grid-cols-3">
         <div>
-          <dt className="text-xs text-muted-foreground">服务最近扫描</dt>
+          <dt className="text-xs text-muted-foreground">统计程序最近扫描</dt>
           <dd className="mt-1 tabular-nums">
             {time(status?.service.lastScanEpochSeconds)}
           </dd>
@@ -330,7 +441,7 @@ export function UsageActivityPanel({
         <div
           className="inline-flex gap-1 rounded-lg bg-muted p-1"
           role="tablist"
-          aria-label="计费记录视图"
+          aria-label="统计记录视图"
         >
           {(["overview", "ledger", "diagnostics"] as const).map(
             (value, index) => (
@@ -382,7 +493,7 @@ export function UsageActivityPanel({
             variant="ghost"
             onClick={refresh}
             disabled={fetching}
-            aria-label="刷新计费记录"
+            aria-label="刷新统计记录"
           >
             <RefreshCw
               className={fetching ? "animate-spin" : undefined}
@@ -411,7 +522,8 @@ export function UsageActivityPanel({
               {pairing ? "正在配对…" : "重新配对"}
             </Button>
           ) : null}
-          {serviceState === "OFFLINE" || serviceState === "NOT_INSTALLED" ? (
+          {(serviceState === "OFFLINE" || serviceState === "NOT_INSTALLED") &&
+          !showVersionAction ? (
             <Button
               size="sm"
               variant="outline"
@@ -421,8 +533,8 @@ export function UsageActivityPanel({
               {starting
                 ? "正在处理…"
                 : serviceState === "NOT_INSTALLED"
-                  ? "安装计费服务"
-                  : "启动计费服务"}
+                  ? "安装统计程序"
+                  : "启动统计程序"}
             </Button>
           ) : null}
         </div>
@@ -589,12 +701,41 @@ export function UsageActivityPanel({
         >
           <div className="grid gap-3 text-sm sm:grid-cols-2">
             <div className="rounded-lg border p-3">
-              <h3 className="font-medium">Rust 常驻服务</h3>
+              <h3 className="font-medium">Rust 常驻统计程序</h3>
               <p className="mt-1 text-xs text-muted-foreground">
                 {serviceState ? serviceLabels[serviceState] : "正在读取…"}
               </p>
+              <dl className="mt-2 grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
+                <div>
+                  <dt className="text-muted-foreground">运行版本</dt>
+                  <dd className="mt-0.5 tabular-nums">
+                    {runtimeVersion ?? (healthy ? "旧版/未知" : "未运行/未知")}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-muted-foreground">已安装版本</dt>
+                  <dd className="mt-0.5 tabular-nums">
+                    {meterVersion.data?.installedVersion ?? "旧版/未知"}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-muted-foreground">安装包版本</dt>
+                  <dd className="mt-0.5 tabular-nums">
+                    {meterVersion.data?.bundledVersion ?? "未知"}
+                  </dd>
+                </div>
+              </dl>
+              {meterVersion.isError ? (
+                <p className="mt-2 text-xs text-amber-700">
+                  暂时无法读取统计程序版本，请刷新重试。
+                </p>
+              ) : meterVersion.data?.status === "UNKNOWN" ? (
+                <p className="mt-2 text-xs text-amber-700">
+                  无法确认当前版本：程序文件校验信息不足，请检查安装状态。
+                </p>
+              ) : null}
               <p className="mt-2 text-xs">
-                {explainError(status?.service.errorCode) ?? "暂无服务错误"}
+                {explainError(status?.service.errorCode) ?? "暂无统计程序错误"}
               </p>
               {status?.pairingState === "PAIRING_FAILED" ? (
                 <p className="mt-2 text-xs text-destructive">
@@ -655,29 +796,31 @@ export function UsageActivityPanel({
             </div>
           </div>
           <h3 className="mb-3 mt-5 text-sm font-medium">
-            服务日志 · 最近 50 条
+            统计程序日志 · 最近 50 条
           </h3>
           <p className="mb-3 text-xs text-muted-foreground">
             仅展示运行摘要。批次 Token
             不是单笔流水，不要重复累加；记录可能因后台去重而不新增入账。
           </p>
           {logs.isPending ? (
-            <p className="text-sm text-muted-foreground">正在读取服务日志…</p>
+            <p className="text-sm text-muted-foreground">
+              正在读取统计程序日志…
+            </p>
           ) : logs.isError ? (
             <p role="alert" className="text-sm text-destructive">
               日志读取失败：{getApiErrorMessage(logs.error)}
             </p>
           ) : logs.data?.state === "ADMIN_REQUIRED" ? (
             <p className="text-sm text-muted-foreground">
-              请以管理员身份运行客户端查看服务日志；消耗流水不需要管理员权限。
+              请以管理员身份运行客户端查看统计程序日志；消耗流水不需要管理员权限。
             </p>
           ) : logs.data?.state === "NOT_AVAILABLE" ? (
             <p className="text-sm text-muted-foreground">
-              本机暂无服务日志，请先安装并启动计费服务。
+              本机暂无统计程序日志，请先安装并启动统计程序。
             </p>
           ) : logs.data?.state === "READ_FAILED" ? (
             <p role="alert" className="text-sm text-destructive">
-              服务日志暂不可读，请检查目录权限后刷新。
+              统计程序日志暂不可读，请检查目录权限后刷新。
             </p>
           ) : logs.data?.entries.length ? (
             <ol className="max-h-96 overflow-y-auto divide-y">
@@ -691,6 +834,9 @@ export function UsageActivityPanel({
                     <p className="mt-1 text-xs text-muted-foreground">
                       {time(entry.atEpochSeconds)}
                       {entry.state ? ` · ${serviceLabels[entry.state]}` : ""}
+                      {entry.ccSwitchGuard
+                        ? ` · 守卫：${entry.ccSwitchGuard}`
+                        : ""}
                     </p>
                     {entry.errorCode ? (
                       <p className="mt-1 text-xs text-destructive">

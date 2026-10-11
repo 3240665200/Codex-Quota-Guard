@@ -45,21 +45,21 @@ export function trayFeedbackNotice(feedback: TrayFeedback): Notice {
   switch (feedback.outcome) {
     case "success":
     case "running":
-      return { kind: "success", message: "计费服务正在运行。" };
+      return { kind: "success", message: "统计程序正在运行。" };
     case "started":
-      return { kind: "success", message: "计费服务已启动。" };
+      return { kind: "success", message: "统计程序已启动。" };
     case "installed":
-      return { kind: "success", message: "计费服务已安装并启动。" };
+      return { kind: "success", message: "统计程序已安装并启动。" };
     case "needs_admin":
       return {
         kind: "warning",
         message:
-          "请先从托盘退出客户端，再以管理员身份运行以安装或更新计费服务。",
+          "请先从托盘退出客户端，再以管理员身份运行以安装或更新统计程序。",
       };
     case "not_installed":
       return {
         kind: "error",
-        message: "安装包缺少计费服务文件，请重新安装最新版客户端。",
+        message: "安装包缺少统计程序文件，请重新安装最新版客户端。",
       };
     case "server_unavailable":
       return {
@@ -67,12 +67,12 @@ export function trayFeedbackNotice(feedback: TrayFeedback): Notice {
         message: "无法连接后台，请检查服务器设置和后台运行状态。",
       };
     case "unsupported":
-      return { kind: "warning", message: "当前平台暂不支持自动管理计费服务。" };
+      return { kind: "warning", message: "当前平台暂不支持自动管理统计程序。" };
     case "install_failed":
     case "error":
       return {
         kind: "error",
-        message: "计费服务检查失败，请查看运行诊断及安装提示。",
+        message: "统计程序检查失败，请查看运行诊断及安装提示。",
       };
   }
 }

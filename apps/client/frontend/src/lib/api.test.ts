@@ -265,6 +265,32 @@ describe("Tauri API boundary", () => {
     await expect(api.meterRuntimeLogs()).rejects.toThrow();
   });
 
+  it("accepts only fixed CC Switch guard diagnostics", async () => {
+    const data = {
+      state: "READY",
+      skippedLines: 0,
+      entries: [
+        {
+          atEpochSeconds: 1,
+          kind: "GUARD_TERMINATED",
+          state: null,
+          reportedEvents: 0,
+          reportedTokens: 0,
+          heartbeatSent: false,
+          errorCode: null,
+          ccSwitchGuard: "TERMINATED",
+        },
+      ],
+    };
+    invokeMock.mockResolvedValue(data);
+    await expect(api.meterRuntimeLogs()).resolves.toEqual(data);
+    invokeMock.mockResolvedValue({
+      ...data,
+      entries: [{ ...data.entries[0], ccSwitchGuard: "untrusted" }],
+    });
+    await expect(api.meterRuntimeLogs()).rejects.toThrow();
+  });
+
   it("validates a status response and calls the fixed command", async () => {
     invokeMock.mockResolvedValue({
       service: "codex-quota-guard",
@@ -290,12 +316,53 @@ describe("Tauri API boundary", () => {
     await expect(api.ensureMeterService()).rejects.toThrow();
   });
 
+  it("accepts only fixed native startup guard outcomes", async () => {
+    invokeMock.mockResolvedValue({ state: "READY", ccSwitchTerminated: true });
+    await expect(api.startupGateCheck()).resolves.toEqual({
+      state: "READY",
+      ccSwitchTerminated: true,
+    });
+    expect(invokeMock).toHaveBeenCalledWith("startup_gate_check");
+    invokeMock.mockResolvedValue({
+      state: "GUARD_ERROR",
+      ccSwitchTerminated: false,
+    });
+    await expect(api.startupGuardStatus()).resolves.toEqual({
+      state: "GUARD_ERROR",
+      ccSwitchTerminated: false,
+    });
+    invokeMock.mockResolvedValue({
+      state: "SKIPPED",
+      ccSwitchTerminated: false,
+    });
+    await expect(api.startupGuardStatus()).rejects.toThrow();
+  });
+
   it("accepts first-run service installation and server validation outcomes", async () => {
     invokeMock
       .mockResolvedValueOnce("INSTALLED")
       .mockResolvedValueOnce("SERVER_UNAVAILABLE");
     await expect(api.retryMeterService()).resolves.toBe("INSTALLED");
     await expect(api.retryMeterService()).resolves.toBe("SERVER_UNAVAILABLE");
+  });
+
+  it("validates installed and bundled statistics program versions", async () => {
+    const version = {
+      installedVersion: "0.1.0",
+      bundledVersion: "0.1.1",
+      needsUpgrade: true,
+      status: "UPGRADE_REQUIRED",
+    };
+    invokeMock.mockResolvedValue(version);
+    await expect(api.meterServiceVersion()).resolves.toEqual(version);
+    expect(invokeMock).toHaveBeenCalledWith("meter_service_version");
+    invokeMock.mockResolvedValue({ ...version, status: "arbitrary" });
+    await expect(api.meterServiceVersion()).rejects.toThrow();
+    invokeMock.mockResolvedValue({
+      ...version,
+      installedVersion: "x".repeat(65),
+    });
+    await expect(api.meterServiceVersion()).rejects.toThrow();
   });
 
   it("validates the server address setting and uses fixed settings commands", async () => {

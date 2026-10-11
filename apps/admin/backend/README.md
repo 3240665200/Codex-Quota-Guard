@@ -27,7 +27,7 @@
 - `POST /api/v1/admin/teams/{id}/quota-reset`：重置团队共享用量统计起点，不改变成员个人用量
 - `GET /api/v1/admin/users/{id}/usage-events`：管理员分页查看该用户已入库的安全 Token 流水，不返回会话原文或设备令牌
 - `GET /api/v1/admin/users/{id}/official-quota`：管理员查看最后一次客户端上报的官方额度
-- `POST /api/v1/client/meter/enroll`：已登录系统用户配对本机 Rust 计费服务；一次性返回仅能上报的设备令牌
+- `POST /api/v1/client/meter/enroll`：已登录系统用户配对本机 Rust 统计程序；一次性返回仅能上报的设备令牌
 - `POST /api/v1/meter/heartbeat`、`POST /api/v1/meter/usage/events`：Rust 服务独立心跳和用量上报，使用设备令牌而非用户会话
 - `GET /api/v1/admin/users/{id}/meter-devices`、`DELETE /api/v1/admin/users/{id}/meter-devices/{deviceId}`：管理员查看设备在线状态及撤销绑定
 

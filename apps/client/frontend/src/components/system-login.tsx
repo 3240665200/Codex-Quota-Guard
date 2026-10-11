@@ -54,7 +54,7 @@ export function SystemLoginPage({
     onSuccess: (config) => {
       setServerUrl(config.url);
       setNeedsRestart(true);
-      toast.success("服务器地址已保存，请重新打开客户端。");
+      toast.success("服务器地址已保存，请从系统托盘退出客户端后重新启动。");
     },
     onError: (error) => toast.error(getApiErrorMessage(error)),
   });
@@ -76,7 +76,9 @@ export function SystemLoginPage({
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (needsRestart) {
-      toast.error("服务器地址已更改，请重启客户端后再登录。");
+      toast.error(
+        "服务器地址已更改，请从系统托盘退出客户端后重新启动，再登录。",
+      );
       return;
     }
     if (!email.trim() || !password) {
@@ -237,7 +239,7 @@ export function SystemLoginPage({
                     </Button>
                     {needsRestart ? (
                       <p role="status" className="text-sm text-primary">
-                        已保存。请关闭并重新打开客户端，再登录系统。
+                        已保存。请从系统托盘退出客户端后重新启动，再登录系统。
                       </p>
                     ) : null}
                     {serverConfigQuery.isError ? (

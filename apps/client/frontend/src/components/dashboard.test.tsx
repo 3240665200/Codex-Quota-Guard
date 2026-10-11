@@ -117,6 +117,13 @@ describe("Dashboard", () => {
             totalElements: 0,
             totalPages: 0,
           };
+        case "meter_service_version":
+          return {
+            installedVersion: null,
+            bundledVersion: "0.1.1",
+            needsUpgrade: null,
+            status: "NOT_INSTALLED",
+          };
         case "codex_rate_limits":
           return {
             planType: "pro",
@@ -168,7 +175,7 @@ describe("Dashboard", () => {
     ).toBeVisible();
     expect(await screen.findByText(/Design/)).toBeVisible();
     expect(screen.getByRole("heading", { name: "团队共享额度" })).toBeVisible();
-    expect(screen.getByText(/计费服务未安装/)).toBeVisible();
+    expect(screen.getByText(/统计程序未安装/)).toBeVisible();
     expect(screen.getAllByTitle("精确值：1,000 Token").length).toBeGreaterThan(
       0,
     );
@@ -202,6 +209,7 @@ describe("Dashboard", () => {
         "codex_rate_limits",
         "usage_status",
         "usage_analytics",
+        "meter_service_version",
       ]),
     );
   });
@@ -303,6 +311,13 @@ describe("Dashboard", () => {
       if (command === "quota_overview") return quota;
       if (command === "codex_rate_limits")
         return { planType: null, windows: [], fetchedAt: null };
+      if (command === "meter_service_version")
+        return {
+          installedVersion: "0.1.1",
+          bundledVersion: "0.2.0",
+          needsUpgrade: true,
+          status: "UPGRADE_REQUIRED",
+        };
       if (command === "meter_service_retry") return "STARTED";
       if (command === "usage_status")
         return {
@@ -327,7 +342,7 @@ describe("Dashboard", () => {
     renderDashboard();
 
     await user.click(
-      await screen.findByRole("button", { name: "启动计费服务" }),
+      await screen.findByRole("button", { name: "更新统计程序" }),
     );
     expect(invokeMock).toHaveBeenCalledWith("meter_service_retry");
   });
@@ -363,7 +378,7 @@ describe("Dashboard", () => {
     renderDashboard();
 
     await user.click(
-      await screen.findByRole("button", { name: "安装计费服务" }),
+      await screen.findByRole("button", { name: "安装统计程序" }),
     );
     expect(invokeMock).toHaveBeenCalledWith("meter_service_retry");
   });

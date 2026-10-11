@@ -26,6 +26,32 @@ const meterStartSchema = z.enum([
   "UNSUPPORTED",
 ]);
 
+const startupGateSchema = z.object({
+  state: z.enum([
+    "READY",
+    "CHECKING",
+    "ADMIN_REQUIRED",
+    "METER_UNAVAILABLE",
+    "GUARD_ERROR",
+    "BACKEND_UNAVAILABLE",
+    "UNSUPPORTED",
+  ]),
+  ccSwitchTerminated: z.boolean(),
+});
+
+const meterVersionSchema = z.object({
+  installedVersion: z.string().min(1).max(64).nullable(),
+  bundledVersion: z.string().min(1).max(64).nullable(),
+  needsUpgrade: z.boolean().nullable(),
+  status: z.enum([
+    "CURRENT",
+    "UPGRADE_REQUIRED",
+    "NOT_INSTALLED",
+    "UNKNOWN",
+    "UNSUPPORTED",
+  ]),
+});
+
 const serverConfigSchema = z.object({
   url: z.string().url(),
 });
@@ -124,6 +150,7 @@ const usageStatusSchema = z.object({
     lastScanEpochSeconds: tokenCount.nullable(),
     lastReportEpochSeconds: tokenCount.nullable(),
     reportedEvents: tokenCount,
+    version: z.string().min(1).max(64).nullable().optional(),
     errorCode: z
       .string()
       .regex(/^[A-Z_]{1,64}$/)
@@ -247,6 +274,11 @@ const meterRuntimeLogsSchema = z.object({
           "HEARTBEAT",
           "ERROR",
           "STATUS_CHANGE",
+          "GUARD_ACTIVE",
+          "GUARD_INACTIVE",
+          "GUARD_DETECTED",
+          "GUARD_TERMINATED",
+          "GUARD_ERROR",
         ]),
         state: z
           .enum([
@@ -263,6 +295,9 @@ const meterRuntimeLogsSchema = z.object({
         errorCode: z
           .string()
           .regex(/^[A-Z_]{1,64}$/)
+          .nullable(),
+        ccSwitchGuard: z
+          .enum(["INACTIVE", "CLEAR", "TERMINATED", "ERROR"])
           .nullable(),
       }),
     )
@@ -356,6 +391,8 @@ const quotaOverviewSchema = z
 
 export type StatusResponse = z.infer<typeof statusSchema>;
 export type MeterStartOutcome = z.infer<typeof meterStartSchema>;
+export type StartupGateResult = z.infer<typeof startupGateSchema>;
+export type MeterVersion = z.infer<typeof meterVersionSchema>;
 export type ServerConfig = z.infer<typeof serverConfigSchema>;
 export type SystemUser = z.infer<typeof systemUserSchema>;
 export type SystemSession = z.infer<typeof systemSessionSchema>;
@@ -386,6 +423,10 @@ async function invokeValidated<T>(
 }
 
 export const api = {
+  startupGateCheck: () =>
+    invokeValidated("startup_gate_check", startupGateSchema),
+  startupGuardStatus: () =>
+    invokeValidated("startup_guard_status", startupGateSchema),
   ensureMeterService: () => {
     meterStartupPromise ??= invokeValidated(
       "meter_service_ensure",
@@ -402,6 +443,8 @@ export const api = {
   },
   meterSetupError: () =>
     invokeValidated("meter_setup_error", z.string().max(300).nullable()),
+  meterServiceVersion: () =>
+    invokeValidated("meter_service_version", meterVersionSchema),
   status: () => invokeValidated("status", statusSchema),
   serverConfig: () => invokeValidated("server_config_get", serverConfigSchema),
   saveServerConfig: (config: ServerConfig) =>

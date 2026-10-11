@@ -5,7 +5,12 @@ import { toast } from "sonner";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { api, getApiErrorMessage, type SystemSession } from "@/lib/api";
+import {
+  api,
+  getApiErrorMessage,
+  type StartupGateResult,
+  type SystemSession,
+} from "@/lib/api";
 import { Dashboard } from "@/components/dashboard";
 import { SystemLoginPage } from "@/components/system-login";
 import { subscribeToTrayFeedback, trayFeedbackNotice } from "@/lib/tray-events";
@@ -48,17 +53,183 @@ function SessionError({
   );
 }
 
+const guardExplanation =
+  "CC Switch 可改变 Codex 的请求路由，影响用量归属。Quota Guard 运行期间，统计程序会自动强制结束当前 Windows 用户会话中的 CC Switch，未保存的更改可能丢失。若 Codex 仍指向代理，请先退出 Quota Guard 并恢复官方直连。";
+
+function StartupGatePage({
+  result,
+  retrying,
+  onRetry,
+}: {
+  result: StartupGateResult | null;
+  retrying: boolean;
+  onRetry: () => void;
+}) {
+  const [serverUrl, setServerUrl] = useState("");
+  const [savingServer, setSavingServer] = useState(false);
+  const [serverError, setServerError] = useState("");
+  useEffect(() => {
+    void api
+      .serverConfig()
+      .then((config) => setServerUrl(config.url))
+      .catch(() => {
+        setServerError("无法读取服务器地址，请检查客户端设置目录。");
+      });
+  }, []);
+  const saveServer = async () => {
+    setSavingServer(true);
+    setServerError("");
+    try {
+      await api.saveServerConfig({ url: serverUrl.trim() });
+      setServerError("地址已保存。点击“重新检查”以应用新地址。");
+    } catch (error) {
+      setServerError(getApiErrorMessage(error));
+    } finally {
+      setSavingServer(false);
+    }
+  };
+  const state = result?.state;
+  const waiting = state === "CHECKING" || retrying || result === null;
+  const detail =
+    state === "ADMIN_REQUIRED"
+      ? "请从系统托盘退出客户端，右键点击程序并选择“以管理员身份运行”，然后重试。"
+      : state === "METER_UNAVAILABLE"
+        ? "统计程序未安装、未启动或更新失败。请确认安装包完整，并以管理员身份重试。"
+        : state === "BACKEND_UNAVAILABLE"
+          ? "本地 Java 服务未能启动，请检查安装包后重试。"
+          : state === "UNSUPPORTED"
+            ? "当前平台暂不支持 Windows 统计程序门禁。"
+            : state === "GUARD_ERROR"
+              ? "无法确认 CC Switch 已关闭，或统计服务无法核实守护状态。请手动退出 CC Switch 后重试。"
+              : "正在验证管理员权限、统计程序与 CC Switch 状态…";
+  return (
+    <main className="flex min-h-screen items-center justify-center bg-muted/30 px-4">
+      <Alert variant={waiting ? "default" : "destructive"} className="max-w-xl">
+        <AlertTitle>
+          {waiting ? "正在检查启动条件" : "启动条件尚未满足"}
+        </AlertTitle>
+        <AlertDescription className="space-y-3">
+          <p>{detail}</p>
+          <p>{guardExplanation}</p>
+          <div className="space-y-2 border-t pt-3">
+            <label htmlFor="startup-server-url" className="font-medium">
+              中央服务器地址
+            </label>
+            <div className="flex flex-wrap gap-2">
+              <input
+                id="startup-server-url"
+                value={serverUrl}
+                onChange={(event) => setServerUrl(event.target.value)}
+                placeholder="https://your-server.example.com"
+                className="min-w-64 flex-1 rounded-md border bg-background px-3 py-2 text-sm text-foreground"
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={savingServer}
+                onClick={() => void saveServer()}
+              >
+                {savingServer ? "正在保存…" : "保存地址"}
+              </Button>
+            </div>
+            {serverError ? <p role="status">{serverError}</p> : null}
+          </div>
+          {!waiting ? (
+            <Button variant="outline" size="sm" onClick={onRetry}>
+              重新检查
+            </Button>
+          ) : null}
+        </AlertDescription>
+      </Alert>
+    </main>
+  );
+}
+
 export function ClientApp() {
   const queryClient = useQueryClient();
   const [logoutError, setLogoutError] = useState<unknown>(null);
   const [localSignedOut, setLocalSignedOut] = useState(false);
-  const meterStartupRequested = useRef(false);
+  const [gate, setGate] = useState<StartupGateResult | null>(null);
+  const [gateRetrying, setGateRetrying] = useState(false);
+  const [ccSwitchStopped, setCcSwitchStopped] = useState(false);
+  const gateAttempt = useRef(0);
+  const previouslyReady = useRef(false);
+  const gateQuery = useQuery({
+    queryKey: ["startup-gate"],
+    queryFn: api.startupGateCheck,
+    retry: false,
+    staleTime: Infinity,
+  });
+  const gateReady = gate?.state === "READY";
   const sessionQuery = useQuery({
     queryKey: ["system-session"],
     queryFn: api.systemSession,
     retry: false,
     refetchInterval: 30_000,
+    enabled: gateReady,
   });
+
+  useEffect(() => {
+    if (gateQuery.data) setGate(gateQuery.data);
+    else if (gateQuery.isError) {
+      setGate({ state: "GUARD_ERROR", ccSwitchTerminated: false });
+    }
+  }, [gateQuery.data, gateQuery.isError]);
+
+  useEffect(() => {
+    if (gate?.ccSwitchTerminated) setCcSwitchStopped(true);
+    if (gate?.state === "READY") {
+      previouslyReady.current = true;
+    } else if (previouslyReady.current) {
+      queryClient.removeQueries({ queryKey: ["system-session"] });
+      setLocalSignedOut(false);
+    }
+  }, [gate, queryClient]);
+
+  useEffect(() => {
+    if (!gateReady) return;
+    let active = true;
+    const check = async () => {
+      try {
+        const next = await api.startupGuardStatus();
+        // Native checks can overlap with the background monitor. CHECKING is
+        // transient; leaving READY here would stop this polling loop forever.
+        if (active && next.state !== "CHECKING") setGate(next);
+      } catch {
+        if (active)
+          setGate({ state: "GUARD_ERROR", ccSwitchTerminated: false });
+      }
+    };
+    const timer = window.setInterval(() => void check(), 3_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [gateReady]);
+
+  useEffect(() => {
+    if (gate?.state === "READY" && gate.ccSwitchTerminated) {
+      toast.warning(
+        "已强制结束 CC Switch。Quota Guard 运行期间请勿重新打开它；如 Codex 仍走代理，请先退出客户端并恢复官方直连。",
+      );
+    }
+  }, [gate?.state, gate?.ccSwitchTerminated]);
+
+  const retryGate = async () => {
+    const attempt = ++gateAttempt.current;
+    setGateRetrying(true);
+    setGate({ state: "CHECKING", ccSwitchTerminated: false });
+    try {
+      const result = await api.startupGateCheck();
+      if (attempt === gateAttempt.current) setGate(result);
+    } catch {
+      if (attempt === gateAttempt.current) {
+        setGate({ state: "GUARD_ERROR", ccSwitchTerminated: false });
+      }
+    } finally {
+      if (attempt === gateAttempt.current) setGateRetrying(false);
+    }
+  };
 
   useEffect(
     () =>
@@ -71,6 +242,7 @@ export function ClientApp() {
           "usage-events",
           "usage-analytics",
           "meter-runtime-logs",
+          "meter-service-version",
         ]) {
           void queryClient.invalidateQueries({ queryKey: [key] });
         }
@@ -80,52 +252,6 @@ export function ClientApp() {
       }),
     [queryClient],
   );
-
-  useEffect(() => {
-    // React StrictMode replays effects during development. The API boundary
-    // also coalesces remounts so a launch cannot request UAC twice.
-    if (meterStartupRequested.current) return;
-    meterStartupRequested.current = true;
-    void api
-      .ensureMeterService()
-      .then(async (result) => {
-        switch (result) {
-          case "STARTED":
-            toast.success("计费服务已自动启动，会在关闭客户端后继续运行。");
-            break;
-          case "INSTALLED":
-            toast.success(
-              "计费服务已自动安装并启动，会在关闭客户端后继续运行。",
-            );
-            break;
-          case "NOT_INSTALLED":
-            toast.warning("安装包缺少计费服务文件，请重新安装最新版客户端。");
-            break;
-          case "NEEDS_ADMIN":
-            toast.error(
-              "安装或更新计费服务配置需要右键以管理员身份运行客户端。",
-            );
-            break;
-          case "SERVER_UNAVAILABLE":
-            toast.error(
-              "无法连接后台，计费服务暂未安装。请检查服务器地址后重新打开客户端。",
-            );
-            break;
-          case "INSTALL_FAILED":
-            toast.error(
-              (await api.meterSetupError().catch(() => null)) ??
-                "计费服务自动安装失败，请查看应用数据目录中的 meter-setup-status.json。",
-            );
-            break;
-          case "FAILED":
-            toast.error("计费服务启动失败，请在服务管理器中检查状态。");
-            break;
-          default:
-            break;
-        }
-      })
-      .catch(() => toast.error("无法检查计费服务状态，请稍后重试。"));
-  }, []);
 
   const handleAuthenticated = (session: SystemSession) => {
     setLogoutError(null);
@@ -147,28 +273,61 @@ export function ClientApp() {
     }
   };
 
+  if (!gateReady) {
+    return (
+      <StartupGatePage
+        result={gate}
+        retrying={gateRetrying}
+        onRetry={() => void retryGate()}
+      />
+    );
+  }
+
   if (sessionQuery.isPending) {
     return <SessionLoading />;
   }
 
+  const guardNotice = (
+    <div
+      role="status"
+      className="border-b border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-200"
+    >
+      {ccSwitchStopped
+        ? "已停止 CC Switch。"
+        : "运行 Quota Guard 时请保持 CC Switch 关闭。"}
+      {guardExplanation}
+    </div>
+  );
+
   if (sessionQuery.error && !sessionQuery.data) {
     return (
-      <SessionError
-        error={sessionQuery.error}
-        onRetry={() => void sessionQuery.refetch()}
-      />
+      <>
+        {guardNotice}
+        <SessionError
+          error={sessionQuery.error}
+          onRetry={() => void sessionQuery.refetch()}
+        />
+      </>
     );
   }
 
   const session = sessionQuery.data;
   if (localSignedOut || !session?.authenticated || !session.user) {
     return (
-      <SystemLoginPage
-        onAuthenticated={handleAuthenticated}
-        statusError={logoutError ?? undefined}
-      />
+      <>
+        {guardNotice}
+        <SystemLoginPage
+          onAuthenticated={handleAuthenticated}
+          statusError={logoutError ?? undefined}
+        />
+      </>
     );
   }
 
-  return <Dashboard session={session} onLogout={() => void handleLogout()} />;
+  return (
+    <>
+      {guardNotice}
+      <Dashboard session={session} onLogout={() => void handleLogout()} />
+    </>
+  );
 }
