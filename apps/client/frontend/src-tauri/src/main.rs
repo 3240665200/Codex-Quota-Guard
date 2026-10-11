@@ -1,10 +1,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod backend;
+mod conflict_notice;
 mod meter_service;
 mod server_config;
 mod startup_gate;
 mod tray;
+mod window_layout;
+mod window_state;
 
 use backend::{ApiRoute, BackendState};
 use reqwest::Method;
@@ -64,6 +67,47 @@ fn command_error(error: backend::BackendError) -> String {
     // BackendError has exclusively user-safe messages. Do not pass through
     // errors from the child process, HTTP library, filesystem, or Java.
     error.to_string()
+}
+
+fn record_window_size(
+    app_handle: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+    physical_size: tauri::PhysicalSize<u32>,
+    scale_factor: Option<f64>,
+    force: bool,
+) {
+    let is_normal = window
+        .is_minimized()
+        .ok()
+        .zip(window.is_maximized().ok())
+        .zip(window.is_fullscreen().ok())
+        .is_some_and(|((minimized, maximized), fullscreen)| {
+            window_state::is_normal_window(minimized, maximized, fullscreen)
+        });
+    if !is_normal {
+        return;
+    }
+
+    let scale_factor = scale_factor.or_else(|| window.scale_factor().ok());
+    let Some(size) =
+        scale_factor.and_then(|scale| window_layout::logical_size_from_tauri(physical_size, scale))
+    else {
+        return;
+    };
+    if let Some(state) = app_handle.try_state::<window_state::WindowState>() {
+        state.record_size(size, true, force);
+    }
+}
+
+fn record_current_window_size(
+    app_handle: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+    force: bool,
+) {
+    let (Ok(size), Ok(scale_factor)) = (window.inner_size(), window.scale_factor()) else {
+        return;
+    };
+    record_window_size(app_handle, window, size, Some(scale_factor), force);
 }
 
 #[tauri::command]
@@ -177,6 +221,26 @@ async fn system_logout(state: State<'_, BackendState>) -> CommandResult<()> {
 fn main() {
     let builder = tauri::Builder::default()
         .setup(|app| {
+            app.manage(conflict_notice::ConflictNotices::default());
+            let window_state = window_state::WindowState::from_app(app.handle());
+            let saved_size = window_state.saved_size();
+            app.manage(window_state);
+
+            if let Some(main_window) = app.get_webview_window("main") {
+                let applied_layout =
+                    window_layout::apply_initial_layout(&main_window, saved_size);
+                let initial_size = match applied_layout {
+                    Ok(size) => size.or_else(|| window_layout::current_logical_size(&main_window)),
+                    Err(_) => {
+                        eprintln!("Unable to apply the initial window layout.");
+                        window_layout::current_logical_size(&main_window)
+                    }
+                };
+                if let Some(initial_size) = initial_size {
+                    app.state::<window_state::WindowState>()
+                        .set_initial_size(initial_size);
+                }
+            }
             app.manage(tray::TrayState::default());
             app.manage(startup_gate::StartupGate::default());
             let guard_app = app.handle().clone();
@@ -188,9 +252,9 @@ fn main() {
                 if !gate.should_monitor() {
                     break;
                 }
-                if gate.is_ready() {
-                    let _ = gate.status(&guard_app);
-                }
+                // Continue consuming termination notices even if a guard error
+                // stopped Java or the renderer is hidden in the tray.
+                let _ = gate.status(&guard_app);
             });
             let tray_available = tray::install(app).is_ok();
             app.state::<tray::TrayState>()
@@ -233,23 +297,55 @@ fn main() {
     };
 
     app.run(|app_handle, event| match event {
-        RunEvent::WindowEvent {
-            label,
-            event: tauri::WindowEvent::CloseRequested { api, .. },
-            ..
-        } if label == "main" => {
-            let tray_available = app_handle
-                .try_state::<tray::TrayState>()
-                .is_some_and(|state| state.is_available());
-            let mut ops = tray::TauriCloseRequestOps {
-                app: app_handle.clone(),
-                api: &api,
+        RunEvent::WindowEvent { label, event, .. } if label == "main" => {
+            let Some(window) = app_handle.get_webview_window("main") else {
+                return;
             };
-            tray::handle_close_request(tray_available, &mut ops);
+            match event {
+                tauri::WindowEvent::Resized(size) => {
+                    record_window_size(app_handle, &window, size, None, false);
+                }
+                tauri::WindowEvent::ScaleFactorChanged {
+                    scale_factor,
+                    new_inner_size,
+                    ..
+                } => {
+                    record_window_size(
+                        app_handle,
+                        &window,
+                        new_inner_size,
+                        Some(scale_factor),
+                        false,
+                    );
+                }
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    record_current_window_size(app_handle, &window, true);
+                    let tray_available = app_handle
+                        .try_state::<tray::TrayState>()
+                        .is_some_and(|state| state.is_available());
+                    let mut ops = tray::TauriCloseRequestOps {
+                        app: app_handle.clone(),
+                        api: &api,
+                    };
+                    tray::handle_close_request(tray_available, &mut ops);
+                }
+                _ => {}
+            }
         }
         RunEvent::ExitRequested { .. } => {
+            // Withdraw enforcement before notification shutdown or preference
+            // flushes, so a slow disk cannot extend silent enforcement.
             if let Some(gate) = app_handle.try_state::<startup_gate::StartupGate>() {
                 gate.stop();
+            }
+            if let Some(notices) = app_handle.try_state::<conflict_notice::ConflictNotices>() {
+                notices.stop();
+            }
+            if let Some(window) = app_handle.get_webview_window("main") {
+                record_current_window_size(app_handle, &window, true);
+            }
+            if let Some(state) = app_handle.try_state::<window_state::WindowState>() {
+                state.flush();
             }
             let mut ops = tray::TauriExitEventOps {
                 app: app_handle.clone(),
@@ -259,6 +355,15 @@ fn main() {
         RunEvent::Exit => {
             if let Some(gate) = app_handle.try_state::<startup_gate::StartupGate>() {
                 gate.stop();
+            }
+            if let Some(notices) = app_handle.try_state::<conflict_notice::ConflictNotices>() {
+                notices.stop();
+            }
+            if let Some(window) = app_handle.get_webview_window("main") {
+                record_current_window_size(app_handle, &window, true);
+            }
+            if let Some(state) = app_handle.try_state::<window_state::WindowState>() {
+                state.flush();
             }
             let mut ops = tray::TauriExitEventOps {
                 app: app_handle.clone(),

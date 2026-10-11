@@ -42,15 +42,25 @@ pub(super) struct GuardCheck {
     pub(super) lease_id: Option<Uuid>,
     pub(super) checked_at: u64,
     pub(super) detected: bool,
+    pub(super) confirmed_termination_count: u64,
+    pub(super) last_terminated_at: Option<u64>,
 }
 
 impl GuardCheck {
-    fn new(state: GuardState, lease_id: Option<Uuid>, detected: bool) -> Self {
+    fn new(
+        state: GuardState,
+        lease_id: Option<Uuid>,
+        detected: bool,
+        confirmed_termination_count: u64,
+        last_terminated_at: Option<u64>,
+    ) -> Self {
         Self {
             state,
             lease_id,
             checked_at: epoch_seconds(),
             detected,
+            confirmed_termination_count,
+            last_terminated_at,
         }
     }
 
@@ -131,8 +141,10 @@ trait GuardOps {
     fn cc_candidates(&self) -> Result<Vec<u32>, ()>;
 }
 
-fn enforce<O: GuardOps>(lease: &GuardLease, owner_sid: &str, ops: &O) -> (GuardState, bool) {
+fn enforce<O: GuardOps>(lease: &GuardLease, owner_sid: &str, ops: &O) -> GuardCheck {
     let mut detected = false;
+    let mut confirmed_termination_count = 0u64;
+    let mut last_terminated_at = None;
     let result = (|| {
         if !ops.lease_current(lease)? {
             return Ok(GuardState::Inactive);
@@ -184,6 +196,8 @@ fn enforce<O: GuardOps>(lease: &GuardLease, owner_sid: &str, ops: &O) -> (GuardS
             if !cc.exited(2_000)? {
                 return Err(());
             }
+            confirmed_termination_count = confirmed_termination_count.saturating_add(1);
+            last_terminated_at = Some(epoch_seconds());
             terminated = true;
         }
         if !ops.lease_current(lease)? || app.exited(0)? {
@@ -195,29 +209,34 @@ fn enforce<O: GuardOps>(lease: &GuardLease, owner_sid: &str, ops: &O) -> (GuardS
             GuardState::Clear
         })
     })();
-    (result.unwrap_or(GuardState::Error), detected)
+    GuardCheck::new(
+        result.unwrap_or(GuardState::Error),
+        Some(lease.lease_id),
+        detected,
+        confirmed_termination_count,
+        last_terminated_at,
+    )
 }
 
 pub(super) fn check(config: &MeterConfig) -> GuardCheck {
     let lease = match read_lease(&config.status_file) {
         Ok(Some(lease)) => lease,
-        Ok(None) => return GuardCheck::new(GuardState::Inactive, None, false),
-        Err(()) => return GuardCheck::new(GuardState::Error, None, false),
+        Ok(None) => return GuardCheck::new(GuardState::Inactive, None, false, 0, None),
+        Err(()) => return GuardCheck::new(GuardState::Error, None, false, 0, None),
     };
     let lease_id = Some(lease.lease_id);
     let Some(owner_sid) = config.owner_user_sid.as_deref() else {
         // Old installations remain readable. Upgrade must add the SID before
         // a desktop lease can activate process enforcement.
-        return GuardCheck::new(GuardState::Error, lease_id, false);
+        return GuardCheck::new(GuardState::Error, lease_id, false, 0, None);
     };
-    let (state, detected) = enforce(
+    enforce(
         &lease,
         owner_sid,
         &WindowsOps {
             status_file: config.status_file.clone(),
         },
-    );
-    GuardCheck::new(state, lease_id, detected)
+    )
 }
 
 struct WindowsOps {
@@ -599,6 +618,7 @@ mod tests {
         exits: Rc<Cell<bool>>,
         on_product: Option<Rc<dyn Fn()>>,
         terminate_count: Rc<Cell<u32>>,
+        exit_after_terminate: bool,
     }
     impl GuardProcess for MockProcess {
         fn identity(&self) -> Result<ProcessIdentity, ()> {
@@ -615,7 +635,9 @@ mod tests {
         }
         fn terminate(&self) -> Result<(), ()> {
             self.terminate_count.set(self.terminate_count.get() + 1);
-            self.exits.set(true);
+            if self.exit_after_terminate {
+                self.exits.set(true);
+            }
             Ok(())
         }
     }
@@ -655,6 +677,7 @@ mod tests {
             exits: Rc::new(Cell::new(false)),
             on_product: None,
             terminate_count: Rc::new(Cell::new(0)),
+            exit_after_terminate: true,
         }
     }
     fn lease() -> GuardLease {
@@ -676,11 +699,79 @@ mod tests {
     fn active_lease_ends_only_exact_product_for_same_user_and_session() {
         let cc = process(20, CC_EXE, "S-1-5-21-1", 2);
         let count = cc.terminate_count.clone();
-        assert_eq!(
-            enforce(&lease(), "S-1-5-21-1", &ops(cc)),
-            (GuardState::Terminated, true)
-        );
+        let check = enforce(&lease(), "S-1-5-21-1", &ops(cc));
+        assert_eq!(check.state, GuardState::Terminated);
+        assert!(check.detected);
+        assert_eq!(check.confirmed_termination_count, 1);
+        assert!(check.last_terminated_at.is_some());
         assert_eq!(count.get(), 1);
+    }
+
+    #[test]
+    fn reports_only_processes_whose_termination_is_confirmed() {
+        let mut cc = process(20, CC_EXE, "S-1-5-21-1", 2);
+        cc.exit_after_terminate = false;
+        let mock = ops(cc.clone());
+
+        let check = enforce(&lease(), "S-1-5-21-1", &mock);
+
+        assert_eq!(check.state, GuardState::Error);
+        assert_eq!(check.confirmed_termination_count, 0);
+        assert_eq!(check.last_terminated_at, None);
+        assert_eq!(cc.terminate_count.get(), 1);
+    }
+
+    #[test]
+    fn counts_each_confirmed_process() {
+        let first = process(20, CC_EXE, "S-1-5-21-1", 2);
+        let second = process(21, CC_EXE, "S-1-5-21-1", 2);
+        let mut mock = ops(first.clone());
+        mock.processes.insert(21, second.clone());
+        mock.candidates = vec![20, 21];
+
+        let check = enforce(&lease(), "S-1-5-21-1", &mock);
+
+        assert_eq!(check.state, GuardState::Terminated);
+        assert_eq!(check.confirmed_termination_count, 2);
+        assert!(check.last_terminated_at.is_some());
+        assert_eq!(first.terminate_count.get(), 1);
+        assert_eq!(second.terminate_count.get(), 1);
+    }
+
+    #[test]
+    fn keeps_confirmed_termination_count_when_later_candidate_errors() {
+        let first = process(20, CC_EXE, "S-1-5-21-1", 2);
+        let mut second = process(21, CC_EXE, "S-1-5-21-1", 2);
+        second.product = Err(());
+        let mut mock = ops(first.clone());
+        mock.processes.insert(21, second);
+        mock.candidates = vec![20, 21];
+
+        let check = enforce(&lease(), "S-1-5-21-1", &mock);
+
+        assert_eq!(check.state, GuardState::Error);
+        assert_eq!(check.confirmed_termination_count, 1);
+        assert!(check.last_terminated_at.is_some());
+        assert_eq!(first.terminate_count.get(), 1);
+    }
+
+    #[test]
+    fn keeps_confirmed_termination_count_when_lease_changes_later() {
+        let first = process(20, CC_EXE, "S-1-5-21-1", 2);
+        let mut second = process(21, CC_EXE, "S-1-5-21-1", 2);
+        let mut mock = ops(first.clone());
+        let lease_current = mock.lease_current.clone();
+        second.on_product = Some(Rc::new(move || lease_current.set(false)));
+        mock.processes.insert(21, second.clone());
+        mock.candidates = vec![20, 21];
+
+        let check = enforce(&lease(), "S-1-5-21-1", &mock);
+
+        assert_eq!(check.state, GuardState::Inactive);
+        assert_eq!(check.confirmed_termination_count, 1);
+        assert!(check.last_terminated_at.is_some());
+        assert_eq!(first.terminate_count.get(), 1);
+        assert_eq!(second.terminate_count.get(), 0);
     }
 
     #[test]
@@ -690,13 +781,13 @@ mod tests {
         let mut stale = lease();
         stale.created_at += 1;
         assert_eq!(
-            enforce(&stale, "S-1-5-21-1", &ops(cc.clone())).0,
+            enforce(&stale, "S-1-5-21-1", &ops(cc.clone())).state,
             GuardState::Inactive
         );
         let mut mock = ops(cc);
         mock.processes.get_mut(&10).unwrap().id.elevated = false;
         assert_eq!(
-            enforce(&lease(), "S-1-5-21-1", &mock).0,
+            enforce(&lease(), "S-1-5-21-1", &mock).state,
             GuardState::Inactive
         );
         assert_eq!(count.get(), 0);
@@ -710,10 +801,10 @@ mod tests {
             process(20, "other.exe", "S-1-5-21-1", 2),
         ] {
             let count = cc.terminate_count.clone();
-            assert_eq!(
-                enforce(&lease(), "S-1-5-21-1", &ops(cc)),
-                (GuardState::Clear, false)
-            );
+            let check = enforce(&lease(), "S-1-5-21-1", &ops(cc));
+            assert_eq!(check.state, GuardState::Clear);
+            assert!(!check.detected);
+            assert_eq!(check.confirmed_termination_count, 0);
             assert_eq!(count.get(), 0);
         }
     }
@@ -723,10 +814,10 @@ mod tests {
         let mut cc = process(20, CC_EXE, "S-1-5-21-1", 2);
         cc.product = Ok("Unrelated program".into());
         let count = cc.terminate_count.clone();
-        assert_eq!(
-            enforce(&lease(), "S-1-5-21-1", &ops(cc)),
-            (GuardState::Error, false)
-        );
+        let check = enforce(&lease(), "S-1-5-21-1", &ops(cc));
+        assert_eq!(check.state, GuardState::Error);
+        assert!(!check.detected);
+        assert_eq!(check.confirmed_termination_count, 0);
         assert_eq!(count.get(), 0);
     }
 
@@ -737,7 +828,7 @@ mod tests {
         let mock = ops(cc);
         mock.lease_current.set(false);
         assert_eq!(
-            enforce(&lease(), "S-1-5-21-1", &mock).0,
+            enforce(&lease(), "S-1-5-21-1", &mock).state,
             GuardState::Inactive
         );
         assert_eq!(count.get(), 0);
@@ -755,7 +846,7 @@ mod tests {
             ..mock
         };
         assert_eq!(
-            enforce(&lease(), "S-1-5-21-1", &mock).0,
+            enforce(&lease(), "S-1-5-21-1", &mock).state,
             GuardState::Inactive
         );
         assert_eq!(count.get(), 0);
@@ -771,7 +862,7 @@ mod tests {
         let mut mock = mock;
         mock.processes.insert(20, cc);
         assert_eq!(
-            enforce(&lease(), "S-1-5-21-1", &mock).0,
+            enforce(&lease(), "S-1-5-21-1", &mock).state,
             GuardState::Inactive
         );
         assert_eq!(count.get(), 0);
@@ -783,7 +874,10 @@ mod tests {
         let count = cc.terminate_count.clone();
         let mut mock = ops(cc);
         mock.processes.get_mut(&10).unwrap().product = Ok("Another desktop".into());
-        assert_eq!(enforce(&lease(), "S-1-5-21-1", &mock).0, GuardState::Error);
+        assert_eq!(
+            enforce(&lease(), "S-1-5-21-1", &mock).state,
+            GuardState::Error
+        );
         assert_eq!(count.get(), 0);
     }
 

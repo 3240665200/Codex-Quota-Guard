@@ -7,6 +7,7 @@ import { createRoot } from "react-dom/client";
 import { I18nextProvider } from "react-i18next";
 
 import { Dashboard } from "@/components/dashboard";
+import { SystemLoginPage } from "@/components/system-login";
 import { Toaster } from "@/components/ui/sonner";
 import { api } from "@/lib/api";
 import { ClientThemeProvider, useClientTheme } from "@/lib/client-theme";
@@ -90,6 +91,31 @@ const demoQuota = {
   allowed: true,
   blockReason: null,
 } satisfies QuotaOverview;
+
+const unlimitedQuota: QuotaOverview = {
+  ...demoQuota,
+  policy: {
+    ...demoQuota.policy,
+    fiveHourTokenLimit: null,
+    weeklyTokenLimit: 1_000_000_000,
+    fiveHourSource: "UNCONFIGURED",
+  },
+  usage: {
+    ...demoQuota.usage,
+    fiveHourUsedTokens: 129_123_456,
+    fiveHourRemainingTokens: null,
+    weeklyUsedTokens: 470_720_001,
+    weeklyRemainingTokens: 529_279_999,
+  },
+  teamQuota: {
+    ...demoQuota.teamQuota,
+    totalTokenLimit: 4_000_000_000,
+    totalUsedTokens: 2_708_372_415,
+    totalRemainingTokens: 1_291_627_585,
+  },
+};
+const unlimitedScenario =
+  new URLSearchParams(window.location.search).get("scenario") === "unlimited";
 
 const demoUsageStatus = {
   fallback: {
@@ -311,10 +337,12 @@ mockIPC((command, payload) => {
   switch (command) {
     case "system_current":
       return demoSession;
+    case "server_config_get":
+      return { url: "http://preview.example.invalid:8080" };
     case "status":
       return demoStatus;
     case "quota_overview":
-      return demoQuota;
+      return unlimitedScenario ? unlimitedQuota : demoQuota;
     case "usage_status":
     case "usage_scan":
     case "usage_pair":
@@ -343,7 +371,17 @@ mockIPC((command, payload) => {
       } satisfies UsageEventPage;
     }
     case "meter_runtime_logs":
-      return demoRuntimeLogs;
+      return unlimitedScenario
+        ? {
+            ...demoRuntimeLogs,
+            entries: Array.from({ length: 40 }, (_, index) => ({
+              ...demoRuntimeLogs.entries[
+                index % demoRuntimeLogs.entries.length
+              ],
+              atEpochSeconds: epochMinutesAgo(index + 1),
+            })),
+          }
+        : demoRuntimeLogs;
     case "meter_service_version":
       return demoMeterVersion;
     case "meter_service_retry":
@@ -382,7 +420,7 @@ function PreviewGuardNotice() {
   return (
     <aside
       aria-label="界面预览提示"
-      className={`rounded-xl border px-4 py-3 text-sm ${dark ? "border-sky-900 bg-sky-950/50 text-sky-100" : "border-sky-200 bg-sky-50 text-sky-900"}`}
+      className={`py-1 text-xs leading-5 ${dark ? "text-sky-100" : "text-sky-900"}`}
       role="note"
     >
       <span className="font-semibold">界面预览 · 演示数据</span>
@@ -409,11 +447,21 @@ root.render(
     <I18nextProvider i18n={i18n}>
       <QueryClientProvider client={queryClient}>
         <ClientThemeProvider>
-          <Dashboard
-            session={demoSession}
-            onLogout={() => undefined}
-            guardNotice={<PreviewGuardNotice />}
-          />
+          {new URLSearchParams(window.location.search).get("view") ===
+          "login" ? (
+            <div className="cqg-entry-page">
+              <div className="border-b bg-muted/50 px-6 py-2">
+                <PreviewGuardNotice />
+              </div>
+              <SystemLoginPage onAuthenticated={() => undefined} />
+            </div>
+          ) : (
+            <Dashboard
+              session={demoSession}
+              onLogout={() => undefined}
+              guardNotice={<PreviewGuardNotice />}
+            />
+          )}
           <Toaster />
         </ClientThemeProvider>
       </QueryClientProvider>

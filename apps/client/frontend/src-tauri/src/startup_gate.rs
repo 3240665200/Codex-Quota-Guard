@@ -1,4 +1,8 @@
-use crate::{backend::BackendState, meter_service, tray};
+use crate::{
+    backend::BackendState,
+    conflict_notice::{ConflictNotices, NoticeEvent},
+    meter_service, tray,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, OpenOptions},
@@ -124,10 +128,6 @@ impl StartupGate {
         !self.closed.load(Ordering::Acquire)
     }
 
-    pub(crate) fn is_ready(&self) -> bool {
-        self.ready.load(Ordering::Acquire)
-    }
-
     pub(crate) fn stop(&self) {
         self.closed.store(true, Ordering::Release);
         self.ready.store(false, Ordering::Release);
@@ -228,6 +228,17 @@ impl StartupGate {
         let Ok(bytes) = fs::read(&path) else {
             return GateResult::new(GateState::Checking);
         };
+        if let Some(status) = validated_guard_status(&bytes, lease_id, unix_seconds()) {
+            if let Some(notice) = termination_notice(&status, lease_id) {
+                if !self.closed.load(Ordering::Acquire)
+                    && self.current_lease_id().as_deref() == Some(lease_id)
+                {
+                    if let Some(notices) = app.try_state::<ConflictNotices>() {
+                        notices.observe(app, notice);
+                    }
+                }
+            }
+        }
         classify_guard_status(&bytes, lease_id, unix_seconds())
     }
 
@@ -375,27 +386,72 @@ fn unix_seconds() -> u64 {
 }
 
 fn classify_guard_status(bytes: &[u8], lease_id: &str, now: u64) -> GateResult {
-    let Ok(status) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+    let Some(status) = validated_guard_status(bytes, lease_id, now) else {
         return GateResult::new(GateState::Checking);
     };
-    if status.get("ccSwitchGuardLeaseId").and_then(|v| v.as_str()) != Some(lease_id) {
-        return GateResult::new(GateState::Checking);
-    }
-    let Some(checked_at) = status
-        .get("ccSwitchGuardCheckedAt")
-        .and_then(|v| v.as_u64())
-    else {
-        return GateResult::new(GateState::Checking);
-    };
-    if checked_at > now + 2 || now.saturating_sub(checked_at) > GUARD_FRESH_SECONDS {
-        return GateResult::new(GateState::Checking);
-    }
-    match status.get("ccSwitchGuard").and_then(|v| v.as_str()) {
+    let mut result = match status.get("ccSwitchGuard").and_then(|v| v.as_str()) {
         Some("CLEAR") => GateResult::ready(false),
         Some("TERMINATED") => GateResult::ready(true),
         Some("ERROR") => GateResult::new(GateState::GuardError),
         _ => GateResult::new(GateState::Checking),
+    };
+    result.cc_switch_terminated |= termination_notice(&status, lease_id).is_some();
+    result
+}
+
+fn validated_guard_status(bytes: &[u8], lease_id: &str, now: u64) -> Option<serde_json::Value> {
+    if bytes.len() > 4096 {
+        return None;
     }
+    let status: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    if status.get("ccSwitchGuardLeaseId").and_then(|v| v.as_str()) != Some(lease_id) {
+        return None;
+    }
+    let checked_at = status
+        .get("ccSwitchGuardCheckedAt")
+        .and_then(|v| v.as_u64())?;
+    if checked_at == 0
+        || checked_at > now.saturating_add(2)
+        || now.saturating_sub(checked_at) > GUARD_FRESH_SECONDS
+    {
+        return None;
+    }
+    Some(status)
+}
+
+fn termination_notice(status: &serde_json::Value, lease_id: &str) -> Option<NoticeEvent> {
+    let state = status.get("ccSwitchGuard")?.as_str()?;
+    if !matches!(state, "CLEAR" | "TERMINATED" | "ERROR" | "INACTIVE") {
+        return None;
+    }
+    let checked_at = status.get("ccSwitchGuardCheckedAt")?.as_u64()?;
+    // Best-effort compatibility for a legacy service during an upgrade. New
+    // services retain their cumulative record after TERMINATED becomes CLEAR.
+    if status.get("ccSwitchTerminationEpoch").is_none()
+        && status.get("ccSwitchTerminationCount").is_none()
+        && status.get("ccSwitchLastTerminatedAt").is_none()
+    {
+        return (state == "TERMINATED").then(|| NoticeEvent {
+            lease_id: lease_id.to_owned(),
+            // The upgraded meter uses the same deterministic key when it
+            // imports this legacy record, so the upgrade does not alert twice.
+            epoch: Uuid::from_u128(u128::from(checked_at)).to_string(),
+            count: 1,
+            last_terminated_at: Some(checked_at),
+        });
+    }
+    let epoch = Uuid::parse_str(status.get("ccSwitchTerminationEpoch")?.as_str()?).ok()?;
+    let count = status.get("ccSwitchTerminationCount")?.as_u64()?;
+    let terminated_at = status.get("ccSwitchLastTerminatedAt")?.as_u64()?;
+    if epoch.is_nil() || count == 0 || terminated_at == 0 || terminated_at > checked_at {
+        return None;
+    }
+    Some(NoticeEvent {
+        lease_id: lease_id.to_owned(),
+        epoch: epoch.to_string(),
+        count,
+        last_terminated_at: Some(terminated_at),
+    })
 }
 
 fn read_lease(path: &Path) -> Option<GuardLeaseRecord> {
@@ -526,6 +582,74 @@ fn is_elevated_admin() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn notification_status(state: &str, count: u64) -> serde_json::Value {
+        serde_json::json!({
+            "ccSwitchGuardLeaseId": "lease-current",
+            "ccSwitchGuardCheckedAt": 100,
+            "ccSwitchGuard": state,
+            "ccSwitchTerminationEpoch": "12345678-1234-4234-8234-123456789abc",
+            "ccSwitchTerminationCount": count,
+            "ccSwitchLastTerminatedAt": 90,
+        })
+    }
+
+    #[test]
+    fn completed_terminations_remain_notifiable_after_clear_and_guard_failure() {
+        for state in ["CLEAR", "ERROR", "INACTIVE", "TERMINATED"] {
+            let bytes = serde_json::to_vec(&notification_status(state, 2)).unwrap();
+            let status = validated_guard_status(&bytes, "lease-current", 100).unwrap();
+            let notice = termination_notice(&status, "lease-current").unwrap();
+            assert_eq!(notice.count, 2);
+            assert_eq!(notice.last_terminated_at, Some(90));
+            assert_eq!(notice.lease_id, "lease-current");
+            assert!(classify_guard_status(&bytes, "lease-current", 100).cc_switch_terminated);
+        }
+        let bytes = serde_json::to_vec(&notification_status("ERROR", 1)).unwrap();
+        assert_eq!(
+            classify_guard_status(&bytes, "lease-current", 100).state,
+            GateState::GuardError
+        );
+    }
+
+    #[test]
+    fn notices_require_the_current_fresh_lease_and_valid_termination_metadata() {
+        let bytes = serde_json::to_vec(&notification_status("CLEAR", 1)).unwrap();
+        assert!(validated_guard_status(&bytes, "other-lease", 100).is_none());
+        assert!(validated_guard_status(&bytes, "lease-current", 131).is_none());
+        assert!(validated_guard_status(&bytes, "lease-current", 97).is_none());
+        assert!(validated_guard_status(&vec![b' '; 4097], "lease-current", 100).is_none());
+        for (field, invalid) in [
+            ("ccSwitchTerminationEpoch", serde_json::json!("invalid")),
+            (
+                "ccSwitchTerminationEpoch",
+                serde_json::json!(Uuid::nil().to_string()),
+            ),
+            ("ccSwitchTerminationCount", serde_json::json!(0)),
+            ("ccSwitchTerminationCount", serde_json::json!(-1)),
+            ("ccSwitchLastTerminatedAt", serde_json::json!(101)),
+            ("ccSwitchLastTerminatedAt", serde_json::json!(null)),
+            ("ccSwitchGuard", serde_json::json!("UNRECOGNIZED")),
+        ] {
+            let mut status = notification_status("CLEAR", 1);
+            status[field] = invalid;
+            assert!(
+                termination_notice(&status, "lease-current").is_none(),
+                "invalid {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_termination_records_are_notified_only_when_they_report_a_termination() {
+        let mut status =
+            serde_json::json!({"ccSwitchGuard":"TERMINATED","ccSwitchGuardCheckedAt":100});
+        let notice = termination_notice(&status, "legacy-lease").unwrap();
+        assert_eq!(notice.count, 1);
+        assert_eq!(notice.epoch, Uuid::from_u128(100).to_string());
+        status["ccSwitchGuard"] = serde_json::json!("CLEAR");
+        assert!(termination_notice(&status, "legacy-lease").is_none());
+    }
 
     #[test]
     fn guard_requires_current_lease_and_fresh_positive_confirmation() {

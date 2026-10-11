@@ -62,6 +62,12 @@ describe("personal usage statistics", () => {
     render(view(queryClient()));
     expect(await screen.findByText("0.00325")).toBeVisible();
     expect(screen.getByText("估算费用 (USD)")).toBeVisible();
+    expect(screen.getByText("估算费用 (USD)").closest("dl")).toHaveClass(
+      "grid-cols-[repeat(auto-fit,minmax(min(100%,15rem),1fr))]",
+    );
+    expect(screen.getByLabelText("Token 分项汇总")).toHaveClass(
+      "grid-cols-[repeat(auto-fit,minmax(min(100%,7rem),1fr))]",
+    );
     expect(screen.getByText("可估价 1 / 2 条")).toBeVisible();
     expect(screen.getByText("费用仅包含分项完整且已定价的记录")).toBeVisible();
     for (const value of [1200, 1000, 300, 100, 200, 150]) {

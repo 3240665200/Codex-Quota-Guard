@@ -17,6 +17,7 @@ import {
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
+import { AppIcon } from "@/components/app-icon";
 import {
   api,
   getApiErrorMessage,
@@ -41,6 +42,7 @@ import {
   serviceLabels,
 } from "@/components/usage-activity-panel";
 import { ThemeSwitcher } from "@/components/theme-switcher";
+import "./quota-layout.css";
 
 function describeBlockReason(reason: string | null): string {
   switch (reason) {
@@ -65,8 +67,12 @@ function describeBlockReason(reason: string | null): string {
 
 function TokenAmount({ value }: { value: number }) {
   return (
-    <span title={`精确值：${formatTokenCount(value)} Token`}>
-      {formatCompactTokenCount(value)} Token
+    <span
+      className="cqg-token-amount"
+      title={`精确值：${formatTokenCount(value)} Token`}
+    >
+      <span>{formatCompactTokenCount(value)}</span>{" "}
+      <span className="cqg-token-unit">Token</span>
     </span>
   );
 }
@@ -163,8 +169,11 @@ function EmptyState({
 function TeamCard({ overview }: { overview: QuotaOverview }) {
   const { team, teamQuota } = overview;
   return (
-    <section className="cqg-surface min-w-0 p-5" aria-label="团队共享额度">
-      <div className="mb-5 flex items-start justify-between gap-3">
+    <section
+      className="cqg-surface cqg-summary-card min-w-0 p-4"
+      aria-label="团队共享额度"
+    >
+      <div className="cqg-summary-card-header mb-4 flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h2 className="text-base font-semibold">团队共享额度</h2>
           <p className="mt-1 truncate text-xs text-muted-foreground">
@@ -178,7 +187,7 @@ function TeamCard({ overview }: { overview: QuotaOverview }) {
         <Users aria-hidden="true" className="size-5 shrink-0 text-primary" />
       </div>
       {teamQuota ? (
-        <div className="space-y-5">
+        <div className="cqg-summary-card-content space-y-3">
           <div>
             <QuotaProgress
               label="累计总额"
@@ -196,7 +205,7 @@ function TeamCard({ overview }: { overview: QuotaOverview }) {
               ) : null}
             </div>
           </div>
-          <div className="border-t pt-4">
+          <div className="border-t pt-3">
             <QuotaProgress
               label="5 小时团队"
               used={teamQuota.fiveHourUsedTokens}
@@ -213,7 +222,7 @@ function TeamCard({ overview }: { overview: QuotaOverview }) {
               ) : null}
             </div>
           </div>
-          <div className="border-t pt-4">
+          <div className="border-t pt-3">
             <QuotaProgress
               label="7 天团队"
               used={teamQuota.weeklyUsedTokens}
@@ -232,7 +241,9 @@ function TeamCard({ overview }: { overview: QuotaOverview }) {
           </div>
         </div>
       ) : (
-        <p className="text-sm text-muted-foreground">暂无团队共享额度</p>
+        <p className="cqg-summary-card-content text-sm text-muted-foreground">
+          暂无团队共享额度
+        </p>
       )}
     </section>
   );
@@ -254,19 +265,19 @@ function UsageWindow({
     limitTokens !== null &&
     remainingTokens <= Math.max(1, Math.floor(limitTokens * 0.2));
   return (
-    <article className="cqg-window flex min-h-[208px] min-w-0 flex-col justify-between p-5">
-      <div className="flex items-start justify-between gap-3">
+    <article className="cqg-window cqg-usage-window min-w-0 p-4">
+      <header className="cqg-usage-window-header flex items-start justify-between gap-3">
         <h3 className="text-sm font-semibold">{label}</h3>
         <span className="text-xs text-muted-foreground">
           {limitTokens === null ? "不设限" : "个人上限"}
         </span>
-      </div>
-      <div className="mt-5 min-w-0">
-        <p className="text-xs text-muted-foreground">
+      </header>
+      <div className="cqg-usage-window-primary">
+        <p className="cqg-usage-window-label text-xs text-muted-foreground">
           {limitTokens === null ? "个人已用" : "个人剩余"}
         </p>
         <p
-          className={`mt-1 break-words text-3xl font-semibold tracking-tight tabular-nums ${nearLimit ? "text-[var(--cqg-status-warning)]" : "text-foreground"}`}
+          className={`cqg-usage-window-value break-words font-semibold tracking-tight tabular-nums ${nearLimit ? "text-[var(--cqg-status-warning)]" : "text-foreground"}`}
         >
           {limitTokens === null ? (
             <TokenAmount value={usedTokens} />
@@ -277,9 +288,9 @@ function UsageWindow({
           )}
         </p>
       </div>
-      <div className="mt-6">
+      <footer className="cqg-usage-window-footer">
         {limitTokens === null ? (
-          <p className="text-xs text-muted-foreground">
+          <p className="text-xs leading-4 text-muted-foreground">
             本窗口只记录用量，不参与个人限额判断
           </p>
         ) : (
@@ -289,7 +300,7 @@ function UsageWindow({
               used={usedTokens}
               limit={limitTokens}
             />
-            <div className="mt-3 flex flex-wrap justify-between gap-x-3 gap-y-1 text-xs tabular-nums text-muted-foreground">
+            <div className="cqg-usage-window-metrics mt-2 flex flex-wrap justify-between gap-x-2 gap-y-1 text-xs tabular-nums text-muted-foreground">
               <span>
                 个人已用 <TokenAmount value={usedTokens} />
               </span>
@@ -299,7 +310,7 @@ function UsageWindow({
             </div>
           </>
         )}
-      </div>
+      </footer>
     </article>
   );
 }
@@ -310,7 +321,11 @@ function UsageCard({ overview }: { overview: QuotaOverview }) {
     <section aria-labelledby="personal-quota-heading">
       <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
         <div>
-          <h2 id="personal-quota-heading" className="text-base font-semibold">
+          <h2
+            id="personal-quota-heading"
+            className="text-base font-semibold"
+            title="个人额度按事件发生时间滚动统计"
+          >
             个人 Token
           </h2>
           <p className="mt-1 text-xs text-muted-foreground">
@@ -319,11 +334,8 @@ function UsageCard({ overview }: { overview: QuotaOverview }) {
               : "尚无已接收的用量"}
           </p>
         </div>
-        <span className="text-xs text-muted-foreground">
-          窗口按事件发生时间滚动统计
-        </span>
       </div>
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="cqg-quota-grid">
         <UsageWindow
           label="5 小时"
           usedTokens={usage.fiveHourUsedTokens}
@@ -350,13 +362,13 @@ function OfficialRateLimitWindow({
 }) {
   return (
     <div className="min-w-0">
-      <div className="flex items-center justify-between gap-3 text-sm">
+      <div className="flex items-center justify-between gap-3 text-xs leading-4">
         <span className="font-medium">{label}</span>
         <span className="font-semibold tabular-nums text-primary">
           {formatPercent(window.usedPercent)}
         </span>
       </div>
-      <div className="mt-3">
+      <div className="mt-2">
         <Progress
           aria-label={`${label}官方使用进度`}
           className="h-2 bg-muted"
@@ -364,7 +376,7 @@ function OfficialRateLimitWindow({
           value={window.usedPercent}
         />
       </div>
-      <p className="mt-2 text-xs text-muted-foreground">
+      <p className="mt-3 text-xs text-muted-foreground">
         {window.resetsAt ? formatResetTime(window.resetsAt) : "重置时间未知"}
       </p>
     </div>
@@ -388,10 +400,10 @@ function OfficialRateLimitsCard({
   );
   return (
     <section
-      className="cqg-surface min-w-0 p-5"
+      className="cqg-surface cqg-summary-card min-w-0 p-4"
       aria-labelledby="official-quota-heading"
     >
-      <div className="mb-5 flex items-start justify-between gap-3">
+      <div className="cqg-summary-card-header mb-4 flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h2 id="official-quota-heading" className="text-base font-semibold">
             官方 Codex 额度
@@ -408,19 +420,21 @@ function OfficialRateLimitsCard({
         </div>
         <Gauge aria-hidden="true" className="size-5 shrink-0 text-primary" />
       </div>
-      {fiveHour || weekly ? (
-        <div className="grid gap-5">
-          {fiveHour ? (
-            <OfficialRateLimitWindow label="5 小时窗口" window={fiveHour} />
-          ) : null}
-          {weekly ? (
-            <OfficialRateLimitWindow label="7 天窗口" window={weekly} />
-          ) : null}
-        </div>
-      ) : (
-        <p className="text-sm text-muted-foreground">暂无可显示的官方额度</p>
-      )}
-      <p className="mt-5 border-t pt-3 text-xs text-muted-foreground">
+      <div className="cqg-summary-card-content">
+        {fiveHour || weekly ? (
+          <div className="grid gap-5">
+            {fiveHour ? (
+              <OfficialRateLimitWindow label="5 小时窗口" window={fiveHour} />
+            ) : null}
+            {weekly ? (
+              <OfficialRateLimitWindow label="7 天窗口" window={weekly} />
+            ) : null}
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">暂无可显示的官方额度</p>
+        )}
+      </div>
+      <p className="mt-4 border-t pt-3 text-xs text-muted-foreground">
         官方账户额度仅作参考，不计入个人 Token。
       </p>
     </section>
@@ -711,11 +725,12 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
 
   return (
     <div className="cqg-dashboard cqg-shell" data-collapsed={collapsed}>
-      <aside className="cqg-sidebar" aria-label="客户端导航">
+      <aside
+        className="cqg-sidebar cqg-scrollbar-hidden"
+        aria-label="客户端导航"
+      >
         <div className="cqg-brand">
-          <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground">
-            <ShieldCheck className="size-5" aria-hidden="true" />
-          </div>
+          <AppIcon className="size-9 shrink-0" />
           <div className="cqg-nav-copy min-w-0">
             <p className="whitespace-nowrap text-sm font-semibold tracking-tight">
               Quota Guard
@@ -775,7 +790,7 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
           <div className="cqg-sidebar-account">
             <UserCircle
               aria-hidden="true"
-              className="size-8 shrink-0 rounded-full bg-accent p-1.5 text-accent-foreground"
+              className="cqg-account-avatar size-8 shrink-0 rounded-full bg-accent p-1.5 text-accent-foreground"
             />
             <div
               className="cqg-nav-copy min-w-0 flex-1"
@@ -802,7 +817,7 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
         </div>
       </aside>
       <main className="cqg-workspace">
-        <header className="cqg-dashboard-header flex min-h-[72px] shrink-0 items-center justify-between gap-3 border-b px-4 py-3 sm:px-6">
+        <header className="cqg-dashboard-header flex min-h-[60px] shrink-0 items-center justify-between gap-3 border-b px-4 py-2">
           <div className="flex min-w-0 items-center gap-3">
             <Button
               variant="ghost"
@@ -821,7 +836,7 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
             </Button>
             <div className="min-w-0">
               <h1 className="text-base font-semibold">{currentPage.title}</h1>
-              <p className="mt-1 hidden truncate text-xs text-muted-foreground md:block">
+              <p className="cqg-page-description mt-1 truncate text-xs text-muted-foreground">
                 {currentPage.description}
               </p>
             </div>
@@ -860,13 +875,19 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
         {guardNotice ? (
           <aside
             aria-label="运行注意事项"
-            className="max-h-[30vh] shrink-0 overflow-y-auto border-b bg-muted/50 px-4 py-2 text-xs sm:px-6"
+            className="cqg-scrollbar-hidden max-h-[30vh] shrink-0 overflow-y-auto border-b bg-muted/50 px-4 py-1.5 text-xs"
           >
             {guardNotice}
           </aside>
         ) : null}
-        <div className="cqg-workspace-scroll" ref={scrollArea}>
-          <div className="mx-auto flex w-full max-w-[1240px] flex-col gap-5 p-4 sm:p-6">
+        <div
+          className="cqg-workspace-scroll cqg-scrollbar-hidden"
+          ref={scrollArea}
+          tabIndex={0}
+          role="region"
+          aria-label={`${currentPage.label}内容`}
+        >
+          <div className="cqg-workspace-content mx-auto flex w-full max-w-[1240px] flex-col gap-4 p-4">
             {requestError ? (
               <Alert variant="destructive">
                 <CircleAlert aria-hidden="true" />
@@ -891,7 +912,7 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
                 <>
                   <AccessCard overview={overview} />
                   <UsageCard overview={overview} />
-                  <div className="grid min-w-0 gap-4 md:grid-cols-2">
+                  <div className="cqg-quota-grid">
                     <TeamCard overview={overview} />
                     <OfficialRateLimitsCard
                       rateLimits={rateLimitsQuery.data}

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { I18nextProvider } from "react-i18next";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -65,6 +65,7 @@ const quota: QuotaOverview = {
   allowed: true,
   blockReason: null,
 };
+let quotaResponse = quota;
 
 function renderDashboard(guardNotice?: string) {
   const queryClient = new QueryClient({
@@ -85,12 +86,13 @@ function renderDashboard(guardNotice?: string) {
 
 describe("Dashboard", () => {
   beforeEach(() => {
+    quotaResponse = quota;
     invokeMock.mockImplementation(async (command) => {
       switch (command) {
         case "status":
           return status;
         case "quota_overview":
-          return quota;
+          return quotaResponse;
         case "usage_analytics":
           return {
             from: "2026-10-03T00:00:00Z",
@@ -183,9 +185,14 @@ describe("Dashboard", () => {
     expect(screen.getAllByTitle("精确值：1,000 Token").length).toBeGreaterThan(
       0,
     );
-    expect(
-      screen.getByTitle("精确值：800 Token").parentElement,
-    ).toHaveTextContent("个人已用");
+    const personalFiveHour = screen
+      .getByRole("heading", { name: "5 小时" })
+      .closest("article")!;
+    expect(within(personalFiveHour).getByText("个人已用")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "个人 Token" })).toHaveAttribute(
+      "title",
+      "个人额度按事件发生时间滚动统计",
+    );
     expect(screen.getAllByTitle("精确值：100 Token").length).toBeGreaterThan(0);
     expect(
       screen.getByTitle("精确值：900 Token").parentElement,
@@ -214,6 +221,77 @@ describe("Dashboard", () => {
         "usage_status",
         "meter_service_version",
       ]),
+    );
+  });
+
+  it("aligns unlimited and capped personal windows while preserving their quota semantics", async () => {
+    quotaResponse = {
+      ...quota,
+      policy: {
+        ...quota.policy,
+        fiveHourTokenLimit: null,
+        fiveHourSource: "UNCONFIGURED",
+      },
+      usage: { ...quota.usage, fiveHourRemainingTokens: null },
+      allowed: true,
+      blockReason: null,
+    };
+
+    renderDashboard();
+
+    await screen.findByRole("heading", { name: "个人 Token" });
+    const fiveHour = screen
+      .getByRole("heading", { name: "5 小时" })
+      .closest("article")!;
+    const weekly = screen
+      .getByRole("heading", { name: "7 天" })
+      .closest("article")!;
+    for (const window of [fiveHour, weekly]) {
+      expect(window.children).toHaveLength(3);
+      expect(window.children[0]).toHaveClass("cqg-usage-window-header");
+      expect(window.children[1]).toHaveClass("cqg-usage-window-primary");
+      expect(window.children[2]).toHaveClass("cqg-usage-window-footer");
+    }
+
+    const unlimitedValue = within(fiveHour).getByTitle("精确值：800 Token");
+    expect(
+      unlimitedValue.closest(".cqg-usage-window-primary"),
+    ).toHaveTextContent("个人已用");
+    expect(unlimitedValue.querySelector(".cqg-token-unit")).toHaveTextContent(
+      "Token",
+    );
+    expect(
+      within(fiveHour).getByText("本窗口只记录用量，不参与个人限额判断"),
+    ).toBeVisible();
+    expect(fiveHour.querySelector('[role="progressbar"]')).toBeNull();
+
+    const cappedValue = within(weekly).getByTitle("精确值：5,500 Token");
+    expect(cappedValue.closest(".cqg-usage-window-primary")).toHaveTextContent(
+      "个人剩余",
+    );
+    expect(
+      within(weekly).getByRole("progressbar", {
+        name: "7 天个人额度使用进度",
+      }),
+    ).toHaveAttribute("aria-valuenow", "45");
+    const weeklyMetrics = weekly.querySelector(".cqg-usage-window-metrics");
+    expect(weeklyMetrics).toHaveTextContent("个人已用 4,500 Token");
+    expect(weeklyMetrics).toHaveTextContent("上限 1万 Token");
+    expect(within(weekly).getByTitle("精确值：10,000 Token")).toBeVisible();
+
+    const team = screen.getByRole("region", { name: "团队共享额度" });
+    const official = screen.getByRole("region", {
+      name: "官方 Codex 额度",
+    });
+    const teamHeader = team.querySelector(".cqg-summary-card-header");
+    const officialHeader = official.querySelector(".cqg-summary-card-header");
+    expect(teamHeader).not.toBeNull();
+    expect(officialHeader).not.toBeNull();
+    expect(teamHeader?.nextElementSibling).toHaveClass(
+      "cqg-summary-card-content",
+    );
+    expect(officialHeader?.nextElementSibling).toHaveClass(
+      "cqg-summary-card-content",
     );
   });
 

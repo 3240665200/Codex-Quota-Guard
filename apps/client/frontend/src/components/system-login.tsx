@@ -1,18 +1,12 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import {
-  Eye,
-  EyeOff,
-  KeyRound,
-  LoaderCircle,
-  Settings2,
-  ShieldCheck,
-} from "lucide-react";
+import { Eye, EyeOff, KeyRound, LoaderCircle, Settings2 } from "lucide-react";
 import { FormEvent, useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { ThemeSwitcher } from "@/components/theme-switcher";
+import { AppIcon } from "@/components/app-icon";
 import {
   Card,
   CardContent,
@@ -90,19 +84,17 @@ export function SystemLoginPage({
   };
 
   return (
-    <main className="min-h-screen bg-background px-4 py-5 sm:px-8">
-      <div className="mx-auto flex min-h-[calc(100vh-2.5rem)] w-full max-w-5xl flex-col">
-        <div className="flex items-center gap-2 border-b border-border pb-4 text-sm font-semibold">
-          <div className="flex size-8 items-center justify-center rounded-md bg-foreground text-background">
-            <ShieldCheck aria-hidden="true" className="size-4" />
-          </div>
+    <main className="flex min-h-screen flex-col bg-background p-4 sm:px-6">
+      <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col">
+        <div className="flex flex-wrap items-center gap-2 border-b border-border pb-3 text-sm font-semibold">
+          <AppIcon className="size-8 shrink-0" />
           Quota Guard
           <span className="ml-2 border-l pl-3 text-xs font-normal text-muted-foreground">
             客户端
           </span>
           <ThemeSwitcher compact className="ml-auto" />
         </div>
-        <div className="flex flex-1 items-center justify-center py-8">
+        <div className="flex flex-1 items-center justify-center py-5">
           <Card className="w-full max-w-[430px] border-border shadow-sm">
             <CardHeader className="gap-1 pb-4">
               <h1 className="text-xl font-semibold">登录 Quota Guard</h1>

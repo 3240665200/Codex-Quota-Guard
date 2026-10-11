@@ -39,7 +39,7 @@ export function UsageStatistics({ userId }: { userId: string }) {
   );
   return (
     <div className="min-w-0" aria-label="个人用量统计">
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <div
           role="group"
           aria-label="统计时间范围"
@@ -93,8 +93,8 @@ export function UsageStatistics({ userId }: { userId: string }) {
       ) : null}
       {summary ? (
         <>
-          <dl className="grid grid-cols-2 gap-x-4 gap-y-5 border-b pb-5 lg:grid-cols-4">
-            <div>
+          <dl className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,15rem),1fr))] gap-x-4 gap-y-3 border-b pb-4">
+            <div className="min-w-0">
               <dt className="text-xs text-muted-foreground">估算费用 (USD)</dt>
               <dd
                 className="mt-1 break-words text-lg font-semibold tabular-nums"
@@ -107,7 +107,7 @@ export function UsageStatistics({ userId }: { userId: string }) {
                 可估价 {summary.costedEventCount} / {summary.eventCount} 条
               </p>
             </div>
-            <div>
+            <div className="min-w-0">
               <dt className="text-xs text-muted-foreground">总 Token</dt>
               <dd className="mt-1 text-lg font-semibold tabular-nums">
                 {token(summary.totalTokens, "text-primary")}
@@ -116,14 +116,14 @@ export function UsageStatistics({ userId }: { userId: string }) {
                 分项完整 {summary.breakdownEventCount} / {summary.eventCount} 条
               </p>
             </div>
-            <div>
+            <div className="min-w-0">
               <dt className="text-xs text-muted-foreground">用量事件</dt>
               <dd className="mt-1 text-lg font-semibold tabular-nums">
                 {formatTokenCount(summary.eventCount)}
               </dd>
               <p className="mt-1 text-xs text-muted-foreground">已接收并去重</p>
             </div>
-            <div>
+            <div className="min-w-0">
               <dt className="text-xs text-muted-foreground">缓存命中率</dt>
               <dd className="mt-1 text-lg font-semibold tabular-nums">
                 {summary.cacheHitRatePercent === null
@@ -133,7 +133,7 @@ export function UsageStatistics({ userId }: { userId: string }) {
             </div>
           </dl>
           <dl
-            className="grid grid-cols-2 gap-4 py-4 sm:grid-cols-5"
+            className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,7rem),1fr))] gap-3 py-3"
             aria-label="Token 分项汇总"
           >
             {(
@@ -157,7 +157,7 @@ export function UsageStatistics({ userId }: { userId: string }) {
                 ],
               ] as const
             ).map(([label, value, className]) => (
-              <div key={label}>
+              <div key={label} className="min-w-0">
                 <dt className="text-xs text-muted-foreground">{label} Token</dt>
                 <dd className="mt-1 text-sm font-medium tabular-nums">
                   {token(value, className)}
@@ -166,11 +166,11 @@ export function UsageStatistics({ userId }: { userId: string }) {
             ))}
           </dl>
           {summary.costedEventCount < summary.eventCount ? (
-            <p className="mb-4 text-xs text-amber-700 dark:text-amber-400">
+            <p className="mb-3 text-xs text-amber-700 dark:text-amber-400">
               费用仅包含分项完整且已定价的记录
             </p>
           ) : null}
-          <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-3">
             <div>
               <h3 className="text-sm font-medium">用量趋势</h3>
               <p className="mt-1 text-xs text-muted-foreground">
@@ -201,7 +201,7 @@ export function UsageStatistics({ userId }: { userId: string }) {
             </p>
           ) : (
             <div
-              className="mt-3 h-48 w-full min-w-0"
+              className="mt-3 h-44 w-full min-w-0"
               role="img"
               aria-label={`${unit} 用量趋势图`}
             >

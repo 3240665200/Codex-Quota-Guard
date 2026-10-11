@@ -212,13 +212,8 @@ export function ClientApp() {
     };
   }, [gateReady]);
 
-  useEffect(() => {
-    if (gate?.state === "READY" && gate.ccSwitchTerminated) {
-      toast.warning(
-        "已强制结束 CC Switch。Quota Guard 运行期间请勿重新打开它；如 Codex 仍走代理，请先退出客户端并恢复官方直连。",
-      );
-    }
-  }, [gate?.state, gate?.ccSwitchTerminated]);
+  // The native guard presents an acknowledged Windows dialog independently of
+  // renderer visibility. Keep the persistent banner without a duplicate toast.
 
   const retryGate = async () => {
     const attempt = ++gateAttempt.current;
@@ -307,26 +302,26 @@ export function ClientApp() {
 
   if (sessionQuery.error && !sessionQuery.data) {
     return (
-      <>
+      <div className="cqg-entry-page">
         <div className="border-b bg-muted/50 px-6 py-2">{guardNotice}</div>
         <SessionError
           error={sessionQuery.error}
           onRetry={() => void sessionQuery.refetch()}
         />
-      </>
+      </div>
     );
   }
 
   const session = sessionQuery.data;
   if (localSignedOut || !session?.authenticated || !session.user) {
     return (
-      <>
+      <div className="cqg-entry-page">
         <div className="border-b bg-muted/50 px-6 py-2">{guardNotice}</div>
         <SystemLoginPage
           onAuthenticated={handleAuthenticated}
           statusError={logoutError ?? undefined}
         />
-      </>
+      </div>
     );
   }
 

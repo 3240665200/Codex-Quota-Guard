@@ -251,6 +251,23 @@ describe("ClientApp system session gate", () => {
     }
   });
 
+  it("keeps the terminated banner without duplicating the native acknowledged notice", async () => {
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command, args) => {
+      if (
+        command === "startup_gate_check" ||
+        command === "startup_guard_status"
+      ) {
+        return { state: "READY", ccSwitchTerminated: true };
+      }
+      return original(command, args);
+    });
+    renderClientApp();
+    expect(await screen.findByText(/已停止 CC Switch/)).toBeVisible();
+    expect(toast.warning).not.toHaveBeenCalled();
+    expect(screen.getByText(/未保存更改可能丢失/)).toBeVisible();
+  });
+
   it("shows signed-out tray scan feedback without bypassing the login gate", async () => {
     renderClientApp();
     await screen.findByText("登录 Quota Guard");

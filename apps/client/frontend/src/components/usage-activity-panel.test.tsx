@@ -148,9 +148,25 @@ describe("UsageActivityPanel", () => {
     await userEvent.click(screen.getByRole("tab", { name: "运行诊断" }));
     expect(screen.getByText(/超大日志记录.*500/)).toBeVisible();
     expect(screen.getByText(/累计计数重置.*12/)).toBeVisible();
+    expect(screen.getByRole("list", { name: "扫描诊断汇总" })).toHaveClass(
+      "cqg-scrollbar-hidden",
+      "overflow-y-auto",
+    );
+    expect(screen.getByRole("list", { name: "扫描诊断汇总" })).toHaveAttribute(
+      "tabindex",
+      "0",
+    );
     expect(
       screen.queryByText(/OVERSIZED_JSONL_RECORD、OVERSIZED_JSONL_RECORD/),
     ).not.toBeInTheDocument();
+  });
+
+  it("keeps hidden-scrollbar diagnostics keyboard scrollable", async () => {
+    render(view("user-a", undefined, vi.fn(), "diagnostics"));
+    const logs = await screen.findByRole("list", { name: "统计程序运行日志" });
+    expect(logs).toHaveClass("cqg-scrollbar-hidden", "overflow-y-auto");
+    expect(logs).toHaveAttribute("tabindex", "0");
+    expect(within(logs).getByTitle("精确值：12,500 Token")).toBeVisible();
   });
 
   it("renders the external overview as analytics only and refreshes its analytics query", async () => {
@@ -201,6 +217,7 @@ describe("UsageActivityPanel", () => {
 
     render(view("user-a", undefined, vi.fn(), "ledger"));
     const table = await screen.findByRole("table", { name: "个人消耗流水" });
+    expect(table).toHaveClass("min-w-[640px]", "table-fixed");
 
     expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
     expect(screen.queryByText("统计程序最近扫描")).not.toBeInTheDocument();
@@ -540,12 +557,14 @@ describe("UsageActivityPanel", () => {
     expect(
       headers.every((header) => header.getAttribute("scope") === "col"),
     ).toBe(true);
-    expect(table).toHaveClass("min-w-[1040px]");
+    expect(table).toHaveClass("min-w-[700px]", "table-fixed");
     expect(table.parentElement).toHaveClass("min-w-0", "overflow-x-auto");
     expect(table.closest("section")).toHaveClass("min-w-0");
 
     const rows = within(table).getAllByRole("row");
-    expect(within(rows[1]).getByTitle(longModel)).toHaveTextContent(longModel);
+    const modelCell = within(rows[1]).getByTitle(longModel);
+    expect(modelCell).toHaveTextContent(longModel);
+    expect(modelCell.firstElementChild).toHaveClass("truncate");
     expect(within(rows[1]).getByText("high")).toBeVisible();
     const cells = within(rows[2]).getAllByRole("cell");
     expect(cells).toHaveLength(7);
@@ -624,6 +643,15 @@ describe("UsageActivityPanel", () => {
 
     await userEvent.click(trigger);
     const dialog = await screen.findByRole("dialog", { name: "消耗详情" });
+    expect(dialog).toHaveClass("max-h-[calc(100dvh-1rem)]");
+    expect(dialog.querySelector(".overflow-y-auto")).toHaveClass(
+      "cqg-scrollbar-hidden",
+      "min-h-0",
+      "flex-1",
+    );
+    expect(
+      within(dialog).getByRole("button", { name: "关闭详情" }).closest("div"),
+    ).toHaveClass("shrink-0");
     for (const label of [
       "总消耗",
       "费用估算",

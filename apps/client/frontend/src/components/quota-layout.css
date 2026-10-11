@@ -1,0 +1,85 @@
+.cqg-token-amount {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.25em;
+  white-space: nowrap;
+}
+
+.cqg-token-unit {
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1;
+}
+
+.cqg-summary-card {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.cqg-summary-card-header {
+  min-height: 44px;
+}
+
+.cqg-summary-card-content {
+  min-width: 0;
+  flex: 1;
+}
+
+.cqg-usage-window {
+  display: grid;
+  min-height: 176px;
+  grid-template-rows: 20px 48px minmax(56px, auto);
+  gap: 8px;
+}
+
+.cqg-usage-window-header {
+  min-width: 0;
+  height: 20px;
+}
+
+.cqg-usage-window-header h3,
+.cqg-usage-window-header > span {
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+.cqg-usage-window-primary {
+  min-width: 0;
+  align-self: center;
+}
+
+.cqg-usage-window-label {
+  line-height: 16px;
+}
+
+.cqg-usage-window-value {
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+  font-size: 28px;
+  line-height: 30px;
+}
+
+.cqg-usage-window-footer {
+  min-width: 0;
+  align-self: start;
+}
+
+.cqg-usage-window-footer [role="group"] {
+  gap: 6px;
+}
+
+.cqg-usage-window-metrics {
+  min-width: 0;
+}
+
+.cqg-usage-window-metrics > span {
+  white-space: nowrap;
+}
+
+@container cqg-workspace (max-width: 760px) {
+  .cqg-usage-window-value {
+    font-size: 24px;
+    line-height: 28px;
+  }
+}

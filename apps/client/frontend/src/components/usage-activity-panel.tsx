@@ -92,7 +92,7 @@ function TokenDetailRow({
   return (
     <div className="flex items-baseline justify-between gap-3">
       <dt className="text-muted-foreground">{label}</dt>
-      <dd className="text-right">
+      <dd className="min-w-0 text-right [overflow-wrap:anywhere]">
         <TokenBreakdown value={value} />
       </dd>
     </div>
@@ -135,9 +135,9 @@ function UsageTokens({ item }: { item: UsageEventPage["items"][number] }) {
       </div>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm" />
-        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 flex max-h-[85vh] w-[calc(100%_-_2rem)] max-w-xl -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border bg-background text-foreground shadow-2xl focus:outline-none">
-          <div className="flex items-start justify-between gap-4 border-b px-5 py-4">
-            <div>
+        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100dvh-1rem)] w-[calc(100%_-_2rem)] max-w-xl -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border bg-background text-foreground shadow-2xl focus:outline-none">
+          <div className="flex shrink-0 items-start justify-between gap-4 border-b px-4 py-3 sm:px-5 sm:py-4">
+            <div className="min-w-0">
               <Dialog.Title className="text-lg font-semibold">
                 消耗详情
               </Dialog.Title>
@@ -157,7 +157,12 @@ function UsageTokens({ item }: { item: UsageEventPage["items"][number] }) {
               </Button>
             </Dialog.Close>
           </div>
-          <div className="min-h-0 space-y-5 overflow-y-auto px-5 py-4">
+          <div
+            className="cqg-scrollbar-hidden min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-4 py-3 sm:px-5 sm:py-4"
+            role="region"
+            aria-label="消耗详情内容"
+            tabIndex={0}
+          >
             <dl className="grid gap-4 rounded-xl bg-muted/50 p-4 sm:grid-cols-2">
               <div>
                 <dt className="text-xs text-muted-foreground">总消耗</dt>
@@ -209,7 +214,7 @@ function UsageTokens({ item }: { item: UsageEventPage["items"][number] }) {
               ))}
             </dl>
           </div>
-          <div className="flex justify-end border-t px-5 py-3">
+          <div className="flex shrink-0 justify-end border-t px-4 py-3 sm:px-5">
             <Dialog.Close asChild>
               <Button type="button" variant="outline" size="sm">
                 关闭
@@ -449,7 +454,7 @@ export function UsageActivityPanel({
 
   return (
     <section
-      className={legacyView ? "cqg-surface min-w-0 p-5" : "min-w-0"}
+      className={legacyView ? "cqg-surface min-w-0 p-4" : "min-w-0"}
       aria-labelledby={
         legacyView || activeView === "diagnostics" ? `${id}-heading` : undefined
       }
@@ -466,13 +471,13 @@ export function UsageActivityPanel({
       ) : null}
       {(legacyView || activeView === "diagnostics") && (
         <>
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="flex items-start gap-3">
+          <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
+            <div className="flex min-w-0 items-start gap-3">
               <ListChecks
                 className="mt-0.5 size-5 text-primary"
                 aria-hidden="true"
               />
-              <div>
+              <div className="min-w-0">
                 <h2 id={`${id}-heading`} className="text-base font-semibold">
                   {legacyView ? "统计与消耗记录" : "运行诊断"}
                 </h2>
@@ -503,10 +508,10 @@ export function UsageActivityPanel({
           {statusReadFailed ? (
             <div
               role="alert"
-              className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-200"
+              className="mt-3 min-w-0 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-200"
             >
               <p className="font-medium">统计状态读取失败</p>
-              <p className="mt-1 text-xs">
+              <p className="mt-1 text-xs [overflow-wrap:anywhere]">
                 {getApiErrorMessage(statusError)}
                 {status ? " 当前显示的是上次读取结果。" : " 请刷新重试。"}
               </p>
@@ -515,10 +520,10 @@ export function UsageActivityPanel({
           {upgradeRequired ? (
             <div
               role="alert"
-              className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-200"
+              className="mt-3 min-w-0 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-200"
             >
               <p className="font-medium">统计程序需要更新</p>
-              <p className="mt-1 text-xs">
+              <p className="mt-1 text-xs [overflow-wrap:anywhere]">
                 运行版本 {runtimeVersion ?? "未知"}，已安装版本{" "}
                 {meterVersion.data?.installedVersion ?? "未知"}，安装包版本{" "}
                 {meterVersion.data?.bundledVersion ?? "未知"}。
@@ -531,7 +536,7 @@ export function UsageActivityPanel({
                 <Button
                   size="sm"
                   variant="outline"
-                  className="mt-3"
+                  className="mt-2"
                   disabled={starting}
                   onClick={onStart}
                 >
@@ -547,10 +552,10 @@ export function UsageActivityPanel({
           {!upgradeRequired && (runtimeVersionMismatch || versionUnverified) ? (
             <div
               role="alert"
-              className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-200"
+              className="mt-3 min-w-0 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-200"
             >
               <p className="font-medium">统计程序运行版本待确认</p>
-              <p className="mt-1 text-xs">
+              <p className="mt-1 text-xs [overflow-wrap:anywhere]">
                 {runtimeVersionMismatch
                   ? `运行版本 ${runtimeVersion} 与已安装版本 ${meterVersion.data?.installedVersion} 不一致，请重新启动统计程序。`
                   : meterVersion.isError
@@ -563,7 +568,7 @@ export function UsageActivityPanel({
                 <Button
                   size="sm"
                   variant="outline"
-                  className="mt-3"
+                  className="mt-2"
                   disabled={starting}
                   onClick={onStart}
                 >
@@ -576,7 +581,7 @@ export function UsageActivityPanel({
               ) : null}
             </div>
           ) : null}
-          <dl className="mt-5 grid gap-3 rounded-lg border bg-muted/40 p-3 text-sm sm:grid-cols-3">
+          <dl className="mt-4 grid grid-cols-[repeat(auto-fit,minmax(min(100%,12rem),1fr))] gap-3 rounded-lg border bg-muted/40 p-3 text-sm">
             <div>
               <dt className="text-xs text-muted-foreground">
                 统计程序最近扫描
@@ -619,7 +624,7 @@ export function UsageActivityPanel({
                     aria-selected={tab === value}
                     aria-controls={`${id}-${value}`}
                     tabIndex={tab === value ? 0 : -1}
-                    className={`rounded-md px-3 py-1.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${tab === value ? "bg-background font-medium shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                    className={`rounded-md px-2.5 py-1.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:px-3 ${tab === value ? "bg-background font-medium shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
                     onClick={() => setTab(value)}
                     onKeyDown={(event) => {
                       if (
@@ -773,56 +778,61 @@ export function UsageActivityPanel({
           ) : ledger.data ? (
             <>
               {ledger.data.items.length ? (
-                <div className="min-w-0 overflow-x-auto">
+                <div
+                  className="cqg-scrollbar-hidden min-w-0 overflow-x-auto"
+                  role="region"
+                  aria-label="流水表格"
+                  tabIndex={0}
+                >
                   <table
-                    className={`w-full ${legacyView ? "min-w-[1040px] table-fixed whitespace-nowrap" : "min-w-[700px]"} text-left text-sm`}
+                    className={`w-full table-fixed ${legacyView ? "min-w-[700px]" : "min-w-[640px]"} text-left text-sm`}
                     aria-label="个人消耗流水"
                   >
                     <colgroup>
                       {legacyView ? (
                         <>
-                          <col className="w-[174px]" />
-                          <col className="w-[216px]" />
-                          <col className="w-[112px]" />
-                          <col className="w-[174px]" />
+                          <col className="w-[108px]" />
+                          <col className="w-[160px]" />
                           <col className="w-[76px]" />
-                          <col className="w-[190px]" />
-                          <col className="w-[96px]" />
+                          <col className="w-[108px]" />
+                          <col className="w-[44px]" />
+                          <col className="w-[116px]" />
+                          <col className="w-[76px]" />
                         </>
                       ) : (
                         <>
-                          <col className="w-[190px]" />
-                          <col className="w-[220px]" />
-                          <col className="w-[190px]" />
-                          <col />
+                          <col className="w-1/4" />
+                          <col className="w-[37%]" />
+                          <col className="w-1/4" />
+                          <col className="w-[13%]" />
                         </>
                       )}
                     </colgroup>
                     <thead className="border-b text-xs text-muted-foreground">
                       <tr>
-                        <th className="pb-3 pr-5 font-medium" scope="col">
+                        <th className="pb-2 pr-2 font-medium" scope="col">
                           消耗时间
                         </th>
-                        <th className="pb-3 pr-5 font-medium" scope="col">
+                        <th className="pb-2 pr-2 font-medium" scope="col">
                           Token 消耗
                         </th>
                         {legacyView ? (
                           <>
-                            <th className="pb-3 pr-5 font-medium" scope="col">
+                            <th className="pb-2 pr-2 font-medium" scope="col">
                               来源
                             </th>
-                            <th className="pb-3 pr-5 font-medium" scope="col">
+                            <th className="pb-2 pr-2 font-medium" scope="col">
                               后台接收
                             </th>
-                            <th className="pb-3 font-medium" scope="col">
+                            <th className="pb-2 font-medium" scope="col">
                               状态
                             </th>
                           </>
                         ) : null}
-                        <th className="pb-3 pr-5 font-medium" scope="col">
+                        <th className="pb-2 pr-2 font-medium" scope="col">
                           模型名称
                         </th>
-                        <th className="pb-3 font-medium" scope="col">
+                        <th className="pb-2 font-medium" scope="col">
                           思考等级
                         </th>
                       </tr>
@@ -830,36 +840,36 @@ export function UsageActivityPanel({
                     <tbody>
                       {ledger.data.items.map((item) => (
                         <tr key={item.id} className="border-b last:border-0">
-                          <td className="py-3 pr-5 tabular-nums">
+                          <td className="py-2 pr-2 tabular-nums [overflow-wrap:anywhere]">
                             {time(item.occurredAt)}
                           </td>
-                          <td className="py-2 pr-5">
+                          <td className="py-2 pr-2">
                             <UsageTokens item={item} />
                           </td>
                           {legacyView ? (
                             <>
-                              <td className="py-3 pr-5 text-xs text-muted-foreground">
+                              <td className="py-2 pr-2 text-xs text-muted-foreground">
                                 {item.source === "TOKEN_USAGE_RECORD"
                                   ? "官方用量记录"
                                   : "累计差值补录"}
                               </td>
-                              <td className="py-3 pr-5 tabular-nums text-muted-foreground">
+                              <td className="py-2 pr-2 tabular-nums [overflow-wrap:anywhere] text-muted-foreground">
                                 {time(item.receivedAt)}
                               </td>
-                              <td className="py-3 text-xs text-primary">
+                              <td className="py-2 text-xs text-primary">
                                 已接收
                               </td>
                             </>
                           ) : null}
                           <td
-                            className="py-3 pr-5"
+                            className="py-2 pr-2"
                             title={item.model ?? "未知"}
                           >
                             <span className="block max-w-48 truncate">
                               {item.model ?? "未知"}
                             </span>
                           </td>
-                          <td className="py-3">
+                          <td className="py-2 [overflow-wrap:anywhere]">
                             {item.reasoningEffort ?? "未知"}
                           </td>
                         </tr>
@@ -916,8 +926,8 @@ export function UsageActivityPanel({
             : {})}
           className={legacyView ? "pt-4" : "pt-1"}
         >
-          <div className="grid gap-3 text-sm sm:grid-cols-2">
-            <div className="rounded-lg border p-3">
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,18rem),1fr))] gap-3 text-sm">
+            <div className="min-w-0 rounded-lg border p-3">
               <h3 className="font-medium">Rust 常驻统计程序</h3>
               <p className="mt-1 text-xs text-muted-foreground">
                 {serviceState
@@ -926,22 +936,22 @@ export function UsageActivityPanel({
                     ? "统计状态读取失败"
                     : "正在读取…"}
               </p>
-              <dl className="mt-2 grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
+              <dl className="mt-2 grid grid-cols-[repeat(auto-fit,minmax(min(100%,7rem),1fr))] gap-2 text-xs">
                 <div>
                   <dt className="text-muted-foreground">运行版本</dt>
-                  <dd className="mt-0.5 tabular-nums">
+                  <dd className="mt-0.5 tabular-nums [overflow-wrap:anywhere]">
                     {runtimeVersion ?? (healthy ? "旧版/未知" : "未运行/未知")}
                   </dd>
                 </div>
                 <div>
                   <dt className="text-muted-foreground">已安装版本</dt>
-                  <dd className="mt-0.5 tabular-nums">
+                  <dd className="mt-0.5 tabular-nums [overflow-wrap:anywhere]">
                     {meterVersion.data?.installedVersion ?? "旧版/未知"}
                   </dd>
                 </div>
                 <div>
                   <dt className="text-muted-foreground">安装包版本</dt>
-                  <dd className="mt-0.5 tabular-nums">
+                  <dd className="mt-0.5 tabular-nums [overflow-wrap:anywhere]">
                     {meterVersion.data?.bundledVersion ?? "未知"}
                   </dd>
                 </div>
@@ -955,16 +965,16 @@ export function UsageActivityPanel({
                   无法确认当前版本：程序文件校验信息不足，请检查安装状态。
                 </p>
               ) : null}
-              <p className="mt-2 text-xs">
+              <p className="mt-2 text-xs [overflow-wrap:anywhere]">
                 {explainError(status?.service.errorCode) ?? "暂无统计程序错误"}
               </p>
               {status?.pairingState === "PAIRING_FAILED" ? (
-                <p className="mt-2 text-xs text-destructive">
+                <p className="mt-2 text-xs text-destructive [overflow-wrap:anywhere]">
                   设备配对失败，请确认后台在线后重试。
                 </p>
               ) : null}
             </div>
-            <div className="rounded-lg border p-3">
+            <div className="min-w-0 rounded-lg border p-3">
               <h3 className="font-medium">桌面回退扫描</h3>
               <p className="mt-1 text-xs text-muted-foreground">
                 {status
@@ -977,7 +987,7 @@ export function UsageActivityPanel({
                 最近扫描：{time(status?.fallback.lastScannedAt)}
               </p>
               {explainError(status?.fallback.errorCode) ? (
-                <p className="mt-2 text-xs text-destructive">
+                <p className="mt-2 text-xs text-destructive [overflow-wrap:anywhere]">
                   {explainError(status?.fallback.errorCode)}
                 </p>
               ) : null}
@@ -993,17 +1003,18 @@ export function UsageActivityPanel({
                   ) : null}
                   <ul
                     aria-label="扫描诊断汇总"
-                    className="mt-2 max-h-40 divide-y overflow-y-auto rounded-md border px-3"
+                    className="cqg-scrollbar-hidden mt-2 max-h-40 min-w-0 divide-y overflow-y-auto rounded-md border px-3"
+                    tabIndex={0}
                   >
                     {scannerIssues
                       .slice(0, MAX_VISIBLE_ISSUE_TYPES)
                       .map(([code, count]) => (
                         <li key={code} className="py-2">
-                          <p className="break-words text-xs text-amber-800">
+                          <p className="break-words text-xs text-amber-800 [overflow-wrap:anywhere]">
                             {scannerIssueLabels[code] ?? "扫描诊断"} · {code} ·{" "}
                             {count} 次
                           </p>
-                          <p className="mt-1 text-xs text-muted-foreground">
+                          <p className="mt-1 text-xs text-muted-foreground [overflow-wrap:anywhere]">
                             {scannerIssueDescriptions[code] ??
                               "仅显示安全诊断码，不包含原始日志内容。"}
                           </p>
@@ -1020,10 +1031,10 @@ export function UsageActivityPanel({
               ) : null}
             </div>
           </div>
-          <h3 className="mb-3 mt-5 text-sm font-medium">
+          <h3 className="mb-2 mt-4 text-sm font-medium">
             统计程序日志 · 最近 50 条
           </h3>
-          <p className="mb-3 text-xs text-muted-foreground">
+          <p className="mb-2 text-xs text-muted-foreground [overflow-wrap:anywhere]">
             仅展示运行摘要。批次 Token
             不是单笔流水，不要重复累加；记录可能因后台去重而不新增入账。
           </p>
@@ -1032,7 +1043,10 @@ export function UsageActivityPanel({
               正在读取统计程序日志…
             </p>
           ) : logs.isError ? (
-            <p role="alert" className="text-sm text-destructive">
+            <p
+              role="alert"
+              className="text-sm text-destructive [overflow-wrap:anywhere]"
+            >
               日志读取失败：{getApiErrorMessage(logs.error)}
             </p>
           ) : logs.data?.state === "ADMIN_REQUIRED" ? (
@@ -1048,15 +1062,19 @@ export function UsageActivityPanel({
               统计程序日志暂不可读，请检查目录权限后刷新。
             </p>
           ) : logs.data?.entries.length ? (
-            <ol className="max-h-96 overflow-y-auto divide-y">
+            <ol
+              className="cqg-scrollbar-hidden max-h-96 min-w-0 divide-y overflow-y-auto"
+              tabIndex={0}
+              aria-label="统计程序运行日志"
+            >
               {logs.data.entries.map((entry, index) => (
                 <li
                   key={`${entry.atEpochSeconds}-${index}`}
-                  className="flex flex-wrap items-start justify-between gap-2 py-3 text-sm"
+                  className="flex min-w-0 flex-wrap items-start justify-between gap-2 py-2 text-sm"
                 >
-                  <div>
+                  <div className="min-w-0 flex-1">
                     <p className="font-medium">{logLabels[entry.kind]}</p>
-                    <p className="mt-1 text-xs text-muted-foreground">
+                    <p className="mt-1 text-xs text-muted-foreground [overflow-wrap:anywhere]">
                       {time(entry.atEpochSeconds)}
                       {entry.state ? ` · ${serviceLabels[entry.state]}` : ""}
                       {entry.ccSwitchGuard
@@ -1064,13 +1082,13 @@ export function UsageActivityPanel({
                         : ""}
                     </p>
                     {entry.errorCode ? (
-                      <p className="mt-1 text-xs text-destructive">
+                      <p className="mt-1 text-xs text-destructive [overflow-wrap:anywhere]">
                         {explainError(entry.errorCode)}
                       </p>
                     ) : null}
                   </div>
                   {entry.kind === "USAGE_REPORTED" ? (
-                    <div className="text-right">
+                    <div className="shrink-0 text-right">
                       <Tokens value={entry.reportedTokens} />
                       <p className="mt-1 text-xs text-muted-foreground">
                         {entry.reportedEvents} 条事件 · 上报批次

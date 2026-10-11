@@ -15,6 +15,7 @@ use audit::{AuditKind, AuditLog};
 mod ccswitch_guard;
 
 const MAX_RECORD_BYTES: usize = 4 * 1024 * 1024;
+const MAX_GUARD_STATUS_BYTES: usize = 4096;
 const PREFIX_BYTES: usize = 4096;
 const MAX_CACHED_TURNS: usize = 256;
 const GUARD_STATUS_FILE: &str = "ccswitch-guard-status.json";
@@ -779,38 +780,116 @@ struct GuardSnapshot {
     lease_id: Option<uuid::Uuid>,
     error_code: Option<String>,
     detected: bool,
+    confirmed_termination_count: u64,
+    confirmed_last_terminated_at: Option<u64>,
+    termination_epoch: uuid::Uuid,
+    termination_count: u64,
+    last_terminated_at: Option<u64>,
 }
 
 impl GuardSnapshot {
+    fn new(
+        state: &'static str,
+        checked_at: u64,
+        lease_id: Option<uuid::Uuid>,
+        error_code: Option<String>,
+        detected: bool,
+    ) -> Self {
+        Self {
+            state,
+            checked_at,
+            lease_id,
+            error_code,
+            detected,
+            confirmed_termination_count: 0,
+            confirmed_last_terminated_at: None,
+            termination_epoch: uuid::Uuid::new_v4(),
+            termination_count: 0,
+            last_terminated_at: None,
+        }
+    }
+
     #[cfg(test)]
     fn inactive() -> Self {
-        Self {
-            state: "INACTIVE",
-            checked_at: epoch_seconds(),
-            lease_id: None,
-            error_code: None,
-            detected: false,
-        }
+        Self::new("INACTIVE", epoch_seconds(), None, None, false)
     }
 
     #[cfg(test)]
     fn error(code: impl Into<String>) -> Self {
-        Self {
-            state: "ERROR",
-            checked_at: epoch_seconds(),
-            lease_id: None,
-            error_code: Some(code.into()),
-            detected: false,
-        }
+        Self::new("ERROR", epoch_seconds(), None, Some(code.into()), false)
     }
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct GuardStatus {
-    cc_switch_guard: &'static str,
+    cc_switch_guard: String,
     cc_switch_guard_checked_at: u64,
     cc_switch_guard_lease_id: Option<uuid::Uuid>,
+    cc_switch_termination_epoch: uuid::Uuid,
+    cc_switch_termination_count: u64,
+    cc_switch_last_terminated_at: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LegacyGuardStatus {
+    cc_switch_guard: String,
+    cc_switch_guard_checked_at: u64,
+    cc_switch_guard_lease_id: Option<uuid::Uuid>,
+}
+
+#[derive(Clone)]
+struct GuardTerminationLedger {
+    lease_id: Option<uuid::Uuid>,
+    epoch: uuid::Uuid,
+    count: u64,
+    last_terminated_at: Option<u64>,
+}
+
+impl GuardTerminationLedger {
+    fn new(lease_id: Option<uuid::Uuid>) -> Self {
+        Self {
+            lease_id,
+            epoch: uuid::Uuid::new_v4(),
+            count: 0,
+            last_terminated_at: None,
+        }
+    }
+
+    fn recover(lease_id: Option<uuid::Uuid>, stored: Option<GuardStatus>) -> Self {
+        if let (Some(lease_id), Some(status)) = (lease_id, stored) {
+            if status.cc_switch_guard_lease_id == Some(lease_id) {
+                return Self {
+                    lease_id: Some(lease_id),
+                    epoch: status.cc_switch_termination_epoch,
+                    count: status.cc_switch_termination_count,
+                    last_terminated_at: status.cc_switch_last_terminated_at,
+                };
+            }
+        }
+        Self::new(lease_id)
+    }
+
+    fn apply(&mut self, mut checked: GuardSnapshot) -> GuardSnapshot {
+        if self.lease_id != checked.lease_id {
+            *self = Self::new(checked.lease_id);
+        }
+        if checked.confirmed_termination_count > 0 {
+            self.count = self
+                .count
+                .saturating_add(checked.confirmed_termination_count);
+            if let Some(terminated_at) = checked.confirmed_last_terminated_at {
+                self.last_terminated_at = Some(terminated_at);
+            }
+        }
+        checked.confirmed_termination_count = 0;
+        checked.confirmed_last_terminated_at = None;
+        checked.termination_epoch = self.epoch;
+        checked.termination_count = self.count;
+        checked.last_terminated_at = self.last_terminated_at;
+        checked
+    }
 }
 
 fn guard_status_path(config: &MeterConfig) -> Result<PathBuf, String> {
@@ -825,9 +904,12 @@ fn write_guard_status(path: &Path, guard: &GuardSnapshot) -> Result<(), String> 
     let parent = path.parent().ok_or("METER_STATUS_PATH_INVALID")?;
     fs::create_dir_all(parent).map_err(|_| "METER_STATUS_WRITE_FAILED")?;
     let status = GuardStatus {
-        cc_switch_guard: guard.state,
+        cc_switch_guard: guard.state.to_owned(),
         cc_switch_guard_checked_at: guard.checked_at,
         cc_switch_guard_lease_id: guard.lease_id,
+        cc_switch_termination_epoch: guard.termination_epoch,
+        cc_switch_termination_count: guard.termination_count,
+        cc_switch_last_terminated_at: guard.last_terminated_at,
     };
     let bytes = serde_json::to_vec(&status).map_err(|_| "METER_STATUS_WRITE_FAILED")?;
     let temporary = parent.join(format!(
@@ -848,28 +930,93 @@ fn write_guard_status(path: &Path, guard: &GuardSnapshot) -> Result<(), String> 
     result.map_err(str::to_owned)
 }
 
+fn read_guard_status(path: &Path) -> Option<GuardStatus> {
+    let metadata = fs::symlink_metadata(path).ok()?;
+    if !metadata.file_type().is_file()
+        || metadata.len() == 0
+        || metadata.len() > MAX_GUARD_STATUS_BYTES as u64
+    {
+        return None;
+    }
+    let input = File::open(path).ok()?;
+    let opened_metadata = input.metadata().ok()?;
+    if !opened_metadata.is_file()
+        || opened_metadata.len() == 0
+        || opened_metadata.len() > MAX_GUARD_STATUS_BYTES as u64
+    {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    input
+        .take((MAX_GUARD_STATUS_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.is_empty() || bytes.len() > MAX_GUARD_STATUS_BYTES {
+        return None;
+    }
+    if let Ok(status) = serde_json::from_slice::<GuardStatus>(&bytes) {
+        if valid_guard_status(&status) {
+            return Some(status);
+        }
+    }
+    let legacy: LegacyGuardStatus = serde_json::from_slice(&bytes).ok()?;
+    if !matches!(
+        legacy.cc_switch_guard.as_str(),
+        "INACTIVE" | "CLEAR" | "TERMINATED" | "ERROR"
+    ) || (legacy.cc_switch_guard == "TERMINATED" && legacy.cc_switch_guard_checked_at == 0)
+    {
+        return None;
+    }
+    let legacy_termination = legacy.cc_switch_guard == "TERMINATED";
+    Some(GuardStatus {
+        cc_switch_guard: legacy.cc_switch_guard,
+        cc_switch_guard_checked_at: legacy.cc_switch_guard_checked_at,
+        cc_switch_guard_lease_id: legacy.cc_switch_guard_lease_id,
+        cc_switch_termination_epoch: if legacy_termination {
+            // Shared with the desktop's legacy-status fallback. Importing an
+            // already observed termination must not create another notice.
+            uuid::Uuid::from_u128(u128::from(legacy.cc_switch_guard_checked_at))
+        } else {
+            uuid::Uuid::new_v4()
+        },
+        cc_switch_termination_count: u64::from(legacy_termination),
+        cc_switch_last_terminated_at: legacy_termination
+            .then_some(legacy.cc_switch_guard_checked_at),
+    })
+}
+
+fn valid_guard_status(status: &GuardStatus) -> bool {
+    matches!(
+        status.cc_switch_guard.as_str(),
+        "INACTIVE" | "CLEAR" | "TERMINATED" | "ERROR"
+    ) && !status.cc_switch_termination_epoch.is_nil()
+        && !(status.cc_switch_termination_count == 0
+            && status.cc_switch_last_terminated_at.is_some())
+        && !(status.cc_switch_termination_count > 0
+            && status
+                .cc_switch_last_terminated_at
+                .is_none_or(|at| at == 0 || at > status.cc_switch_guard_checked_at))
+}
+
 fn check_guard(config: &MeterConfig) -> GuardSnapshot {
     #[cfg(windows)]
     {
         let check = ccswitch_guard::check(config);
-        GuardSnapshot {
-            state: check.state.as_str(),
-            checked_at: check.checked_at,
-            lease_id: check.lease_id,
-            error_code: check.error_code(),
-            detected: check.detected,
-        }
+        let mut snapshot = GuardSnapshot::new(
+            check.state.as_str(),
+            check.checked_at,
+            check.lease_id,
+            check.error_code(),
+            check.detected,
+        );
+        snapshot.confirmed_termination_count = check.confirmed_termination_count;
+        snapshot.confirmed_last_terminated_at = check.last_terminated_at;
+        snapshot
     }
     #[cfg(not(windows))]
     {
         let _ = config;
-        GuardSnapshot {
-            state: "INACTIVE",
-            checked_at: epoch_seconds(),
-            lease_id: None,
-            error_code: None,
-            detected: false,
-        }
+        GuardSnapshot::new("INACTIVE", epoch_seconds(), None, None, false)
     }
 }
 
@@ -920,8 +1067,15 @@ impl GuardSupervisor {
     ) -> Result<Self, String> {
         let status_path = guard_status_path(config)?;
         let mut audit_state = GuardAuditState::default();
-        let initial =
-            publish_guard_snapshot(checker(config), audit, &mut audit_state, &status_path);
+        let first_check = checker(config);
+        let mut termination_ledger =
+            GuardTerminationLedger::recover(first_check.lease_id, read_guard_status(&status_path));
+        let initial = publish_guard_snapshot(
+            termination_ledger.apply(first_check),
+            audit,
+            &mut audit_state,
+            &status_path,
+        );
         let snapshot = Arc::new(Mutex::new(initial));
         let stop = Arc::new((Mutex::new(false), Condvar::new()));
         let thread_snapshot = Arc::clone(&snapshot);
@@ -950,7 +1104,7 @@ impl GuardSupervisor {
                     break;
                 };
                 let next = publish_guard_snapshot(
-                    checked,
+                    termination_ledger.apply(checked),
                     &thread_audit,
                     &mut audit_state,
                     &thread_status_path,
@@ -1425,6 +1579,176 @@ mod tests {
 
     fn record(response_id: &str, tokens: u64) -> String {
         record_at(response_id, tokens, &TEST_TIMESTAMP)
+    }
+
+    fn guard_check(
+        state: &'static str,
+        lease_id: Option<uuid::Uuid>,
+        confirmed_count: u64,
+        last_terminated_at: Option<u64>,
+    ) -> GuardSnapshot {
+        let mut checked = GuardSnapshot::new(
+            state,
+            last_terminated_at.unwrap_or(200),
+            lease_id,
+            None,
+            false,
+        );
+        checked.confirmed_termination_count = confirmed_count;
+        checked.confirmed_last_terminated_at = last_terminated_at;
+        checked
+    }
+
+    #[test]
+    fn termination_ledger_preserves_event_when_guard_clears() {
+        let lease_id = uuid::Uuid::new_v4();
+        let mut ledger = GuardTerminationLedger::new(Some(lease_id));
+        let terminated = ledger.apply(guard_check("TERMINATED", Some(lease_id), 1, Some(101)));
+        let clear = ledger.apply(guard_check("CLEAR", Some(lease_id), 0, None));
+
+        assert_eq!(terminated.termination_count, 1);
+        assert_eq!(terminated.last_terminated_at, Some(101));
+        assert_eq!(clear.termination_epoch, terminated.termination_epoch);
+        assert_eq!(clear.termination_count, 1);
+        assert_eq!(clear.last_terminated_at, Some(101));
+    }
+
+    #[test]
+    fn termination_ledger_accumulates_each_confirmed_check() {
+        let lease_id = uuid::Uuid::new_v4();
+        let mut ledger = GuardTerminationLedger::new(Some(lease_id));
+        let first = ledger.apply(guard_check("TERMINATED", Some(lease_id), 1, Some(101)));
+        let second = ledger.apply(guard_check("TERMINATED", Some(lease_id), 1, Some(103)));
+
+        assert_eq!(first.termination_count, 1);
+        assert_eq!(second.termination_epoch, first.termination_epoch);
+        assert_eq!(second.termination_count, 2);
+        assert_eq!(second.last_terminated_at, Some(103));
+    }
+
+    #[test]
+    fn same_lease_restart_recovers_epoch_and_count_from_status_file() {
+        let root = TestDir::new();
+        let path = root.path().join(GUARD_STATUS_FILE);
+        let lease_id = uuid::Uuid::new_v4();
+        let mut ledger = GuardTerminationLedger::new(Some(lease_id));
+        let saved = ledger.apply(guard_check("TERMINATED", Some(lease_id), 2, Some(150)));
+        write_guard_status(&path, &saved).unwrap();
+        let persisted = read_guard_status(&path).expect("valid guard status should load");
+
+        let mut restarted = GuardTerminationLedger::recover(Some(lease_id), Some(persisted));
+        let resumed = restarted.apply(guard_check("CLEAR", Some(lease_id), 0, None));
+
+        assert_eq!(resumed.termination_epoch, saved.termination_epoch);
+        assert_eq!(resumed.termination_count, 2);
+        assert_eq!(resumed.last_terminated_at, Some(150));
+
+        write_guard_status(&path, &resumed).unwrap();
+        let mut restarted_again =
+            GuardTerminationLedger::recover(Some(lease_id), read_guard_status(&path));
+        let after_clear_restart =
+            restarted_again.apply(guard_check("CLEAR", Some(lease_id), 0, None));
+        assert_eq!(
+            after_clear_restart.termination_epoch,
+            saved.termination_epoch
+        );
+        assert_eq!(after_clear_restart.termination_count, 2);
+        assert_eq!(after_clear_restart.last_terminated_at, Some(150));
+    }
+
+    #[test]
+    fn legacy_terminated_status_recovers_at_least_one_event_for_same_lease() {
+        let root = TestDir::new();
+        let path = root.path().join(GUARD_STATUS_FILE);
+        let lease_id = uuid::Uuid::new_v4();
+        let legacy = serde_json::json!({
+            "ccSwitchGuard": "TERMINATED",
+            "ccSwitchGuardCheckedAt": 123,
+            "ccSwitchGuardLeaseId": lease_id,
+        });
+        fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+
+        let persisted = read_guard_status(&path).expect("legacy terminated status should load");
+        assert_eq!(persisted.cc_switch_guard, "TERMINATED");
+        assert_eq!(persisted.cc_switch_termination_count, 1);
+        assert_eq!(
+            persisted.cc_switch_termination_epoch,
+            uuid::Uuid::from_u128(123)
+        );
+        let mut ledger = GuardTerminationLedger::recover(Some(lease_id), Some(persisted));
+        let cleared = ledger.apply(guard_check("CLEAR", Some(lease_id), 0, None));
+
+        assert_eq!(cleared.termination_count, 1);
+        assert_eq!(cleared.last_terminated_at, Some(123));
+    }
+
+    #[test]
+    fn changed_or_missing_lease_starts_an_empty_termination_epoch() {
+        let root = TestDir::new();
+        let path = root.path().join(GUARD_STATUS_FILE);
+        let old_lease = uuid::Uuid::new_v4();
+        let mut old_ledger = GuardTerminationLedger::new(Some(old_lease));
+        let saved = old_ledger.apply(guard_check("TERMINATED", Some(old_lease), 1, Some(150)));
+        write_guard_status(&path, &saved).unwrap();
+        let persisted = read_guard_status(&path).unwrap();
+
+        let new_lease = uuid::Uuid::new_v4();
+        let mut new_ledger =
+            GuardTerminationLedger::recover(Some(new_lease), Some(persisted.clone()));
+        let new_status = new_ledger.apply(guard_check("CLEAR", Some(new_lease), 0, None));
+        assert_ne!(new_status.termination_epoch, saved.termination_epoch);
+        assert_eq!(new_status.termination_count, 0);
+        assert_eq!(new_status.last_terminated_at, None);
+
+        let mut no_lease_ledger = GuardTerminationLedger::recover(None, Some(persisted));
+        let no_lease = no_lease_ledger.apply(guard_check("INACTIVE", None, 0, None));
+        assert_ne!(no_lease.termination_epoch, saved.termination_epoch);
+        assert_eq!(no_lease.termination_count, 0);
+        let next_lease = uuid::Uuid::new_v4();
+        let next = no_lease_ledger.apply(guard_check("CLEAR", Some(next_lease), 0, None));
+        assert_eq!(next.termination_count, 0);
+        assert_eq!(next.last_terminated_at, None);
+    }
+
+    #[test]
+    fn guard_status_reader_rejects_corrupt_and_oversized_files() {
+        let root = TestDir::new();
+        let path = root.path().join(GUARD_STATUS_FILE);
+        fs::write(&path, b"not json").unwrap();
+        assert!(read_guard_status(&path).is_none());
+        fs::write(&path, br#"{"unknownStatusField":true}"#).unwrap();
+        assert!(read_guard_status(&path).is_none());
+        fs::write(&path, vec![b'x'; MAX_GUARD_STATUS_BYTES + 1]).unwrap();
+        assert!(read_guard_status(&path).is_none());
+    }
+
+    #[test]
+    fn failed_status_write_retains_count_for_retry_without_double_counting() {
+        let root = TestDir::new();
+        let audit = AuditLog::new(&root.path().join("state")).unwrap();
+        let lease_id = uuid::Uuid::new_v4();
+        let mut ledger = GuardTerminationLedger::new(Some(lease_id));
+        let terminated = ledger.apply(guard_check("TERMINATED", Some(lease_id), 1, Some(150)));
+        let blocked_path = root.path().join(GUARD_STATUS_FILE);
+        fs::create_dir(&blocked_path).unwrap();
+        let mut audit_state = GuardAuditState::default();
+
+        let failed =
+            publish_guard_snapshot(terminated.clone(), &audit, &mut audit_state, &blocked_path);
+        assert_eq!(failed.state, "ERROR");
+        assert_eq!(failed.termination_count, 1);
+
+        fs::remove_dir(&blocked_path).unwrap();
+        let clear = ledger.apply(guard_check("CLEAR", Some(lease_id), 0, None));
+        let written = publish_guard_snapshot(clear, &audit, &mut audit_state, &blocked_path);
+        let persisted = read_guard_status(&blocked_path).expect("retry should write status");
+        assert_eq!(written.termination_epoch, terminated.termination_epoch);
+        assert_eq!(
+            persisted.cc_switch_termination_epoch,
+            terminated.termination_epoch
+        );
+        assert_eq!(persisted.cc_switch_termination_count, 1);
+        assert_eq!(persisted.cc_switch_last_terminated_at, Some(150));
     }
 
     #[test]
@@ -2084,13 +2408,13 @@ mod tests {
             device_id: uuid::Uuid::new_v4(),
             owner_user_sid: None,
         };
-        let guard = GuardSnapshot {
-            state: "CLEAR",
-            checked_at: epoch_seconds(),
-            lease_id: Some(uuid::Uuid::new_v4()),
-            error_code: None,
-            detected: false,
-        };
+        let guard = GuardSnapshot::new(
+            "CLEAR",
+            epoch_seconds(),
+            Some(uuid::Uuid::new_v4()),
+            None,
+            false,
+        );
         let published_guard = guard.clone();
         let mut runtime = MeterRuntime::new_with_guard_checker(
             config,
@@ -2098,6 +2422,7 @@ mod tests {
             GUARD_POLL_INTERVAL,
         )
         .unwrap();
+        let published_epoch = runtime.guard.snapshot().termination_epoch;
         runtime.publish_guard_status(&guard).unwrap();
         let interim: MeterStatus =
             serde_json::from_slice(&fs::read(root.path().join("status.json")).unwrap()).unwrap();
@@ -2109,9 +2434,23 @@ mod tests {
                 .unwrap();
         assert_eq!(independent["ccSwitchGuard"], "CLEAR");
         assert_eq!(
+            independent["ccSwitchTerminationEpoch"],
+            published_epoch.to_string()
+        );
+        assert_eq!(independent["ccSwitchTerminationCount"], 0);
+        assert_eq!(
+            independent["ccSwitchLastTerminatedAt"],
+            serde_json::Value::Null
+        );
+        assert_eq!(
             independent["ccSwitchGuardLeaseId"],
             guard.lease_id.unwrap().to_string()
         );
+        let public: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.path().join("status.json")).unwrap()).unwrap();
+        assert!(public.get("ccSwitchTerminationEpoch").is_none());
+        assert!(public.get("ccSwitchTerminationCount").is_none());
+        assert!(public.get("ccSwitchLastTerminatedAt").is_none());
         assert!(!root.path().join("state/scan-state.json").exists());
         assert_eq!(runtime.tick().state, "BASELINE_READY");
         let final_status: MeterStatus =
@@ -2135,13 +2474,7 @@ mod tests {
         let runtime = MeterRuntime::new_for_test(config).unwrap();
         fs::remove_dir_all(root.path().join("state/logs")).unwrap();
         fs::write(root.path().join("state/logs"), b"blocked").unwrap();
-        let guard = GuardSnapshot {
-            state: "CLEAR",
-            checked_at: 123,
-            lease_id: Some(uuid::Uuid::new_v4()),
-            error_code: None,
-            detected: false,
-        };
+        let guard = GuardSnapshot::new("CLEAR", 123, Some(uuid::Uuid::new_v4()), None, false);
         let mut audit_state = GuardAuditState::default();
         assert_eq!(
             audit_state.record(&runtime.audit, &guard),
@@ -2190,13 +2523,7 @@ mod tests {
             if checker_in_flight.load(Ordering::Acquire) {
                 GuardSnapshot::error("METER_CC_SWITCH_GUARD_FAILED")
             } else {
-                GuardSnapshot {
-                    state: "CLEAR",
-                    checked_at: epoch_seconds(),
-                    lease_id: Some(lease_id),
-                    error_code: None,
-                    detected: false,
-                }
+                GuardSnapshot::new("CLEAR", epoch_seconds(), Some(lease_id), None, false)
             }
         });
         let guard_status_path = root.path().join(GUARD_STATUS_FILE);
