@@ -1,6 +1,13 @@
 import { useEffect, useId, useRef, useState } from "react";
+import * as Dialog from "@radix-ui/react-dialog";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, ListChecks, RefreshCw } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  ListChecks,
+  RefreshCw,
+  X,
+} from "lucide-react";
 import {
   api,
   getApiErrorMessage,
@@ -93,28 +100,125 @@ function TokenDetailRow({
 }
 
 function UsageTokens({ item }: { item: UsageEventPage["items"][number] }) {
+  const metadata = [
+    ["消耗时间", time(item.occurredAt)],
+    ["后台接收", time(item.receivedAt)],
+    ["模型名称", item.model ?? "未知"],
+    ["思考等级", item.reasoningEffort ?? "未知"],
+    [
+      "来源",
+      item.source === "TOKEN_USAGE_RECORD" ? "官方用量记录" : "累计差值补录",
+    ],
+    ["状态", "已接收"],
+  ];
   return (
-    <div className="rounded-lg border border-border/70 bg-muted/25 px-3 py-2.5">
-      <div className="flex items-baseline justify-between gap-3 border-b border-border/60 pb-2">
-        <span className="text-xs font-medium text-muted-foreground">
-          总消耗
-        </span>
-        <span className="text-teal-800 dark:text-teal-300">
-          <Tokens value={item.totalTokens} />
-        </span>
+    <Dialog.Root>
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0 space-y-1">
+          <div className="text-teal-800 dark:text-teal-300">
+            <Tokens value={item.totalTokens} />
+          </div>
+          <div className="truncate text-xs text-muted-foreground">
+            <EstimatedCost item={item} />
+          </div>
+        </div>
+        <Dialog.Trigger asChild>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-8 shrink-0 px-2 text-xs text-teal-700 dark:text-teal-300"
+          >
+            查看详情
+          </Button>
+        </Dialog.Trigger>
       </div>
-      <dl className="mt-2 space-y-1.5 text-xs">
-        <TokenDetailRow label="输入（含缓存）" value={item.inputTokens} />
-        <TokenDetailRow label="输出（含思考）" value={item.outputTokens} />
-        <TokenDetailRow label="缓存读" value={item.cachedInputTokens} />
-        <TokenDetailRow label="缓存写" value={item.cacheWriteInputTokens} />
-        <TokenDetailRow label="思考" value={item.reasoningOutputTokens} />
-      </dl>
-      <div className="mt-2 flex items-baseline justify-between gap-3 border-t border-border/60 pt-2 text-xs">
-        <span className="text-muted-foreground">费用估算</span>
-        <EstimatedCost item={item} />
-      </div>
-    </div>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm" />
+        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 flex max-h-[85vh] w-[calc(100%_-_2rem)] max-w-xl -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border bg-background text-foreground shadow-2xl focus:outline-none">
+          <div className="flex items-start justify-between gap-4 border-b px-5 py-4">
+            <div>
+              <Dialog.Title className="text-lg font-semibold">
+                消耗详情
+              </Dialog.Title>
+              <Dialog.Description className="mt-1 text-xs text-muted-foreground">
+                已被中央服务接收的单笔记录，时间按本地时区显示。
+              </Dialog.Description>
+            </div>
+            <Dialog.Close asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="size-8 shrink-0"
+                aria-label="关闭详情"
+              >
+                <X aria-hidden="true" />
+              </Button>
+            </Dialog.Close>
+          </div>
+          <div className="min-h-0 space-y-5 overflow-y-auto px-5 py-4">
+            <dl className="grid gap-4 rounded-xl bg-muted/50 p-4 sm:grid-cols-2">
+              <div>
+                <dt className="text-xs text-muted-foreground">总消耗</dt>
+                <dd className="mt-1 text-xl text-teal-800 dark:text-teal-300">
+                  <TokenBreakdown value={item.totalTokens} />{" "}
+                  <span className="text-xs text-muted-foreground">Token</span>
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs text-muted-foreground">费用估算</dt>
+                <dd className="mt-1 text-lg font-medium">
+                  <EstimatedCost item={item} />
+                </dd>
+              </div>
+            </dl>
+            <div>
+              <h3 className="text-sm font-semibold">Token 明细</h3>
+              <dl className="mt-3 space-y-3 text-sm">
+                <TokenDetailRow
+                  label="输入（含缓存）"
+                  value={item.inputTokens}
+                />
+                <TokenDetailRow
+                  label="输出（含思考）"
+                  value={item.outputTokens}
+                />
+                <TokenDetailRow label="缓存读" value={item.cachedInputTokens} />
+                <TokenDetailRow
+                  label="缓存写"
+                  value={item.cacheWriteInputTokens}
+                />
+                <TokenDetailRow
+                  label="思考"
+                  value={item.reasoningOutputTokens}
+                />
+              </dl>
+              <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
+                输入已包含缓存，输出已包含思考，分项不要重复相加。费用按当前模型单价估算，不是官方账单。
+              </p>
+            </div>
+            <dl className="grid gap-x-5 gap-y-4 border-t pt-4 text-sm sm:grid-cols-2">
+              {metadata.map(([label, value]) => (
+                <div key={label} className="min-w-0">
+                  <dt className="text-xs text-muted-foreground">{label}</dt>
+                  <dd className="mt-1 break-words tabular-nums [overflow-wrap:anywhere]">
+                    {value}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+          <div className="flex justify-end border-t px-5 py-3">
+            <Dialog.Close asChild>
+              <Button type="button" variant="outline" size="sm">
+                关闭
+              </Button>
+            </Dialog.Close>
+          </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }
 
@@ -555,7 +659,7 @@ export function UsageActivityPanel({
           className="pt-4"
         >
           <p className="mb-3 text-xs text-muted-foreground">
-            当前系统用户的已接收用量；未上报或上报失败的记录不会显示为已入账。输入含缓存，输出含思考，分项不要重复相加。
+            中央服务已接收的消耗记录；点击“查看详情”查看 Token 分项与估算费用。
           </p>
           {ledger.isError ? (
             <div
@@ -581,12 +685,12 @@ export function UsageActivityPanel({
               {ledger.data.items.length ? (
                 <div className="min-w-0 overflow-x-auto">
                   <table
-                    className="w-full min-w-[1100px] table-fixed whitespace-nowrap text-left text-sm"
+                    className="w-full min-w-[1040px] table-fixed whitespace-nowrap text-left text-sm"
                     aria-label="个人消耗流水"
                   >
                     <colgroup>
                       <col className="w-[174px]" />
-                      <col className="w-[278px]" />
+                      <col className="w-[216px]" />
                       <col className="w-[112px]" />
                       <col className="w-[174px]" />
                       <col className="w-[76px]" />

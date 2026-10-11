@@ -320,7 +320,7 @@ describe("UsageActivityPanel", () => {
       size: 10,
     });
   });
-  it("keeps model metadata visible while placing all token details in one column", async () => {
+  it("keeps model metadata visible in the seven-column compact ledger", async () => {
     const longModel = `m${"x".repeat(95)}`;
     invokeMock.mockImplementation(async (command) => {
       if (command === "usage_events")
@@ -361,7 +361,7 @@ describe("UsageActivityPanel", () => {
     expect(
       headers.every((header) => header.getAttribute("scope") === "col"),
     ).toBe(true);
-    expect(table).toHaveClass("min-w-[1100px]");
+    expect(table).toHaveClass("min-w-[1040px]");
     expect(table.parentElement).toHaveClass("min-w-0", "overflow-x-auto");
     expect(table.closest("section")).toHaveClass("min-w-0");
 
@@ -372,14 +372,27 @@ describe("UsageActivityPanel", () => {
     expect(cells).toHaveLength(7);
     expect(cells[5]).toHaveTextContent("未知");
     expect(cells[6]).toHaveTextContent("未知");
+    const tokenCell = within(rows[1]).getAllByRole("cell")[1];
+    expect(
+      within(tokenCell).getByRole("button", { name: "查看详情" }),
+    ).toBeVisible();
+    for (const label of [
+      "输入（含缓存）",
+      "输出（含思考）",
+      "缓存读",
+      "缓存写",
+      "思考",
+    ]) {
+      expect(within(tokenCell).queryByText(label)).not.toBeInTheDocument();
+    }
   });
-  it("shows token components and USD estimates without replacing total consumption", async () => {
+  it("shows compact token summaries and opens details for the selected row", async () => {
     invokeMock.mockResolvedValue({
       ...ledger,
       items: [
         {
           ...ledger.items[0],
-          model: "test-model",
+          model: "first-model",
           reasoningEffort: "high",
           inputTokens: 10000,
           cachedInputTokens: 3000,
@@ -389,31 +402,94 @@ describe("UsageActivityPanel", () => {
           estimatedCostUsd: 0.0355,
           costStatus: "PRICED",
         },
+        {
+          ...ledger.items[0],
+          id: "b".repeat(64),
+          occurredAt: "2026-10-08T00:00:00Z",
+          receivedAt: "2026-10-08T00:00:01Z",
+          totalTokens: 7200,
+          source: "CUMULATIVE_TOKEN_COUNT_FALLBACK",
+          model: "selected-model",
+          reasoningEffort: "medium",
+          inputTokens: 6000,
+          cachedInputTokens: 1500,
+          cacheWriteInputTokens: 250,
+          outputTokens: 1200,
+          reasoningOutputTokens: 400,
+          estimatedCostUsd: 0.0123,
+          costStatus: "PRICED",
+        },
       ],
     });
     render(view());
     await userEvent.click(screen.getByRole("tab", { name: "消耗流水" }));
     const table = await screen.findByRole("table", { name: "个人消耗流水" });
-    const tokenCell = within(table).getAllByRole("cell")[1];
+    const rows = within(table).getAllByRole("row");
+    const selectedRow = rows[2];
+    const tokenCell = within(selectedRow).getAllByRole("cell")[1];
+    expect(
+      within(tokenCell).getByTitle("精确值：7,200 Token"),
+    ).toBeVisible();
+    expect(within(tokenCell).getByText("USD 0.0123")).toBeVisible();
+    const trigger = within(tokenCell).getByRole("button", {
+      name: "查看详情",
+    });
+    expect(trigger).toBeVisible();
     for (const label of [
-      "总消耗",
       "输入（含缓存）",
       "输出（含思考）",
       "缓存读",
       "缓存写",
       "思考",
-      "费用估算",
     ]) {
-      expect(within(tokenCell).getByText(label)).toBeVisible();
+      expect(within(tokenCell).queryByText(label)).not.toBeInTheDocument();
     }
-    for (const tokens of [12500, 10000, 3000, 0, 2500, 1800]) {
+
+    await userEvent.click(trigger);
+    const dialog = await screen.findByRole("dialog", { name: "消耗详情" });
+    for (const label of [
+      "总消耗",
+      "费用估算",
+      "输入（含缓存）",
+      "输出（含思考）",
+      "缓存读",
+      "缓存写",
+      "思考",
+      "消耗时间",
+      "后台接收",
+      "来源",
+      "状态",
+      "模型名称",
+      "思考等级",
+    ]) {
+      expect(within(dialog).getByText(label)).toBeVisible();
+    }
+    for (const tokens of [7200, 6000, 1500, 250, 1200, 400]) {
       expect(
-        within(tokenCell).getByTitle(
+        within(dialog).getByTitle(
           `精确值：${tokens.toLocaleString("en-US")} Token`,
         ),
       ).toBeVisible();
     }
-    expect(within(tokenCell).getByText("USD 0.0355")).toBeVisible();
+    expect(within(dialog).getByText("USD 0.0123")).toBeVisible();
+    expect(within(dialog).getByText("selected-model")).toBeVisible();
+    expect(within(dialog).getByText("medium")).toBeVisible();
+    expect(within(dialog).getByText("累计差值补录")).toBeVisible();
+    expect(within(dialog).getByText("已接收")).toBeVisible();
+    expect(
+      within(dialog).getByRole("button", { name: "关闭详情" }),
+    ).toBeVisible();
+    const occurredAt = within(dialog).getByText("消耗时间").parentElement;
+    const receivedAt = within(dialog).getByText("后台接收").parentElement;
+    expect(occurredAt).toHaveTextContent("2026");
+    expect(receivedAt).toHaveTextContent("2026");
+
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: /^关闭$/ }),
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
   });
   it("does not present missing historical breakdowns as zero", async () => {
     invokeMock.mockResolvedValue({
@@ -435,9 +511,39 @@ describe("UsageActivityPanel", () => {
     await userEvent.click(screen.getByRole("tab", { name: "消耗流水" }));
     const table = await screen.findByRole("table", { name: "个人消耗流水" });
     const tokenCell = within(table).getAllByRole("cell")[1];
-    expect(within(tokenCell).getAllByText("未知")).toHaveLength(4);
-    expect(within(tokenCell).getByTitle("精确值：0 Token")).toBeVisible();
     expect(within(tokenCell).getByText("分项缺失")).toBeVisible();
+    await userEvent.click(
+      within(tokenCell).getByRole("button", { name: "查看详情" }),
+    );
+    const dialog = await screen.findByRole("dialog", { name: "消耗详情" });
+    expect(within(dialog).getAllByText("未知")).toHaveLength(6);
+    expect(within(dialog).getByTitle("精确值：0 Token")).toBeVisible();
+  });
+  it("closes usage details with the header button and returns focus after Escape", async () => {
+    render(view());
+    await userEvent.click(screen.getByRole("tab", { name: "消耗流水" }));
+    const table = await screen.findByRole("table", { name: "个人消耗流水" });
+    const tokenCell = within(table).getAllByRole("cell")[1];
+    const trigger = within(tokenCell).getByRole("button", {
+      name: "查看详情",
+    });
+
+    await userEvent.click(trigger);
+    const dialog = await screen.findByRole("dialog", { name: "消耗详情" });
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "关闭详情" }),
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+
+    await userEvent.click(trigger);
+    await screen.findByRole("dialog", { name: "消耗详情" });
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    expect(trigger).toHaveFocus();
   });
   it("pages through the authenticated ledger", async () => {
     render(view());
