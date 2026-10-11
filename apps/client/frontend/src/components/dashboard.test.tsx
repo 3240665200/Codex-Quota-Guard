@@ -66,14 +66,18 @@ const quota: QuotaOverview = {
   blockReason: null,
 };
 
-function renderDashboard() {
+function renderDashboard(guardNotice?: string) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
   return render(
     <I18nextProvider i18n={i18n}>
       <QueryClientProvider client={queryClient}>
-        <Dashboard session={session} onLogout={vi.fn()} />
+        <Dashboard
+          session={session}
+          onLogout={vi.fn()}
+          guardNotice={guardNotice}
+        />
       </QueryClientProvider>
     </I18nextProvider>,
   );
@@ -208,7 +212,6 @@ describe("Dashboard", () => {
         "quota_overview",
         "codex_rate_limits",
         "usage_status",
-        "usage_analytics",
         "meter_service_version",
       ]),
     );
@@ -299,6 +302,7 @@ describe("Dashboard", () => {
     });
     renderDashboard();
 
+    await user.click(screen.getByRole("button", { name: "统计程序" }));
     await user.click(await screen.findByRole("button", { name: "重新配对" }));
 
     expect(invokeMock).toHaveBeenCalledWith("usage_pair");
@@ -341,6 +345,7 @@ describe("Dashboard", () => {
     });
     renderDashboard();
 
+    await user.click(screen.getByRole("button", { name: "统计程序" }));
     await user.click(
       await screen.findByRole("button", { name: "更新统计程序" }),
     );
@@ -377,6 +382,7 @@ describe("Dashboard", () => {
     });
     renderDashboard();
 
+    await user.click(screen.getByRole("button", { name: "统计程序" }));
     await user.click(
       await screen.findByRole("button", { name: "安装统计程序" }),
     );
@@ -500,6 +506,111 @@ describe("Dashboard", () => {
       screen.queryByRole("progressbar", { name: "5 小时个人额度使用进度" }),
     ).not.toBeInTheDocument();
     expect(screen.getAllByText("不设限").length).toBeGreaterThan(0);
+  });
+
+  it("opens independent workspaces without fetching inactive usage pages", async () => {
+    const user = (await import("@testing-library/user-event")).default.setup();
+    renderDashboard();
+    await screen.findByRole("heading", { name: "个人 Token" });
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "usage_analytics",
+      expect.anything(),
+    );
+    expect(screen.queryByLabelText("个人用量统计")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "用量统计" }));
+    expect(
+      await screen.findByRole("region", { name: "个人用量统计" }),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("heading", { name: "个人 Token" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "用量统计" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+
+    await user.click(screen.getByRole("button", { name: "消耗流水" }));
+    expect(await screen.findByText("暂无消耗记录")).toBeVisible();
+    expect(screen.queryByLabelText("个人用量统计")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "额度总览" }));
+    expect(
+      await screen.findByRole("heading", { name: "个人 Token" }),
+    ).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "收起导航" }));
+    expect(screen.getByRole("button", { name: "展开导航" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+    expect(screen.getByRole("button", { name: "额度总览" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+  });
+
+  it("keeps diagnostics reachable when the quota request fails", async () => {
+    const user = (await import("@testing-library/user-event")).default.setup();
+    invokeMock.mockRejectedValue(new Error("service unavailable"));
+    renderDashboard();
+    await user.click(screen.getByRole("button", { name: "统计程序" }));
+    expect(
+      await screen.findByRole("heading", { name: "统计程序", level: 1 }),
+    ).toBeVisible();
+    expect(
+      await screen.findByRole("button", { name: "立即扫描" }),
+    ).toBeVisible();
+  });
+
+  it("does not mark a running service healthy when fallback reporting fails", async () => {
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command, args) => {
+      if (command === "usage_status")
+        return {
+          fallback: {
+            state: "REPORT_FAILED",
+            lastScannedAt: null,
+            lastReportedAt: null,
+            lastReportedEvents: 0,
+            issues: [],
+          },
+          service: {
+            state: "UP_TO_DATE",
+            version: "0.2.1",
+            lastScanEpochSeconds: null,
+            lastReportEpochSeconds: null,
+            reportedEvents: 0,
+            errorCode: null,
+          },
+          pairingState: "PAIRING_SENT",
+        };
+      if (command === "meter_service_version")
+        return {
+          installedVersion: "0.2.1",
+          bundledVersion: "0.2.1",
+          needsUpgrade: false,
+          status: "CURRENT",
+        };
+      return original(command, args);
+    });
+    renderDashboard();
+    expect(
+      await screen.findByRole("button", { name: "查看统计程序：回退上报异常" }),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "查看统计程序：统计程序运行中" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps the conflict notice outside the scrolling workspace on every page", async () => {
+    const user = (await import("@testing-library/user-event")).default.setup();
+    renderDashboard("运行期间会强制结束 CC Switch，未保存更改可能丢失。");
+    const notice = screen.getByRole("complementary", { name: "运行注意事项" });
+    expect(notice).toBeVisible();
+    expect(notice.closest(".cqg-workspace-scroll")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "消耗流水" }));
+    expect(notice).toBeVisible();
+    expect(notice).toHaveTextContent("未保存更改可能丢失");
   });
 
   it("shows a useful error state when the local service is unavailable", async () => {

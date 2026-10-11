@@ -29,8 +29,10 @@ const status = {
 } as const;
 function view(
   userId = "user-a",
-  override?: UsageStatus,
+  override?: UsageStatus | null,
   onStart: () => void = vi.fn(),
+  selectedView?: "overview" | "ledger" | "diagnostics",
+  statusError?: unknown,
 ) {
   return (
     <QueryClientProvider
@@ -40,12 +42,16 @@ function view(
     >
       <UsageActivityPanel
         userId={userId}
+        view={selectedView}
         status={
-          override ?? {
-            ...status,
-            fallback: { ...status.fallback, issues: [] },
-          }
+          override === null
+            ? undefined
+            : (override ?? {
+                ...status,
+                fallback: { ...status.fallback, issues: [] },
+              })
         }
+        statusError={statusError}
         scanning={false}
         pairing={false}
         starting={false}
@@ -145,6 +151,179 @@ describe("UsageActivityPanel", () => {
     expect(
       screen.queryByText(/OVERSIZED_JSONL_RECORD、OVERSIZED_JSONL_RECORD/),
     ).not.toBeInTheDocument();
+  });
+
+  it("renders the external overview as analytics only and refreshes its analytics query", async () => {
+    render(view("user-a", undefined, vi.fn(), "overview"));
+
+    expect(await screen.findByText("当前范围暂无用量")).toBeVisible();
+    expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
+    expect(screen.queryByText("统计程序最近扫描")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "立即扫描" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("统计程序日志 · 最近 50 条"),
+    ).not.toBeInTheDocument();
+    expect(invokeMock.mock.calls.map(([command]) => command)).toEqual([
+      "usage_analytics",
+    ]);
+
+    await userEvent.click(screen.getByRole("button", { name: "刷新用量统计" }));
+    await waitFor(() =>
+      expect(
+        invokeMock.mock.calls.filter(
+          ([command]) => command === "usage_analytics",
+        ),
+      ).toHaveLength(2),
+    );
+    expect(invokeMock.mock.calls.map(([command]) => command)).toEqual([
+      "usage_analytics",
+      "usage_analytics",
+    ]);
+  });
+
+  it("renders the external ledger without diagnostics and keeps model metadata", async () => {
+    invokeMock.mockImplementation(async (command) => {
+      if (command === "usage_events")
+        return {
+          ...ledger,
+          items: [
+            {
+              ...ledger.items[0],
+              model: "gpt-5-codex",
+              reasoningEffort: "high",
+            },
+          ],
+        };
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    render(view("user-a", undefined, vi.fn(), "ledger"));
+    const table = await screen.findByRole("table", { name: "个人消耗流水" });
+
+    expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
+    expect(screen.queryByText("统计程序最近扫描")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "立即扫描" }),
+    ).not.toBeInTheDocument();
+    expect(invokeMock.mock.calls.map(([command]) => command)).toEqual([
+      "usage_events",
+    ]);
+    expect(
+      within(table)
+        .getAllByRole("columnheader")
+        .map((header) => header.textContent),
+    ).toEqual(["消耗时间", "Token 消耗", "模型名称", "思考等级"]);
+    expect(within(table).getByText("gpt-5-codex")).toBeVisible();
+    expect(within(table).getByText("high")).toBeVisible();
+    expect(within(table).getByTitle("精确值：12,500 Token")).toBeVisible();
+  });
+
+  it("concentrates service recovery, scan reports, and logs in the external diagnostics view", async () => {
+    invokeMock.mockImplementation(async (command) => {
+      if (command === "meter_service_version")
+        return {
+          installedVersion: "0.1.0",
+          bundledVersion: "0.1.1",
+          needsUpgrade: true,
+          status: "UPGRADE_REQUIRED",
+        };
+      if (command === "meter_runtime_logs")
+        return {
+          state: "READY",
+          skippedLines: 0,
+          entries: [
+            {
+              atEpochSeconds: 1791504000,
+              kind: "SERVICE_STARTED",
+              state: "UNPAIRED",
+              reportedEvents: 0,
+              reportedTokens: 0,
+              heartbeatSent: false,
+              errorCode: null,
+              ccSwitchGuard: null,
+            },
+          ],
+        };
+      throw new Error(`Unexpected command: ${command}`);
+    });
+    const diagnosticStatus = {
+      ...status,
+      service: {
+        ...status.service,
+        state: "UNPAIRED",
+        errorCode: "METER_PAIRING_EXPIRED",
+      },
+      pairingState: "PAIRING_FAILED",
+      fallback: {
+        ...status.fallback,
+        state: "UP_TO_DATE",
+        issues: ["OVERSIZED_JSONL_RECORD"],
+      },
+    } as UsageStatus;
+
+    render(
+      view(
+        "user-a",
+        diagnosticStatus,
+        vi.fn(),
+        "diagnostics",
+        new Error("status request failed"),
+      ),
+    );
+
+    expect(screen.getAllByText(/统计状态读取失败/)).toHaveLength(2);
+    expect(screen.getByText(/当前显示的是上次读取结果/)).toBeVisible();
+    expect(await screen.findByText("统计程序需要更新")).toBeVisible();
+    expect(await screen.findByText("统计程序启动")).toBeVisible();
+    expect(screen.getByText(/超大日志记录/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "更新统计程序" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "重新配对" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "立即扫描" })).toBeVisible();
+    expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
+    expect(invokeMock.mock.calls.map(([command]) => command).sort()).toEqual([
+      "meter_runtime_logs",
+      "meter_service_version",
+    ]);
+  });
+
+  it("shows a status query error instead of a loading label when no prior status exists", async () => {
+    invokeMock.mockImplementation(async (command) => {
+      if (command === "meter_service_version")
+        return {
+          installedVersion: null,
+          bundledVersion: "0.1.1",
+          needsUpgrade: null,
+          status: "UNKNOWN",
+        };
+      if (command === "meter_runtime_logs")
+        return { state: "NOT_AVAILABLE", skippedLines: 0, entries: [] };
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    render(
+      view(
+        "user-a",
+        null,
+        vi.fn(),
+        "diagnostics",
+        new Error("status request failed"),
+      ),
+    );
+
+    expect(
+      await screen.findByText("本机暂无统计程序日志，请先安装并启动统计程序。"),
+    ).toBeVisible();
+    const statusAlert = screen
+      .getByText("请刷新重试。", { exact: false })
+      .closest('[role="alert"]') as HTMLElement;
+    expect(within(statusAlert).getByText("统计状态读取失败")).toBeVisible();
+    expect(screen.getByText("请刷新重试。", { exact: false })).toBeVisible();
+    expect(screen.queryByText("正在检查统计程序…")).not.toBeInTheDocument();
+    expect(screen.queryByText("正在读取…")).not.toBeInTheDocument();
+    expect(await screen.findByText(/无法确认当前版本/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "检查并修复" })).toBeVisible();
   });
 
   it("shows CC Switch guard actions in the runtime log", async () => {
@@ -427,9 +606,7 @@ describe("UsageActivityPanel", () => {
     const rows = within(table).getAllByRole("row");
     const selectedRow = rows[2];
     const tokenCell = within(selectedRow).getAllByRole("cell")[1];
-    expect(
-      within(tokenCell).getByTitle("精确值：7,200 Token"),
-    ).toBeVisible();
+    expect(within(tokenCell).getByTitle("精确值：7,200 Token")).toBeVisible();
     expect(within(tokenCell).getByText("USD 0.0123")).toBeVisible();
     const trigger = within(tokenCell).getByRole("button", {
       name: "查看详情",

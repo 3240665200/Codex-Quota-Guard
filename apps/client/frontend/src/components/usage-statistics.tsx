@@ -27,8 +27,9 @@ export function UsageStatistics({ userId }: { userId: string }) {
   const data = query.data;
   const summary = data?.summary;
   const points = useMemo(() => (data ? usageTrendPoints(data) : []), [data]);
-  const token = (value: number | null) => (
+  const token = (value: number | null, className?: string) => (
     <span
+      className={className}
       title={
         value === null ? "分项缺失" : `精确值：${formatTokenCount(value)} Token`
       }
@@ -37,7 +38,7 @@ export function UsageStatistics({ userId }: { userId: string }) {
     </span>
   );
   return (
-    <div className="min-w-0 pt-4" aria-label="个人用量统计">
+    <div className="min-w-0" aria-label="个人用量统计">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div
           role="group"
@@ -97,6 +98,7 @@ export function UsageStatistics({ userId }: { userId: string }) {
               <dt className="text-xs text-muted-foreground">估算费用 (USD)</dt>
               <dd
                 className="mt-1 break-words text-lg font-semibold tabular-nums"
+                style={{ color: "var(--cqg-chart-cost, #b78234)" }}
                 title="当前配置单价 · 非官方账单"
               >
                 {formatUsd(summary.estimatedCostUsd)}
@@ -108,7 +110,7 @@ export function UsageStatistics({ userId }: { userId: string }) {
             <div>
               <dt className="text-xs text-muted-foreground">总 Token</dt>
               <dd className="mt-1 text-lg font-semibold tabular-nums">
-                {token(summary.totalTokens)}
+                {token(summary.totalTokens, "text-primary")}
               </dd>
               <p className="mt-1 text-xs text-muted-foreground">
                 分项完整 {summary.breakdownEventCount} / {summary.eventCount} 条
@@ -136,17 +138,29 @@ export function UsageStatistics({ userId }: { userId: string }) {
           >
             {(
               [
-                ["输入", summary.inputTokens],
-                ["缓存读", summary.cachedInputTokens],
-                ["缓存写", summary.cacheWriteInputTokens],
-                ["输出", summary.outputTokens],
-                ["思考", summary.reasoningOutputTokens],
+                ["输入", summary.inputTokens, "text-primary"],
+                [
+                  "缓存读",
+                  summary.cachedInputTokens,
+                  "text-secondary-foreground",
+                ],
+                [
+                  "缓存写",
+                  summary.cacheWriteInputTokens,
+                  "text-secondary-foreground",
+                ],
+                ["输出", summary.outputTokens, "text-secondary-foreground"],
+                [
+                  "思考",
+                  summary.reasoningOutputTokens,
+                  "text-amber-700 dark:text-amber-300",
+                ],
               ] as const
-            ).map(([label, value]) => (
+            ).map(([label, value, className]) => (
               <div key={label}>
                 <dt className="text-xs text-muted-foreground">{label} Token</dt>
                 <dd className="mt-1 text-sm font-medium tabular-nums">
-                  {token(value)}
+                  {token(value, className)}
                 </dd>
               </div>
             ))}
@@ -204,16 +218,22 @@ export function UsageStatistics({ userId }: { userId: string }) {
                   <CartesianGrid
                     vertical={false}
                     strokeDasharray="3 3"
-                    stroke="var(--cqg-chart-grid, #cbd5e1)"
+                    stroke="var(--cqg-chart-grid, #d7c8b4)"
                   />
                   <XAxis
                     dataKey="label"
                     minTickGap={44}
-                    tick={{ fontSize: 11 }}
+                    tick={{
+                      fontSize: 11,
+                      fill: "hsl(var(--muted-foreground))",
+                    }}
                   />
                   <YAxis
                     width={68}
-                    tick={{ fontSize: 11 }}
+                    tick={{
+                      fontSize: 11,
+                      fill: "hsl(var(--muted-foreground))",
+                    }}
                     tickFormatter={(value: number) =>
                       unit === "USD"
                         ? formatUsd(value)
@@ -221,6 +241,23 @@ export function UsageStatistics({ userId }: { userId: string }) {
                     }
                   />
                   <Tooltip
+                    contentStyle={{
+                      backgroundColor:
+                        "var(--cqg-chart-tooltip-bg, hsl(var(--popover)))",
+                      borderColor:
+                        "var(--cqg-chart-tooltip-border, hsl(var(--border)))",
+                      color:
+                        "var(--cqg-chart-tooltip-text, hsl(var(--popover-foreground)))",
+                      borderRadius: "0.625rem",
+                    }}
+                    labelStyle={{
+                      color:
+                        "var(--cqg-chart-tooltip-text, hsl(var(--popover-foreground)))",
+                    }}
+                    itemStyle={{
+                      color:
+                        "var(--cqg-chart-tooltip-text, hsl(var(--popover-foreground)))",
+                    }}
                     labelFormatter={(_, payload) =>
                       `${payload[0]?.payload.bucket ?? ""} (UTC)`
                     }
@@ -236,8 +273,17 @@ export function UsageStatistics({ userId }: { userId: string }) {
                     dataKey={
                       unit === "USD" ? "estimatedCostUsd" : "totalTokens"
                     }
-                    stroke={unit === "USD" ? "#2563eb" : "#0d9488"}
-                    fill={unit === "USD" ? "#dbeafe" : "#ccfbf1"}
+                    stroke={
+                      unit === "USD"
+                        ? "var(--cqg-chart-cost, #b78234)"
+                        : "var(--cqg-chart-token, #4a9d9a)"
+                    }
+                    fill={
+                      unit === "USD"
+                        ? "var(--cqg-chart-cost, #b78234)"
+                        : "var(--cqg-chart-token, #4a9d9a)"
+                    }
+                    fillOpacity={0.16}
                     strokeWidth={2}
                     connectNulls={false}
                     isAnimationActive={false}

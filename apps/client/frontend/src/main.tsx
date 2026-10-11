@@ -5,6 +5,7 @@ import { I18nextProvider } from "react-i18next";
 
 import { Toaster } from "@/components/ui/sonner";
 import { ClientApp } from "@/components/client-app";
+import { ClientThemeProvider } from "@/lib/client-theme";
 import i18n from "@/lib/i18n";
 import "@/index.css";
 
@@ -21,8 +22,10 @@ createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <I18nextProvider i18n={i18n}>
       <QueryClientProvider client={queryClient}>
-        <ClientApp />
-        <Toaster />
+        <ClientThemeProvider>
+          <ClientApp />
+          <Toaster />
+        </ClientThemeProvider>
       </QueryClientProvider>
     </I18nextProvider>
   </StrictMode>,

@@ -13,6 +13,7 @@ import {
 } from "@/lib/api";
 import { Dashboard } from "@/components/dashboard";
 import { SystemLoginPage } from "@/components/system-login";
+import { ThemeSwitcher } from "@/components/theme-switcher";
 import { subscribeToTrayFeedback, trayFeedbackNotice } from "@/lib/tray-events";
 
 const signedOutSession: SystemSession = {
@@ -103,8 +104,12 @@ function StartupGatePage({
               ? "无法确认 CC Switch 已关闭，或统计服务无法核实守护状态。请手动退出 CC Switch 后重试。"
               : "正在验证管理员权限、统计程序与 CC Switch 状态…";
   return (
-    <main className="flex min-h-screen items-center justify-center bg-muted/30 px-4">
-      <Alert variant={waiting ? "default" : "destructive"} className="max-w-xl">
+    <main className="relative flex min-h-screen items-center justify-center bg-background px-6 py-12">
+      <ThemeSwitcher compact className="absolute right-6 top-5" />
+      <Alert
+        variant={waiting ? "default" : "destructive"}
+        className="max-w-xl bg-card p-6 shadow-sm"
+      >
         <AlertTitle>
           {waiting ? "正在检查启动条件" : "启动条件尚未满足"}
         </AlertTitle>
@@ -288,21 +293,22 @@ export function ClientApp() {
   }
 
   const guardNotice = (
-    <div
-      role="status"
-      className="border-b border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-200"
-    >
-      {ccSwitchStopped
-        ? "已停止 CC Switch。"
-        : "运行 Quota Guard 时请保持 CC Switch 关闭。"}
-      {guardExplanation}
-    </div>
+    <details className="cqg-guard-notice text-xs text-muted-foreground">
+      <summary className="cursor-pointer rounded py-1 leading-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        <span role="status">
+          {ccSwitchStopped ? "已停止 CC Switch。" : ""}
+          运行期间会强制结束 CC Switch，未保存更改可能丢失。
+        </span>
+        <span className="ml-2 text-primary">查看说明</span>
+      </summary>
+      <p className="mt-2 max-w-4xl leading-relaxed">{guardExplanation}</p>
+    </details>
   );
 
   if (sessionQuery.error && !sessionQuery.data) {
     return (
       <>
-        {guardNotice}
+        <div className="border-b bg-muted/50 px-6 py-2">{guardNotice}</div>
         <SessionError
           error={sessionQuery.error}
           onRetry={() => void sessionQuery.refetch()}
@@ -315,7 +321,7 @@ export function ClientApp() {
   if (localSignedOut || !session?.authenticated || !session.user) {
     return (
       <>
-        {guardNotice}
+        <div className="border-b bg-muted/50 px-6 py-2">{guardNotice}</div>
         <SystemLoginPage
           onAuthenticated={handleAuthenticated}
           statusError={logoutError ?? undefined}
@@ -325,9 +331,10 @@ export function ClientApp() {
   }
 
   return (
-    <>
-      {guardNotice}
-      <Dashboard session={session} onLogout={() => void handleLogout()} />
-    </>
+    <Dashboard
+      session={session}
+      onLogout={() => void handleLogout()}
+      guardNotice={guardNotice}
+    />
   );
 }

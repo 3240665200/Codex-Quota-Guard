@@ -1,8 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useRef, useState, type ReactNode } from "react";
 import {
+  Activity,
+  ChartNoAxesCombined,
   CircleAlert,
   Gauge,
+  ListChecks,
   LogOut,
+  PanelLeftClose,
+  PanelLeftOpen,
   RefreshCw,
   ShieldCheck,
   UserCircle,
@@ -23,13 +29,18 @@ import {
   formatPercent,
   formatResetTime,
   formatTokenCount,
+  cn,
 } from "@/lib/utils";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
-import { UsageActivityPanel } from "@/components/usage-activity-panel";
+import {
+  UsageActivityPanel,
+  serviceLabels,
+} from "@/components/usage-activity-panel";
+import { ThemeSwitcher } from "@/components/theme-switcher";
 
 function describeBlockReason(reason: string | null): string {
   switch (reason) {
@@ -102,13 +113,13 @@ function QuotaProgress({
       </div>
       <Progress
         aria-label={`${label}使用进度`}
-        className="h-2 bg-slate-200 dark:bg-slate-800"
+        className="h-2 bg-muted"
         indicatorClassName={
           exhausted
-            ? "bg-red-500"
+            ? "bg-[var(--cqg-status-error)]"
             : percent >= 80
-              ? "bg-amber-500"
-              : "bg-teal-600"
+              ? "bg-[var(--cqg-status-warning)]"
+              : "bg-primary"
         }
         value={percent}
       />
@@ -164,10 +175,7 @@ function TeamCard({ overview }: { overview: QuotaOverview }) {
                 : "未加入团队"}
           </p>
         </div>
-        <Users
-          aria-hidden="true"
-          className="size-5 shrink-0 text-teal-700 dark:text-teal-400"
-        />
+        <Users aria-hidden="true" className="size-5 shrink-0 text-primary" />
       </div>
       {teamQuota ? (
         <div className="space-y-5">
@@ -194,7 +202,7 @@ function TeamCard({ overview }: { overview: QuotaOverview }) {
               used={teamQuota.fiveHourUsedTokens}
               limit={teamQuota.fiveHourTokenLimit}
             />
-            <div className="flex flex-wrap justify-between gap-2 text-xs tabular-nums text-muted-foreground">
+            <div className="mt-3 flex flex-wrap justify-between gap-2 text-xs tabular-nums text-muted-foreground">
               <span>
                 <TokenAmount value={teamQuota.fiveHourUsedTokens} /> 已用
               </span>
@@ -246,7 +254,7 @@ function UsageWindow({
     limitTokens !== null &&
     remainingTokens <= Math.max(1, Math.floor(limitTokens * 0.2));
   return (
-    <article className="cqg-window flex min-h-[205px] min-w-0 flex-col justify-between p-5">
+    <article className="cqg-window flex min-h-[208px] min-w-0 flex-col justify-between p-5">
       <div className="flex items-start justify-between gap-3">
         <h3 className="text-sm font-semibold">{label}</h3>
         <span className="text-xs text-muted-foreground">
@@ -258,7 +266,7 @@ function UsageWindow({
           {limitTokens === null ? "个人已用" : "个人剩余"}
         </p>
         <p
-          className={`mt-1 break-words text-3xl font-semibold tabular-nums ${nearLimit ? "text-red-600" : "text-foreground"}`}
+          className={`mt-1 break-words text-3xl font-semibold tracking-tight tabular-nums ${nearLimit ? "text-[var(--cqg-status-warning)]" : "text-foreground"}`}
         >
           {limitTokens === null ? (
             <TokenAmount value={usedTokens} />
@@ -315,7 +323,7 @@ function UsageCard({ overview }: { overview: QuotaOverview }) {
           窗口按事件发生时间滚动统计
         </span>
       </div>
-      <div className="grid gap-3 md:grid-cols-2">
+      <div className="grid gap-4 sm:grid-cols-2">
         <UsageWindow
           label="5 小时"
           usedTokens={usage.fiveHourUsedTokens}
@@ -344,15 +352,15 @@ function OfficialRateLimitWindow({
     <div className="min-w-0">
       <div className="flex items-center justify-between gap-3 text-sm">
         <span className="font-medium">{label}</span>
-        <span className="font-semibold tabular-nums text-sky-700 dark:text-sky-400">
+        <span className="font-semibold tabular-nums text-primary">
           {formatPercent(window.usedPercent)}
         </span>
       </div>
       <div className="mt-3">
         <Progress
           aria-label={`${label}官方使用进度`}
-          className="h-2 bg-slate-200 dark:bg-slate-800"
-          indicatorClassName="bg-sky-600"
+          className="h-2 bg-muted"
+          indicatorClassName="bg-primary"
           value={window.usedPercent}
         />
       </div>
@@ -398,13 +406,10 @@ function OfficialRateLimitsCard({
                   : "账户级参考"}
           </p>
         </div>
-        <Gauge
-          aria-hidden="true"
-          className="size-5 shrink-0 text-sky-700 dark:text-sky-400"
-        />
+        <Gauge aria-hidden="true" className="size-5 shrink-0 text-primary" />
       </div>
       {fiveHour || weekly ? (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+        <div className="grid gap-5">
           {fiveHour ? (
             <OfficialRateLimitWindow label="5 小时窗口" window={fiveHour} />
           ) : null}
@@ -431,7 +436,7 @@ function AccessCard({ overview }: { overview: QuotaOverview }) {
       >
         <ShieldCheck
           aria-hidden="true"
-          className="size-5 shrink-0 text-teal-700 dark:text-teal-400"
+          className="size-5 shrink-0 text-[var(--cqg-status-success)]"
         />
         <span className="font-semibold">额度可用</span>
         <span className="text-sm text-muted-foreground">
@@ -449,12 +454,12 @@ function AccessCard({ overview }: { overview: QuotaOverview }) {
     overview.blockReason === "TEAM_TOTAL_TOKEN_QUOTA_EXCEEDED";
   return (
     <div
-      className="cqg-status-strip cqg-status-warning flex flex-wrap items-center gap-3 px-4 py-3"
+      className="cqg-status-strip cqg-status-error flex flex-wrap items-center gap-3 px-4 py-3"
       role="alert"
     >
       <CircleAlert
         aria-hidden="true"
-        className="size-5 shrink-0 text-red-600"
+        className="size-5 shrink-0 text-[var(--cqg-status-error)]"
       />
       <span className="font-semibold">
         {exhausted
@@ -474,11 +479,52 @@ function AccessCard({ overview }: { overview: QuotaOverview }) {
 export interface DashboardProps {
   session: SystemSession;
   onLogout: () => void;
+  guardNotice?: ReactNode;
 }
 
-export function Dashboard({ session, onLogout }: DashboardProps) {
+const workspaces = [
+  {
+    id: "quota",
+    label: "额度总览",
+    title: "额度仪表盘",
+    description: "个人、团队与官方账户额度，分别查看。",
+    Icon: Gauge,
+  },
+  {
+    id: "analytics",
+    label: "用量统计",
+    title: "用量统计",
+    description: "Token 构成、使用趋势与 USD 费用估算。",
+    Icon: ChartNoAxesCombined,
+  },
+  {
+    id: "ledger",
+    label: "消耗流水",
+    title: "消耗流水",
+    description: "已接收的用量记录，点击详情查看完整分项。",
+    Icon: ListChecks,
+  },
+  {
+    id: "diagnostics",
+    label: "统计程序",
+    title: "统计程序",
+    description: "运行状态、版本更新与本机诊断日志。",
+    Icon: Activity,
+  },
+] as const;
+type WorkspaceId = (typeof workspaces)[number]["id"];
+
+export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const [workspace, setWorkspace] = useState<WorkspaceId>("quota");
+  const [collapsed, setCollapsed] = useState(false);
+  const scrollArea = useRef<HTMLDivElement>(null);
+  const currentPage = workspaces.find((page) => page.id === workspace)!;
+  const navigate = (next: WorkspaceId) => {
+    setWorkspace(next);
+    if (scrollArea.current) scrollArea.current.scrollTop = 0;
+  };
   const statusQuery = useQuery({
     queryKey: ["status"],
     queryFn: api.status,
@@ -496,6 +542,13 @@ export function Dashboard({ session, onLogout }: DashboardProps) {
     queryFn: api.usageStatus,
     retry: false,
     refetchInterval: 5_000,
+  });
+  // Keep version detection active even when the diagnostics page is closed.
+  const meterVersionQuery = useQuery({
+    queryKey: ["meter-service-version"],
+    queryFn: api.meterServiceVersion,
+    retry: false,
+    refetchInterval: 30_000,
   });
   const scanMutation = useMutation({
     mutationFn: api.scanUsage,
@@ -595,7 +648,13 @@ export function Dashboard({ session, onLogout }: DashboardProps) {
         quotaQuery.refetch(),
         usageStatusQuery.refetch(),
         rateLimitsQuery.refetch(),
+        meterVersionQuery.refetch(),
       ]);
+      await Promise.all(
+        ["usage-analytics", "usage-events", "meter-runtime-logs"].map((key) =>
+          queryClient.invalidateQueries({ queryKey: [key, session.user?.id] }),
+        ),
+      );
       const failedResult = results.find((result) => result.error);
       if (failedResult?.error) {
         throw failedResult.error;
@@ -608,120 +667,264 @@ export function Dashboard({ session, onLogout }: DashboardProps) {
 
   const requestError = [statusQuery.error, quotaQuery.error].find(Boolean);
   const statusOnline = statusQuery.data?.state === "online";
+  const meterState = usageStatusQuery.data?.service.state;
+  const meterVersion = meterVersionQuery.data;
+  const runtimeVersion = usageStatusQuery.data?.service.version;
+  const upgradeRequired =
+    meterVersion?.needsUpgrade || meterVersion?.status === "UPGRADE_REQUIRED";
+  const fallbackFailed = ["REPORT_FAILED", "SCAN_FAILED"].includes(
+    usageStatusQuery.data?.fallback.state ?? "",
+  );
+  const versionUnverified =
+    meterVersionQuery.isError ||
+    meterVersionQuery.isPending ||
+    meterVersion?.status === "UNKNOWN" ||
+    (!!runtimeVersion &&
+      !!meterVersion?.installedVersion &&
+      runtimeVersion !== meterVersion.installedVersion) ||
+    ((meterState === "UP_TO_DATE" || meterState === "REPORTED") &&
+      !runtimeVersion);
+  const meterHealthy =
+    !usageStatusQuery.isError &&
+    !upgradeRequired &&
+    !fallbackFailed &&
+    !versionUnverified &&
+    (meterState === "UP_TO_DATE" ||
+      meterState === "REPORTED" ||
+      meterState === "BASELINE_READY");
+  const meterLabel = usageStatusQuery.isError
+    ? "统计状态读取失败"
+    : upgradeRequired
+      ? "统计程序待更新"
+      : fallbackFailed
+        ? "回退上报异常"
+        : meterState === "NOT_INSTALLED" ||
+            meterState === "OFFLINE" ||
+            meterState === "ERROR" ||
+            meterState === "UNPAIRED"
+          ? serviceLabels[meterState]
+          : versionUnverified
+            ? "统计版本待确认"
+            : meterState
+              ? serviceLabels[meterState]
+              : "正在读取统计状态…";
 
   return (
-    <main className="cqg-dashboard min-h-screen bg-slate-50 dark:bg-slate-950">
-      <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8">
-        <header className="cqg-dashboard-header flex flex-wrap items-center justify-between gap-4 border-b pb-4">
-          <div className="flex min-w-0 items-center gap-3">
-            <div className="flex size-9 shrink-0 items-center justify-center rounded-md bg-foreground text-background">
-              <Gauge aria-hidden="true" className="size-5" />
-            </div>
-            <div className="min-w-0">
-              <p className="text-[11px] font-semibold uppercase text-muted-foreground">
-                Quota Guard
-              </p>
-              <h1 className="text-xl font-semibold">{t("dashboard")}</h1>
-            </div>
-            <span
-              className={`cqg-connection ml-2 hidden items-center gap-2 text-xs sm:inline-flex ${statusOnline ? "text-teal-700 dark:text-teal-400" : "text-amber-700 dark:text-amber-400"}`}
-            >
-              <span
-                className={`size-2 rounded-full ${statusOnline ? "bg-teal-600" : "bg-amber-500"}`}
-              />
-              {statusOnline ? t("connected") : t("serviceUnavailable")}
-            </span>
+    <div className="cqg-dashboard cqg-shell" data-collapsed={collapsed}>
+      <aside className="cqg-sidebar" aria-label="客户端导航">
+        <div className="cqg-brand">
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground">
+            <ShieldCheck className="size-5" aria-hidden="true" />
           </div>
-          <div className="flex min-w-0 items-center justify-end gap-2">
-            <div className="mr-1 flex min-w-0 items-center gap-2 border-r pr-3 text-left">
-              <UserCircle
-                aria-hidden="true"
-                className="size-5 text-muted-foreground"
-              />
-              <div className="flex min-w-0 flex-col">
-                <span className="max-w-36 truncate text-xs font-medium">
-                  {session.user?.displayName}
-                </span>
-                <span className="max-w-36 truncate text-[11px] text-muted-foreground">
-                  {session.user?.email}
-                </span>
-              </div>
+          <div className="cqg-nav-copy min-w-0">
+            <p className="whitespace-nowrap text-sm font-semibold tracking-tight">
+              Quota Guard
+            </p>
+            <p className="mt-0.5 text-[10px] tracking-widest text-muted-foreground">
+              用量与额度工作台
+            </p>
+          </div>
+        </div>
+        <nav className="flex-1 space-y-1 px-3 pt-5" aria-label="工作区">
+          <p className="cqg-nav-copy mb-3 px-3 text-[10px] font-medium tracking-widest text-muted-foreground">
+            工作区
+          </p>
+          {workspaces.map(({ id, label, Icon }) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => navigate(id)}
+              aria-label={label}
+              title={label}
+              aria-current={workspace === id ? "page" : undefined}
+              className={cn(
+                "cqg-nav-item",
+                workspace === id && "cqg-nav-item-active",
+              )}
+            >
+              <Icon className="size-[18px] shrink-0" aria-hidden="true" />
+              <span className="cqg-nav-copy truncate">{label}</span>
+            </button>
+          ))}
+        </nav>
+        <div className="cqg-sidebar-bottom">
+          <button
+            type="button"
+            className="cqg-meter-link"
+            onClick={() => navigate("diagnostics")}
+            title={meterLabel}
+            aria-label={`查看统计程序：${meterLabel}`}
+          >
+            <span
+              aria-hidden="true"
+              className={cn(
+                "size-2 shrink-0 rounded-full",
+                meterHealthy
+                  ? "bg-[var(--cqg-status-success)]"
+                  : "bg-[var(--cqg-status-warning)]",
+              )}
+            />
+            <span className="cqg-nav-copy truncate text-xs">{meterLabel}</span>
+          </button>
+          <div className="cqg-theme-row">
+            <span className="cqg-nav-copy text-xs text-muted-foreground">
+              外观
+            </span>
+            <ThemeSwitcher compact className="cqg-sidebar-themes" />
+          </div>
+          <div className="cqg-sidebar-account">
+            <UserCircle
+              aria-hidden="true"
+              className="size-8 shrink-0 rounded-full bg-accent p-1.5 text-accent-foreground"
+            />
+            <div
+              className="cqg-nav-copy min-w-0 flex-1"
+              title={session.user?.email}
+            >
+              <p className="truncate text-xs font-medium">
+                {session.user?.displayName}
+              </p>
+              <p className="mt-0.5 truncate text-[10px] text-muted-foreground">
+                {session.user?.email}
+              </p>
             </div>
             <Button
               variant="ghost"
               size="icon"
+              className="size-8 shrink-0"
+              onClick={onLogout}
+              aria-label="退出系统"
+              title="退出系统"
+            >
+              <LogOut className="size-4" aria-hidden="true" />
+            </Button>
+          </div>
+        </div>
+      </aside>
+      <main className="cqg-workspace">
+        <header className="cqg-dashboard-header flex min-h-[72px] shrink-0 items-center justify-between gap-3 border-b px-4 py-3 sm:px-6">
+          <div className="flex min-w-0 items-center gap-3">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="cqg-collapse-button size-8 shrink-0 text-muted-foreground"
+              onClick={() => setCollapsed(!collapsed)}
+              aria-expanded={!collapsed}
+              aria-label={collapsed ? "展开导航" : "收起导航"}
+              title={collapsed ? "展开导航" : "收起导航"}
+            >
+              {collapsed ? (
+                <PanelLeftOpen aria-hidden="true" />
+              ) : (
+                <PanelLeftClose aria-hidden="true" />
+              )}
+            </Button>
+            <div className="min-w-0">
+              <h1 className="text-base font-semibold">{currentPage.title}</h1>
+              <p className="mt-1 hidden truncate text-xs text-muted-foreground md:block">
+                {currentPage.description}
+              </p>
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-3">
+            <span className="cqg-connection hidden items-center gap-2 text-xs text-muted-foreground sm:inline-flex">
+              <span
+                aria-hidden="true"
+                className={cn(
+                  "size-1.5 rounded-full",
+                  statusOnline
+                    ? "bg-[var(--cqg-status-success)]"
+                    : "bg-[var(--cqg-status-warning)]",
+                )}
+              />
+              {statusOnline ? t("connected") : t("serviceUnavailable")}
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
               onClick={refresh}
               disabled={isRefreshing}
               aria-label={isRefreshing ? t("refreshing") : t("refresh")}
               title={isRefreshing ? t("refreshing") : t("refresh")}
             >
               <RefreshCw
-                className={isRefreshing ? "animate-spin" : undefined}
+                aria-hidden="true"
+                className={
+                  isRefreshing ? "motion-safe:animate-spin" : undefined
+                }
               />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={onLogout}
-              aria-label="退出系统"
-              title="退出系统"
-            >
-              <LogOut aria-hidden="true" />
+              <span className="hidden sm:inline">刷新</span>
             </Button>
           </div>
         </header>
-
-        {requestError ? (
-          <Alert variant="destructive">
-            <CircleAlert aria-hidden="true" />
-            <AlertTitle>{t("serviceUnavailable")}</AlertTitle>
-            <AlertDescription className="flex flex-wrap items-center gap-3">
-              <span>{getApiErrorMessage(requestError)}</span>
-              <Button variant="outline" size="sm" onClick={refresh}>
-                {t("retry")}
-              </Button>
-            </AlertDescription>
-          </Alert>
+        {guardNotice ? (
+          <aside
+            aria-label="运行注意事项"
+            className="max-h-[30vh] shrink-0 overflow-y-auto border-b bg-muted/50 px-4 py-2 text-xs sm:px-6"
+          >
+            {guardNotice}
+          </aside>
         ) : null}
+        <div className="cqg-workspace-scroll" ref={scrollArea}>
+          <div className="mx-auto flex w-full max-w-[1240px] flex-col gap-5 p-4 sm:p-6">
+            {requestError ? (
+              <Alert variant="destructive">
+                <CircleAlert aria-hidden="true" />
+                <AlertTitle>{t("serviceUnavailable")}</AlertTitle>
+                <AlertDescription className="flex flex-wrap items-center gap-3">
+                  <span>{getApiErrorMessage(requestError)}</span>
+                  <Button variant="outline" size="sm" onClick={refresh}>
+                    {t("retry")}
+                  </Button>
+                </AlertDescription>
+              </Alert>
+            ) : null}
 
-        {quotaQuery.isPending ? (
-          <div className="grid gap-4 lg:grid-cols-2">
-            <LoadingCard />
-            <LoadingCard />
-            <LoadingCard className="lg:col-span-2" />
-          </div>
-        ) : overview ? (
-          <>
-            <AccessCard overview={overview} />
-            <UsageCard overview={overview} />
-            <div className="grid min-w-0 gap-4 md:grid-cols-2">
-              <TeamCard overview={overview} />
-              <OfficialRateLimitsCard
-                rateLimits={rateLimitsQuery.data}
-                loading={rateLimitsQuery.isPending}
-                failed={rateLimitsQuery.isError}
+            {workspace === "quota" ? (
+              quotaQuery.isPending ? (
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <LoadingCard />
+                  <LoadingCard />
+                  <LoadingCard className="lg:col-span-2" />
+                </div>
+              ) : overview ? (
+                <>
+                  <AccessCard overview={overview} />
+                  <UsageCard overview={overview} />
+                  <div className="grid min-w-0 gap-4 md:grid-cols-2">
+                    <TeamCard overview={overview} />
+                    <OfficialRateLimitsCard
+                      rateLimits={rateLimitsQuery.data}
+                      loading={rateLimitsQuery.isPending}
+                      failed={rateLimitsQuery.isError}
+                    />
+                  </div>
+                </>
+              ) : (
+                <EmptyState
+                  title="暂时无法读取个人额度"
+                  description="请刷新重试；如问题持续，请联系管理员。"
+                />
+              )
+            ) : (
+              <UsageActivityPanel
+                key={session.user!.id}
+                view={workspace === "analytics" ? "overview" : workspace}
+                userId={session.user!.id}
+                measuredAt={overview?.usage.measuredAt ?? null}
+                status={usageStatusQuery.data}
+                statusError={usageStatusQuery.error}
+                scanning={scanMutation.isPending}
+                pairing={pairMutation.isPending}
+                starting={startMeterMutation.isPending}
+                onScan={() => scanMutation.mutate()}
+                onPair={() => pairMutation.mutate()}
+                onStart={() => startMeterMutation.mutate()}
               />
-            </div>
-            <UsageActivityPanel
-              key={session.user!.id}
-              userId={session.user!.id}
-              measuredAt={overview.usage.measuredAt}
-              status={usageStatusQuery.data}
-              scanning={scanMutation.isPending}
-              pairing={pairMutation.isPending}
-              starting={startMeterMutation.isPending}
-              onScan={() => scanMutation.mutate()}
-              onPair={() => pairMutation.mutate()}
-              onStart={() => startMeterMutation.mutate()}
-            />
-          </>
-        ) : (
-          <EmptyState
-            title="暂时无法读取个人额度"
-            description="请刷新重试；如问题持续，请联系管理员。"
-          />
-        )}
-      </div>
-    </main>
+            )}
+          </div>
+        </div>
+      </main>
+    </div>
   );
 }

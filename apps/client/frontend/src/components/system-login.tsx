@@ -12,6 +12,7 @@ import { toast } from "sonner";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { ThemeSwitcher } from "@/components/theme-switcher";
 import {
   Card,
   CardContent,
@@ -91,7 +92,7 @@ export function SystemLoginPage({
   return (
     <main className="min-h-screen bg-background px-4 py-5 sm:px-8">
       <div className="mx-auto flex min-h-[calc(100vh-2.5rem)] w-full max-w-5xl flex-col">
-        <div className="flex items-center gap-2 border-b pb-4 text-sm font-semibold">
+        <div className="flex items-center gap-2 border-b border-border pb-4 text-sm font-semibold">
           <div className="flex size-8 items-center justify-center rounded-md bg-foreground text-background">
             <ShieldCheck aria-hidden="true" className="size-4" />
           </div>
@@ -99,9 +100,10 @@ export function SystemLoginPage({
           <span className="ml-2 border-l pl-3 text-xs font-normal text-muted-foreground">
             客户端
           </span>
+          <ThemeSwitcher compact className="ml-auto" />
         </div>
         <div className="flex flex-1 items-center justify-center py-8">
-          <Card className="w-full max-w-[430px] shadow-sm">
+          <Card className="w-full max-w-[430px] border-border shadow-sm">
             <CardHeader className="gap-1 pb-4">
               <h1 className="text-xl font-semibold">登录 Quota Guard</h1>
               <CardDescription>系统账户</CardDescription>

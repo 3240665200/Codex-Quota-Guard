@@ -20,7 +20,7 @@ import { Button } from "@/components/ui/button";
 import { UsageStatistics } from "@/components/usage-statistics";
 import { formatUsd } from "@/lib/usage-format";
 
-const serviceLabels: Record<UsageStatus["service"]["state"], string> = {
+export const serviceLabels: Record<UsageStatus["service"]["state"], string> = {
   NOT_INSTALLED: "统计程序未安装",
   OFFLINE: "统计程序离线",
   BASELINE_READY: "统计基线已建立",
@@ -115,7 +115,7 @@ function UsageTokens({ item }: { item: UsageEventPage["items"][number] }) {
     <Dialog.Root>
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0 space-y-1">
-          <div className="text-teal-800 dark:text-teal-300">
+          <div className="text-primary">
             <Tokens value={item.totalTokens} />
           </div>
           <div className="truncate text-xs text-muted-foreground">
@@ -127,7 +127,7 @@ function UsageTokens({ item }: { item: UsageEventPage["items"][number] }) {
             type="button"
             variant="ghost"
             size="sm"
-            className="h-8 shrink-0 px-2 text-xs text-teal-700 dark:text-teal-300"
+            className="h-8 shrink-0 px-2 text-xs text-primary"
           >
             查看详情
           </Button>
@@ -161,7 +161,7 @@ function UsageTokens({ item }: { item: UsageEventPage["items"][number] }) {
             <dl className="grid gap-4 rounded-xl bg-muted/50 p-4 sm:grid-cols-2">
               <div>
                 <dt className="text-xs text-muted-foreground">总消耗</dt>
-                <dd className="mt-1 text-xl text-teal-800 dark:text-teal-300">
+                <dd className="mt-1 text-xl text-primary">
                   <TokenBreakdown value={item.totalTokens} />{" "}
                   <span className="text-xs text-muted-foreground">Token</span>
                 </dd>
@@ -323,7 +323,9 @@ function Tokens({ value }: { value: number }) {
 
 export function UsageActivityPanel({
   userId,
+  view,
   status,
+  statusError,
   measuredAt,
   scanning,
   pairing,
@@ -333,7 +335,9 @@ export function UsageActivityPanel({
   onStart,
 }: {
   userId: string;
+  view?: "overview" | "ledger" | "diagnostics";
   status: UsageStatus | undefined;
+  statusError?: unknown;
   measuredAt?: string | null;
   scanning: boolean;
   pairing: boolean;
@@ -345,6 +349,9 @@ export function UsageActivityPanel({
   const [tab, setTab] = useState<"overview" | "ledger" | "diagnostics">(
     "overview",
   );
+  const activeView = view ?? tab;
+  const legacyView = view === undefined;
+  const statusReadFailed = statusError != null;
   const [page, setPage] = useState(0);
   const id = useId();
   const tabs = useRef<(HTMLButtonElement | null)[]>([]);
@@ -356,20 +363,21 @@ export function UsageActivityPanel({
     queryKey: ["usage-events", userId, page],
     queryFn: () => api.usageEvents(page, 10),
     retry: false,
-    enabled: tab === "ledger",
+    enabled: activeView === "ledger",
     refetchInterval: 10000,
   });
   const logs = useQuery({
     queryKey: ["meter-runtime-logs", userId],
     queryFn: api.meterRuntimeLogs,
     retry: false,
-    enabled: tab === "diagnostics",
+    enabled: activeView === "diagnostics",
     refetchInterval: 10000,
   });
   const meterVersion = useQuery({
     queryKey: ["meter-service-version"],
     queryFn: api.meterServiceVersion,
     retry: false,
+    enabled: legacyView || activeView === "diagnostics",
     refetchInterval: 30000,
   });
   const serviceState = status?.service.state;
@@ -411,256 +419,338 @@ export function UsageActivityPanel({
   const acceptedAt =
     page === 0 ? (ledger.data?.items[0]?.receivedAt ?? measuredAt) : measuredAt;
   const refresh = () => {
-    void queryClient.invalidateQueries({ queryKey: ["usage-status"] });
-    void meterVersion.refetch();
-    if (tab === "overview")
+    if (legacyView) {
+      void queryClient.invalidateQueries({ queryKey: ["usage-status"] });
+      void meterVersion.refetch();
+      if (activeView === "overview")
+        void queryClient.invalidateQueries({
+          queryKey: ["usage-analytics", userId],
+        });
+      else void (activeView === "ledger" ? ledger.refetch() : logs.refetch());
+      return;
+    }
+    if (activeView === "overview")
       void queryClient.invalidateQueries({
         queryKey: ["usage-analytics", userId],
       });
-    else void (tab === "ledger" ? ledger.refetch() : logs.refetch());
+    else if (activeView === "ledger") void ledger.refetch();
+    else {
+      void queryClient.invalidateQueries({ queryKey: ["usage-status"] });
+      void meterVersion.refetch();
+      void logs.refetch();
+    }
   };
   const fetching =
-    tab === "overview"
+    activeView === "overview"
       ? false
-      : tab === "ledger"
+      : activeView === "ledger"
         ? ledger.isFetching
         : logs.isFetching;
 
   return (
     <section
-      className="cqg-surface min-w-0 p-5"
-      aria-labelledby={`${id}-heading`}
+      className={legacyView ? "cqg-surface min-w-0 p-5" : "min-w-0"}
+      aria-labelledby={
+        legacyView || activeView === "diagnostics" ? `${id}-heading` : undefined
+      }
+      aria-label={
+        !legacyView && activeView !== "diagnostics"
+          ? activeView === "overview"
+            ? "个人用量统计"
+            : "个人消耗流水"
+          : undefined
+      }
     >
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="flex items-start gap-3">
-          <ListChecks
-            className="mt-0.5 size-5 text-teal-700 dark:text-teal-400"
-            aria-hidden="true"
-          />
-          <div>
-            <h2 id={`${id}-heading`} className="text-base font-semibold">
-              统计与消耗记录
-            </h2>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {serviceState ? serviceLabels[serviceState] : "正在检查统计程序…"}{" "}
-              · 每 10 秒更新记录
-            </p>
+      {!legacyView && activeView === "overview" ? (
+        <UsageStatistics key={userId} userId={userId} />
+      ) : null}
+      {(legacyView || activeView === "diagnostics") && (
+        <>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="flex items-start gap-3">
+              <ListChecks
+                className="mt-0.5 size-5 text-primary"
+                aria-hidden="true"
+              />
+              <div>
+                <h2 id={`${id}-heading`} className="text-base font-semibold">
+                  {legacyView ? "统计与消耗记录" : "运行诊断"}
+                </h2>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {statusReadFailed
+                    ? `统计状态读取失败${status ? "，当前显示上次读取结果" : ""}`
+                    : serviceState
+                      ? serviceLabels[serviceState]
+                      : "正在检查统计程序…"}{" "}
+                  · 每 10 秒更新记录
+                </p>
+              </div>
+            </div>
+            <span
+              className={`text-xs font-medium ${healthy && !fallbackFailed && !versionNeedsAttention ? "text-primary" : "text-amber-700 dark:text-amber-400"}`}
+            >
+              {upgradeRequired
+                ? "需升级"
+                : fallbackFailed
+                  ? "回退上报异常"
+                  : runtimeVersionMismatch || versionUnverified
+                    ? "版本待确认"
+                    : healthy
+                      ? "正常"
+                      : "需检查"}
+            </span>
+          </div>
+          {statusReadFailed ? (
+            <div
+              role="alert"
+              className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-200"
+            >
+              <p className="font-medium">统计状态读取失败</p>
+              <p className="mt-1 text-xs">
+                {getApiErrorMessage(statusError)}
+                {status ? " 当前显示的是上次读取结果。" : " 请刷新重试。"}
+              </p>
+            </div>
+          ) : null}
+          {upgradeRequired ? (
+            <div
+              role="alert"
+              className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-200"
+            >
+              <p className="font-medium">统计程序需要更新</p>
+              <p className="mt-1 text-xs">
+                运行版本 {runtimeVersion ?? "未知"}，已安装版本{" "}
+                {meterVersion.data?.installedVersion ?? "未知"}，安装包版本{" "}
+                {meterVersion.data?.bundledVersion ?? "未知"}。
+                {sameVersionDifferentBinary
+                  ? "版本号相同，但程序文件校验不一致，仍需更新。"
+                  : "已安装程序与安装包不一致，旧版可能缺少输入、输出等 Token 分项。"}
+                点击更新以安装随客户端打包的版本；如提示权限不足，请从托盘退出客户端，再以管理员身份重新打开。已入库的旧流水不会自动补齐。
+              </p>
+              {showVersionAction ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="mt-3"
+                  disabled={starting}
+                  onClick={onStart}
+                >
+                  <RefreshCw
+                    aria-hidden="true"
+                    className={starting ? "animate-spin" : undefined}
+                  />
+                  {starting ? "正在更新…" : "更新统计程序"}
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
+          {!upgradeRequired && (runtimeVersionMismatch || versionUnverified) ? (
+            <div
+              role="alert"
+              className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-200"
+            >
+              <p className="font-medium">统计程序运行版本待确认</p>
+              <p className="mt-1 text-xs">
+                {runtimeVersionMismatch
+                  ? `运行版本 ${runtimeVersion} 与已安装版本 ${meterVersion.data?.installedVersion} 不一致，请重新启动统计程序。`
+                  : meterVersion.isError
+                    ? "无法读取安装版本，请刷新后重试。"
+                    : meterVersion.data?.status === "UNKNOWN"
+                      ? "安装版本无法通过程序文件校验，不能确认已是最新版；请检查安装状态。"
+                      : "后台尚未收到运行版本，可能仍在运行旧版统计程序或旧版后端。请检查安装与服务状态。"}
+              </p>
+              {showVersionAction ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="mt-3"
+                  disabled={starting}
+                  onClick={onStart}
+                >
+                  <RefreshCw
+                    aria-hidden="true"
+                    className={starting ? "animate-spin" : undefined}
+                  />
+                  {starting ? "正在检查…" : "检查并修复"}
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
+          <dl className="mt-5 grid gap-3 rounded-lg border bg-muted/40 p-3 text-sm sm:grid-cols-3">
+            <div>
+              <dt className="text-xs text-muted-foreground">
+                统计程序最近扫描
+              </dt>
+              <dd className="mt-1 tabular-nums">
+                {time(status?.service.lastScanEpochSeconds)}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-xs text-muted-foreground">最近成功上报</dt>
+              <dd className="mt-1 tabular-nums">{time(lastReport)}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-muted-foreground">后台最近接收</dt>
+              <dd className="mt-1 tabular-nums">{time(acceptedAt)}</dd>
+            </div>
+          </dl>
+        </>
+      )}
+      {legacyView || activeView !== "overview" ? (
+        <div
+          className={`${legacyView ? "mt-4" : "mb-3"} flex flex-wrap items-center justify-between gap-3 border-b pb-3`}
+        >
+          {legacyView ? (
+            <div
+              className="inline-flex gap-1 rounded-lg bg-muted p-1"
+              role="tablist"
+              aria-label="统计记录视图"
+            >
+              {(["overview", "ledger", "diagnostics"] as const).map(
+                (value, index) => (
+                  <button
+                    key={value}
+                    ref={(element) => {
+                      tabs.current[index] = element;
+                    }}
+                    type="button"
+                    id={`${id}-${value}-tab`}
+                    role="tab"
+                    aria-selected={tab === value}
+                    aria-controls={`${id}-${value}`}
+                    tabIndex={tab === value ? 0 : -1}
+                    className={`rounded-md px-3 py-1.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${tab === value ? "bg-background font-medium shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                    onClick={() => setTab(value)}
+                    onKeyDown={(event) => {
+                      if (
+                        ["ArrowLeft", "ArrowRight", "Home", "End"].includes(
+                          event.key,
+                        )
+                      ) {
+                        event.preventDefault();
+                        const next =
+                          event.key === "Home"
+                            ? 0
+                            : event.key === "End"
+                              ? 2
+                              : (index + (event.key === "ArrowLeft" ? 2 : 1)) %
+                                3;
+                        setTab(
+                          (["overview", "ledger", "diagnostics"] as const)[
+                            next
+                          ],
+                        );
+                        tabs.current[next]?.focus();
+                      }
+                    }}
+                  >
+                    {value === "overview"
+                      ? "用量统计"
+                      : value === "ledger"
+                        ? "消耗流水"
+                        : "运行诊断"}
+                  </button>
+                ),
+              )}
+            </div>
+          ) : null}
+          <div className="flex flex-wrap gap-2">
+            {activeView !== "overview" ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={refresh}
+                disabled={fetching}
+                aria-label={
+                  legacyView
+                    ? "刷新统计记录"
+                    : activeView === "ledger"
+                      ? "刷新消耗流水"
+                      : "刷新运行诊断"
+                }
+              >
+                <RefreshCw
+                  className={fetching ? "animate-spin" : undefined}
+                  aria-hidden="true"
+                />
+                {legacyView
+                  ? "刷新记录"
+                  : activeView === "ledger"
+                    ? "刷新流水"
+                    : "刷新诊断"}
+              </Button>
+            ) : null}
+            {legacyView || activeView === "diagnostics" ? (
+              <>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={scanning}
+                  onClick={onScan}
+                >
+                  {scanning ? "正在扫描…" : "立即扫描"}
+                </Button>
+                {serviceState === "UNPAIRED" ||
+                status?.pairingState === "PAIRING_FAILED" ||
+                status?.service.errorCode === "METER_PAIRING_EXPIRED" ||
+                status?.service.errorCode === "METER_PAIRING_INVALID" ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={pairing}
+                    onClick={onPair}
+                  >
+                    {pairing ? "正在配对…" : "重新配对"}
+                  </Button>
+                ) : null}
+                {(serviceState === "OFFLINE" ||
+                  serviceState === "NOT_INSTALLED") &&
+                !showVersionAction ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={starting}
+                    onClick={onStart}
+                  >
+                    {starting
+                      ? "正在处理…"
+                      : serviceState === "NOT_INSTALLED"
+                        ? "安装统计程序"
+                        : "启动统计程序"}
+                  </Button>
+                ) : null}
+              </>
+            ) : null}
           </div>
         </div>
-        <span
-          className={`text-xs font-medium ${healthy && !fallbackFailed && !versionNeedsAttention ? "text-teal-700 dark:text-teal-400" : "text-amber-700 dark:text-amber-400"}`}
-        >
-          {upgradeRequired
-            ? "需升级"
-            : fallbackFailed
-              ? "回退上报异常"
-              : runtimeVersionMismatch || versionUnverified
-                ? "版本待确认"
-                : healthy
-                  ? "正常"
-                  : "需检查"}
-        </span>
-      </div>
-      {upgradeRequired ? (
-        <div
-          role="alert"
-          className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-200"
-        >
-          <p className="font-medium">统计程序需要更新</p>
-          <p className="mt-1 text-xs">
-            运行版本 {runtimeVersion ?? "未知"}，已安装版本{" "}
-            {meterVersion.data?.installedVersion ?? "未知"}，安装包版本{" "}
-            {meterVersion.data?.bundledVersion ?? "未知"}。
-            {sameVersionDifferentBinary
-              ? "版本号相同，但程序文件校验不一致，仍需更新。"
-              : "已安装程序与安装包不一致，旧版可能缺少输入、输出等 Token 分项。"}
-            点击更新以安装随客户端打包的版本；如提示权限不足，请从托盘退出客户端，再以管理员身份重新打开。已入库的旧流水不会自动补齐。
-          </p>
-          {showVersionAction ? (
-            <Button
-              size="sm"
-              variant="outline"
-              className="mt-3"
-              disabled={starting}
-              onClick={onStart}
-            >
-              <RefreshCw
-                aria-hidden="true"
-                className={starting ? "animate-spin" : undefined}
-              />
-              {starting ? "正在更新…" : "更新统计程序"}
-            </Button>
-          ) : null}
-        </div>
       ) : null}
-      {!upgradeRequired && (runtimeVersionMismatch || versionUnverified) ? (
-        <div
-          role="alert"
-          className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-200"
-        >
-          <p className="font-medium">统计程序运行版本待确认</p>
-          <p className="mt-1 text-xs">
-            {runtimeVersionMismatch
-              ? `运行版本 ${runtimeVersion} 与已安装版本 ${meterVersion.data?.installedVersion} 不一致，请重新启动统计程序。`
-              : meterVersion.isError
-                ? "无法读取安装版本，请刷新后重试。"
-                : meterVersion.data?.status === "UNKNOWN"
-                  ? "安装版本无法通过程序文件校验，不能确认已是最新版；请检查安装状态。"
-                  : "后台尚未收到运行版本，可能仍在运行旧版统计程序或旧版后端。请检查安装与服务状态。"}
-          </p>
-          {showVersionAction ? (
-            <Button
-              size="sm"
-              variant="outline"
-              className="mt-3"
-              disabled={starting}
-              onClick={onStart}
-            >
-              <RefreshCw
-                aria-hidden="true"
-                className={starting ? "animate-spin" : undefined}
-              />
-              {starting ? "正在检查…" : "检查并修复"}
-            </Button>
-          ) : null}
-        </div>
-      ) : null}
-      <dl className="mt-5 grid gap-3 rounded-lg border bg-slate-50/70 p-4 text-sm dark:bg-slate-900/50 sm:grid-cols-3">
-        <div>
-          <dt className="text-xs text-muted-foreground">统计程序最近扫描</dt>
-          <dd className="mt-1 tabular-nums">
-            {time(status?.service.lastScanEpochSeconds)}
-          </dd>
-        </div>
-        <div>
-          <dt className="text-xs text-muted-foreground">最近成功上报</dt>
-          <dd className="mt-1 tabular-nums">{time(lastReport)}</dd>
-        </div>
-        <div>
-          <dt className="text-xs text-muted-foreground">后台最近接收</dt>
-          <dd className="mt-1 tabular-nums">{time(acceptedAt)}</dd>
-        </div>
-      </dl>
-      <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-b pb-3">
-        <div
-          className="inline-flex gap-1 rounded-lg bg-muted p-1"
-          role="tablist"
-          aria-label="统计记录视图"
-        >
-          {(["overview", "ledger", "diagnostics"] as const).map(
-            (value, index) => (
-              <button
-                key={value}
-                ref={(element) => {
-                  tabs.current[index] = element;
-                }}
-                type="button"
-                id={`${id}-${value}-tab`}
-                role="tab"
-                aria-selected={tab === value}
-                aria-controls={`${id}-${value}`}
-                tabIndex={tab === value ? 0 : -1}
-                className={`rounded-md px-3 py-1.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${tab === value ? "bg-background font-medium shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
-                onClick={() => setTab(value)}
-                onKeyDown={(event) => {
-                  if (
-                    ["ArrowLeft", "ArrowRight", "Home", "End"].includes(
-                      event.key,
-                    )
-                  ) {
-                    event.preventDefault();
-                    const next =
-                      event.key === "Home"
-                        ? 0
-                        : event.key === "End"
-                          ? 2
-                          : (index + (event.key === "ArrowLeft" ? 2 : 1)) % 3;
-                    setTab(
-                      (["overview", "ledger", "diagnostics"] as const)[next],
-                    );
-                    tabs.current[next]?.focus();
-                  }
-                }}
-              >
-                {value === "overview"
-                  ? "用量统计"
-                  : value === "ledger"
-                    ? "消耗流水"
-                    : "运行诊断"}
-              </button>
-            ),
-          )}
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={refresh}
-            disabled={fetching}
-            aria-label="刷新统计记录"
+      {activeView === "overview" ? (
+        legacyView ? (
+          <div
+            id={`${id}-overview`}
+            role="tabpanel"
+            aria-labelledby={`${id}-overview-tab`}
           >
-            <RefreshCw
-              className={fetching ? "animate-spin" : undefined}
-              aria-hidden="true"
-            />
-            刷新记录
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={scanning}
-            onClick={onScan}
-          >
-            {scanning ? "正在扫描…" : "立即扫描"}
-          </Button>
-          {serviceState === "UNPAIRED" ||
-          status?.pairingState === "PAIRING_FAILED" ||
-          status?.service.errorCode === "METER_PAIRING_EXPIRED" ||
-          status?.service.errorCode === "METER_PAIRING_INVALID" ? (
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={pairing}
-              onClick={onPair}
-            >
-              {pairing ? "正在配对…" : "重新配对"}
-            </Button>
-          ) : null}
-          {(serviceState === "OFFLINE" || serviceState === "NOT_INSTALLED") &&
-          !showVersionAction ? (
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={starting}
-              onClick={onStart}
-            >
-              {starting
-                ? "正在处理…"
-                : serviceState === "NOT_INSTALLED"
-                  ? "安装统计程序"
-                  : "启动统计程序"}
-            </Button>
-          ) : null}
-        </div>
-      </div>
-      {tab === "overview" ? (
-        <div
-          id={`${id}-overview`}
-          role="tabpanel"
-          aria-labelledby={`${id}-overview-tab`}
-        >
-          <UsageStatistics key={userId} userId={userId} />
-        </div>
-      ) : tab === "ledger" ? (
+            <UsageStatistics key={userId} userId={userId} />
+          </div>
+        ) : null
+      ) : activeView === "ledger" ? (
         <div
           id={`${id}-ledger`}
-          role="tabpanel"
-          aria-labelledby={`${id}-ledger-tab`}
-          className="pt-4"
+          {...(legacyView
+            ? {
+                role: "tabpanel",
+                "aria-labelledby": `${id}-ledger-tab`,
+              }
+            : {})}
+          className={legacyView ? "pt-4" : "pt-1"}
         >
-          <p className="mb-3 text-xs text-muted-foreground">
-            中央服务已接收的消耗记录；点击“查看详情”查看 Token 分项与估算费用。
-          </p>
+          {legacyView ? (
+            <p className="mb-3 text-xs text-muted-foreground">
+              中央服务已接收的消耗记录；点击“查看详情”查看 Token
+              分项与估算费用。
+            </p>
+          ) : null}
           {ledger.isError ? (
             <div
               role="alert"
@@ -685,17 +775,28 @@ export function UsageActivityPanel({
               {ledger.data.items.length ? (
                 <div className="min-w-0 overflow-x-auto">
                   <table
-                    className="w-full min-w-[1040px] table-fixed whitespace-nowrap text-left text-sm"
+                    className={`w-full ${legacyView ? "min-w-[1040px] table-fixed whitespace-nowrap" : "min-w-[700px]"} text-left text-sm`}
                     aria-label="个人消耗流水"
                   >
                     <colgroup>
-                      <col className="w-[174px]" />
-                      <col className="w-[216px]" />
-                      <col className="w-[112px]" />
-                      <col className="w-[174px]" />
-                      <col className="w-[76px]" />
-                      <col className="w-[190px]" />
-                      <col className="w-[96px]" />
+                      {legacyView ? (
+                        <>
+                          <col className="w-[174px]" />
+                          <col className="w-[216px]" />
+                          <col className="w-[112px]" />
+                          <col className="w-[174px]" />
+                          <col className="w-[76px]" />
+                          <col className="w-[190px]" />
+                          <col className="w-[96px]" />
+                        </>
+                      ) : (
+                        <>
+                          <col className="w-[190px]" />
+                          <col className="w-[220px]" />
+                          <col className="w-[190px]" />
+                          <col />
+                        </>
+                      )}
                     </colgroup>
                     <thead className="border-b text-xs text-muted-foreground">
                       <tr>
@@ -705,15 +806,19 @@ export function UsageActivityPanel({
                         <th className="pb-3 pr-5 font-medium" scope="col">
                           Token 消耗
                         </th>
-                        <th className="pb-3 pr-5 font-medium" scope="col">
-                          来源
-                        </th>
-                        <th className="pb-3 pr-5 font-medium" scope="col">
-                          后台接收
-                        </th>
-                        <th className="pb-3 font-medium" scope="col">
-                          状态
-                        </th>
+                        {legacyView ? (
+                          <>
+                            <th className="pb-3 pr-5 font-medium" scope="col">
+                              来源
+                            </th>
+                            <th className="pb-3 pr-5 font-medium" scope="col">
+                              后台接收
+                            </th>
+                            <th className="pb-3 font-medium" scope="col">
+                              状态
+                            </th>
+                          </>
+                        ) : null}
                         <th className="pb-3 pr-5 font-medium" scope="col">
                           模型名称
                         </th>
@@ -731,17 +836,21 @@ export function UsageActivityPanel({
                           <td className="py-2 pr-5">
                             <UsageTokens item={item} />
                           </td>
-                          <td className="py-3 pr-5 text-xs text-muted-foreground">
-                            {item.source === "TOKEN_USAGE_RECORD"
-                              ? "官方用量记录"
-                              : "累计差值补录"}
-                          </td>
-                          <td className="py-3 pr-5 tabular-nums text-muted-foreground">
-                            {time(item.receivedAt)}
-                          </td>
-                          <td className="py-3 text-xs text-teal-700 dark:text-teal-400">
-                            已接收
-                          </td>
+                          {legacyView ? (
+                            <>
+                              <td className="py-3 pr-5 text-xs text-muted-foreground">
+                                {item.source === "TOKEN_USAGE_RECORD"
+                                  ? "官方用量记录"
+                                  : "累计差值补录"}
+                              </td>
+                              <td className="py-3 pr-5 tabular-nums text-muted-foreground">
+                                {time(item.receivedAt)}
+                              </td>
+                              <td className="py-3 text-xs text-primary">
+                                已接收
+                              </td>
+                            </>
+                          ) : null}
                           <td
                             className="py-3 pr-5"
                             title={item.model ?? "未知"}
@@ -799,15 +908,23 @@ export function UsageActivityPanel({
       ) : (
         <div
           id={`${id}-diagnostics`}
-          role="tabpanel"
-          aria-labelledby={`${id}-diagnostics-tab`}
-          className="pt-4"
+          {...(legacyView
+            ? {
+                role: "tabpanel",
+                "aria-labelledby": `${id}-diagnostics-tab`,
+              }
+            : {})}
+          className={legacyView ? "pt-4" : "pt-1"}
         >
           <div className="grid gap-3 text-sm sm:grid-cols-2">
             <div className="rounded-lg border p-3">
               <h3 className="font-medium">Rust 常驻统计程序</h3>
               <p className="mt-1 text-xs text-muted-foreground">
-                {serviceState ? serviceLabels[serviceState] : "正在读取…"}
+                {serviceState
+                  ? serviceLabels[serviceState]
+                  : statusReadFailed
+                    ? "统计状态读取失败"
+                    : "正在读取…"}
               </p>
               <dl className="mt-2 grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
                 <div>
@@ -850,7 +967,11 @@ export function UsageActivityPanel({
             <div className="rounded-lg border p-3">
               <h3 className="font-medium">桌面回退扫描</h3>
               <p className="mt-1 text-xs text-muted-foreground">
-                {status ? fallbackLabels[status.fallback.state] : "正在读取…"}
+                {status
+                  ? fallbackLabels[status.fallback.state]
+                  : statusReadFailed
+                    ? "统计状态读取失败"
+                    : "正在读取…"}
               </p>
               <p className="mt-2 text-xs">
                 最近扫描：{time(status?.fallback.lastScannedAt)}
