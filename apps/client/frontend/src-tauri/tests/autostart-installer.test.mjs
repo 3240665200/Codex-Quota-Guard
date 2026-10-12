@@ -62,10 +62,9 @@ test("installer helper dispatch precedes Tauri and the startup guard", () => {
   assert.match(entry.slice(helper, entry.indexOf("tauri::Builder")), /std::process::exit/);
 });
 
-test("logon action is LUA and uses fixed self elevation through normal UAC", () => {
+test("ordinary startup registration never creates another scheduled task and keeps normal UAC", () => {
   const source = readFileSync(path.join(root, "src/autostart/windows.rs"), "utf8");
-  assert.match(source, /SetRunLevel\(TASK_RUNLEVEL_LUA\)/);
-  assert.doesNotMatch(source, /SetRunLevel\(TASK_RUNLEVEL_HIGHEST\)/);
+  assert.doesNotMatch(source, /RegisterTaskDefinition|TASK_CREATE_OR_UPDATE|SetRunLevel\(/);
   assert.match(source, /ShellExecuteExW/);
   assert.match(source, /SEE_MASK_NOASYNC/);
   assert.match(source, /"runas"/);

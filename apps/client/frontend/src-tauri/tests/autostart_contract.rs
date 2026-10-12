@@ -1,5 +1,5 @@
-// This target exercises the registration policy with a fake scheduler. It never
-// registers, runs, disables, or deletes a real Windows task.
+// This target exercises the registration policy with an in-memory startup store.
+// It never writes the registry or registers, runs, or deletes a Windows task.
 #[path = "../src/autostart.rs"]
 #[allow(dead_code)] // The policy target compiles but never invokes native OS writes.
 mod autostart;
@@ -19,8 +19,10 @@ struct FakeTasks {
     removals: usize,
     fail_read: bool,
     read_error: Option<&'static str>,
+    legacy_read_error: Option<&'static str>,
     fail_write: bool,
     ignore_write: bool,
+    ignore_legacy_cleanup: bool,
 }
 
 impl TaskStore for FakeTasks {
@@ -42,6 +44,9 @@ impl TaskStore for FakeTasks {
         self.writes.push(enabled);
         if !self.ignore_write {
             self.enabled = Some(enabled);
+            if !self.ignore_legacy_cleanup {
+                self.legacy_enabled = None;
+            }
         }
         Ok(())
     }
@@ -49,6 +54,9 @@ impl TaskStore for FakeTasks {
     fn remove(&mut self) -> Result<(), &'static str> {
         self.removals += 1;
         self.enabled = None;
+        if !self.ignore_legacy_cleanup {
+            self.legacy_enabled = None;
+        }
         Ok(())
     }
 
@@ -57,7 +65,10 @@ impl TaskStore for FakeTasks {
     }
 
     fn read_legacy(&self) -> Result<Option<bool>, &'static str> {
-        Ok(self.legacy_enabled)
+        match self.legacy_read_error {
+            Some(error) => Err(error),
+            None => Ok(self.legacy_enabled),
+        }
     }
 
     fn remember(&mut self, enabled: bool) -> Result<(), &'static str> {
@@ -90,7 +101,115 @@ fn status_verification_preserves_the_precise_read_error() {
         ..Default::default()
     };
     assert_eq!(set_enabled(&mut tasks, true), Err(ERROR));
+    assert!(tasks.writes.is_empty());
     assert_eq!(tasks.remembered, None);
+}
+
+#[test]
+fn a_windows_disabled_startup_entry_wins_and_retires_the_enabled_old_task() {
+    let mut tasks = FakeTasks {
+        enabled: Some(false),
+        legacy_enabled: Some(true),
+        remembered: Some(true),
+        ..Default::default()
+    };
+
+    let status = initialize_default(&mut tasks).unwrap();
+
+    assert!(!status.enabled);
+    assert_eq!(tasks.enabled, Some(false));
+    assert_eq!(tasks.legacy_enabled, None);
+    assert_eq!(tasks.remembered, Some(false));
+}
+
+#[test]
+fn an_enabled_startup_entry_wins_and_retires_the_disabled_old_task() {
+    let mut tasks = FakeTasks {
+        enabled: Some(true),
+        legacy_enabled: Some(false),
+        remembered: Some(false),
+        ..Default::default()
+    };
+
+    let status = initialize_default(&mut tasks).unwrap();
+
+    assert!(status.enabled);
+    assert_eq!(tasks.enabled, Some(true));
+    assert_eq!(tasks.legacy_enabled, None);
+    assert_eq!(tasks.remembered, Some(true));
+}
+
+#[test]
+fn an_existing_startup_entry_does_not_skip_legacy_identity_validation() {
+    const ERROR: &str = "旧启动任务与当前安装不匹配";
+    let mut tasks = FakeTasks {
+        enabled: Some(false),
+        legacy_enabled: Some(true),
+        legacy_read_error: Some(ERROR),
+        ..Default::default()
+    };
+
+    assert_eq!(initialize_default(&mut tasks), Err(ERROR));
+    assert!(tasks.writes.is_empty());
+    assert_eq!(tasks.remembered, None);
+}
+
+#[test]
+fn explicit_setting_rejects_legacy_identity_errors_before_writing() {
+    const ERROR: &str = "旧启动任务与当前安装不匹配";
+    let mut tasks = FakeTasks {
+        enabled: Some(false),
+        legacy_read_error: Some(ERROR),
+        ..Default::default()
+    };
+
+    assert_eq!(set_enabled(&mut tasks, true), Err(ERROR));
+    assert!(tasks.writes.is_empty());
+    assert_eq!(tasks.enabled, Some(false));
+    assert_eq!(tasks.remembered, None);
+}
+
+#[test]
+fn ineffective_legacy_cleanup_is_not_reported_as_successful_migration() {
+    let mut tasks = FakeTasks {
+        legacy_enabled: Some(true),
+        ignore_legacy_cleanup: true,
+        ..Default::default()
+    };
+
+    assert!(initialize_default(&mut tasks).is_err());
+    assert_eq!(tasks.legacy_enabled, Some(true));
+    assert_eq!(tasks.remembered, None);
+}
+
+#[test]
+fn explicit_setting_verifies_that_the_legacy_task_was_removed() {
+    let mut tasks = FakeTasks {
+        enabled: Some(false),
+        legacy_enabled: Some(true),
+        ignore_legacy_cleanup: true,
+        ..Default::default()
+    };
+
+    assert!(set_enabled(&mut tasks, true).is_err());
+    assert_eq!(tasks.legacy_enabled, Some(true));
+    assert_eq!(tasks.remembered, None);
+}
+
+#[test]
+fn uninstall_removes_both_owned_entries_and_preserves_windows_off_choice() {
+    let mut tasks = FakeTasks {
+        enabled: Some(false),
+        legacy_enabled: Some(true),
+        remembered: Some(true),
+        ..Default::default()
+    };
+
+    uninstall(&mut tasks, false).unwrap();
+
+    assert_eq!(tasks.enabled, None);
+    assert_eq!(tasks.legacy_enabled, None);
+    assert_eq!(tasks.remembered, Some(false));
 }
 
 #[test]
