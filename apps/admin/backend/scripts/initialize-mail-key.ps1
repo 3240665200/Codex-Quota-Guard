@@ -41,7 +41,13 @@ try {
     $keyText = [Convert]::ToBase64String($keyBytes)
     $settings[$keyName] = ConvertTo-SecureString -String $keyText -AsPlainText -Force
     $settings | Export-Clixml -LiteralPath $temporary
-    Set-Acl -LiteralPath $temporary -AclObject (Get-Acl -LiteralPath $resolvedConfig)
+    # Preserve the existing DACL, not its owner/group. Copying a different owner
+    # would require take-ownership privileges even when this user can update it.
+    $accessSection = [Security.AccessControl.AccessControlSections]::Access
+    $originalAcl = Get-Acl -LiteralPath $resolvedConfig
+    $temporaryAcl = New-Object Security.AccessControl.FileSecurity
+    $temporaryAcl.SetSecurityDescriptorSddlForm($originalAcl.GetSecurityDescriptorSddlForm($accessSection), $accessSection)
+    Set-Acl -LiteralPath $temporary -AclObject $temporaryAcl
     $check = Import-Clixml -LiteralPath $temporary
     $checkText = [pscredential]::new('mail-key', $check[$keyName]).GetNetworkCredential().Password
     if ($checkText -ne $keyText) { throw 'Protected mailbox key verification failed.' }
