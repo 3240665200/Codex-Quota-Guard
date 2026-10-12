@@ -188,31 +188,31 @@ describe("Dashboard", () => {
     const personalFiveHour = screen
       .getByRole("heading", { name: "5 小时" })
       .closest("article")!;
-    expect(within(personalFiveHour).getByText("个人已用")).toBeVisible();
+    expect(within(personalFiveHour).getByText("个人剩余")).toBeVisible();
     expect(screen.getByRole("heading", { name: "个人 Token" })).toHaveAttribute(
       "title",
       "个人额度按事件发生时间滚动统计",
     );
     expect(screen.getAllByTitle("精确值：100 Token").length).toBeGreaterThan(0);
     expect(
-      screen.getByTitle("精确值：900 Token").parentElement,
-    ).toHaveTextContent("已用");
+      screen.getByTitle("精确值：100 Token").parentElement,
+    ).toHaveTextContent("剩余");
     expect(
       screen.getByRole("heading", { name: "官方 Codex 额度" }),
     ).toBeVisible();
-    expect(await screen.findByText("25%")).toBeVisible();
+    expect(await screen.findByText("剩余 75%")).toBeVisible();
     expect(
-      screen.getByRole("progressbar", { name: "5 小时个人额度使用进度" }),
-    ).toHaveAttribute("aria-valuenow", "80");
+      screen.getByRole("progressbar", { name: "5 小时个人额度剩余额度" }),
+    ).toHaveAttribute("aria-valuenow", "20");
     expect(
-      screen.getByRole("progressbar", { name: "5 小时团队使用进度" }),
-    ).toHaveAttribute("aria-valuenow", "90");
+      screen.getByRole("progressbar", { name: "5 小时团队剩余额度" }),
+    ).toHaveAttribute("aria-valuenow", "10");
     expect(
-      screen.getByRole("progressbar", { name: "累计总额使用进度" }),
+      screen.getByRole("progressbar", { name: "累计总额剩余额度" }),
     ).toHaveAttribute("aria-valuenow", "50");
     expect(
-      screen.getByRole("progressbar", { name: "5 小时窗口官方使用进度" }),
-    ).toHaveAttribute("aria-valuenow", "25");
+      screen.getByRole("progressbar", { name: "5 小时窗口官方剩余额度" }),
+    ).toHaveAttribute("aria-valuenow", "75");
     expect(new Set(invokeMock.mock.calls.map(([command]) => command))).toEqual(
       new Set([
         "status",
@@ -253,13 +253,13 @@ describe("Dashboard", () => {
       expect(window.children[2]).toHaveClass("cqg-usage-window-footer");
     }
 
-    const unlimitedValue = within(fiveHour).getByTitle("精确值：800 Token");
+    const unlimitedValue = within(fiveHour).getByText("不限额");
     expect(
       unlimitedValue.closest(".cqg-usage-window-primary"),
-    ).toHaveTextContent("个人已用");
-    expect(unlimitedValue.querySelector(".cqg-token-unit")).toHaveTextContent(
-      "Token",
-    );
+    ).toHaveTextContent("个人剩余");
+    expect(
+      within(fiveHour).queryByTitle("精确值：800 Token"),
+    ).not.toBeInTheDocument();
     expect(
       within(fiveHour).getByText("本窗口只记录用量，不参与个人限额判断"),
     ).toBeVisible();
@@ -271,11 +271,11 @@ describe("Dashboard", () => {
     );
     expect(
       within(weekly).getByRole("progressbar", {
-        name: "7 天个人额度使用进度",
+        name: "7 天个人额度剩余额度",
       }),
-    ).toHaveAttribute("aria-valuenow", "45");
+    ).toHaveAttribute("aria-valuenow", "55");
     const weeklyMetrics = weekly.querySelector(".cqg-usage-window-metrics");
-    expect(weeklyMetrics).toHaveTextContent("个人已用 4,500 Token");
+    expect(weeklyMetrics).not.toHaveTextContent("个人已用");
     expect(weeklyMetrics).toHaveTextContent("上限 1万 Token");
     expect(within(weekly).getByTitle("精确值：10,000 Token")).toBeVisible();
 
@@ -294,6 +294,83 @@ describe("Dashboard", () => {
       "cqg-summary-card-content",
     );
   });
+
+  it.each([
+    { limit: 0, used: 0, remaining: 0, percent: 0 },
+    { limit: 1_000, used: 1_000, remaining: 0, percent: 0 },
+    { limit: 1_000, used: 1_500, remaining: 0, percent: 0 },
+    { limit: 1_000, used: 0, remaining: 1_000, percent: 100 },
+  ])(
+    "shows remaining quota for limit $limit and usage $used",
+    async ({ limit, used, remaining, percent }) => {
+      quotaResponse = {
+        ...quota,
+        policy: { ...quota.policy, fiveHourTokenLimit: limit },
+        usage: {
+          ...quota.usage,
+          fiveHourUsedTokens: used,
+          fiveHourRemainingTokens: remaining,
+        },
+        teamQuota: {
+          ...quota.teamQuota!,
+          totalTokenLimit: limit,
+          totalUsedTokens: used,
+          totalRemainingTokens: remaining,
+        },
+        allowed: remaining > 0,
+        blockReason: remaining > 0 ? null : "FIVE_HOUR_TOKEN_QUOTA_EXCEEDED",
+      };
+      renderDashboard();
+      const personal = await screen.findByRole("progressbar", {
+        name: "5 小时个人额度剩余额度",
+      });
+      const team = screen.getByRole("progressbar", {
+        name: "累计总额剩余额度",
+      });
+      for (const bar of [personal, team]) {
+        expect(bar).toHaveAttribute("aria-valuenow", String(percent));
+        if (remaining === 0) {
+          expect(bar.firstElementChild).toHaveClass(
+            "bg-[var(--cqg-status-error)]",
+          );
+        }
+      }
+    },
+  );
+
+  it.each([
+    { used: 0, remaining: 100 },
+    { used: 100, remaining: 0 },
+  ])(
+    "shows official remaining $remaining% for used $used%",
+    async ({ used, remaining }) => {
+      const original = invokeMock.getMockImplementation()!;
+      invokeMock.mockImplementation(async (command, args) => {
+        if (command === "codex_rate_limits")
+          return {
+            planType: "pro",
+            fetchedAt: null,
+            windows: [
+              {
+                limitId: "codex",
+                slot: "weekly",
+                windowDurationMins: 10_080,
+                usedPercent: used,
+                resetsAt: null,
+              },
+            ],
+          };
+        return original(command, args);
+      });
+      renderDashboard();
+      expect(
+        await screen.findByRole("progressbar", {
+          name: "7 天窗口官方剩余额度",
+        }),
+      ).toHaveAttribute("aria-valuenow", String(remaining));
+      expect(screen.getByText(`剩余 ${remaining}%`)).toBeVisible();
+    },
+  );
 
   it("does not offer credential download or managed Codex login", async () => {
     renderDashboard();
@@ -346,7 +423,7 @@ describe("Dashboard", () => {
     renderDashboard();
 
     expect(
-      await screen.findByRole("progressbar", { name: "7 天窗口官方使用进度" }),
+      await screen.findByRole("progressbar", { name: "7 天窗口官方剩余额度" }),
     ).toBeVisible();
     expect(screen.queryByText("5 小时窗口")).not.toBeInTheDocument();
   });
@@ -544,11 +621,11 @@ describe("Dashboard", () => {
       await screen.findByText(/所属团队的 5 小时共享 Token 额度已用尽/),
     ).toBeVisible();
     expect(
-      screen.getByRole("progressbar", { name: "5 小时团队使用进度" }),
-    ).toHaveAttribute("aria-valuenow", "100");
+      screen.getByRole("progressbar", { name: "5 小时团队剩余额度" }),
+    ).toHaveAttribute("aria-valuenow", "0");
     expect(
-      screen.getByRole("progressbar", { name: "5 小时个人额度使用进度" }),
-    ).toHaveAttribute("aria-valuenow", "80");
+      screen.getByRole("progressbar", { name: "5 小时个人额度剩余额度" }),
+    ).toHaveAttribute("aria-valuenow", "20");
   });
 
   it("treats an absent five-hour limit as unlimited", async () => {
@@ -581,7 +658,7 @@ describe("Dashboard", () => {
     expect(await screen.findByText("额度可用")).toBeVisible();
     expect(screen.queryByText("Token 额度已用尽")).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("progressbar", { name: "5 小时个人额度使用进度" }),
+      screen.queryByRole("progressbar", { name: "5 小时个人额度剩余额度" }),
     ).not.toBeInTheDocument();
     expect(screen.getAllByText("不设限").length).toBeGreaterThan(0);
   });
