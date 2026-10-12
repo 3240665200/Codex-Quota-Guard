@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -9,6 +9,11 @@ import {
   meterManifestVersion,
   verifyMeterPackage,
 } from "./meter-package-verification.mjs";
+
+test("the installer template and build CLI use the same pinned version", () => {
+  const manifest = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"));
+  assert.equal(manifest.devDependencies["@tauri-apps/cli"], "2.11.5");
+});
 
 test("Windows packaging requests static CRT while preserving supplied Rust flags", () => {
   const existing = {
