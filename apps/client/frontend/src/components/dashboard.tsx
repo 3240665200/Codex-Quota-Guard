@@ -77,40 +77,36 @@ function TokenAmount({ value }: { value: number }) {
   );
 }
 
-function usagePercent(used: number, limit: number | null): number {
-  if (limit === null) return 0;
-  if (limit === 0) return 100;
-  return Math.min(100, Math.max(0, (used / limit) * 100));
-}
-
 function QuotaProgress({
-  used,
+  remaining,
   limit,
   label,
 }: {
-  used: number;
+  remaining: number | null;
   limit: number | null;
   label: string;
 }) {
-  if (limit === null) {
+  if (limit === null || remaining === null) {
     return (
       <div className="flex justify-between gap-3 text-xs text-muted-foreground">
         <span>{label}</span>
-        <span>不设限</span>
+        <span>{limit === null ? "不设限" : "暂不可得"}</span>
       </div>
     );
   }
-  const percent = usagePercent(used, limit);
-  const exhausted = percent >= 100;
+  const percent =
+    limit === 0 ? 0 : Math.min(100, Math.max(0, (remaining * 100) / limit));
+  const exhausted = remaining <= 0 || limit === 0;
   return (
     <div
       className="flex flex-col gap-2"
       role="group"
-      aria-label={`${label}使用进度`}
+      aria-label={`${label}剩余额度`}
     >
       <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
         <span>{label}</span>
         <span className="tabular-nums font-medium text-foreground">
+          剩余{" "}
           {new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 1 }).format(
             percent,
           )}
@@ -118,12 +114,12 @@ function QuotaProgress({
         </span>
       </div>
       <Progress
-        aria-label={`${label}使用进度`}
+        aria-label={`${label}剩余额度`}
         className="h-2 bg-muted"
         indicatorClassName={
           exhausted
             ? "bg-[var(--cqg-status-error)]"
-            : percent >= 80
+            : percent <= 20
               ? "bg-[var(--cqg-status-warning)]"
               : "bg-primary"
         }
@@ -191,16 +187,18 @@ function TeamCard({ overview }: { overview: QuotaOverview }) {
           <div>
             <QuotaProgress
               label="累计总额"
-              used={teamQuota.totalUsedTokens}
+              remaining={teamQuota.totalRemainingTokens}
               limit={teamQuota.totalTokenLimit}
             />
             <div className="mt-3 flex flex-wrap justify-between gap-2 text-xs tabular-nums text-muted-foreground">
-              <span>
-                <TokenAmount value={teamQuota.totalUsedTokens} /> 已用
-              </span>
               {teamQuota.totalRemainingTokens !== null ? (
                 <span>
                   <TokenAmount value={teamQuota.totalRemainingTokens} /> 剩余
+                </span>
+              ) : null}
+              {teamQuota.totalTokenLimit !== null ? (
+                <span>
+                  上限 <TokenAmount value={teamQuota.totalTokenLimit} />
                 </span>
               ) : null}
             </div>
@@ -208,16 +206,18 @@ function TeamCard({ overview }: { overview: QuotaOverview }) {
           <div className="border-t pt-3">
             <QuotaProgress
               label="5 小时团队"
-              used={teamQuota.fiveHourUsedTokens}
+              remaining={teamQuota.fiveHourRemainingTokens}
               limit={teamQuota.fiveHourTokenLimit}
             />
             <div className="mt-3 flex flex-wrap justify-between gap-2 text-xs tabular-nums text-muted-foreground">
-              <span>
-                <TokenAmount value={teamQuota.fiveHourUsedTokens} /> 已用
-              </span>
               {teamQuota.fiveHourRemainingTokens !== null ? (
                 <span>
                   <TokenAmount value={teamQuota.fiveHourRemainingTokens} /> 剩余
+                </span>
+              ) : null}
+              {teamQuota.fiveHourTokenLimit !== null ? (
+                <span>
+                  上限 <TokenAmount value={teamQuota.fiveHourTokenLimit} />
                 </span>
               ) : null}
             </div>
@@ -225,16 +225,18 @@ function TeamCard({ overview }: { overview: QuotaOverview }) {
           <div className="border-t pt-3">
             <QuotaProgress
               label="7 天团队"
-              used={teamQuota.weeklyUsedTokens}
+              remaining={teamQuota.weeklyRemainingTokens}
               limit={teamQuota.weeklyTokenLimit}
             />
             <div className="mt-3 flex flex-wrap justify-between gap-2 text-xs tabular-nums text-muted-foreground">
-              <span>
-                <TokenAmount value={teamQuota.weeklyUsedTokens} /> 已用
-              </span>
               {teamQuota.weeklyRemainingTokens !== null ? (
                 <span>
                   <TokenAmount value={teamQuota.weeklyRemainingTokens} /> 剩余
+                </span>
+              ) : null}
+              {teamQuota.weeklyTokenLimit !== null ? (
+                <span>
+                  上限 <TokenAmount value={teamQuota.weeklyTokenLimit} />
                 </span>
               ) : null}
             </div>
@@ -251,12 +253,10 @@ function TeamCard({ overview }: { overview: QuotaOverview }) {
 
 function UsageWindow({
   label,
-  usedTokens,
   remainingTokens,
   limitTokens,
 }: {
   label: string;
-  usedTokens: number;
   remainingTokens: number | null;
   limitTokens: number | null;
 }) {
@@ -274,13 +274,13 @@ function UsageWindow({
       </header>
       <div className="cqg-usage-window-primary">
         <p className="cqg-usage-window-label text-xs text-muted-foreground">
-          {limitTokens === null ? "个人已用" : "个人剩余"}
+          个人剩余
         </p>
         <p
           className={`cqg-usage-window-value break-words font-semibold tracking-tight tabular-nums ${nearLimit ? "text-[var(--cqg-status-warning)]" : "text-foreground"}`}
         >
           {limitTokens === null ? (
-            <TokenAmount value={usedTokens} />
+            "不限额"
           ) : remainingTokens === null ? (
             "暂不可得"
           ) : (
@@ -297,13 +297,10 @@ function UsageWindow({
           <>
             <QuotaProgress
               label={`${label}个人额度`}
-              used={usedTokens}
+              remaining={remainingTokens}
               limit={limitTokens}
             />
             <div className="cqg-usage-window-metrics mt-2 flex flex-wrap justify-between gap-x-2 gap-y-1 text-xs tabular-nums text-muted-foreground">
-              <span>
-                个人已用 <TokenAmount value={usedTokens} />
-              </span>
               <span>
                 上限 <TokenAmount value={limitTokens} />
               </span>
@@ -338,13 +335,11 @@ function UsageCard({ overview }: { overview: QuotaOverview }) {
       <div className="cqg-quota-grid">
         <UsageWindow
           label="5 小时"
-          usedTokens={usage.fiveHourUsedTokens}
           remainingTokens={usage.fiveHourRemainingTokens}
           limitTokens={policy.fiveHourTokenLimit}
         />
         <UsageWindow
           label="7 天"
-          usedTokens={usage.weeklyUsedTokens}
           remainingTokens={usage.weeklyRemainingTokens}
           limitTokens={policy.weeklyTokenLimit}
         />
@@ -360,20 +355,21 @@ function OfficialRateLimitWindow({
   label: string;
   window: OfficialCodexRateLimits["windows"][number];
 }) {
+  const remainingPercent = Math.min(100, Math.max(0, 100 - window.usedPercent));
   return (
     <div className="min-w-0">
       <div className="flex items-center justify-between gap-3 text-xs leading-4">
         <span className="font-medium">{label}</span>
         <span className="font-semibold tabular-nums text-primary">
-          {formatPercent(window.usedPercent)}
+          剩余 {formatPercent(remainingPercent)}
         </span>
       </div>
       <div className="mt-2">
         <Progress
-          aria-label={`${label}官方使用进度`}
+          aria-label={`${label}官方剩余额度`}
           className="h-2 bg-muted"
           indicatorClassName="bg-primary"
-          value={window.usedPercent}
+          value={remainingPercent}
         />
       </div>
       <p className="mt-3 text-xs text-muted-foreground">
