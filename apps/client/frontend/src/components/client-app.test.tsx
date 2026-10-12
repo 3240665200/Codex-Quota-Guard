@@ -73,6 +73,22 @@ function renderClientApp() {
 }
 
 describe("ClientApp system session gate", () => {
+  it("explains the seven-day local remembered session on the login page", async () => {
+    renderClientApp();
+    expect(await screen.findByText(/在本机保留登录状态 7 天/)).toBeVisible();
+    expect(screen.getByText(/退出登录将清除/)).toBeVisible();
+  });
+
+  it("enters the dashboard from a restored native session without requesting a password", async () => {
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command, args) =>
+      command === "system_current" ? signedIn : original(command, args),
+    );
+    renderClientApp();
+    expect(await screen.findByRole("heading", { name: "个人 Token" })).toBeVisible();
+    expect(screen.queryByLabelText("密码")).not.toBeInTheDocument();
+    expect(invokeMock.mock.calls.some(([command]) => command === "system_login")).toBe(false);
+  });
   beforeEach(() => {
     invokeMock.mockClear();
     listenMock.mockReset();

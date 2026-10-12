@@ -567,6 +567,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn session_vault_failures_do_not_masquerade_as_wrong_passwords_or_server_outages() {
+        for route in [ApiRoute::SystemLogin, ApiRoute::SystemCurrent, ApiRoute::QuotaOverview] {
+            assert!(matches!(classify_response(route, StatusCode::LOCKED), BackendError::SessionStorageUnavailable));
+        }
+    }
+
+    #[test]
     fn login_assistance_routes_accept_only_a_uuid_and_never_external_urls() {
         let id = "b350ad52-7b5d-4a5e-bc26-73d17a8dbbaf";
         let route = login_assistance_route(id).unwrap();
