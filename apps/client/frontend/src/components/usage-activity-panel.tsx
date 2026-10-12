@@ -603,7 +603,7 @@ export function UsageActivityPanel({
       )}
       {legacyView || activeView !== "overview" ? (
         <div
-          className={`${legacyView ? "mt-4" : "mb-3"} flex flex-wrap items-center justify-between gap-3 border-b pb-3`}
+          className={`${legacyView ? "mt-4" : activeView === "diagnostics" ? "my-3" : "mb-3"} flex flex-wrap items-center justify-between gap-3 border-b pb-3`}
         >
           {legacyView ? (
             <div

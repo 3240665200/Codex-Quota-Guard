@@ -909,12 +909,12 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
                   <AccessCard overview={overview} />
                   <UsageCard overview={overview} />
                   <div className="cqg-quota-grid">
-                    <TeamCard overview={overview} />
                     <OfficialRateLimitsCard
                       rateLimits={rateLimitsQuery.data}
                       loading={rateLimitsQuery.isPending}
                       failed={rateLimitsQuery.isError}
                     />
+                    <TeamCard overview={overview} />
                   </div>
                 </>
               ) : (
