@@ -38,6 +38,9 @@ pub(crate) enum ApiRoute {
     UsagePair,
     UsageEvents { page: u32, size: u32 },
     UsageAnalytics { days: u32 },
+    LoginAssistanceInfo,
+    LoginAssistanceStart,
+    LoginAssistanceListener { id: Uuid },
     MeterRuntimeLogs,
     CodexRateLimits,
     SystemLogin,
@@ -56,6 +59,10 @@ impl ApiRoute {
             Self::UsagePair => "/api/v1/usage/pair",
             Self::UsageEvents { .. } => "/api/v1/usage/events",
             Self::UsageAnalytics { .. } => "/api/v1/usage/analytics",
+            Self::LoginAssistanceInfo => "/api/v1/login-assistance",
+            Self::LoginAssistanceStart | Self::LoginAssistanceListener { .. } => {
+                "/api/v1/login-assistance/listeners"
+            }
             Self::MeterRuntimeLogs => "/api/v1/usage/logs",
             Self::CodexRateLimits => "/api/v1/codex/rate-limits",
             Self::SystemLogin => "/api/v1/session/login",
@@ -80,6 +87,14 @@ pub(crate) enum BackendError {
     InvalidPagination,
     #[error("统计范围须为 1、7 或 30 天。")]
     InvalidUsageRange,
+    #[error("该账户已有用户正在监听，请稍后重试。")]
+    MailBusy,
+    #[error("操作过于频繁，请稍后重试。")]
+    MailRateLimited,
+    #[error("无法使用登录辅助，请检查团队与邮箱配置后重试。")]
+    MailRejected,
+    #[error("监听任务编号无效，请重新开始监听。")]
+    InvalidListenerId,
     #[error("邮箱或密码不正确，请检查后重试。")]
     InvalidCredentials,
     #[error(
@@ -338,6 +353,24 @@ impl BackendState {
 }
 
 fn classify_response(route: ApiRoute, status: StatusCode) -> BackendError {
+    if matches!(
+        route,
+        ApiRoute::LoginAssistanceInfo
+            | ApiRoute::LoginAssistanceStart
+            | ApiRoute::LoginAssistanceListener { .. }
+    ) {
+        // Classify by status only: an upstream body may contain email secrets.
+        return match status {
+            StatusCode::UNAUTHORIZED => BackendError::SystemLoginRequired,
+            StatusCode::CONFLICT => BackendError::MailBusy,
+            StatusCode::TOO_MANY_REQUESTS => BackendError::MailRateLimited,
+            StatusCode::BAD_REQUEST | StatusCode::FORBIDDEN | StatusCode::NOT_FOUND => {
+                BackendError::MailRejected
+            }
+            StatusCode::SERVICE_UNAVAILABLE => BackendError::ControlPlaneUnavailable,
+            _ => BackendError::Unavailable,
+        };
+    }
     match (route, status) {
         (ApiRoute::SystemLogin, StatusCode::UNAUTHORIZED | StatusCode::BAD_REQUEST) => {
             BackendError::InvalidCredentials
@@ -362,6 +395,11 @@ fn classify_response(route: ApiRoute, status: StatusCode) -> BackendError {
         ) => BackendError::SystemLoginRequired,
         _ => BackendError::Unavailable,
     }
+}
+
+pub(crate) fn login_assistance_route(listener_id: &str) -> Result<ApiRoute, BackendError> {
+    let id = Uuid::parse_str(listener_id).map_err(|_| BackendError::InvalidListenerId)?;
+    Ok(ApiRoute::LoginAssistanceListener { id })
 }
 
 fn request_graceful_shutdown(process: &mut RunningBackend) -> bool {
@@ -503,6 +541,7 @@ fn fixed_url(port: u16, route: ApiRoute) -> String {
     match route {
         ApiRoute::UsageEvents { page, size } => format!("{base}?page={page}&size={size}"),
         ApiRoute::UsageAnalytics { days } => format!("{base}?days={days}"),
+        ApiRoute::LoginAssistanceListener { id } => format!("{base}/{id}"),
         _ => base,
     }
 }
@@ -531,10 +570,25 @@ mod tests {
     fn login_assistance_routes_accept_only_a_uuid_and_never_external_urls() {
         let id = "b350ad52-7b5d-4a5e-bc26-73d17a8dbbaf";
         let route = login_assistance_route(id).unwrap();
-        assert_eq!(fixed_url(43117, route), format!("http://127.0.0.1:43117/api/v1/login-assistance/listeners/{id}"));
-        assert_eq!(fixed_url(43117, ApiRoute::LoginAssistanceInfo), "http://127.0.0.1:43117/api/v1/login-assistance");
-        assert_eq!(fixed_url(43117, ApiRoute::LoginAssistanceStart), "http://127.0.0.1:43117/api/v1/login-assistance/listeners");
-        for invalid in ["", "../session/login", "https://example.com", "not-a-uuid", "x?code=123456"] {
+        assert_eq!(
+            fixed_url(43117, route),
+            format!("http://127.0.0.1:43117/api/v1/login-assistance/listeners/{id}")
+        );
+        assert_eq!(
+            fixed_url(43117, ApiRoute::LoginAssistanceInfo),
+            "http://127.0.0.1:43117/api/v1/login-assistance"
+        );
+        assert_eq!(
+            fixed_url(43117, ApiRoute::LoginAssistanceStart),
+            "http://127.0.0.1:43117/api/v1/login-assistance/listeners"
+        );
+        for invalid in [
+            "",
+            "../session/login",
+            "https://example.com",
+            "not-a-uuid",
+            "x?code=123456",
+        ] {
             assert!(login_assistance_route(invalid).is_err());
         }
     }
@@ -542,11 +596,26 @@ mod tests {
     #[test]
     fn login_assistance_errors_are_specific_and_never_echo_remote_details() {
         let route = ApiRoute::LoginAssistanceStart;
-        assert!(matches!(classify_response(route, StatusCode::UNAUTHORIZED), BackendError::SystemLoginRequired));
-        assert!(matches!(classify_response(route, StatusCode::CONFLICT), BackendError::MailBusy));
-        assert!(matches!(classify_response(route, StatusCode::TOO_MANY_REQUESTS), BackendError::MailRateLimited));
-        assert!(matches!(classify_response(route, StatusCode::FORBIDDEN), BackendError::MailRejected));
-        assert!(matches!(classify_response(route, StatusCode::SERVICE_UNAVAILABLE), BackendError::ControlPlaneUnavailable));
+        assert!(matches!(
+            classify_response(route, StatusCode::UNAUTHORIZED),
+            BackendError::SystemLoginRequired
+        ));
+        assert!(matches!(
+            classify_response(route, StatusCode::CONFLICT),
+            BackendError::MailBusy
+        ));
+        assert!(matches!(
+            classify_response(route, StatusCode::TOO_MANY_REQUESTS),
+            BackendError::MailRateLimited
+        ));
+        assert!(matches!(
+            classify_response(route, StatusCode::FORBIDDEN),
+            BackendError::MailRejected
+        ));
+        assert!(matches!(
+            classify_response(route, StatusCode::SERVICE_UNAVAILABLE),
+            BackendError::ControlPlaneUnavailable
+        ));
     }
 
     #[test]

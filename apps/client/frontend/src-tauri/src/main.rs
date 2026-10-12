@@ -220,6 +220,43 @@ async fn system_login(
 }
 
 #[tauri::command]
+async fn login_assistance_info(state: State<'_, BackendState>) -> CommandResult<Value> {
+    state
+        .json(Method::GET, ApiRoute::LoginAssistanceInfo)
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
+async fn login_assistance_start(state: State<'_, BackendState>) -> CommandResult<Value> {
+    state
+        .json(Method::POST, ApiRoute::LoginAssistanceStart)
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
+async fn login_assistance_status(
+    listener_id: String,
+    state: State<'_, BackendState>,
+) -> CommandResult<Value> {
+    let route = backend::login_assistance_route(&listener_id).map_err(command_error)?;
+    state.json(Method::GET, route).await.map_err(command_error)
+}
+
+#[tauri::command]
+async fn login_assistance_cancel(
+    listener_id: String,
+    state: State<'_, BackendState>,
+) -> CommandResult<Value> {
+    let route = backend::login_assistance_route(&listener_id).map_err(command_error)?;
+    state
+        .json(Method::DELETE, route)
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
 async fn system_current(state: State<'_, BackendState>) -> CommandResult<Value> {
     state
         .json(Method::GET, ApiRoute::SystemCurrent)
@@ -306,6 +343,10 @@ fn main() {
             system_login,
             system_current,
             system_logout,
+            login_assistance_info,
+            login_assistance_start,
+            login_assistance_status,
+            login_assistance_cancel,
             server_config_get,
             server_config_save
         ]);
