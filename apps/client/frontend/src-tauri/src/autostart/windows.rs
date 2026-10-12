@@ -675,7 +675,7 @@ fn show_startup_error(message: &'static str) {
     };
 }
 
-fn request_logon_elevation() -> Result<(), &'static str> {
+fn request_elevation() -> Result<(), &'static str> {
     // Shell extensions may require STA COM, and NOASYNC completes ShellExecute
     // before this short-lived unelevated launcher exits.
     let _apartment = ComApartment::initialize(COINIT_APARTMENTTHREADED)?;
@@ -725,7 +725,6 @@ pub(super) fn handle_startup(mode: LaunchMode) -> Option<i32> {
         }
     };
     match action {
-        StartupAction::Desktop => None,
         StartupAction::Initialize => {
             // Development builds depend on a live Vite server and must not
             // become a permanent Windows logon entry automatically.
@@ -738,7 +737,7 @@ pub(super) fn handle_startup(mode: LaunchMode) -> Option<i32> {
             }
             None
         }
-        StartupAction::Elevate => match request_logon_elevation() {
+        StartupAction::Elevate => match request_elevation() {
             Ok(()) => Some(0),
             Err(message) => {
                 show_startup_error(message);

@@ -29,7 +29,6 @@ pub(crate) enum LaunchMode {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum StartupAction {
-    Desktop,
     Initialize,
     Elevate,
     Uninstall,
@@ -44,11 +43,10 @@ pub(crate) fn startup_action(
         return Err(CONTEXT_ERROR);
     }
     match (mode, elevated) {
-        (LaunchMode::Desktop, false) => Ok(StartupAction::Desktop),
+        (LaunchMode::Desktop | LaunchMode::Logon, false) => Ok(StartupAction::Elevate),
         (LaunchMode::Desktop | LaunchMode::Logon | LaunchMode::ElevatedLogon, true) => {
             Ok(StartupAction::Initialize)
         }
-        (LaunchMode::Logon, false) => Ok(StartupAction::Elevate),
         (LaunchMode::ElevatedLogon, false) => Err(WRITE_ERROR),
         (LaunchMode::Uninstall, _) => Ok(StartupAction::Uninstall),
     }
