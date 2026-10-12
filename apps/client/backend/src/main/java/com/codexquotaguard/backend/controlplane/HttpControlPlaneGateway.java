@@ -14,6 +14,10 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.ObjectMapper;
 
@@ -22,6 +26,7 @@ final class HttpControlPlaneGateway implements ControlPlaneGateway {
 
     private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(10);
     private static final int MAX_USAGE_EVENTS_PER_REQUEST = 100;
+    private static final int MAX_MAIL_RESPONSE_BYTES = 8192;
     private static final ProxySelector DIRECT_PROXY_SELECTOR = new ProxySelector() {
         @Override
         public List<Proxy> select(URI uri) {
@@ -120,7 +125,7 @@ final class HttpControlPlaneGateway implements ControlPlaneGateway {
     }
 
     private <T> T sendMailJson(HttpRequest request, Class<T> type) {
-        HttpResponse<String> response = send(request);
+        HttpResponse<byte[]> response = sendMail(request);
         switch (response.statusCode()) {
             case 400, 403, 404 -> throw ControlPlaneException.mailRejected();
             case 409 -> throw ControlPlaneException.mailBusy();
@@ -128,10 +133,27 @@ final class HttpControlPlaneGateway implements ControlPlaneGateway {
             default -> ensureSuccess(response.statusCode());
         }
         try {
-            if (response.body().length() > 8192) throw ControlPlaneException.unavailable();
             return mapper.readValue(response.body(), type);
         } catch (RuntimeException exception) {
             // Never retain a response body or Jackson exception containing an OTP.
+            throw ControlPlaneException.unavailable();
+        }
+    }
+
+    private HttpResponse<byte[]> sendMail(HttpRequest request) {
+        CompletableFuture<HttpResponse<byte[]>> exchange = null;
+        try {
+            // The stage completes only after the bounded subscriber consumes the
+            // full body; this deadline therefore also covers slow/chunked bodies.
+            exchange = client.sendAsync(request,
+                    ignored -> new BoundedMailBodySubscriber(MAX_MAIL_RESPONSE_BYTES));
+            return exchange.get(requestTimeout.toNanos(), TimeUnit.NANOSECONDS);
+        } catch (InterruptedException interrupted) {
+            if (exchange != null) exchange.cancel(true);
+            Thread.currentThread().interrupt();
+            throw ControlPlaneException.unavailable();
+        } catch (ExecutionException | TimeoutException | RuntimeException failure) {
+            if (exchange != null) exchange.cancel(true);
             throw ControlPlaneException.unavailable();
         }
     }

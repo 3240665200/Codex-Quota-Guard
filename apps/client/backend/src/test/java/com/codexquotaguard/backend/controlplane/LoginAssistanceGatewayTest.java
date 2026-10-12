@@ -3,11 +3,16 @@ package com.codexquotaguard.backend.controlplane;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowable;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import java.net.InetSocketAddress;
 import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -143,6 +148,20 @@ class LoginAssistanceGatewayTest {
     @Test
     void timesOutAnUnfinishedBodyAfterHeadersHaveAlreadyArrived() throws Exception {
         assertRejectsUnfinishedBody(200, RESULT.substring(0, 30), Duration.ofMillis(200));
+    }
+
+    @Test
+    void cancelsThePendingHttpExchangeWhenTheCompleteBodyDeadlineExpires() {
+        var client = mock(HttpClient.class);
+        var pending = new CompletableFuture<HttpResponse<byte[]>>();
+        when(client.sendAsync(any(HttpRequest.class),
+                org.mockito.ArgumentMatchers.<HttpResponse.BodyHandler<byte[]>>any())).thenReturn(pending);
+        var gateway = new HttpControlPlaneGateway("http://127.0.0.1:43117", new ObjectMapper(),
+                client, Duration.ofMillis(20));
+
+        assertThatThrownBy(() -> gateway.startLoginAssistance("synthetic-session"))
+                .isInstanceOf(ControlPlaneException.class).hasMessage("UNAVAILABLE");
+        assertThat(pending.isCancelled()).isTrue();
     }
 
     private void assertRejectsUnfinishedBody(int status, String prefix, Duration timeout) throws Exception {
