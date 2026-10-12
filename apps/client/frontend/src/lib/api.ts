@@ -79,6 +79,63 @@ const systemSessionSchema = z.object({
   user: systemUserSchema.nullable(),
 });
 
+const loginAssistanceReason = z
+  .string()
+  .regex(/^[A-Z][A-Z0-9_]{0,63}$/)
+  .nullable();
+const loginAssistanceInfoSchema = z.strictObject({
+  available: z.boolean(),
+  reasonCode: loginAssistanceReason,
+  officialAccountId: z.string().min(1).max(128).nullable(),
+  accountLabel: z.string().min(1).max(160).nullable(),
+  recipientEmail: z.string().email().nullable(),
+});
+const loginAssistanceListenerSchema = z
+  .strictObject({
+    id: z.string().uuid(),
+    state: z.enum([
+      "CONNECTING",
+      "LISTENING",
+      "RECEIVED",
+      "CANCELLED",
+      "TIMED_OUT",
+      "FAILED",
+    ]),
+    startedAt: z.iso.datetime({ offset: true }),
+    expiresAt: z.iso.datetime({ offset: true }),
+    listeningAt: z.iso.datetime({ offset: true }).nullable(),
+    receivedAt: z.iso.datetime({ offset: true }).nullable(),
+    code: z
+      .string()
+      .regex(/^\d{6}$/)
+      .nullable(),
+    errorCode: loginAssistanceReason,
+  })
+  .superRefine((value, context) => {
+    const started = Date.parse(value.startedAt);
+    const expires = Date.parse(value.expiresAt);
+    const listening =
+      value.listeningAt === null ? null : Date.parse(value.listeningAt);
+    const received =
+      value.receivedAt === null ? null : Date.parse(value.receivedAt);
+    if (
+      expires <= started ||
+      (listening !== null && (listening < started || listening >= expires)) ||
+      (value.state === "RECEIVED"
+        ? value.code === null ||
+          listening === null ||
+          received === null ||
+          received < listening ||
+          received >= expires
+        : value.code !== null || received !== null)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "监听结果与本次监听时间或状态不一致。",
+      });
+    }
+  });
+
 const quotaTeamSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -401,6 +458,10 @@ export type MeterVersion = z.infer<typeof meterVersionSchema>;
 export type ServerConfig = z.infer<typeof serverConfigSchema>;
 export type SystemUser = z.infer<typeof systemUserSchema>;
 export type SystemSession = z.infer<typeof systemSessionSchema>;
+export type LoginAssistanceInfo = z.infer<typeof loginAssistanceInfoSchema>;
+export type LoginAssistanceListener = z.infer<
+  typeof loginAssistanceListenerSchema
+>;
 export type QuotaTeam = z.infer<typeof quotaTeamSchema>;
 export type QuotaPolicy = z.infer<typeof quotaPolicySchema>;
 export type QuotaUsage = z.infer<typeof quotaUsageSchema>;
@@ -463,6 +524,30 @@ export const api = {
   systemLogout: async () => {
     await invoke("system_logout");
   },
+  loginAssistanceInfo: () =>
+    invokeValidated("login_assistance_info", loginAssistanceInfoSchema),
+  loginAssistanceStart: () =>
+    invokeValidated("login_assistance_start", loginAssistanceListenerSchema),
+  loginAssistanceStatus: async (listenerId: string) => {
+    z.string().uuid().parse(listenerId);
+    return invokeValidated(
+      "login_assistance_status",
+      loginAssistanceListenerSchema.refine(
+        (listener) => listener.id === listenerId,
+      ),
+      { listenerId },
+    );
+  },
+  loginAssistanceCancel: async (listenerId: string) => {
+    z.string().uuid().parse(listenerId);
+    return invokeValidated(
+      "login_assistance_cancel",
+      loginAssistanceListenerSchema.refine(
+        (listener) => listener.id === listenerId,
+      ),
+      { listenerId },
+    );
+  },
   quotaOverview: () => invokeValidated("quota_overview", quotaOverviewSchema),
   usageStatus: () => invokeValidated("usage_status", usageStatusSchema),
   usageEvents: async (page = 0, size = 10) => {
@@ -492,6 +577,10 @@ const safeBackendMessages = new Set([
   "邮箱或密码不正确，请检查后重试。",
   "请先登录系统账户。",
   "中央后台拒绝请求，请检查请求内容后重试。",
+  "该账户已有用户正在监听，请稍后重试。",
+  "操作过于频繁，请稍后重试。",
+  "无法使用登录辅助，请检查团队与邮箱配置后重试。",
+  "监听任务编号无效，请重新开始监听。",
   "请输入完整的服务器地址，例如 http://192.168.0.102:8080。",
   "服务器地址缺少主机名。",
   "服务器地址只能填写协议、主机和端口。",

@@ -1,10 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState, type ReactNode } from "react";
+import { flushSync } from "react-dom";
 import {
   Activity,
   ChartNoAxesCombined,
   CircleAlert,
   Gauge,
+  KeyRound,
   ListChecks,
   LogOut,
   PanelLeftClose,
@@ -20,6 +22,7 @@ import { toast } from "sonner";
 
 import { AppIcon } from "@/components/app-icon";
 import { ClientSettings } from "@/components/client-settings";
+import { LoginAssistance } from "@/components/login-assistance";
 import {
   api,
   getApiErrorMessage,
@@ -503,6 +506,13 @@ const workspaces = [
     Icon: Gauge,
   },
   {
+    id: "login-assistance",
+    label: "登录辅助",
+    title: "登录辅助",
+    description: "接收所属团队官方账户本次登录的新验证码。",
+    Icon: KeyRound,
+  },
+  {
     id: "analytics",
     label: "用量统计",
     title: "用量统计",
@@ -812,7 +822,14 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
               variant="ghost"
               size="icon"
               className="size-8 shrink-0"
-              onClick={onLogout}
+              onClick={() => {
+                // Dispose the local code and request cancellation before the
+                // surrounding app clears the signed-in bridge session.
+                if (workspace === "login-assistance") {
+                  flushSync(() => setWorkspace("quota"));
+                }
+                onLogout();
+              }}
               aria-label="退出系统"
               title="退出系统"
             >
@@ -932,6 +949,11 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
                   description="请刷新重试；如问题持续，请联系管理员。"
                 />
               )
+            ) : workspace === "login-assistance" ? (
+              <LoginAssistance
+                key={session.user!.id}
+                userId={session.user!.id}
+              />
             ) : workspace === "settings" ? (
               <ClientSettings />
             ) : (
