@@ -20,6 +20,9 @@ export function ClientSettings() {
   const mutation = useMutation({
     mutationFn: api.setAutostart,
     onSuccess: (result) => queryClient.setQueryData(autostartQueryKey, result),
+    // The Windows task may have changed before persisting its upgrade preference
+    // failed. Re-read the actual task while retaining the actionable error.
+    onError: () => queryClient.invalidateQueries({ queryKey: autostartQueryKey }),
   });
   const refresh = () => {
     mutation.reset();
