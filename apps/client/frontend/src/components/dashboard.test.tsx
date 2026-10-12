@@ -746,7 +746,7 @@ describe("Dashboard", () => {
     renderDashboard();
     await screen.findByRole("heading", { name: "个人 Token" });
     expect(invokeMock).not.toHaveBeenCalledWith("autostart_status");
-    await user.click(screen.getByRole("button", { name: "设置", exact: true }));
+    await user.click(screen.getByRole("button", { name: "设置" }));
     expect(
       await screen.findByRole("heading", { name: "设置", level: 1 }),
     ).toBeVisible();
@@ -778,7 +778,7 @@ describe("Dashboard", () => {
       return original(command, args);
     });
     renderDashboard();
-    await user.click(screen.getByRole("button", { name: "设置", exact: true }));
+    await user.click(screen.getByRole("button", { name: "设置" }));
     const toggle = await screen.findByRole("switch", { name: "开机自启动" });
     await waitFor(() => expect(toggle).toBeEnabled());
     await user.click(toggle);
@@ -800,7 +800,7 @@ describe("Dashboard", () => {
       return original(command, args);
     });
     renderDashboard();
-    await user.click(screen.getByRole("button", { name: "设置", exact: true }));
+    await user.click(screen.getByRole("button", { name: "设置" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "无法读取自启动状态",
     );
@@ -820,7 +820,7 @@ describe("Dashboard", () => {
       return original(command, args);
     });
     renderDashboard();
-    await user.click(screen.getByRole("button", { name: "设置", exact: true }));
+    await user.click(screen.getByRole("button", { name: "设置" }));
     expect(
       await screen.findByText("当前系统暂不支持开机自启动设置"),
     ).toBeVisible();

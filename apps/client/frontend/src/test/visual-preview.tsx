@@ -333,8 +333,17 @@ function numericPayload(payload: unknown, key: string): number | undefined {
   return typeof value === "number" ? value : undefined;
 }
 
+let demoAutostartEnabled = true;
 mockIPC((command, payload) => {
   switch (command) {
+    case "autostart_status":
+      return { supported: true, enabled: demoAutostartEnabled };
+    case "autostart_set": {
+      const enabled = (payload as { enabled?: unknown } | undefined)?.enabled;
+      if (typeof enabled !== "boolean") throw new Error("预览自启动设置无效");
+      demoAutostartEnabled = enabled;
+      return { supported: true, enabled: demoAutostartEnabled };
+    }
     case "system_current":
       return demoSession;
     case "server_config_get":
