@@ -218,6 +218,10 @@ describe("UsageActivityPanel", () => {
     render(view("user-a", undefined, vi.fn(), "ledger"));
     const table = await screen.findByRole("table", { name: "个人消耗流水" });
     expect(table).toHaveClass("min-w-[640px]", "table-fixed");
+    const ledgerToolbar = screen.getByRole("button", { name: "刷新消耗流水" })
+      .parentElement!.parentElement!;
+    expect(ledgerToolbar).toHaveClass("mb-3");
+    expect(ledgerToolbar).not.toHaveClass("my-3");
 
     expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
     expect(screen.queryByText("统计程序最近扫描")).not.toBeInTheDocument();
@@ -298,6 +302,10 @@ describe("UsageActivityPanel", () => {
     expect(screen.getByRole("button", { name: "更新统计程序" })).toBeVisible();
     expect(screen.getByRole("button", { name: "重新配对" })).toBeVisible();
     expect(screen.getByRole("button", { name: "立即扫描" })).toBeVisible();
+    const toolbar = screen.getByRole("button", { name: "刷新运行诊断" })
+      .parentElement!.parentElement!;
+    expect(toolbar.previousElementSibling?.tagName).toBe("DL");
+    expect(toolbar).toHaveClass("my-3");
     expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
     expect(invokeMock.mock.calls.map(([command]) => command).sort()).toEqual([
       "meter_runtime_logs",

@@ -224,6 +224,22 @@ describe("Dashboard", () => {
     );
   });
 
+  it("keeps personal windows first and places official quota before shared team quota", async () => {
+    renderDashboard();
+    await screen.findByRole("heading", { name: "个人 Token" });
+    expect(
+      screen
+        .getAllByRole("heading", { level: 2 })
+        .map((heading) => heading.textContent),
+    ).toEqual(["个人 Token", "官方 Codex 额度", "团队共享额度"]);
+    const official = screen.getByRole("region", { name: "官方 Codex 额度" });
+    const team = screen.getByRole("region", { name: "团队共享额度" });
+    expect(official.nextElementSibling).toBe(team);
+    expect(official.parentElement?.previousElementSibling).toBe(
+      screen.getByRole("region", { name: "个人 Token" }),
+    );
+  });
+
   it("aligns unlimited and capped personal windows while preserving their quota semantics", async () => {
     quotaResponse = {
       ...quota,
