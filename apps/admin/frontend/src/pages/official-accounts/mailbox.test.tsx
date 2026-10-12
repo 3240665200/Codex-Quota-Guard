@@ -1,0 +1,132 @@
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { App as AntApp } from 'antd';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import OfficialAccountsPage from './index';
+
+const mocks = vi.hoisted(() => ({
+  createOfficialAccount: vi.fn(), deleteOfficialAccount: vi.fn(),
+  listOfficialAccounts: vi.fn(), updateOfficialAccount: vi.fn(),
+  listMailboxProviders: vi.fn(), getOfficialAccountMailbox: vi.fn(),
+  saveOfficialAccountMailbox: vi.fn(), deleteOfficialAccountMailbox: vi.fn(),
+  testOfficialAccountMailbox: vi.fn(),
+}));
+vi.mock('../../services/api', () => mocks);
+
+const providers = [
+  ['QQ', 'QQ 邮箱', 'imap.qq.com'], ['NETEASE_163', '163 邮箱', 'imap.163.com'],
+  ['NETEASE_126', '126 邮箱', 'imap.126.com'], ['YEAH', 'yeah.net 邮箱', 'imap.yeah.net'],
+  ['GOOGLE', 'Gmail', 'imap.gmail.com'], ['MICROSOFT', 'Outlook / Microsoft 365', 'outlook.office365.com'],
+  ['ICLOUD', 'iCloud 邮箱', 'imap.mail.me.com'], ['YAHOO', 'Yahoo 邮箱', 'imap.mail.yahoo.com'],
+  ['ZOHO', 'Zoho 邮箱', 'imap.zoho.com'], ['TENCENT_ENTERPRISE', '腾讯企业邮箱', 'imap.exmail.qq.com'],
+  ['ALI_ENTERPRISE', '阿里企业邮箱', 'imap.qiye.aliyun.com'], ['CUSTOM', '自定义 IMAP', ''],
+].map(([id, label, host]) => ({ id, label, host, port: 993,
+  authModes: id === 'GOOGLE' ? ['GOOGLE_OAUTH2'] : id === 'MICROSOFT'
+    ? ['MICROSOFT_OAUTH2'] : ['PASSWORD'], help: `${label}的官方 IMAP 设置` }));
+const saved = {
+  configured: true, enabled: true, provider: 'QQ', host: 'imap.qq.com', port: 993,
+  username: 'owner@qq.com', recipientEmail: 'owner@qq.com', folder: 'INBOX',
+  senderEmail: 'actual-sender@example.com', authMode: 'PASSWORD', oauthClientId: '',
+  oauthTenant: '', hasPassword: true, hasClientSecret: false, hasRefreshToken: false,
+  encryptionReady: true,
+};
+
+async function openMailbox() {
+  render(<AntApp><OfficialAccountsPage /></AntApp>);
+  fireEvent.click(await screen.findByRole('button', { name: /邮箱配置.*研发账户|研发账户.*邮箱配置/ }));
+  return await screen.findByRole('dialog', { name: /邮箱配置/ });
+}
+
+describe('官方账户的用户自有邮箱配置', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.listOfficialAccounts.mockResolvedValue([{ id: 'account-1', label: '研发账户',
+      estimatedTotalTokens: 1_000_000, reporterEmail: 'reporter@example.com', quota: null,
+      createdAt: '2026-10-12T00:00:00Z', updatedAt: '2026-10-12T00:00:00Z', version: 0 }]);
+    mocks.listMailboxProviders.mockResolvedValue(providers);
+    mocks.getOfficialAccountMailbox.mockResolvedValue(saved);
+    mocks.saveOfficialAccountMailbox.mockResolvedValue(saved);
+    mocks.deleteOfficialAccountMailbox.mockResolvedValue(undefined);
+    mocks.testOfficialAccountMailbox.mockResolvedValue({ success: true, message: '连接成功' });
+  });
+
+  it('loads the selected account and all server-provided domestic and overseas presets', async () => {
+    const dialog = await openMailbox();
+    await waitFor(() => expect(mocks.getOfficialAccountMailbox).toHaveBeenCalledWith('account-1'));
+    expect(mocks.listMailboxProviders).toHaveBeenCalledOnce();
+    expect(await within(dialog).findByDisplayValue('owner@qq.com')).toBeInTheDocument();
+    fireEvent.mouseDown(within(dialog).getByRole('combobox', { name: '邮箱服务商' }));
+    for (const provider of providers) {
+      expect(await screen.findByRole('option', { name: provider.label })).toBeInTheDocument();
+    }
+    expect(within(dialog).getByText(/TLS/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /一键授权/ })).not.toBeInTheDocument();
+  });
+
+  it('keeps saved credentials out of the form and omits blank secrets when updating', async () => {
+    const dialog = await openMailbox();
+    await within(dialog).findByDisplayValue('actual-sender@example.com');
+    expect(within(dialog).getByLabelText('邮箱密码 / 授权码')).toHaveValue('');
+    fireEvent.click(within(dialog).getByRole('button', { name: /保\s*存/ }));
+    await waitFor(() => expect(mocks.saveOfficialAccountMailbox).toHaveBeenCalledOnce());
+    const [id, body] = mocks.saveOfficialAccountMailbox.mock.calls[0];
+    expect(id).toBe('account-1');
+    expect(body).toMatchObject({ host: 'imap.qq.com', port: 993, folder: 'INBOX',
+      recipientEmail: 'owner@qq.com', senderEmail: 'actual-sender@example.com', authMode: 'PASSWORD' });
+    expect(body).not.toHaveProperty('password');
+    expect(body).not.toHaveProperty('oauthClientSecret');
+    expect(body).not.toHaveProperty('oauthRefreshToken');
+  });
+
+  it('does not infer a sender from a display name and validates the real sender address', async () => {
+    mocks.getOfficialAccountMailbox.mockResolvedValue({ ...saved, senderEmail: '' });
+    const dialog = await openMailbox();
+    await within(dialog).findByDisplayValue('owner@qq.com');
+    expect(within(dialog).getByLabelText('真实发件邮箱')).toHaveValue('');
+    fireEvent.click(within(dialog).getByRole('button', { name: /保\s*存/ }));
+    expect(await within(dialog).findByText('请输入真实发件邮箱')).toBeInTheDocument();
+    expect(mocks.saveOfficialAccountMailbox).not.toHaveBeenCalled();
+  });
+
+  it('clears typed secrets immediately on close and never writes them to browser storage', async () => {
+    const storage = vi.spyOn(Storage.prototype, 'setItem');
+    const dialog = await openMailbox();
+    await within(dialog).findByDisplayValue('actual-sender@example.com');
+    fireEvent.change(within(dialog).getByLabelText('邮箱密码 / 授权码'), { target: { value: 'private-mail-secret' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: '取消' }));
+    await waitFor(() => expect(screen.queryByDisplayValue('private-mail-secret')).not.toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /邮箱配置.*研发账户|研发账户.*邮箱配置/ }));
+    const reopened = await screen.findByRole('dialog', { name: /邮箱配置/ });
+    await within(reopened).findByDisplayValue('actual-sender@example.com');
+    expect(within(reopened).getByLabelText('邮箱密码 / 授权码')).toHaveValue('');
+    expect(storage.mock.calls.some((args) => args.some((value) => String(value).includes('private-mail-secret')))).toBe(false);
+  });
+
+  it('disables enabled saves when the server has no encryption key', async () => {
+    mocks.getOfficialAccountMailbox.mockResolvedValue({ ...saved, encryptionReady: false });
+    const dialog = await openMailbox();
+    expect(await within(dialog).findByText(/服务端.*加密.*密钥/)).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: /保\s*存/ })).toBeDisabled();
+    expect(mocks.saveOfficialAccountMailbox).not.toHaveBeenCalled();
+  });
+
+  it('tests the saved configuration only, without submitting typed unsaved secrets', async () => {
+    const dialog = await openMailbox();
+    await within(dialog).findByDisplayValue('actual-sender@example.com');
+    fireEvent.change(within(dialog).getByLabelText('邮箱密码 / 授权码'), { target: { value: 'unsaved-secret' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: '测试已保存配置' }));
+    await waitFor(() => expect(mocks.testOfficialAccountMailbox).toHaveBeenCalledWith('account-1'));
+    expect(mocks.testOfficialAccountMailbox.mock.calls[0]).toHaveLength(1);
+    expect(mocks.saveOfficialAccountMailbox).not.toHaveBeenCalled();
+    expect(await within(dialog).findByText('连接成功')).toBeInTheDocument();
+  });
+
+  it('requires confirmation before deleting the saved mailbox connection', async () => {
+    const dialog = await openMailbox();
+    await within(dialog).findByDisplayValue('actual-sender@example.com');
+    fireEvent.click(within(dialog).getByRole('button', { name: '删除邮箱配置' }));
+    expect(mocks.deleteOfficialAccountMailbox).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole('button', { name: '确认删除' }));
+    await waitFor(() => expect(mocks.deleteOfficialAccountMailbox).toHaveBeenCalledWith('account-1'));
+  });
+});
