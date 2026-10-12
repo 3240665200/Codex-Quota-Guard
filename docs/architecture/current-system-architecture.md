@@ -47,7 +47,7 @@ Ant Design Pro 管理页 ─────────管理员 API─────
 
 桌面“设置”页通过固定 Tauri 命令 `autostart_status` / `autostart_set` 查询及修改自启动，接口只接受启用/禁用 Boolean，不接受外部程序路径、命令或账户。设置页面不把本地缓存当作 Windows 登记成功的依据；读取失败、保存失败与不支持的平台均明确提示。
 
-0.3.4 的 Windows NSIS 安装包恢复 currentUser 范围，允许自选目录。POSTINSTALL 仅显示说明，不调用客户端登记任务。正式版每次启动在构造 Tauri 之前检查当前 TokenUser、桌面用户 SID 和 TokenElevation；首次获得当前用户管理员权限后才默认登记。非管理员手动启动不登记，继续原有权限门禁；开发版不自动登记依赖 Vite 的登录任务。初始化失败显示固定的原生提示，不把失败当成成功。
+0.3.4 的 Windows NSIS 安装包恢复 currentUser 范围，允许自选目录。POSTINSTALL 仅显示说明，不调用客户端登记任务。正式版每次启动在构造 Tauri 之前检查当前 TokenUser、桌面用户 SID 和 TokenElevation；首次获得当前用户管理员权限后才默认登记。0.3.7 起，非管理员的普通启动和登录启动都进入同一条 `ShellExecuteExW(runas)` 流程；原启动器退出，仅已获权限且身份一致的子进程继续。开发版不自动登记依赖 Vite 的登录任务，开发启动脚本仍应在管理员权限下运行。初始化失败显示固定的原生提示，不把失败当成成功。
 
 登录任务固定为本程序路径加 `--autostart-launch`，使用当前 SID、InteractiveToken 和 `TASK_RUNLEVEL_LUA`。未提权的短时启动进程只调用 `ShellExecuteExW(runas)` 启动自身的固定 `--autostart-elevated` 模式，然后退出；使用 `SEE_MASK_NOASYNC` 等待 Shell 提交操作。取消 UAC 不创建 Tauri/Java/统计守卫，提权子进程再次检查同 SID 与管理员权限，拒绝其他管理员凭据。任务动作只有 Administrators/SYSTEM 可改，当前用户只获读、执行和删除权限，便于普通 currentUser 卸载。发布版本地 Java 仍只运行捆绑 JAR，屏蔽注入 Java agent 的环境变量。
 
