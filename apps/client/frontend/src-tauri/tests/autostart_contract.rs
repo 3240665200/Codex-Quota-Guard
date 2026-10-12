@@ -4,10 +4,12 @@
 mod autostart;
 
 use autostart::{install_default, parse_launch_mode, read_status, set_enabled, uninstall, LaunchMode, TaskStore};
+use autostart::{acl_is_protected, same_logon_user, WriteGrant};
 
 #[derive(Default)]
 struct FakeTasks {
     enabled: Option<bool>,
+    remembered: Option<bool>,
     writes: Vec<bool>,
     removals: usize,
     fail_read: bool,
@@ -30,6 +32,15 @@ impl TaskStore for FakeTasks {
     fn remove(&mut self) -> Result<(), &'static str> {
         self.removals += 1;
         self.enabled = None;
+        Ok(())
+    }
+
+    fn install_preference(&self) -> Result<Option<bool>, &'static str> {
+        Ok(self.remembered)
+    }
+
+    fn remember(&mut self, enabled: bool) -> Result<(), &'static str> {
+        self.remembered = Some(enabled);
         Ok(())
     }
 }
@@ -95,6 +106,15 @@ fn uninstall_removes_registration_but_update_uninstall_preserves_it() {
     assert_eq!(tasks.enabled, None);
 }
 
+#[test]
+fn uninstall_before_upgrade_removes_the_task_but_preserves_the_users_off_choice() {
+    let mut tasks = FakeTasks::default();
+    set_enabled(&mut tasks, false).unwrap();
+    uninstall(&mut tasks, false).unwrap();
+    assert_eq!(tasks.enabled, None);
+    assert!(!install_default(&mut tasks).unwrap().enabled);
+}
+
 fn args(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| (*value).to_owned()).collect()
 }
@@ -113,4 +133,32 @@ fn installer_modes_are_fixed_headless_operations_without_arbitrary_commands() {
     ] {
         assert!(parse_launch_mode(&invalid).is_err());
     }
+}
+
+#[test]
+fn elevated_tasks_refuse_user_owned_or_user_writable_installation_objects() {
+    let administrators = "S-1-5-32-544";
+    let system = "S-1-5-18";
+    let trusted_installer = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
+    let user = "S-1-5-21-1-2-3-1001";
+    let grants = [
+        WriteGrant { sid: administrators.to_owned(), writable: true },
+        WriteGrant { sid: system.to_owned(), writable: true },
+        WriteGrant { sid: trusted_installer.to_owned(), writable: true },
+        WriteGrant { sid: user.to_owned(), writable: false },
+    ];
+    assert!(acl_is_protected(administrators, &grants));
+    assert!(acl_is_protected(trusted_installer, &grants));
+    assert!(!acl_is_protected(user, &grants));
+    let writable = [WriteGrant { sid: user.to_owned(), writable: true }];
+    assert!(!acl_is_protected(administrators, &writable));
+    let everyone = [WriteGrant { sid: "S-1-1-0".to_owned(), writable: true }];
+    assert!(!acl_is_protected(system, &everyone));
+}
+
+#[test]
+fn elevation_with_another_accounts_credentials_never_binds_that_account_to_logon() {
+    assert!(same_logon_user("S-1-5-21-1-2-3-1001", "S-1-5-21-1-2-3-1001"));
+    assert!(!same_logon_user("S-1-5-21-1-2-3-1001", "S-1-5-21-1-2-3-1002"));
+    assert!(!same_logon_user("", ""));
 }
