@@ -105,11 +105,9 @@ mod windows {
         if !directory.is_absolute() {
             return Err(VaultUnavailable);
         }
+        validate_directory_chain(directory)?;
         fs::create_dir_all(directory).map_err(|_| VaultUnavailable)?;
-        let metadata = fs::symlink_metadata(directory).map_err(|_| VaultUnavailable)?;
-        if !metadata.is_dir() || metadata.file_attributes() & REPARSE_POINT != 0 {
-            return Err(VaultUnavailable);
-        }
+        validate_directory_chain(directory)?;
         let path = directory.join("key.dpapi");
         match fs::symlink_metadata(&path) {
             Ok(_) => return read_key(&path),
@@ -152,6 +150,18 @@ mod windows {
         // This exact random temporary file is ours, never a user data directory.
         let _ = fs::remove_file(&temporary);
         result
+    }
+
+    fn validate_directory_chain(directory: &Path) -> Result<(), VaultUnavailable> {
+        for ancestor in directory.ancestors() {
+            match fs::symlink_metadata(ancestor) {
+                Ok(metadata)
+                    if metadata.is_dir() && metadata.file_attributes() & REPARSE_POINT == 0 => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                _ => return Err(VaultUnavailable),
+            }
+        }
+        Ok(())
     }
 
     fn read_key(path: &Path) -> Result<SessionKey, VaultUnavailable> {
