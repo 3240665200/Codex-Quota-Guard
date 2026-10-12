@@ -774,7 +774,9 @@ describe("Dashboard", () => {
       if (command === "autostart_status")
         return { supported: true, enabled: false };
       if (command === "autostart_set")
-        throw new Error("设置失败，请以管理员身份重试");
+        throw new Error(
+          "管理员自启动需要受保护的 Program Files 安装目录；请重新安装到默认目录。",
+        );
       return original(command, args);
     });
     renderDashboard();
@@ -785,6 +787,7 @@ describe("Dashboard", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "自启动设置失败",
     );
+    expect(screen.getByRole("alert")).toHaveTextContent("请重新安装到默认目录");
     expect(toggle).toHaveAttribute("aria-checked", "false");
   });
 
