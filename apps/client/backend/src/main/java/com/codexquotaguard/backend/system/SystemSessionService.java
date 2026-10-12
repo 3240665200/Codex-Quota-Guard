@@ -9,6 +9,8 @@ import com.codexquotaguard.backend.controlplane.PersonalUsageAnalytics;
 import com.codexquotaguard.backend.controlplane.MeterEnrollment;
 import com.codexquotaguard.backend.controlplane.SystemUser;
 import com.codexquotaguard.backend.controlplane.UserUsageEventPage;
+import com.codexquotaguard.backend.controlplane.LoginAssistanceInfo;
+import com.codexquotaguard.backend.controlplane.LoginAssistanceListener;
 import com.codexquotaguard.backend.usage.CodexUsageEvent;
 import jakarta.annotation.PreDestroy;
 import java.util.List;
@@ -28,6 +30,7 @@ public final class SystemSessionService {
     private final ControlPlaneGateway controlPlane;
     private final Object lock = new Object();
     private Session session;
+    private long loginGeneration;
 
     public SystemSessionService(ControlPlaneGateway controlPlane) {
         if (controlPlane == null) {
@@ -50,6 +53,7 @@ public final class SystemSessionService {
         Session replacement = Session.from(authenticated);
         synchronized (lock) {
             session = replacement;
+            loginGeneration++;
         }
         return SystemSessionOverview.signedIn(replacement.user());
     }
@@ -70,6 +74,38 @@ public final class SystemSessionService {
 
     public PersonalQuotaOverview quotaOverview() {
         return invokeAuthenticated(controlPlane::quotaOverview);
+    }
+
+    public LoginAssistanceInfo loginAssistanceInfo() {
+        return invokeLoginAssistance(controlPlane::loginAssistanceInfo);
+    }
+
+    public LoginAssistanceListener startLoginAssistance() {
+        return invokeLoginAssistance(controlPlane::startLoginAssistance);
+    }
+
+    public LoginAssistanceListener loginAssistanceStatus(UUID listenerId) {
+        return invokeLoginAssistance(token -> controlPlane.loginAssistanceStatus(token, listenerId));
+    }
+
+    public LoginAssistanceListener cancelLoginAssistance(UUID listenerId) {
+        return invokeLoginAssistance(token -> controlPlane.cancelLoginAssistance(token, listenerId));
+    }
+
+    private <T> T invokeLoginAssistance(TokenOperation<T> operation) {
+        final long generation;
+        final UUID userId;
+        synchronized (lock) {
+            userId = requireSession().user().id();
+            generation = loginGeneration;
+        }
+        T result = invokeAuthenticated(userId, operation);
+        synchronized (lock) {
+            if (session == null || generation != loginGeneration || !userId.equals(session.user().id())) {
+                throw new SystemSessionRequiredException();
+            }
+        }
+        return result;
     }
 
     public UserUsageEventPage usageEvents(int page, int size) {
@@ -113,6 +149,7 @@ public final class SystemSessionService {
         synchronized (lock) {
             previous = session;
             session = null;
+            loginGeneration++;
         }
         if (previous == null) {
             return;
@@ -256,13 +293,14 @@ public final class SystemSessionService {
             case ACCESS_DENIED -> new CodexAccessDeniedException();
             case INVALID_REQUEST -> new ControlPlaneRequestRejectedException();
             case UNAVAILABLE -> new ControlPlaneUnavailableException();
+            case MAIL_BUSY, MAIL_RATE_LIMITED, MAIL_REJECTED -> new LoginAssistanceException(exception.reason());
         };
     }
 
     private static RuntimeException translateLogin(ControlPlaneException exception) {
         return switch (exception.reason()) {
             case UNAUTHORIZED, INVALID_REQUEST -> new LoginDeniedException();
-            case ACCESS_DENIED, UNAVAILABLE -> new ControlPlaneUnavailableException();
+            case ACCESS_DENIED, UNAVAILABLE, MAIL_BUSY, MAIL_RATE_LIMITED, MAIL_REJECTED -> new ControlPlaneUnavailableException();
         };
     }
 

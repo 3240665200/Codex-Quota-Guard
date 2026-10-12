@@ -17,7 +17,7 @@ import java.util.UUID;
 import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.ObjectMapper;
 
-/** HTTP implementation that has no credential-returning path to the renderer. */
+/** HTTP implementation. Mailbox credentials and official session tokens never reach the renderer. */
 final class HttpControlPlaneGateway implements ControlPlaneGateway {
 
     private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(10);
@@ -85,6 +85,55 @@ final class HttpControlPlaneGateway implements ControlPlaneGateway {
     @Override
     public PersonalQuotaOverview quotaOverview(String accessToken) {
         return sendJson(get("/api/v1/client/quota/overview", accessToken), PersonalQuotaOverview.class);
+    }
+
+    @Override
+    public LoginAssistanceInfo loginAssistanceInfo(String accessToken) {
+        return sendMailJson(get("/api/v1/client/login-assistance", accessToken), LoginAssistanceInfo.class);
+    }
+
+    @Override
+    public LoginAssistanceListener startLoginAssistance(String accessToken) {
+        HttpRequest request = HttpRequest.newBuilder(endpoint("/api/v1/client/login-assistance/listeners"))
+                .timeout(requestTimeout).header("Accept", "application/json")
+                .header("Authorization", "Bearer " + accessToken)
+                .POST(HttpRequest.BodyPublishers.noBody()).build();
+        return sendMailJson(request, LoginAssistanceListener.class);
+    }
+
+    @Override
+    public LoginAssistanceListener loginAssistanceStatus(String accessToken, UUID listenerId) {
+        return sendMailJson(get(mailListenerPath(listenerId), accessToken), LoginAssistanceListener.class);
+    }
+
+    @Override
+    public LoginAssistanceListener cancelLoginAssistance(String accessToken, UUID listenerId) {
+        HttpRequest request = HttpRequest.newBuilder(endpoint(mailListenerPath(listenerId)))
+                .timeout(requestTimeout).header("Accept", "application/json")
+                .header("Authorization", "Bearer " + accessToken).DELETE().build();
+        return sendMailJson(request, LoginAssistanceListener.class);
+    }
+
+    private static String mailListenerPath(UUID listenerId) {
+        if (listenerId == null) throw ControlPlaneException.invalidRequest();
+        return "/api/v1/client/login-assistance/listeners/" + listenerId;
+    }
+
+    private <T> T sendMailJson(HttpRequest request, Class<T> type) {
+        HttpResponse<String> response = send(request);
+        switch (response.statusCode()) {
+            case 400, 403, 404 -> throw ControlPlaneException.mailRejected();
+            case 409 -> throw ControlPlaneException.mailBusy();
+            case 429 -> throw ControlPlaneException.mailRateLimited();
+            default -> ensureSuccess(response.statusCode());
+        }
+        try {
+            if (response.body().length() > 8192) throw ControlPlaneException.unavailable();
+            return mapper.readValue(response.body(), type);
+        } catch (RuntimeException exception) {
+            // Never retain a response body or Jackson exception containing an OTP.
+            throw ControlPlaneException.unavailable();
+        }
     }
 
     @Override

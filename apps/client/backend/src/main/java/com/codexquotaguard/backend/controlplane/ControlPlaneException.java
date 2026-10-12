@@ -7,7 +7,10 @@ public final class ControlPlaneException extends RuntimeException {
         UNAUTHORIZED,
         ACCESS_DENIED,
         INVALID_REQUEST,
-        UNAVAILABLE
+        UNAVAILABLE,
+        MAIL_BUSY,
+        MAIL_RATE_LIMITED,
+        MAIL_REJECTED
     }
 
     private final Reason reason;
@@ -36,4 +39,8 @@ public final class ControlPlaneException extends RuntimeException {
     public static ControlPlaneException unavailable() {
         return new ControlPlaneException(Reason.UNAVAILABLE);
     }
+
+    public static ControlPlaneException mailBusy() { return new ControlPlaneException(Reason.MAIL_BUSY); }
+    public static ControlPlaneException mailRateLimited() { return new ControlPlaneException(Reason.MAIL_RATE_LIMITED); }
+    public static ControlPlaneException mailRejected() { return new ControlPlaneException(Reason.MAIL_REJECTED); }
 }

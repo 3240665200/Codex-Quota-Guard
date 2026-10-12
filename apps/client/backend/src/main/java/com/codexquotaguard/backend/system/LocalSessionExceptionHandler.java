@@ -10,6 +10,15 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 @RestControllerAdvice
 public final class LocalSessionExceptionHandler {
 
+    @ExceptionHandler(LoginAssistanceException.class)
+    public ResponseEntity<ErrorBody> loginAssistance(LoginAssistanceException exception) {
+        return switch (exception.reason()) {
+            case MAIL_BUSY -> response(HttpStatus.CONFLICT, "MAIL_LISTENER_BUSY", "该账户已有用户正在监听，请稍后重试。");
+            case MAIL_RATE_LIMITED -> response(HttpStatus.TOO_MANY_REQUESTS, "MAIL_RATE_LIMITED", "操作过于频繁，请稍后重试。");
+            default -> response(HttpStatus.FORBIDDEN, "MAIL_REJECTED", "无法使用登录辅助，请检查团队与邮箱配置后重试。");
+        };
+    }
+
     @ExceptionHandler(LoginDeniedException.class)
     public ResponseEntity<ErrorBody> loginDenied() {
         return response(HttpStatus.UNAUTHORIZED, "SYSTEM_LOGIN_DENIED", "邮箱或密码不正确。");

@@ -21,6 +21,22 @@ public interface ControlPlaneGateway {
 
     PersonalQuotaOverview quotaOverview(String accessToken);
 
+    default LoginAssistanceInfo loginAssistanceInfo(String accessToken) {
+        throw ControlPlaneException.unavailable();
+    }
+
+    default LoginAssistanceListener startLoginAssistance(String accessToken) {
+        throw ControlPlaneException.unavailable();
+    }
+
+    default LoginAssistanceListener loginAssistanceStatus(String accessToken, UUID listenerId) {
+        throw ControlPlaneException.unavailable();
+    }
+
+    default LoginAssistanceListener cancelLoginAssistance(String accessToken, UUID listenerId) {
+        throw ControlPlaneException.unavailable();
+    }
+
     default UserUsageEventPage usageEvents(String accessToken, int page, int size) {
         throw ControlPlaneException.unavailable();
     }
