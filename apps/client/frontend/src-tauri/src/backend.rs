@@ -103,6 +103,8 @@ pub(crate) enum BackendError {
     MeterPairingRequired,
     #[error("请先登录系统账户。")]
     SystemLoginRequired,
+    #[error("本机登录存储不可用，请关闭其他客户端并检查用户目录权限后重试。")]
+    SessionStorageUnavailable,
 }
 
 /// The token deliberately has no Debug implementation, and is never exposed
@@ -149,6 +151,7 @@ impl BackendState {
             .map_err(|_| BackendError::Startup)?;
 
         let mut command = Command::new(java_executable(app)?);
+        crate::session_vault::configure(&mut command, &app_data);
         // A login task can be elevated. Release builds must not let a user's
         // inherited environment inject executable agents into bundled Java.
         #[cfg(not(debug_assertions))]
@@ -353,6 +356,9 @@ impl BackendState {
 }
 
 fn classify_response(route: ApiRoute, status: StatusCode) -> BackendError {
+    if status == StatusCode::LOCKED {
+        return BackendError::SessionStorageUnavailable;
+    }
     if matches!(
         route,
         ApiRoute::LoginAssistanceInfo
@@ -568,8 +574,15 @@ mod tests {
 
     #[test]
     fn session_vault_failures_do_not_masquerade_as_wrong_passwords_or_server_outages() {
-        for route in [ApiRoute::SystemLogin, ApiRoute::SystemCurrent, ApiRoute::QuotaOverview] {
-            assert!(matches!(classify_response(route, StatusCode::LOCKED), BackendError::SessionStorageUnavailable));
+        for route in [
+            ApiRoute::SystemLogin,
+            ApiRoute::SystemCurrent,
+            ApiRoute::QuotaOverview,
+        ] {
+            assert!(matches!(
+                classify_response(route, StatusCode::LOCKED),
+                BackendError::SessionStorageUnavailable
+            ));
         }
     }
 

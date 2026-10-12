@@ -5,6 +5,7 @@ mod backend;
 mod conflict_notice;
 mod meter_service;
 mod server_config;
+mod session_vault;
 mod startup_gate;
 mod tray;
 mod window_layout;

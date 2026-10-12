@@ -246,8 +246,9 @@ export function SystemLoginPage({
               </div>
             </CardContent>
 
-            <CardFooter className="justify-center text-center text-xs text-muted-foreground">
-              系统账号由管理员创建
+            <CardFooter className="flex-col justify-center gap-1 text-center text-xs text-muted-foreground">
+              <p>在本机保留登录状态 7 天，退出登录将清除。</p>
+              <p>系统账号由管理员创建</p>
             </CardFooter>
           </Card>
         </div>
