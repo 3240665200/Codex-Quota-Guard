@@ -27,4 +27,17 @@ class SystemSessionControllerTest {
                 .isInstanceOf(MeterPairingRequiredException.class);
         verify(sessions).logout();
     }
+
+    @Test
+    void aRestoredSessionMustPassInstalledMeterOwnershipBeforeCurrentReturnsIt() {
+        var sessions = mock(SystemSessionService.class);
+        var pairing = mock(MeterPairingService.class);
+        var user = new SystemUser(UUID.randomUUID(), "member@example.com", "Member",
+                "USER", "ACTIVE", null, null, null, null, null, null, null);
+        when(sessions.currentOverview()).thenReturn(SystemSessionOverview.signedIn(user));
+        when(pairing.pairIfInstalled()).thenThrow(new IllegalStateException("Meter pairing is unavailable"));
+
+        assertThatThrownBy(() -> new SystemSessionController(sessions, pairing).current())
+                .isInstanceOf(MeterPairingRequiredException.class);
+    }
 }

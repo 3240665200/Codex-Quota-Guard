@@ -2,6 +2,9 @@ package com.codexquotaguard.backend.system;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import com.codexquotaguard.backend.controlplane.ControlPlaneAuthSession;
 import com.codexquotaguard.backend.controlplane.ControlPlaneException;
@@ -168,6 +171,59 @@ class SystemSessionServiceTest {
         assertThat(gateway.logoutCalls).isEqualTo(2);
         assertThat(gateway.lastRefreshToken).isEqualTo(REFRESH_ONE);
         assertThat(service.currentOverview().authenticated()).isFalse();
+    }
+
+    @Test
+    void aLoginResponseThatArrivesAfterLogoutCannotRestoreTheSession() {
+        var alice = user("Alice");
+        var gateway = mock(ControlPlaneGateway.class);
+        var service = new SystemSessionService(gateway);
+        when(gateway.login("alice@example.com", "synthetic-password")).thenAnswer(call -> {
+            service.logout();
+            return new ControlPlaneAuthSession(ACCESS_ONE, REFRESH_ONE, alice);
+        });
+        when(gateway.current(ACCESS_ONE)).thenReturn(alice);
+
+        assertThatThrownBy(() -> service.login("alice@example.com", "synthetic-password"))
+                .isInstanceOf(SystemSessionRequiredException.class);
+        assertThat(service.currentOverview().authenticated()).isFalse();
+    }
+
+    @Test
+    void aRefreshForAnotherUserNeverAttachesThatIdentityToTheCurrentSession() {
+        var alice = user("Alice");
+        var bob = user("Bob");
+        var gateway = mock(ControlPlaneGateway.class);
+        when(gateway.login("alice@example.com", "synthetic-password"))
+                .thenReturn(new ControlPlaneAuthSession(ACCESS_ONE, REFRESH_ONE, alice));
+        when(gateway.current(ACCESS_ONE)).thenThrow(ControlPlaneException.unauthorized());
+        when(gateway.refresh(REFRESH_ONE)).thenReturn(new ControlPlaneAuthSession(ACCESS_TWO, REFRESH_TWO, bob));
+        when(gateway.current(ACCESS_TWO)).thenReturn(bob);
+        var service = new SystemSessionService(gateway);
+        service.login("alice@example.com", "synthetic-password");
+
+        assertThat(service.currentOverview().authenticated()).isFalse();
+        assertThat(service.localUserId()).isEmpty();
+    }
+
+    @Test
+    void aMetadataRefreshDoesNotMistakeAnUnchangedExpiredTokenForRotatedCredentials() {
+        var alice = user("Alice");
+        var gateway = mock(ControlPlaneGateway.class);
+        when(gateway.login("alice@example.com", "synthetic-password"))
+                .thenReturn(new ControlPlaneAuthSession(ACCESS_ONE, REFRESH_ONE, alice));
+        when(gateway.current(ACCESS_ONE)).thenReturn(alice);
+        when(gateway.refresh(REFRESH_ONE)).thenReturn(new ControlPlaneAuthSession(ACCESS_TWO, REFRESH_TWO, alice));
+        when(gateway.quotaOverview(ACCESS_TWO)).thenReturn(overview(alice));
+        var service = new SystemSessionService(gateway);
+        service.login("alice@example.com", "synthetic-password");
+        when(gateway.quotaOverview(ACCESS_ONE)).thenAnswer(call -> {
+            service.current();
+            throw ControlPlaneException.unauthorized();
+        });
+
+        assertThat(service.quotaOverview().user()).isEqualTo(alice);
+        verify(gateway).refresh(REFRESH_ONE);
     }
 
     private static SystemUser user(String displayName) {
