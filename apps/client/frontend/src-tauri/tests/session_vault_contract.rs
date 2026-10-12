@@ -82,6 +82,28 @@ fn corrupt_oversized_or_directory_keys_are_not_replaced() {
 }
 
 #[test]
+fn linked_app_data_ancestors_cannot_redirect_key_creation() {
+    use std::os::windows::process::CommandExt;
+    let fixture = Fixture::new();
+    let target = fixture.0.join("outside-app-data");
+    let linked = fixture.0.join("linked-app-data");
+    fs::create_dir(&target).unwrap();
+    let status = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command",
+            "New-Item -ItemType Junction -Path $env:CQG_TEST_LINK -Target $env:CQG_TEST_TARGET -ErrorAction Stop | Out-Null"])
+        .env("CQG_TEST_LINK", &linked)
+        .env("CQG_TEST_TARGET", &target)
+        .creation_flags(0x08000000)
+        .status().unwrap();
+    assert!(status.success());
+    let result = session_vault::load_or_create_key(&linked.join("secure-session"));
+    // Remove the junction itself, never its target, before checking the result.
+    fs::remove_dir(&linked).unwrap();
+    assert!(result.is_err());
+    assert!(!target.join("secure-session").exists());
+}
+
+#[test]
 fn only_the_owned_child_environment_receives_the_key_and_failure_never_uses_inherited_secrets() {
     let fixture = Fixture::new();
     let mut command = Command::new("java");
