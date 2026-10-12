@@ -17,6 +17,7 @@
   <a href="https://github.com/3240665200/Codex-Quota-Guard/releases/latest">下载 Windows 安装包</a>
   · <a href="#快速开始">快速开始</a>
   · <a href="#功能概览">功能概览</a>
+  · <a href="#界面预览">界面预览</a>
   · <a href="./docs/README.md">项目文档</a>
 </p>
 
@@ -36,6 +37,23 @@ Codex Quota Guard 由桌面客户端、中央 Java 服务和 Web 管理后台组
 
 > [!IMPORTANT]
 > **官方额度、本系统 Token 额度和估算 USD 是三套不同的数据。** 官方百分比不能精确换算为 Token，估算费用不是官方账单。本系统可统计并提示限额状态，但官方 Codex 请求不经过本系统，无法据此强制阻断官方应用。
+
+## 界面预览
+
+桌面客户端支持浅色、深色与跟随系统。点击截图可查看大图。
+
+<table>
+  <tr>
+    <th width="50%">浅色模式</th>
+    <th width="50%">深色模式</th>
+  </tr>
+  <tr>
+    <td><a href="./docs/images/desktop-light.png"><img src="./docs/images/desktop-light.png" alt="Codex Quota Guard 桌面客户端浅色模式：个人、官方和团队剩余额度" width="600"></a></td>
+    <td><a href="./docs/images/desktop-dark.png"><img src="./docs/images/desktop-dark.png" alt="Codex Quota Guard 桌面客户端深色模式：个人、官方和团队剩余额度" width="600"></a></td>
+  </tr>
+</table>
+
+截图中的账户名和邮箱已由提供者遮挡；额度数值仅为截图时的状态，不代表默认配置或固定套餐额度。
 
 ## 快速开始
 
