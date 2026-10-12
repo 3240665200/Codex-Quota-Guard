@@ -14,6 +14,14 @@ try {
         $settings[$name] = ConvertTo-SecureString -String ('synthetic-' + $name) -AsPlainText -Force
     }
     $settings | Export-Clixml -LiteralPath $configPath
+    # Reproduce a protected config owned by another administrator without changing
+    # the real fixture's owner: ownership metadata must not be copied to a new file.
+    function Get-Acl {
+        param([string]$LiteralPath)
+        $acl = Microsoft.PowerShell.Security\Get-Acl -LiteralPath $LiteralPath
+        $acl.SetOwner([Security.Principal.SecurityIdentifier]::new('S-1-5-18'))
+        return $acl
+    }
     $result = & $initializer -ConfigPath $configPath
     Assert ($result.Status -eq 'Created') 'First setup should create a key.'
     Assert (Test-Path -LiteralPath $result.BackupPath) 'Setup must preserve a recoverable encrypted backup.'
