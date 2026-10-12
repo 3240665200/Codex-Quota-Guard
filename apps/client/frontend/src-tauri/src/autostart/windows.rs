@@ -30,10 +30,14 @@ use windows::{
     },
 };
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, GetLastError, LocalFree, ERROR_CANCELLED, HANDLE},
+    Foundation::{
+        CloseHandle, GetLastError, LocalFree, ERROR_CANCELLED, ERROR_INSUFFICIENT_BUFFER, HANDLE,
+    },
     Security::{
-        Authorization::ConvertSidToStringSidW, GetTokenInformation, IsValidSid, TokenElevation,
-        TokenUser, TOKEN_ELEVATION, TOKEN_QUERY, TOKEN_USER,
+        Authorization::{ConvertSidToStringSidW, ConvertStringSidToSidW},
+        EqualSid, GetLengthSid, GetTokenInformation, IsValidSid, LookupAccountNameW,
+        SidTypeUnknown, TokenElevation, TokenUser, PSID, SECURITY_MAX_SID_SIZE, TOKEN_ELEVATION,
+        TOKEN_QUERY, TOKEN_USER,
     },
     System::{
         Registry::{
@@ -56,7 +60,8 @@ use windows_sys::Win32::{
 const IDENTITY: &str = "com.codexquotaguard.desktop.autostart";
 const ARGUMENT: &str = "--autostart-launch";
 const PATH_ERROR: &str = "无法读取客户端安装路径，请检查安装文件。";
-const OWNERSHIP_ERROR: &str = "检测到其他安装版本或不匹配的自启动任务，请先卸载原版本。";
+const OWNERSHIP_ERROR: &str =
+    "开机自启动任务与当前用户或安装目录不匹配，已阻止自动修改，请检查旧版本残留任务。";
 const PREFERENCE_ERROR: &str = "无法保存开机自启动安装偏好，请检查 Windows 用户设置权限。";
 const PREFERENCE_KEY: &str = "Software\\Codex Quota Guard\\Desktop";
 
@@ -180,7 +185,13 @@ impl WindowsTasks {
                 if count != 1 {
                     return Ok(None);
                 }
-                let action: IExecAction = actions.get_Item(1)?.cast()?;
+                let action = actions.get_Item(1)?;
+                let mut action_type = TASK_ACTION_EXEC;
+                action.Type(&mut action_type)?;
+                if action_type != TASK_ACTION_EXEC {
+                    return Ok(None);
+                }
+                let action: IExecAction = action.cast()?;
                 let mut executable = BSTR::default();
                 let mut arguments = BSTR::default();
                 let mut directory = BSTR::default();
@@ -192,13 +203,19 @@ impl WindowsTasks {
                 if count != 1 {
                     return Ok(None);
                 }
-                let trigger: ILogonTrigger = triggers.get_Item(1)?.cast()?;
+                let trigger = triggers.get_Item(1)?;
+                let mut trigger_type = TASK_TRIGGER_LOGON;
+                trigger.Type(&mut trigger_type)?;
+                if trigger_type != TASK_TRIGGER_LOGON {
+                    return Ok(None);
+                }
+                let trigger: ILogonTrigger = trigger.cast()?;
                 let mut trigger_user = BSTR::default();
                 trigger.UserId(&mut trigger_user)?;
                 let matches = task.Path()? == format!("\\{IDENTITY}.{sid}")
-                    && marker == format!("{IDENTITY}/{sid}")
-                    && user == sid
-                    && trigger_user == sid
+                    && same_registration_uri(&marker, sid)
+                    && same_account_sid(&user, sid)
+                    && same_account_sid(&trigger_user, sid)
                     && logon == TASK_LOGON_INTERACTIVE_TOKEN
                     && same_path_text(&executable.to_string(), &self.executable)
                     && self
@@ -220,7 +237,8 @@ impl WindowsTasks {
         })();
         match result {
             Ok(Some(kind)) => Ok(kind),
-            Ok(None) | Err(_) => Err(OWNERSHIP_ERROR),
+            Ok(None) => Err(OWNERSHIP_ERROR),
+            Err(_) => Err(READ_ERROR),
         }
     }
 }
@@ -417,6 +435,115 @@ fn path_bstr(path: &Path) -> BSTR {
 
 fn same_path_text(value: &str, path: &Path) -> bool {
     value.eq_ignore_ascii_case(&path.to_string_lossy())
+}
+
+fn same_registration_uri(value: &BSTR, sid: &str) -> bool {
+    // Task Scheduler may replace our URI with the registered task's root path.
+    // Both alternatives remain fixed to this product and this exact user SID.
+    value == &format!("{IDENTITY}/{sid}") || value == &format!("\\{IDENTITY}.{sid}")
+}
+
+struct LocalSid(PSID);
+
+impl LocalSid {
+    fn parse(value: &str) -> Option<Self> {
+        if value.is_empty() || value.contains('\0') || value.len() > 32768 {
+            return None;
+        }
+        let value = wide(value);
+        let mut sid = ptr::null_mut();
+        // SAFETY: The input is NUL terminated and the initialized out pointer
+        // receives a LocalAlloc-owned SID only on success.
+        if unsafe { ConvertStringSidToSidW(value.as_ptr(), &mut sid) } == 0 {
+            return None;
+        }
+        let sid = Self(sid);
+        // SAFETY: ConvertStringSidToSidW returned this allocation successfully.
+        (!sid.0.is_null() && unsafe { IsValidSid(sid.0) } != 0).then_some(sid)
+    }
+}
+
+impl Drop for LocalSid {
+    fn drop(&mut self) {
+        // SAFETY: This pointer is owned memory from ConvertStringSidToSidW.
+        unsafe { LocalFree(self.0) };
+    }
+}
+
+fn same_account_sid(account: &BSTR, expected_sid: &str) -> bool {
+    // A BSTR may contain embedded NULs or invalid UTF-16. Do not let conversion
+    // or Win32's NUL-terminated input silently change the identity being checked.
+    if account.is_empty() || account.len() > 32767 || account.contains(&0) {
+        return false;
+    }
+    let Ok(account) = String::try_from(account) else {
+        return false;
+    };
+    let Some(expected) = LocalSid::parse(expected_sid) else {
+        return false;
+    };
+    if account
+        .get(..2)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("S-"))
+    {
+        // Malformed SID strings must not fall back to account-name resolution.
+        return LocalSid::parse(&account).is_some_and(|actual| {
+            // SAFETY: Both pointers own validated SIDs and remain alive here.
+            unsafe { EqualSid(actual.0, expected.0) != 0 }
+        });
+    }
+
+    let account = wide(&account);
+    let mut sid_size = 0;
+    let mut domain_size = 0;
+    let mut usage = SidTypeUnknown;
+    // SAFETY: NULL output buffers with zero capacities ask Windows for sizes;
+    // lookup begins on the local system and does not trust a username suffix.
+    let result = unsafe {
+        LookupAccountNameW(
+            ptr::null(),
+            account.as_ptr(),
+            ptr::null_mut(),
+            &mut sid_size,
+            ptr::null_mut(),
+            &mut domain_size,
+            &mut usage,
+        )
+    };
+    if result != 0
+        || unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER
+        || !(8..=SECURITY_MAX_SID_SIZE).contains(&sid_size)
+        || domain_size > 32768
+    {
+        return false;
+    }
+    let sid_capacity = sid_size;
+    let domain_capacity = domain_size.max(1);
+    let mut sid = vec![0usize; (sid_capacity as usize).div_ceil(size_of::<usize>())];
+    let mut domain = vec![0u16; domain_capacity as usize];
+    domain_size = domain_capacity;
+    // SAFETY: The SID buffer is aligned and contains at least sid_capacity
+    // bytes; the UTF-16 domain buffer contains domain_capacity code units.
+    let result = unsafe {
+        LookupAccountNameW(
+            ptr::null(),
+            account.as_ptr(),
+            sid.as_mut_ptr().cast(),
+            &mut sid_size,
+            domain.as_mut_ptr(),
+            &mut domain_size,
+            &mut usage,
+        )
+    };
+    let sid = sid.as_mut_ptr().cast();
+    if result == 0 || sid_size > sid_capacity || domain_size > domain_capacity {
+        return false;
+    }
+    // SAFETY: A successful lookup initialized a SID in an aligned buffer of at
+    // least eight bytes. Validate its header and full size before EqualSid.
+    unsafe {
+        IsValidSid(sid) != 0 && GetLengthSid(sid) <= sid_capacity && EqualSid(sid, expected.0) != 0
+    }
 }
 
 fn token(process: HANDLE) -> Result<Handle, &'static str> {
@@ -657,7 +784,10 @@ mod tests {
             "",
             "S-1-5-18\0other-account",
         ] {
-            assert!(!same_account_sid(&BSTR::from(account), expected), "{account:?}");
+            assert!(
+                !same_account_sid(&BSTR::from(account), expected),
+                "{account:?}"
+            );
         }
         assert!(!same_account_sid(&BSTR::from_wide(&[0xd800]), expected));
         assert!(!same_account_sid(&BSTR::from(expected), "S-1-invalid"));

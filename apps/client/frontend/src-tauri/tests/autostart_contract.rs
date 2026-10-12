@@ -68,7 +68,8 @@ impl TaskStore for FakeTasks {
 
 #[test]
 fn task_identity_errors_keep_their_specific_message_and_do_not_change_registration() {
-    const ERROR: &str = "开机自启动任务与当前用户或安装目录不匹配，已阻止自动修改，请检查旧版本残留任务。";
+    const ERROR: &str =
+        "开机自启动任务与当前用户或安装目录不匹配，已阻止自动修改，请检查旧版本残留任务。";
     let mut tasks = FakeTasks {
         read_error: Some(ERROR),
         ..Default::default()
