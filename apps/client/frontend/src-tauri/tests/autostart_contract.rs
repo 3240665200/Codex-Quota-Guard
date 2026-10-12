@@ -194,18 +194,41 @@ fn launch_modes_only_accept_fixed_logon_elevation_and_uninstall_operations() {
 
 #[test]
 fn manual_unelevated_start_does_not_initialize_and_logon_requests_uac() {
-    assert_eq!(startup_action(LaunchMode::Desktop, false, true).unwrap(), StartupAction::Desktop);
-    assert_eq!(startup_action(LaunchMode::Desktop, true, true).unwrap(), StartupAction::Initialize);
-    assert_eq!(startup_action(LaunchMode::Logon, false, true).unwrap(), StartupAction::Elevate);
-    assert_eq!(startup_action(LaunchMode::Logon, true, true).unwrap(), StartupAction::Initialize);
-    assert_eq!(startup_action(LaunchMode::ElevatedLogon, true, true).unwrap(), StartupAction::Initialize);
+    assert_eq!(
+        startup_action(LaunchMode::Desktop, false, true).unwrap(),
+        StartupAction::Desktop
+    );
+    assert_eq!(
+        startup_action(LaunchMode::Desktop, true, true).unwrap(),
+        StartupAction::Initialize
+    );
+    assert_eq!(
+        startup_action(LaunchMode::Logon, false, true).unwrap(),
+        StartupAction::Elevate
+    );
+    assert_eq!(
+        startup_action(LaunchMode::Logon, true, true).unwrap(),
+        StartupAction::Initialize
+    );
+    assert_eq!(
+        startup_action(LaunchMode::ElevatedLogon, true, true).unwrap(),
+        StartupAction::Initialize
+    );
     assert!(startup_action(LaunchMode::ElevatedLogon, false, true).is_err());
-    assert_eq!(startup_action(LaunchMode::Uninstall, false, true).unwrap(), StartupAction::Uninstall);
+    assert_eq!(
+        startup_action(LaunchMode::Uninstall, false, true).unwrap(),
+        StartupAction::Uninstall
+    );
 }
 
 #[test]
 fn another_account_never_initializes_or_launches_the_client() {
-    for mode in [LaunchMode::Desktop, LaunchMode::Logon, LaunchMode::ElevatedLogon, LaunchMode::Uninstall] {
+    for mode in [
+        LaunchMode::Desktop,
+        LaunchMode::Logon,
+        LaunchMode::ElevatedLogon,
+        LaunchMode::Uninstall,
+    ] {
         for elevated in [false, true] {
             assert!(startup_action(mode, elevated, false).is_err());
         }
@@ -214,8 +237,15 @@ fn another_account_never_initializes_or_launches_the_client() {
 
 #[test]
 fn migration_preserves_the_verified_legacy_tasks_actual_off_choice() {
-    let mut tasks = FakeTasks { legacy_enabled: Some(false), remembered: Some(true), ..Default::default() };
-    assert!(!read_status(&tasks).unwrap().enabled, "legacy Highest is not reported as the current LUA mechanism");
+    let mut tasks = FakeTasks {
+        legacy_enabled: Some(false),
+        remembered: Some(true),
+        ..Default::default()
+    };
+    assert!(
+        !read_status(&tasks).unwrap().enabled,
+        "legacy Highest is not reported as the current LUA mechanism"
+    );
     assert!(!initialize_default(&mut tasks).unwrap().enabled);
     assert_eq!(tasks.writes, [false]);
     assert_eq!(tasks.remembered, Some(false));
@@ -223,7 +253,12 @@ fn migration_preserves_the_verified_legacy_tasks_actual_off_choice() {
 
 #[test]
 fn a_current_lua_task_wins_over_stale_legacy_preferences() {
-    let mut tasks = FakeTasks { enabled: Some(false), legacy_enabled: Some(true), remembered: Some(true), ..Default::default() };
+    let mut tasks = FakeTasks {
+        enabled: Some(false),
+        legacy_enabled: Some(true),
+        remembered: Some(true),
+        ..Default::default()
+    };
     assert!(!initialize_default(&mut tasks).unwrap().enabled);
     assert!(tasks.writes.is_empty());
 }

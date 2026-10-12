@@ -1,12 +1,11 @@
-use super::{acl_is_protected, same_logon_user, TaskStore, WriteGrant, READ_ERROR, WRITE_ERROR};
+use super::{
+    initialize_default, same_logon_user, startup_action, uninstall, LaunchMode, StartupAction,
+    TaskStore, CONTEXT_ERROR, READ_ERROR, WRITE_ERROR,
+};
 use std::{
     ffi::OsString,
-    fs,
-    mem::{offset_of, size_of},
-    os::windows::{
-        ffi::{OsStrExt, OsStringExt},
-        fs::MetadataExt,
-    },
+    mem::size_of,
+    os::windows::ffi::{OsStrExt, OsStringExt},
     path::{Path, PathBuf},
     ptr,
 };
@@ -16,56 +15,50 @@ use windows::{
         Foundation::{VARIANT_FALSE, VARIANT_TRUE},
         System::{
             Com::{
-                CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
-                COINIT_MULTITHREADED,
+                CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT,
+                COINIT_APARTMENTTHREADED, COINIT_MULTITHREADED,
             },
             TaskScheduler::{
                 IExecAction, ILogonTrigger, IRegisteredTask, ITaskFolder, ITaskService,
                 TaskScheduler, TASK_ACTION_EXEC, TASK_CREATE_OR_UPDATE,
-                TASK_DONT_ADD_PRINCIPAL_ACE, TASK_ENUM_HIDDEN, TASK_INSTANCES_IGNORE_NEW,
-                TASK_LOGON_INTERACTIVE_TOKEN, TASK_RUNLEVEL_HIGHEST, TASK_TRIGGER_LOGON,
+                TASK_DONT_ADD_PRINCIPAL_ACE, TASK_INSTANCES_IGNORE_NEW,
+                TASK_LOGON_INTERACTIVE_TOKEN, TASK_RUNLEVEL_HIGHEST, TASK_RUNLEVEL_LUA,
+                TASK_TRIGGER_LOGON,
             },
             Variant::VARIANT,
         },
     },
 };
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, LocalFree, HANDLE},
+    Foundation::{CloseHandle, GetLastError, LocalFree, ERROR_CANCELLED, HANDLE},
     Security::{
-        Authorization::{ConvertSidToStringSidW, GetNamedSecurityInfoW, SE_FILE_OBJECT},
-        GetAce, GetTokenInformation, IsValidSid, TokenElevation, TokenUser, ACCESS_ALLOWED_ACE,
-        ACE_HEADER, ACL, DACL_SECURITY_INFORMATION, INHERIT_ONLY_ACE, OWNER_SECURITY_INFORMATION,
-        TOKEN_ELEVATION, TOKEN_QUERY, TOKEN_USER,
+        Authorization::ConvertSidToStringSidW, GetTokenInformation, IsValidSid, TokenElevation,
+        TokenUser, TOKEN_ELEVATION, TOKEN_QUERY, TOKEN_USER,
     },
     System::{
-        Com::CoTaskMemFree,
         Registry::{
-            RegCloseKey, RegCreateKeyExW, RegGetValueW, RegSetValueExW, HKEY_LOCAL_MACHINE,
-            KEY_SET_VALUE, REG_DWORD, RRF_RT_REG_DWORD,
+            RegCloseKey, RegCreateKeyExW, RegGetValueW, RegSetValueExW, HKEY, HKEY_CURRENT_USER,
+            HKEY_LOCAL_MACHINE, KEY_SET_VALUE, REG_DWORD, RRF_RT_REG_DWORD,
         },
         Threading::{
             GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
         },
     },
     UI::{
-        Shell::{FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX86, SHGetKnownFolderPath},
-        WindowsAndMessaging::{GetShellWindow, GetWindowThreadProcessId},
+        Shell::{ShellExecuteExW, SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW},
+        WindowsAndMessaging::{
+            GetShellWindow, GetWindowThreadProcessId, MessageBoxW, MB_ICONEXCLAMATION, MB_OK,
+            SW_SHOWNORMAL,
+        },
     },
 };
 
 const IDENTITY: &str = "com.codexquotaguard.desktop.autostart";
 const ARGUMENT: &str = "--autostart-launch";
-const CONTEXT_ERROR: &str =
-    "开机自启动仅支持当前登录的管理员用户；请勿使用其他账户的管理员凭据设置。";
-const PATH_ERROR: &str = "管理员自启动需要受保护的 Program Files 安装目录；请重新安装到默认目录。";
+const PATH_ERROR: &str = "无法读取客户端安装路径，请检查安装文件。";
 const OWNERSHIP_ERROR: &str = "检测到其他安装版本或不匹配的自启动任务，请先卸载原版本。";
 const PREFERENCE_ERROR: &str = "无法保存开机自启动安装偏好，请检查 Windows 用户设置权限。";
 const PREFERENCE_KEY: &str = "Software\\Codex Quota Guard\\Desktop";
-const REPARSE_POINT: u32 = 0x400;
-// Write data/append/EA/attributes, delete-child/delete, WRITE_DAC/WRITE_OWNER,
-// GENERIC_WRITE/GENERIC_ALL. Generic read/execute alone does not grant writes.
-const WRITE_MASK: u32 =
-    0x2 | 0x4 | 0x10 | 0x40 | 0x100 | 0x10000 | 0x40000 | 0x80000 | 0x40000000 | 0x10000000;
 
 struct Handle(HANDLE);
 impl Drop for Handle {
@@ -78,12 +71,27 @@ impl Drop for Handle {
 struct ComApartment;
 impl ComApartment {
     fn new() -> Result<Self, &'static str> {
+        Self::initialize(COINIT_MULTITHREADED)
+    }
+
+    fn initialize(model: COINIT) -> Result<Self, &'static str> {
         // SAFETY: All scheduler operations and COM objects stay on this thread.
-        unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
+        unsafe { CoInitializeEx(None, model) }
             .ok()
             .map_err(|_| READ_ERROR)?;
         Ok(Self)
     }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum TaskKind {
+    Limited,
+    LegacyHighest,
+}
+
+struct OwnedTask {
+    registered: IRegisteredTask,
+    kind: TaskKind,
 }
 impl Drop for ComApartment {
     fn drop(&mut self) {
@@ -134,29 +142,25 @@ impl WindowsTasks {
         format!("{IDENTITY}/{}", self.sid)
     }
 
-    fn task(&self) -> Result<Option<IRegisteredTask>, &'static str> {
+    fn task(&self) -> Result<Option<OwnedTask>, &'static str> {
         // SAFETY: The folder is connected to the local scheduler; name is fixed
         // except for a SID obtained from a Windows token, never renderer input.
         match unsafe { self.folder.GetTask(&self.name()) } {
             Ok(task) => {
-                self.validate_identity(&task)?;
-                Ok(Some(task))
+                let kind = self.validate_identity(&task)?;
+                Ok(Some(OwnedTask {
+                    registered: task,
+                    kind,
+                }))
             }
             Err(error) if error.code().0 as u32 == 0x80070002 => Ok(None),
             Err(_) => Err(READ_ERROR),
         }
     }
 
-    fn validate_identity(&self, task: &IRegisteredTask) -> Result<(), &'static str> {
-        self.validate_identity_for_sid(task, &self.sid)
-    }
-
-    fn validate_identity_for_sid(
-        &self,
-        task: &IRegisteredTask,
-        sid: &str,
-    ) -> Result<(), &'static str> {
-        let result = (|| -> windows::core::Result<bool> {
+    fn validate_identity(&self, task: &IRegisteredTask) -> Result<TaskKind, &'static str> {
+        let sid = self.sid.as_str();
+        let result = (|| -> windows::core::Result<Option<TaskKind>> {
             // SAFETY: Every out parameter is initialized; COM owns the returned
             // interfaces and BSTR buffers. This function only reads task metadata.
             unsafe {
@@ -174,7 +178,7 @@ impl WindowsTasks {
                 let mut count = 0;
                 actions.Count(&mut count)?;
                 if count != 1 {
-                    return Ok(false);
+                    return Ok(None);
                 }
                 let action: IExecAction = actions.get_Item(1)?.cast()?;
                 let mut executable = BSTR::default();
@@ -186,50 +190,63 @@ impl WindowsTasks {
                 let triggers = definition.Triggers()?;
                 triggers.Count(&mut count)?;
                 if count != 1 {
-                    return Ok(false);
+                    return Ok(None);
                 }
                 let trigger: ILogonTrigger = triggers.get_Item(1)?.cast()?;
                 let mut trigger_user = BSTR::default();
                 trigger.UserId(&mut trigger_user)?;
-                Ok(task.Path()? == format!("\\{IDENTITY}.{sid}")
+                let matches = task.Path()? == format!("\\{IDENTITY}.{sid}")
                     && marker == format!("{IDENTITY}/{sid}")
                     && user == sid
                     && trigger_user == sid
                     && logon == TASK_LOGON_INTERACTIVE_TOKEN
-                    && level == TASK_RUNLEVEL_HIGHEST
                     && same_path_text(&executable.to_string(), &self.executable)
                     && self
                         .executable
                         .parent()
                         .is_some_and(|parent| same_path_text(&directory.to_string(), parent))
-                    && arguments == ARGUMENT)
+                    && arguments == ARGUMENT;
+                if !matches {
+                    return Ok(None);
+                }
+                Ok(if level == TASK_RUNLEVEL_LUA {
+                    Some(TaskKind::Limited)
+                } else if level == TASK_RUNLEVEL_HIGHEST {
+                    Some(TaskKind::LegacyHighest)
+                } else {
+                    None
+                })
             }
         })();
         match result {
-            Ok(true) => Ok(()),
-            Ok(false) | Err(_) => Err(OWNERSHIP_ERROR),
+            Ok(Some(kind)) => Ok(kind),
+            Ok(None) | Err(_) => Err(OWNERSHIP_ERROR),
         }
     }
 }
 
 impl TaskStore for WindowsTasks {
     fn read(&self) -> Result<Option<bool>, &'static str> {
-        self.task()?.map(|task| task_enabled(&task)).transpose()
+        self.task()?
+            .filter(|task| task.kind == TaskKind::Limited)
+            .map(|task| task_enabled(&task.registered))
+            .transpose()
+    }
+
+    fn read_legacy(&self) -> Result<Option<bool>, &'static str> {
+        self.task()?
+            .filter(|task| task.kind == TaskKind::LegacyHighest)
+            .map(|task| task_enabled(&task.registered))
+            .transpose()
     }
 
     fn write(&mut self, enabled: bool) -> Result<(), &'static str> {
         if !is_elevated()? {
             return Err(WRITE_ERROR);
         }
-        let existing = self.task()?;
-        // Disabling an owned task remains possible even if its installation's
-        // permissions were subsequently made unsafe. Do not execute or refresh it.
-        if !enabled {
-            if let Some(task) = existing {
-                return unsafe { task.SetEnabled(VARIANT_FALSE) }.map_err(|_| WRITE_ERROR);
-            }
-        }
-        validate_installation(&self.executable)?;
+        // Validate an existing entry before an atomic update. This also migrates
+        // a verified legacy Highest task to LUA, including its OFF choice.
+        self.task()?;
         let directory = self.executable.parent().ok_or(PATH_ERROR)?;
         // SAFETY: Definition properties are populated only with fixed values,
         // the current token SID, and inspected installation paths. No task is run.
@@ -245,7 +262,7 @@ impl TaskStore for WindowsTasks {
                 let principal = definition.Principal()?;
                 principal.SetUserId(&BSTR::from(&self.sid))?;
                 principal.SetLogonType(TASK_LOGON_INTERACTIVE_TOKEN)?;
-                principal.SetRunLevel(TASK_RUNLEVEL_HIGHEST)?;
+                principal.SetRunLevel(TASK_RUNLEVEL_LUA)?;
                 let trigger: ILogonTrigger =
                     definition.Triggers()?.Create(TASK_TRIGGER_LOGON)?.cast()?;
                 trigger.SetEnabled(VARIANT_TRUE)?;
@@ -262,10 +279,11 @@ impl TaskStore for WindowsTasks {
                 settings.SetStartWhenAvailable(VARIANT_FALSE)?;
                 settings.SetExecutionTimeLimit(&BSTR::from("PT0S"))?;
                 settings.SetMultipleInstances(TASK_INSTANCES_IGNORE_NEW)?;
-                // Only elevated Administrators/SYSTEM can modify the action.
-                // The interactive user may read/run, but cannot replace the task.
+                // The current user can read/run/delete this LUA task so the
+                // currentUser uninstaller needs no administrator elevation.
+                // Only Administrators/SYSTEM can modify its action.
                 let sddl = format!(
-                    "O:BAG:BAD:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGX;;;{})",
+                    "O:BAG:BAD:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGXSD;;;{})",
                     self.sid
                 );
                 self.folder.RegisterTaskDefinition(
@@ -284,32 +302,20 @@ impl TaskStore for WindowsTasks {
     }
 
     fn remove(&mut self) -> Result<(), &'static str> {
-        self.remove_owned_installation_tasks()
+        if self.task()?.is_some() {
+            // SAFETY: task() verified this current SID's fixed product name,
+            // marker, action, literal path, working directory, and logon trigger.
+            unsafe { self.folder.DeleteTask(&self.name(), 0) }.map_err(|_| WRITE_ERROR)?;
+        }
+        Ok(())
     }
 
     fn install_preference(&self) -> Result<Option<bool>, &'static str> {
-        let key = wide(PREFERENCE_KEY);
-        let value = wide(&self.sid);
-        let mut enabled = 0u32;
-        let mut size = size_of::<u32>() as u32;
-        // SAFETY: Reads one fixed product DWORD named by the current token SID;
-        // HKLM is administrator-controlled. No executable paths
-        // or command arguments are accepted or recovered from the registry.
-        let code = unsafe {
-            RegGetValueW(
-                HKEY_LOCAL_MACHINE,
-                key.as_ptr(),
-                value.as_ptr(),
-                RRF_RT_REG_DWORD,
-                ptr::null_mut(),
-                (&mut enabled as *mut u32).cast(),
-                &mut size,
-            )
-        };
-        match code {
-            0 if size == 4 && enabled <= 1 => Ok(Some(enabled != 0)),
-            2 => Ok(None),
-            _ => Err(PREFERENCE_ERROR),
+        match read_preference(HKEY_CURRENT_USER, &self.sid)? {
+            Some(enabled) => Ok(Some(enabled)),
+            // Only a boolean is migrated from the previous admin-controlled key.
+            // It is never treated as permission to launch or create a task.
+            None => read_preference(HKEY_LOCAL_MACHINE, &self.sid),
         }
     }
 
@@ -319,78 +325,8 @@ impl TaskStore for WindowsTasks {
 }
 
 pub(super) fn remove_installation_tasks() -> Result<(), &'static str> {
-    if !is_elevated()? {
-        return Err(WRITE_ERROR);
-    }
-    let sid = token_sid(&token(unsafe { GetCurrentProcess() })?)?;
-    // Uninstall may be authorized by another administrator. It never registers
-    // for that account; it removes only fully verified tasks for this installation.
-    let mut tasks = WindowsTasks::connect_for_sid(sid)?;
-    // The current SID can have a task belonging to a different installation.
-    // Cleanup operates on exact owned tasks for this directory, never on that
-    // unrelated task's status. Each deletion is verified below.
-    tasks.remove()
-}
-
-impl WindowsTasks {
-    fn remove_owned_installation_tasks(&self) -> Result<(), &'static str> {
-        if !is_elevated()? {
-            return Err(WRITE_ERROR);
-        }
-        let mut owned = Vec::new();
-        unsafe {
-            let collection = self
-                .folder
-                .GetTasks(TASK_ENUM_HIDDEN.0)
-                .map_err(|_| READ_ERROR)?;
-            let count = collection.Count().map_err(|_| READ_ERROR)?;
-            for index in 1..=count {
-                let task = collection
-                    .get_Item(&VARIANT::from(index))
-                    .map_err(|_| READ_ERROR)?;
-                let name = task.Path().map_err(|_| READ_ERROR)?.to_string();
-                let Some(sid) = name.strip_prefix(&format!("\\{IDENTITY}.")) else {
-                    continue;
-                };
-                if !sid.starts_with("S-1-")
-                    || sid.len() > 256
-                    || !sid
-                        .bytes()
-                        .all(|byte| byte.is_ascii_digit() || byte == b'-' || byte == b'S')
-                {
-                    continue;
-                }
-                if self.validate_identity_for_sid(&task, sid).is_ok() {
-                    let sid = sid.to_owned();
-                    owned.push((name, sid, task_enabled(&task)?));
-                }
-            }
-            // Enumerate before deleting; indices change as tasks are removed.
-            // Snapshot every verified user's actual switch before deleting any
-            // task. No other user's hive is loaded or modified.
-            for (_, sid, enabled) in &owned {
-                remember_sid(sid, *enabled)?;
-            }
-            for (name, _, _) in owned {
-                let task = self
-                    .folder
-                    .GetTask(&BSTR::from(&name))
-                    .map_err(|_| READ_ERROR)?;
-                let sid = name
-                    .strip_prefix(&format!("\\{IDENTITY}."))
-                    .ok_or(OWNERSHIP_ERROR)?;
-                self.validate_identity_for_sid(&task, sid)?;
-                self.folder
-                    .DeleteTask(&BSTR::from(&name), 0)
-                    .map_err(|_| WRITE_ERROR)?;
-                match self.folder.GetTask(&BSTR::from(&name)) {
-                    Err(error) if error.code().0 as u32 == 0x80070002 => {}
-                    _ => return Err(WRITE_ERROR),
-                }
-            }
-        }
-        Ok(())
-    }
+    let mut tasks = WindowsTasks::connect()?;
+    uninstall(&mut tasks, false)
 }
 
 fn task_enabled(task: &IRegisteredTask) -> Result<bool, &'static str> {
@@ -415,14 +351,39 @@ fn task_enabled(task: &IRegisteredTask) -> Result<bool, &'static str> {
     .map_err(|_| READ_ERROR)
 }
 
+fn read_preference(root: HKEY, sid: &str) -> Result<Option<bool>, &'static str> {
+    let key = wide(PREFERENCE_KEY);
+    let value = wide(sid);
+    let mut enabled = 0u32;
+    let mut size = size_of::<u32>() as u32;
+    // SAFETY: Reads only a fixed product boolean named by the inspected token
+    // SID. No paths, users, or command arguments are recovered from the registry.
+    let code = unsafe {
+        RegGetValueW(
+            root,
+            key.as_ptr(),
+            value.as_ptr(),
+            RRF_RT_REG_DWORD,
+            ptr::null_mut(),
+            (&mut enabled as *mut u32).cast(),
+            &mut size,
+        )
+    };
+    match code {
+        0 if size == 4 && enabled <= 1 => Ok(Some(enabled != 0)),
+        2 => Ok(None),
+        _ => Err(PREFERENCE_ERROR),
+    }
+}
+
 fn remember_sid(sid: &str, enabled: bool) -> Result<(), &'static str> {
     let mut key = ptr::null_mut();
     let path = wide(PREFERENCE_KEY);
-    // SAFETY: Only an elevated setter/installer calls this fixed product HKLM
-    // key. sid is the current token SID or a fully verified owned task's SID.
+    // SAFETY: Writes one fixed product boolean in this process user's hive.
+    // All callers first verify this is the current interactive desktop user.
     let code = unsafe {
         RegCreateKeyExW(
-            HKEY_LOCAL_MACHINE,
+            HKEY_CURRENT_USER,
             path.as_ptr(),
             0,
             ptr::null(),
@@ -572,122 +533,97 @@ fn wide_string(value: *const u16) -> Result<OsString, &'static str> {
     }))
 }
 
-fn program_files(folder: &windows_sys::core::GUID) -> Result<PathBuf, &'static str> {
-    let mut output = ptr::null_mut();
-    // SAFETY: Windows returns a CoTaskMemAlloc-owned known-folder path.
-    if unsafe { SHGetKnownFolderPath(folder, 0, ptr::null_mut(), &mut output) } < 0 {
-        return Err(PATH_ERROR);
-    }
-    let path = wide_string(output).map(PathBuf::from);
-    unsafe { CoTaskMemFree(output.cast()) };
-    path
+fn show_startup_error(message: &'static str) {
+    let title = wide("Codex Quota Guard");
+    let message = wide(message);
+    // SAFETY: Both fixed application strings remain NUL terminated and alive
+    // for this synchronous call; no renderer/registry text is displayed.
+    unsafe {
+        MessageBoxW(
+            ptr::null_mut(),
+            message.as_ptr(),
+            title.as_ptr(),
+            MB_OK | MB_ICONEXCLAMATION,
+        )
+    };
 }
 
-fn validate_installation(executable: &Path) -> Result<(), &'static str> {
+fn request_logon_elevation() -> Result<(), &'static str> {
+    // Shell extensions may require STA COM, and NOASYNC completes ShellExecute
+    // before this short-lived unelevated launcher exits.
+    let _apartment = ComApartment::initialize(COINIT_APARTMENTTHREADED)?;
+    let executable = std::env::current_exe().map_err(|_| PATH_ERROR)?;
     let directory = executable.parent().ok_or(PATH_ERROR)?;
-    let roots = [
-        program_files(&FOLDERID_ProgramFiles)?,
-        program_files(&FOLDERID_ProgramFilesX86)?,
-    ];
-    let root = roots
-        .iter()
-        .find(|root| directory != root.as_path() && directory.starts_with(root))
-        .ok_or(PATH_ERROR)?;
-    // Check every containing directory through the trusted known-folder root.
-    for ancestor in directory.ancestors() {
-        validate_object(ancestor)?;
-        if ancestor == root {
-            break;
+    let verb = wide("runas");
+    let executable: Vec<u16> = executable
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let directory: Vec<u16> = directory.as_os_str().encode_wide().chain(Some(0)).collect();
+    let arguments = wide("--autostart-elevated");
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI,
+        lpVerb: verb.as_ptr(),
+        lpFile: executable.as_ptr(),
+        lpParameters: arguments.as_ptr(),
+        lpDirectory: directory.as_ptr(),
+        nShow: SW_SHOWNORMAL,
+        ..Default::default()
+    };
+    // SAFETY: Only this process's literal OS-provided executable path and a
+    // fixed flag are supplied. Buffers stay alive through the synchronous call.
+    if unsafe { ShellExecuteExW(&mut info) } == 0 {
+        let error = unsafe { GetLastError() };
+        if error == ERROR_CANCELLED {
+            return Ok(());
         }
-    }
-    // The elevated desktop executes bundled Java, JAR, and meter resources too.
-    // Check the whole bounded installation tree, including existing explicit ACLs.
-    let mut pending = vec![directory.to_owned()];
-    let mut inspected = 0;
-    while let Some(path) = pending.pop() {
-        inspected += 1;
-        if inspected > 20000 {
-            return Err(PATH_ERROR);
-        }
-        let metadata = validate_object(&path)?;
-        if metadata.is_dir() {
-            for entry in fs::read_dir(&path).map_err(|_| PATH_ERROR)? {
-                pending.push(entry.map_err(|_| PATH_ERROR)?.path());
-            }
-        }
+        return Err("无法请求客户端管理员权限，请以当前 Windows 用户的管理员身份启动客户端。");
     }
     Ok(())
 }
 
-fn validate_object(path: &Path) -> Result<fs::Metadata, &'static str> {
-    let metadata = fs::symlink_metadata(path).map_err(|_| PATH_ERROR)?;
-    if metadata.file_attributes() & REPARSE_POINT != 0 {
-        return Err(PATH_ERROR);
-    }
-    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-    let mut owner = ptr::null_mut();
-    let mut dacl: *mut ACL = ptr::null_mut();
-    let mut descriptor = ptr::null_mut();
-    // SAFETY: The API allocates descriptor and returns owner/DACL inside it.
-    let code = unsafe {
-        GetNamedSecurityInfoW(
-            wide.as_ptr(),
-            SE_FILE_OBJECT,
-            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
-            &mut owner,
-            ptr::null_mut(),
-            &mut dacl,
-            ptr::null_mut(),
-            &mut descriptor,
-        )
+pub(super) fn handle_startup(mode: LaunchMode) -> Option<i32> {
+    // Validate the new elevated child too: UAC may accept another administrator's
+    // credentials, which must never launch this user's guard, meter, or Java.
+    let action = current_desktop_user()
+        .and_then(|_| is_elevated())
+        .and_then(|elevated| startup_action(mode, elevated, true));
+    let action = match action {
+        Ok(action) => action,
+        Err(message) => {
+            show_startup_error(message);
+            return Some(2);
+        }
     };
-    if code != 0 {
-        return Err(PATH_ERROR);
-    }
-    let result = (|| {
-        if dacl.is_null() {
-            return Err(PATH_ERROR);
-        }
-        let owner = sid_text(owner)?;
-        let mut grants = Vec::new();
-        // SAFETY: dacl and all ACEs are part of the valid security descriptor.
-        let count = unsafe { (*dacl).AceCount };
-        for index in 0..u32::from(count) {
-            let mut ace = ptr::null_mut();
-            if unsafe { GetAce(dacl, index, &mut ace) } == 0 || ace.is_null() {
-                return Err(PATH_ERROR);
-            }
-            let header = unsafe { &*ace.cast::<ACE_HEADER>() };
-            if u32::from(header.AceFlags) & INHERIT_ONLY_ACE != 0 {
-                continue;
-            }
-            match header.AceType {
-                0 => {
-                    // ACCESS_ALLOWED_ACE is followed by a variable-size SID.
-                    if usize::from(header.AceSize) < size_of::<ACCESS_ALLOWED_ACE>() {
-                        return Err(PATH_ERROR);
-                    }
-                    let allowed = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
-                    let sid = unsafe {
-                        ace.cast::<u8>()
-                            .add(offset_of!(ACCESS_ALLOWED_ACE, SidStart))
-                            .cast()
-                    };
-                    grants.push(WriteGrant {
-                        sid: sid_text(sid)?,
-                        writable: allowed.Mask & WRITE_MASK != 0,
-                    });
+    match action {
+        StartupAction::Desktop => None,
+        StartupAction::Initialize => {
+            // Development builds depend on a live Vite server and must not
+            // become a permanent Windows logon entry automatically.
+            if !cfg!(debug_assertions) {
+                if let Err(message) =
+                    WindowsTasks::connect().and_then(|mut tasks| initialize_default(&mut tasks))
+                {
+                    show_startup_error(message);
                 }
-                1 => {}                      // A deny ACE can only reduce access.
-                _ => return Err(PATH_ERROR), // Unknown/callback/object ACEs fail closed.
             }
+            None
         }
-        if !acl_is_protected(&owner, &grants) {
-            return Err(PATH_ERROR);
-        }
-        Ok(metadata)
-    })();
-    // SAFETY: GetNamedSecurityInfoW allocated the descriptor using LocalAlloc.
-    unsafe { LocalFree(descriptor) };
-    result
+        StartupAction::Elevate => match request_logon_elevation() {
+            Ok(()) => Some(0),
+            Err(message) => {
+                show_startup_error(message);
+                Some(2)
+            }
+        },
+        StartupAction::Uninstall => match remove_installation_tasks() {
+            Ok(()) => Some(0),
+            Err(message) => {
+                show_startup_error(message);
+                Some(2)
+            }
+        },
+    }
 }
