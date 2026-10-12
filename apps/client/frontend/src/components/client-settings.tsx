@@ -22,7 +22,8 @@ export function ClientSettings() {
     onSuccess: (result) => queryClient.setQueryData(autostartQueryKey, result),
     // The Windows task may have changed before persisting its upgrade preference
     // failed. Re-read the actual task while retaining the actionable error.
-    onError: () => queryClient.invalidateQueries({ queryKey: autostartQueryKey }),
+    onError: () =>
+      queryClient.invalidateQueries({ queryKey: autostartQueryKey }),
   });
   const refresh = () => {
     mutation.reset();
@@ -79,7 +80,7 @@ export function ClientSettings() {
                 id={descriptionId}
                 className="mt-1 text-xs leading-5 text-muted-foreground"
               >
-                登录 Windows 后自动打开桌面客户端。
+                登录 Windows 后启动客户端，未提权时需确认管理员授权。
               </p>
             </div>
             <button
@@ -138,7 +139,7 @@ export function ClientSettings() {
         </>
       )}
       <p className="mt-5 border-t pt-4 text-xs leading-5 text-muted-foreground">
-        安装时默认开启。关闭自启动不会影响统计服务在后台运行。自启动仍会执行管理员权限和运行环境检查。
+        安装时不设置自启动，首次以管理员身份启动时默认开启；关闭后不会自动重开。关闭自启动不会影响统计服务在后台运行。取消管理员授权时，本次不启动客户端。
       </p>
     </section>
   );
