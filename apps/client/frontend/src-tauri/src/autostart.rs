@@ -76,7 +76,7 @@ pub(crate) trait TaskStore {
 pub(crate) fn read_status(tasks: &impl TaskStore) -> Result<AutostartStatus, &'static str> {
     Ok(AutostartStatus {
         supported: true,
-        enabled: tasks.read().map_err(|_| READ_ERROR)?.unwrap_or(false),
+        enabled: tasks.read()?.unwrap_or(false),
     })
 }
 
@@ -86,7 +86,7 @@ pub(crate) fn set_enabled(
 ) -> Result<AutostartStatus, &'static str> {
     tasks.write(enabled)?;
     // A disabled task is retained so install/upgrade preserves the user's OFF choice.
-    if tasks.read().map_err(|_| READ_ERROR)? != Some(enabled) {
+    if tasks.read()? != Some(enabled) {
         return Err(VERIFY_ERROR);
     }
     tasks.remember(enabled)?;
@@ -99,7 +99,7 @@ pub(crate) fn set_enabled(
 pub(crate) fn initialize_default(
     tasks: &mut impl TaskStore,
 ) -> Result<AutostartStatus, &'static str> {
-    if let Some(enabled) = tasks.read().map_err(|_| READ_ERROR)? {
+    if let Some(enabled) = tasks.read()? {
         // Subsequent launches observe even changes made in Task Scheduler;
         // they never register again or turn an externally disabled task on.
         tasks.remember(enabled)?;
@@ -119,15 +119,11 @@ pub(crate) fn uninstall(tasks: &mut impl TaskStore, updating: bool) -> Result<()
     if !updating {
         // Capture even a choice made directly in Windows Task Scheduler before
         // the old installer removes the task during an interactive upgrade.
-        if let Some(enabled) = tasks
-            .read()
-            .map_err(|_| READ_ERROR)?
-            .or(tasks.read_legacy()?)
-        {
+        if let Some(enabled) = tasks.read()?.or(tasks.read_legacy()?) {
             tasks.remember(enabled)?;
         }
         tasks.remove()?;
-        if tasks.read().map_err(|_| READ_ERROR)?.is_some() || tasks.read_legacy()?.is_some() {
+        if tasks.read()?.is_some() || tasks.read_legacy()?.is_some() {
             return Err(VERIFY_ERROR);
         }
     }
