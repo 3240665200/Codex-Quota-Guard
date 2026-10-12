@@ -625,6 +625,7 @@ describe("Tauri API boundary", () => {
     "客户端安装路径无法用于 Windows 启动应用，请安装到较短的本地路径后重试。",
     "开机自启动迁移未完成且恢复失败，请在任务管理器和任务计划程序中检查本软件的启动项。",
     "普通启动项已保存，但无法确认旧启动任务已清理，请重新启动客户端后重试。",
+    "Windows 启动应用设置在操作期间发生变化，已停止修改，请重新读取后重试。",
   ])("preserves the bounded startup migration error: %s", (message) => {
     expect(getApiErrorMessage(message)).toBe(message);
     expect(getApiErrorMessage(new Error(message))).toBe(message);
