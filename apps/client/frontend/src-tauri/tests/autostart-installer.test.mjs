@@ -75,6 +75,15 @@ test("logon action is LUA and uses fixed self elevation through normal UAC", () 
   assert.match(source, /MessageBoxW/);
 });
 
+test("UAC cancellation exits the launcher before Tauri without retrying elevation", () => {
+  const source = readFileSync(path.join(root, "src/autostart/windows.rs"), "utf8");
+  assert.match(source, /if error == ERROR_CANCELLED\s*\{\s*return Ok\(\(\)\);\s*\}/);
+  const elevation = source.slice(source.indexOf("StartupAction::Elevate =>"),
+    source.indexOf("StartupAction::Uninstall =>"));
+  assert.match(elevation, /Ok\(\(\)\) => Some\(0\)/);
+  assert.doesNotMatch(elevation, /initialize_default|tauri::Builder|StartupGate|loop\s*\{/);
+});
+
 test("release elevated Java cannot load a user-supplied JAR or injected agent options", () => {
   const source = readFileSync(path.join(root, "src/backend.rs"), "utf8");
   assert.equal(/#\[cfg\(debug_assertions\)\]\s*if let Some\(path\) = env::var_os\("CODEX_QUOTA_GUARD_BACKEND_JAR"\)/.test(source), true, "release JAR overrides must be disabled");

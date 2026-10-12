@@ -217,6 +217,9 @@ fn launch_modes_only_accept_fixed_logon_elevation_and_uninstall_operations() {
         args(&["--autostart-install", "--user", "someone-else"]),
         args(&["--autostart-uninstall", "--autostart-install"]),
         args(&["--autostart-launch", "anything"]),
+        args(&["--autostart-launch", "--autostart-elevated"]),
+        args(&["--autostart-elevated", "--autostart-elevated"]),
+        args(&["--autostart-elevated", "--command", "calc.exe"]),
         args(&["--autostart-elevated", "--user", "someone-else"]),
     ] {
         assert!(parse_launch_mode(&invalid).is_err());
@@ -224,28 +227,38 @@ fn launch_modes_only_accept_fixed_logon_elevation_and_uninstall_operations() {
 }
 
 #[test]
-fn manual_unelevated_start_does_not_initialize_and_logon_requests_uac() {
-    assert_eq!(
-        startup_action(LaunchMode::Desktop, false, true).unwrap(),
-        StartupAction::Desktop
-    );
-    assert_eq!(
-        startup_action(LaunchMode::Desktop, true, true).unwrap(),
-        StartupAction::Initialize
-    );
-    assert_eq!(
-        startup_action(LaunchMode::Logon, false, true).unwrap(),
-        StartupAction::Elevate
-    );
-    assert_eq!(
-        startup_action(LaunchMode::Logon, true, true).unwrap(),
-        StartupAction::Initialize
-    );
-    assert_eq!(
-        startup_action(LaunchMode::ElevatedLogon, true, true).unwrap(),
-        StartupAction::Initialize
-    );
+fn manual_and_logon_unelevated_start_request_uac_before_initialization() {
+    for mode in [LaunchMode::Desktop, LaunchMode::Logon] {
+        assert_eq!(
+            startup_action(mode, false, true),
+            Ok(StartupAction::Elevate),
+            "{mode:?} must request permission before starting the client"
+        );
+    }
+}
+
+#[test]
+fn already_elevated_start_initializes_without_requesting_uac_again() {
+    for mode in [
+        LaunchMode::Desktop,
+        LaunchMode::Logon,
+        LaunchMode::ElevatedLogon,
+    ] {
+        assert_eq!(
+            startup_action(mode, true, true),
+            Ok(StartupAction::Initialize),
+            "{mode:?} must use its existing administrator permission"
+        );
+    }
+}
+
+#[test]
+fn an_unelevated_child_rejects_startup_instead_of_requesting_uac_in_a_loop() {
     assert!(startup_action(LaunchMode::ElevatedLogon, false, true).is_err());
+}
+
+#[test]
+fn uninstall_remains_a_separate_startup_operation() {
     assert_eq!(
         startup_action(LaunchMode::Uninstall, false, true).unwrap(),
         StartupAction::Uninstall
