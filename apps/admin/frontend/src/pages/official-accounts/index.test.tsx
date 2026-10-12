@@ -32,7 +32,7 @@ describe('官方账户只读登记页', () => {
     expect(await screen.findByText('研发账户')).toBeInTheDocument();
     expect(screen.getByText('7 天剩余 60%')).toBeInTheDocument();
     expect(screen.queryByText('5 小时剩余')).not.toBeInTheDocument();
-    expect(screen.getByText(/不保存凭证/)).toBeInTheDocument();
+    expect(screen.getByText(/不托管官方账户会话凭证/)).toBeInTheDocument();
   });
 
   it('registers an account estimate and reporting user, not a credential', async () => {

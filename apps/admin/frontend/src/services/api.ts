@@ -194,6 +194,58 @@ export interface OfficialAccountInput {
   version?: number;
 }
 
+export type MailboxAuthMode = 'PASSWORD' | 'GOOGLE_OAUTH2' | 'MICROSOFT_OAUTH2';
+
+export interface MailboxProvider {
+  id: string;
+  label: string;
+  host: string;
+  port: number;
+  authModes: MailboxAuthMode[];
+  help: string;
+}
+
+export interface OfficialAccountMailbox {
+  configured: boolean;
+  enabled: boolean;
+  provider: string | null;
+  host: string | null;
+  port: number | null;
+  username: string | null;
+  recipientEmail: string | null;
+  folder: string | null;
+  senderEmail: string | null;
+  authMode: MailboxAuthMode | null;
+  oauthClientId: string | null;
+  oauthTenant: string | null;
+  hasPassword: boolean;
+  hasClientSecret: boolean;
+  hasRefreshToken: boolean;
+  encryptionReady: boolean;
+}
+
+export interface OfficialAccountMailboxInput {
+  enabled: boolean;
+  provider: string;
+  host: string;
+  port: number;
+  username: string;
+  recipientEmail: string;
+  folder: string;
+  senderEmail: string;
+  authMode: MailboxAuthMode;
+  oauthClientId: string;
+  oauthTenant: string;
+  password?: string;
+  oauthClientSecret?: string;
+  oauthRefreshToken?: string;
+}
+
+export interface MailboxConnectionTest {
+  success: boolean;
+  message: string;
+}
+
 export interface MeterDeviceStatus {
   deviceId: string;
   status: 'ACTIVE' | 'REVOKED';
@@ -401,6 +453,28 @@ export function updateOfficialAccount(id: string, body: OfficialAccountInput): P
 
 export function deleteOfficialAccount(id: string): Promise<void> {
   return request<void>(`/api/v1/admin/official-accounts/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+export function listMailboxProviders(): Promise<MailboxProvider[]> {
+  return request<MailboxProvider[]>('/api/v1/admin/mail-assistance/providers');
+}
+
+export function getOfficialAccountMailbox(id: string): Promise<OfficialAccountMailbox> {
+  return request<OfficialAccountMailbox>(`/api/v1/admin/official-accounts/${encodeURIComponent(id)}/mailbox`);
+}
+
+export function saveOfficialAccountMailbox(id: string, body: OfficialAccountMailboxInput): Promise<OfficialAccountMailbox> {
+  return request<OfficialAccountMailbox>(`/api/v1/admin/official-accounts/${encodeURIComponent(id)}/mailbox`, {
+    body: JSON.stringify(body), method: 'PUT',
+  });
+}
+
+export function deleteOfficialAccountMailbox(id: string): Promise<void> {
+  return request<void>(`/api/v1/admin/official-accounts/${encodeURIComponent(id)}/mailbox`, { method: 'DELETE' });
+}
+
+export function testOfficialAccountMailbox(id: string): Promise<MailboxConnectionTest> {
+  return request<MailboxConnectionTest>(`/api/v1/admin/official-accounts/${encodeURIComponent(id)}/mailbox/test`, { method: 'POST' });
 }
 
 const SESSION_KEY = 'codex-quota-guard.session';
