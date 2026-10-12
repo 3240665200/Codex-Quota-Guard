@@ -1,4 +1,4 @@
-import { useId } from "react";
+import { useEffect, useId } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Power, RefreshCw } from "lucide-react";
 
@@ -16,15 +16,47 @@ export function ClientSettings() {
     queryKey: autostartQueryKey,
     queryFn: api.autostartStatus,
     retry: false,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
   const mutation = useMutation({
+    mutationKey: autostartQueryKey,
     mutationFn: api.setAutostart,
+    onMutate: () => queryClient.cancelQueries({ queryKey: autostartQueryKey }),
     onSuccess: (result) => queryClient.setQueryData(autostartQueryKey, result),
-    // The Windows task may have changed before persisting its upgrade preference
-    // failed. Re-read the actual task while retaining the actionable error.
-    onError: () =>
+    // Re-read Windows after either outcome; the registration may have changed
+    // even if saving its upgrade preference failed. Keep the actionable error.
+    onSettled: () =>
       queryClient.invalidateQueries({ queryKey: autostartQueryKey }),
   });
+  const { refetch } = query;
+
+  useEffect(() => {
+    const refreshOnReturn = () => {
+      const status =
+        queryClient.getQueryData<
+          Awaited<ReturnType<typeof api.autostartStatus>>
+        >(autostartQueryKey);
+      if (
+        document.visibilityState !== "visible" ||
+        status?.supported === false ||
+        queryClient.isMutating({ mutationKey: autostartQueryKey }) > 0 ||
+        queryClient.isFetching({ queryKey: autostartQueryKey }) > 0
+      ) {
+        return;
+      }
+      void refetch();
+    };
+
+    window.addEventListener("focus", refreshOnReturn);
+    document.addEventListener("visibilitychange", refreshOnReturn);
+    return () => {
+      window.removeEventListener("focus", refreshOnReturn);
+      document.removeEventListener("visibilitychange", refreshOnReturn);
+    };
+  }, [queryClient, refetch]);
+
   const refresh = () => {
     mutation.reset();
     void query.refetch();
@@ -138,8 +170,14 @@ export function ClientSettings() {
           ) : null}
         </>
       )}
+      {query.data?.supported ? (
+        <p className="mt-3 text-xs leading-5 text-muted-foreground">
+          也可在任务管理器 → 启动应用 → Codex Quota Guard
+          中启用或禁用；返回此页会自动刷新状态。
+        </p>
+      ) : null}
       <p className="mt-5 border-t pt-4 text-xs leading-5 text-muted-foreground">
-        安装时不设置自启动，首次以管理员身份启动时默认开启；关闭后不会自动重开。关闭自启动不会影响统计服务在后台运行。取消管理员授权时，本次不启动客户端。
+        安装时不设置自启动，首次以管理员身份启动时默认开启；关闭后不会自动重开。关闭桌面程序自启动不会影响统计服务在后台运行。取消管理员授权时，本次不启动客户端。
       </p>
     </section>
   );

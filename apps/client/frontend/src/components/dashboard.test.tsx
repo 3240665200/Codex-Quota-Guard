@@ -736,11 +736,13 @@ describe("Dashboard", () => {
   it("opens settings and reads the actual autostart state without changing it", async () => {
     const user = (await import("@testing-library/user-event")).default.setup();
     const original = invokeMock.getMockImplementation()!;
+    let enabled = true;
     invokeMock.mockImplementation(async (command, args) => {
-      if (command === "autostart_status")
-        return { supported: true, enabled: true };
-      if (command === "autostart_set")
-        return { supported: true, enabled: false };
+      if (command === "autostart_status") return { supported: true, enabled };
+      if (command === "autostart_set") {
+        enabled = (args as { enabled: boolean }).enabled;
+        return { supported: true, enabled };
+      }
       return original(command, args);
     });
     renderDashboard();
