@@ -26,5 +26,13 @@ test("installer helper dispatch precedes Tauri and the startup guard", () => {
   const helper = entry.indexOf("autostart::handle_launch_mode");
   assert.ok(helper >= 0, "headless installer must be dispatched before building Tauri");
   assert.ok(helper < entry.indexOf("tauri::Builder"));
-  assert.match(entry.slice(helper, entry.indexOf("tauri::Builder")), /return/);
+  assert.match(entry.slice(helper, entry.indexOf("tauri::Builder")), /std::process::exit/);
+});
+
+test("release elevated Java cannot load a user-supplied JAR or injected agent options", () => {
+  const source = readFileSync(path.join(root, "src/backend.rs"), "utf8");
+  assert.match(source, /#\[cfg\(debug_assertions\)\]\s*if let Some\(path\) = env::var_os\("CODEX_QUOTA_GUARD_BACKEND_JAR"\)/);
+  for (const variable of ["JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS", "CLASSPATH"]) {
+    assert.ok(source.includes(`.env_remove("${variable}")`), `${variable} must be removed from bundled Java's environment`);
+  }
 });
