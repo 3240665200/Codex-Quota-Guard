@@ -617,4 +617,19 @@ describe("Tauri API boundary", () => {
       "暂时无法连接本地服务，请确认应用仍在运行。",
     );
   });
+
+  it.each([
+    "无法读取 Windows 开机自启动状态，请检查当前用户的启动应用设置。",
+    "Windows 启动应用的审批数据无法识别，已保留原设置，请在任务管理器中检查。",
+    "开机自启动项与当前安装目录不匹配，已阻止自动修改，请检查旧版本残留启动项。",
+    "客户端安装路径无法用于 Windows 启动应用，请安装到较短的本地路径后重试。",
+    "开机自启动迁移未完成且恢复失败，请在任务管理器和任务计划程序中检查本软件的启动项。",
+    "普通启动项已保存，但无法确认旧启动任务已清理，请重新启动客户端后重试。",
+  ])("preserves the bounded startup migration error: %s", (message) => {
+    expect(getApiErrorMessage(message)).toBe(message);
+    expect(getApiErrorMessage(new Error(message))).toBe(message);
+    expect(getApiErrorMessage(`${message} token=secret`)).toBe(
+      "暂时无法连接本地服务，请确认应用仍在运行。",
+    );
+  });
 });
