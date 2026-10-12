@@ -30,6 +30,14 @@ class LoginMailMatcherTest {
     }
 
     @Test
+    void acceptsNewUidMailWhoseServerReceiptTimeHasOnlySecondPrecision() {
+        LoginMailMessage sameSecond = new LoginMailMessage(List.of("sender@example.com"),
+                List.of("owner@example.com"), "ChatGPT Log-in Code", BODY, ARMED);
+        assertThat(matcher.findCode(sameSecond, "sender@example.com", "owner@example.com", ARMED.plusNanos(123_000_000)))
+                .contains("123456");
+    }
+
+    @Test
     void rejectsDifferentActualSenderEvenIfDisplayNameLooksCorrect() {
         LoginMailMessage spoof = new LoginMailMessage(List.of("attacker@example.com"),
                 List.of("owner@example.com"), "ChatGPT Log-in Code", BODY, ARMED.plusSeconds(1));
@@ -47,6 +55,12 @@ class LoginMailMatcherTest {
     void rejectsMultipleCodesAndLongerNumbers() {
         assertThat(matcher.findCode(message(BODY + "\n654321"), "sender@example.com", "owner@example.com", ARMED)).isEmpty();
         assertThat(matcher.findCode(message(BODY.replace("123456", "1234567")), "sender@example.com", "owner@example.com", ARMED)).isEmpty();
+    }
+
+    @Test
+    void rejectsSixDigitNumberThatDoesNotImmediatelyFollowTheLoginPrompt() {
+        String misplaced = BODY.replace("123456", "Please review this message. Reference number: 123456");
+        assertThat(matcher.findCode(message(misplaced), "sender@example.com", "owner@example.com", ARMED)).isEmpty();
     }
 
     @Test

@@ -57,6 +57,10 @@
             <artifactId>caffeine</artifactId>
         </dependency>
         <dependency>
+            <groupId>org.eclipse.angus</groupId>
+            <artifactId>jakarta.mail</artifactId>
+        </dependency>
+        <dependency>
             <groupId>io.jsonwebtoken</groupId>
             <artifactId>jjwt-api</artifactId>
             <version>${jjwt.version}</version>
@@ -120,6 +124,7 @@
                         <include>com/pingche/web/codex/CodexLoginDirectory*</include>
                         <include>com/pingche/web/codex/CodexLoginUrl*</include>
                         <include>com/pingche/web/codex/OfficialCodexLoginGateway*</include>
+                        <include>com/pingche/web/mail/*</include>
                     </includes>
                 </configuration>
                 <executions>
