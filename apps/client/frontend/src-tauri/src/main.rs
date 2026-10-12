@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod autostart;
 mod backend;
 mod conflict_notice;
 mod meter_service;
@@ -16,6 +17,22 @@ use server_config::ServerConfig;
 use tauri::{Manager, RunEvent, State};
 
 type CommandResult<T> = Result<T, String>;
+
+#[tauri::command]
+async fn autostart_status() -> CommandResult<autostart::AutostartStatus> {
+    tauri::async_runtime::spawn_blocking(autostart::status)
+        .await
+        .map_err(|_| "无法读取开机自启动状态，请稍后重试。".to_owned())?
+        .map_err(str::to_owned)
+}
+
+#[tauri::command]
+async fn autostart_set(enabled: bool) -> CommandResult<autostart::AutostartStatus> {
+    tauri::async_runtime::spawn_blocking(move || autostart::set(enabled))
+        .await
+        .map_err(|_| "无法设置开机自启动，请稍后重试。".to_owned())?
+        .map_err(str::to_owned)
+}
 
 #[tauri::command]
 async fn startup_gate_check(app: tauri::AppHandle) -> startup_gate::GateResult {
@@ -219,6 +236,9 @@ async fn system_logout(state: State<'_, BackendState>) -> CommandResult<()> {
 }
 
 fn main() {
+    if let Some(exit_code) = autostart::handle_launch_mode() {
+        std::process::exit(exit_code);
+    }
     let builder = tauri::Builder::default()
         .setup(|app| {
             app.manage(conflict_notice::ConflictNotices::default());
@@ -266,6 +286,8 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            autostart_status,
+            autostart_set,
             startup_gate_check,
             startup_guard_status,
             meter_service_ensure,

@@ -37,7 +37,7 @@ test("Windows bundle uses the tested NSIS lifecycle instead of an unconfigured M
   assert.equal(config.bundle.windows.nsis.installMode, "perMachine");
 });
 
-test("NSIS compiles both lifecycle macros using the real hook file", () => {
+test("NSIS compiles both lifecycle macros using the real hook file", { skip: process.platform !== "win32" }, () => {
   const compiler = process.env.NSIS_MAKENSIS ?? path.join(process.env.LOCALAPPDATA, "tauri/NSIS/makensis.exe");
   const directory = mkdtempSync(path.join(tmpdir(), "autostart-nsis-"));
   try {

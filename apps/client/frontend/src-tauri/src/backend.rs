@@ -133,7 +133,16 @@ impl BackendState {
             .app_data_dir()
             .map_err(|_| BackendError::Startup)?;
 
-        let mut child = Command::new(java_executable(app)?)
+        let mut command = Command::new(java_executable(app)?);
+        // A login task can be elevated. Release builds must not let a user's
+        // inherited environment inject executable agents into bundled Java.
+        #[cfg(not(debug_assertions))]
+        command
+            .env_remove("JAVA_TOOL_OPTIONS")
+            .env_remove("JDK_JAVA_OPTIONS")
+            .env_remove("_JAVA_OPTIONS")
+            .env_remove("CLASSPATH");
+        let mut child = command
             .arg("-jar")
             .arg(jar)
             .env("QUOTA_GUARD_API_TOKEN", token.value())
@@ -420,6 +429,7 @@ fn java_executable(app: &AppHandle) -> Result<PathBuf, BackendError> {
 }
 
 fn resolve_backend_jar(app: &AppHandle) -> Result<PathBuf, BackendError> {
+    #[cfg(debug_assertions)]
     if let Some(path) = env::var_os("CODEX_QUOTA_GUARD_BACKEND_JAR") {
         let path = PathBuf::from(path);
         return path.is_file().then_some(path).ok_or(BackendError::Startup);

@@ -356,6 +356,7 @@ dependencies = [
  "tauri-build",
  "thiserror 2.0.20",
  "uuid",
+ "windows",
  "windows-sys 0.61.2",
 ]
 

@@ -3,6 +3,7 @@ Unicode true
 RequestExecutionLevel admin
 !include LogicLib.nsh
 !define MAINBINARYNAME "codex-quota-guard"
+!define PRODUCTNAME "Codex Quota Guard"
 !macro CheckIfAppIsRunning BINARY PRODUCT
 !macroend
 !include "${HOOKFILE}"

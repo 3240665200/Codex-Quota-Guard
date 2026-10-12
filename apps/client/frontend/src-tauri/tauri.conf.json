@@ -36,6 +36,11 @@
       "resources/meter/*": "meter/"
     },
     "windows": {
+      "nsis": {
+        "installMode": "perMachine",
+        "installerHooks": "./windows/installer-hooks.nsh",
+        "languages": ["SimpChinese"]
+      },
       "webviewInstallMode": {
         "type": "offlineInstaller",
         "silent": true
