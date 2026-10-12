@@ -87,4 +87,5 @@ Write-Host 'The target PC does not need Java, Maven, Node.js, pnpm, or Rust inst
 Write-Host 'The Rust meter executable, install script, and safe log viewer are bundled in the app meter directory.'
 Write-Host 'The installer uses the original current-user scope and allows a custom installation directory.'
 Write-Host 'Autostart is initialized only when the app first runs with the current user administrator approval, never by the installer.'
+Write-Host 'Desktop autostart is a current-user Run entry shown in Task Manager. Verified old scheduled tasks migrate on first launch.'
 Write-Host 'Logon startup uses the normal Windows UAC flow. Settings can disable it; manual launches still require Administrator.'

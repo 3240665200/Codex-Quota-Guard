@@ -45,17 +45,19 @@ Ant Design Pro 管理页 ─────────管理员 API─────
 
 ## Windows 桌面自启动
 
-桌面“设置”页通过固定 Tauri 命令 `autostart_status` / `autostart_set` 查询及修改自启动，接口只接受启用/禁用 Boolean，不接受外部程序路径、命令或账户。设置页面不把本地缓存当作 Windows 登记成功的依据；读取失败、保存失败与不支持的平台均明确提示。
+桌面“设置”页通过固定 Tauri 命令 `autostart_status` / `autostart_set` 查询及修改自启动，接口只接受启用/禁用 Boolean，不接受外部程序路径、命令或账户。打开设置页、重新聚焦窗口或恢复页面可见时重新读取 Windows 状态，查询不自动写入。读取失败、保存失败与不支持的平台均明确提示。
 
-0.3.4 的 Windows NSIS 安装包恢复 currentUser 范围，允许自选目录。POSTINSTALL 仅显示说明，不调用客户端登记任务。正式版每次启动在构造 Tauri 之前检查当前 TokenUser、桌面用户 SID 和 TokenElevation；首次获得当前用户管理员权限后才默认登记。0.3.7 起，非管理员的普通启动和登录启动都进入同一条 `ShellExecuteExW(runas)` 流程；原启动器退出，仅已获权限且身份一致的子进程继续。开发版不自动登记依赖 Vite 的登录任务，开发启动脚本仍应在管理员权限下运行。初始化失败显示固定的原生提示，不把失败当成成功。
+Windows NSIS 安装包保持 currentUser 范围，允许自选目录。POSTINSTALL 仅显示说明，不调用客户端登记启动项。正式版每次启动在构造 Tauri 之前检查当前 TokenUser、桌面用户 SID 和 TokenElevation；首次获得当前用户管理员权限后才默认登记。0.3.7 起，非管理员的普通启动和登录启动都进入同一条 `ShellExecuteExW(runas)` 流程；原启动器退出，仅已获权限且身份一致的子进程继续。开发版不自动登记依赖 Vite 的启动项。初始化失败显示固定的原生提示，不把失败当成成功。
 
-登录任务固定为本程序路径加 `--autostart-launch`，使用当前 SID、InteractiveToken 和 `TASK_RUNLEVEL_LUA`。未提权的短时启动进程只调用 `ShellExecuteExW(runas)` 启动自身的固定 `--autostart-elevated` 模式，然后退出；使用 `SEE_MASK_NOASYNC` 等待 Shell 提交操作。取消 UAC 不创建 Tauri/Java/统计守卫，提权子进程再次检查同 SID 与管理员权限，拒绝其他管理员凭据。任务动作只有 Administrators/SYSTEM 可改，当前用户只获读、执行和删除权限，便于普通 currentUser 卸载。发布版本地 Java 仍只运行捆绑 JAR，屏蔽注入 Java agent 的环境变量。
+普通启动项使用 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的固定值 `Codex Quota Guard`，内容仅为带引号的当前主 EXE 绝对路径加 `--autostart-launch`，不会执行来自注册表的任意命令。命令须符合 Windows Run 的长度限制。未提权的短时启动进程只调用 `ShellExecuteExW(runas)` 启动自身固定的 `--autostart-elevated` 模式，然后退出；使用 `SEE_MASK_NOASYNC` 等待 Shell 提交操作。取消 UAC 不创建 Tauri/Java/统计守卫，提权子进程再次检查同 SID 与管理员权限，拒绝其他管理员凭据。发布版本地 Java 只运行捆绑 JAR，屏蔽注入 Java agent 的环境变量。
 
-后续启动仅观察合法 LUA 任务并记忆真实开关，不重复登记或重开外部禁用的任务。偏好按 SID 存在本软件 HKCU 项；缺失时仅从旧 HKLM 项迁移 Boolean，不恢复任何可执行路径或命令。精确匹配同 SID、同 EXE、URI、参数及触发器的旧 Highest 任务，可在管理员启动时原位降为 LUA 并保留 OFF；不同安装目录的任务不会被覆盖。卸载只清理当前 SID、本安装目录的任务并保留开关，`/UPDATE` 路径保持现有任务，不停止独立统计服务。
+任务管理器禁用普通启动项时可能保留 Run 命令，因此同时读取 `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run` 的同名状态。关闭时保留 Run 登记，方便用户在任务管理器重新开启；显式开启才清除本项禁用标记。对已识别的 12 字节状态只接受 0/2 为开启、3 为关闭，未知格式报错且不改写。该二进制格式没有微软公开稳定契约，实现参考 [Electron 的 Windows 登录启动处理](https://github.com/electron/electron/blob/main/shell/browser/browser_win.cc)，仍需在支持的 Windows 版本验收。Run 机制及长度限制见 [微软文档](https://learn.microsoft.com/en-us/windows/win32/setupapi/run-and-runonce-registry-keys)。
 
-0.3.6 起，任务中的账户名经 Windows 解析为 SID 后比较，避免把用户名与 SID 的表示差异误判为其他账户。URI 只接受本产品原始标记或同一任务的精确根路径；程序路径、工作目录、启动参数、触发器数量/类型、登录方式和运行级别仍严格核对。身份不匹配和 COM 读取失败保留各自固定提示，不再被上层统一覆盖成任务计划程序异常。已通过现有任务的只读识别检查，未执行真实开关写入、UAC 或重新登录验证。
+迁移仅处理精确匹配当前 SID、本安装目录、URI、固定参数、单个登录触发器和执行动作的旧 LUA/Highest 任务；账户名仍经 Windows 解析为 SID 后比较。新启动项若已存在，以其 Windows 实际状态为准，否则保留旧任务的开关。迁移分阶段登记、禁用旧来源、验证新状态并删除旧任务，失败尝试恢复原状态，恢复失败明确提示，不宣称原子事务。不同目录或身份不符的记录不会覆盖。偏好按 SID 保存在本软件 HKCU 项；仅从旧 HKLM 偏好读取 Boolean，不恢复任意路径。卸载只清理本安装的启动项及已验证的旧任务，保留开关偏好；`/UPDATE` 保留现有状态。整个流程不安装、停止或卸载独立统计服务。
 
-主 EXE 需保持默认 asInvoker 兼容性设置；若用户永久勾选 RunAsAdmin，普通权限登录任务可能在进入主函数之前就被系统拒绝，此时应取消该勾选并临时右键管理员启动完成登记。UAC 弹窗还受系统安全策略影响，不承诺绕过授权或自动提升标准用户。macOS/Linux 当前不提供此自启动设置。真实安装、UAC 与开机登录流程需在目标电脑验收；自动化使用模拟任务/权限策略和安装脚本编译，不修改真实任务计划程序。
+主 EXE 需保持默认 asInvoker 兼容性设置；若用户永久勾选 RunAsAdmin，普通启动项可能在进入主函数之前就被系统阻止。UAC 弹窗仍受系统安全策略影响，不承诺绕过授权或自动提升标准用户。macOS/Linux 当前不提供此自启动设置。真实安装、任务管理器联动及注销重新登录流程需在目标电脑验收；自动化通过模拟注册表/计划任务和安装脚本编译验证，不修改真实系统启动项。
+
+已有普通启动项的状态查询只读注册表；没有普通项时会读取旧任务的真实状态，避免迁移失败后误报关闭。初始化、显式设置及卸载仍核验旧任务以防重复入口，因此这些操作在 Windows 任务计划程序不可读时会保守报错，不会忽略旧记录继续写入。
 
 ## Windows 安装与旧版本衔接（0.3.5）
 
