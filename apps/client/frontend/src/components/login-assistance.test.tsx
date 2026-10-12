@@ -12,7 +12,7 @@ import { I18nextProvider } from "react-i18next";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Dashboard } from "./dashboard";
-import type { SystemSession } from "@/lib/api";
+import type { LoginAssistanceInfo, SystemSession } from "@/lib/api";
 import i18n from "@/lib/i18n";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -29,7 +29,7 @@ const session: SystemSession = {
     status: "ACTIVE",
   },
 };
-const available = {
+const available: LoginAssistanceInfo = {
   available: true,
   reasonCode: null,
   officialAccountId: "official-1",
@@ -311,6 +311,59 @@ describe("one-message login assistance", () => {
     expect(screen.getByRole("button", { name: "再次监听" })).toBeEnabled();
   });
 
+  it("clears a received code when the response expiry passes without polling again", async () => {
+    renderDashboard();
+    await openPage();
+    await start();
+    statusResponse = listener("RECEIVED");
+    await tick();
+    expect(screen.getByLabelText("本次登录验证码")).toHaveTextContent("123456");
+    const count = calls("login_assistance_status").length;
+    await tick(120_000);
+    expect(screen.queryByLabelText("本次登录验证码")).not.toBeInTheDocument();
+    expect(
+      screen.getByText("验证码已过期，请重新监听后再发送验证码"),
+    ).toBeVisible();
+    expect(calls("login_assistance_status")).toHaveLength(count);
+    expect(screen.getByRole("button", { name: "再次监听" })).toBeEnabled();
+  });
+
+  it("stops a locally expired listener even while every status request fails", async () => {
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command, args) => {
+      if (command === "login_assistance_status")
+        throw new Error("synthetic unavailable");
+      return original(command, args);
+    });
+    renderDashboard();
+    await openPage();
+    await start();
+    await tick(120_000);
+    expect(
+      screen.getByText("监听已超时，请重新监听后再发送验证码"),
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "再次监听" })).toBeEnabled();
+    expect(
+      screen.queryByRole("button", { name: "取消监听" }),
+    ).not.toBeInTheDocument();
+    const count = calls("login_assistance_status").length;
+    await tick(6_000);
+    expect(calls("login_assistance_status")).toHaveLength(count);
+  });
+
+  it("uses a safe fixed message for an OAuth failure without displaying its raw error code", async () => {
+    renderDashboard();
+    await openPage();
+    await start();
+    statusResponse = { ...listener("FAILED"), errorCode: "MAIL_OAUTH_FAILED" };
+    await tick();
+    expect(
+      screen.getByText("邮箱认证失败，请联系管理员检查邮箱配置。"),
+    ).toBeVisible();
+    expect(screen.queryByText("MAIL_OAUTH_FAILED")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "再次监听" })).toBeEnabled();
+  });
+
   it("cancels on leaving the page and does not display a late status response after reopening", async () => {
     const pending = deferred<ReturnType<typeof listener>>();
     const original = invokeMock.getMockImplementation()!;
@@ -410,14 +463,10 @@ describe("one-message login assistance", () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("123456"));
   });
 
-  it.each(["NO_TEAM", "MAILBOX_NOT_CONFIGURED"])(
+  it.each(["TEAM_UNAVAILABLE", "MAILBOX_UNCONFIGURED"])(
     "guides users when unavailable: %s",
     async (reasonCode) => {
-      infoResponse = {
-        ...available,
-        available: false,
-        reasonCode,
-      } as typeof available;
+      infoResponse = { ...available, available: false, reasonCode };
       renderDashboard();
       fireEvent.click(screen.getByRole("button", { name: "登录辅助" }));
       expect(await screen.findByText(/联系管理员/)).toBeVisible();
