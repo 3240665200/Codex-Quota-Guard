@@ -18,12 +18,16 @@ struct FakeTasks {
     writes: Vec<bool>,
     removals: usize,
     fail_read: bool,
+    read_error: Option<&'static str>,
     fail_write: bool,
     ignore_write: bool,
 }
 
 impl TaskStore for FakeTasks {
     fn read(&self) -> Result<Option<bool>, &'static str> {
+        if let Some(error) = self.read_error {
+            return Err(error);
+        }
         if self.fail_read {
             Err("read failed")
         } else {
@@ -60,6 +64,32 @@ impl TaskStore for FakeTasks {
         self.remembered = Some(enabled);
         Ok(())
     }
+}
+
+#[test]
+fn task_identity_errors_keep_their_specific_message_and_do_not_change_registration() {
+    const ERROR: &str = "开机自启动任务与当前用户或安装目录不匹配，已阻止自动修改，请检查旧版本残留任务。";
+    let mut tasks = FakeTasks {
+        read_error: Some(ERROR),
+        ..Default::default()
+    };
+    assert_eq!(read_status(&tasks), Err(ERROR));
+    assert_eq!(initialize_default(&mut tasks), Err(ERROR));
+    assert_eq!(uninstall(&mut tasks, false), Err(ERROR));
+    assert!(tasks.writes.is_empty());
+    assert_eq!(tasks.removals, 0);
+    assert_eq!(tasks.remembered, None);
+}
+
+#[test]
+fn status_verification_preserves_the_precise_read_error() {
+    const ERROR: &str = "开机自启动仅支持当前登录的管理员用户；请勿使用其他账户的管理员凭据设置。";
+    let mut tasks = FakeTasks {
+        read_error: Some(ERROR),
+        ..Default::default()
+    };
+    assert_eq!(set_enabled(&mut tasks, true), Err(ERROR));
+    assert_eq!(tasks.remembered, None);
 }
 
 #[test]

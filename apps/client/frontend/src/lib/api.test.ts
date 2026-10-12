@@ -607,4 +607,14 @@ describe("Tauri API boundary", () => {
       "本地服务暂时不可用，请稍后重试。",
     );
   });
+
+  it("shows the precise autostart ownership warning without exposing arbitrary task details", () => {
+    const warning =
+      "开机自启动任务与当前用户或安装目录不匹配，已阻止自动修改，请检查旧版本残留任务。";
+    expect(getApiErrorMessage(warning)).toBe(warning);
+    expect(getApiErrorMessage(new Error(warning))).toBe(warning);
+    expect(getApiErrorMessage(`${warning} token=secret`)).toBe(
+      "暂时无法连接本地服务，请确认应用仍在运行。",
+    );
+  });
 });
