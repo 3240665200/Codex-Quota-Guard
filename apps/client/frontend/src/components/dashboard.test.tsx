@@ -765,6 +765,9 @@ describe("Dashboard", () => {
       enabled: false,
     });
     expect(screen.getByText(/不会影响统计服务/)).toBeVisible();
+    expect(screen.getByText(/首次以管理员身份启动时默认开启/)).toBeVisible();
+    expect(screen.getByText(/未提权时需确认管理员授权/)).toBeVisible();
+    expect(screen.queryByText(/安装时默认开启/)).not.toBeInTheDocument();
   });
 
   it("does not pretend autostart was changed when the native update fails", async () => {
@@ -774,9 +777,7 @@ describe("Dashboard", () => {
       if (command === "autostart_status")
         return { supported: true, enabled: false };
       if (command === "autostart_set")
-        throw new Error(
-          "管理员自启动需要受保护的 Program Files 安装目录；请重新安装到默认目录。",
-        );
+        throw new Error("无法读取客户端安装路径，请检查安装文件。");
       return original(command, args);
     });
     renderDashboard();
@@ -787,7 +788,7 @@ describe("Dashboard", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "自启动设置失败",
     );
-    expect(screen.getByRole("alert")).toHaveTextContent("请重新安装到默认目录");
+    expect(screen.getByRole("alert")).toHaveTextContent("请检查安装文件");
     expect(toggle).toHaveAttribute("aria-checked", "false");
   });
 
