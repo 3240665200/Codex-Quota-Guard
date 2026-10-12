@@ -41,7 +41,7 @@ if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
 $settings = Import-Clixml -LiteralPath $ConfigPath
 $required = @('DATABASE_URL', 'DATABASE_USERNAME', 'DATABASE_PASSWORD', 'JWT_SECRET')
 $runtimeKeys = $required + @('CORS_ALLOWED_ORIGINS', 'JWT_ISSUER', 'ACCESS_TOKEN_TTL',
-    'REFRESH_TOKEN_TTL', 'AUTH_RATE_LIMIT_PER_MINUTE')
+    'REFRESH_TOKEN_TTL', 'AUTH_RATE_LIMIT_PER_MINUTE', 'MAIL_ASSISTANCE_ENCRYPTION_KEY')
 # Keep old fields readable for the encrypted pre-migration backup, but never
 # inject the retired Codex credential key or CLI settings into the new server.
 $allowed = $runtimeKeys + @('CODEX_CREDENTIAL_ENCRYPTION_KEY', 'CODEX_LOGIN_COMMAND',
