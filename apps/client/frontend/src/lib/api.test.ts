@@ -44,6 +44,22 @@ describe("Tauri API boundary", () => {
     invokeMock.mockReset();
   });
 
+  it("validates autostart status and passes only a boolean to the fixed setter", async () => {
+    invokeMock.mockResolvedValue({ supported: true, enabled: true });
+    await expect(api.autostartStatus()).resolves.toEqual({
+      supported: true,
+      enabled: true,
+    });
+    expect(invokeMock).toHaveBeenCalledWith("autostart_status");
+    await expect(api.setAutostart(true)).resolves.toEqual({
+      supported: true,
+      enabled: true,
+    });
+    expect(invokeMock).toHaveBeenCalledWith("autostart_set", { enabled: true });
+    invokeMock.mockResolvedValue({ supported: true, enabled: "true" });
+    await expect(api.autostartStatus()).rejects.toThrow();
+  });
+
   it("requests only fixed personal statistics ranges with USD and UTC data", async () => {
     const summary = {
       eventCount: 1,
