@@ -814,6 +814,29 @@ describe("Dashboard", () => {
     ).toHaveAttribute("aria-checked", "false");
   });
 
+  it("rechecks actual task state when saving the installation preference fails", async () => {
+    const user = (await import("@testing-library/user-event")).default.setup();
+    const original = invokeMock.getMockImplementation()!;
+    let enabled = false;
+    invokeMock.mockImplementation(async (command, args) => {
+      if (command === "autostart_status") return { supported: true, enabled };
+      if (command === "autostart_set") {
+        enabled = true;
+        throw new Error(
+          "无法保存开机自启动安装偏好，请检查 Windows 用户设置权限。",
+        );
+      }
+      return original(command, args);
+    });
+    renderDashboard();
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    const toggle = await screen.findByRole("switch", { name: "开机自启动" });
+    await waitFor(() => expect(toggle).toBeEnabled());
+    await user.click(toggle);
+    expect(await screen.findByRole("alert")).toHaveTextContent("安装偏好");
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
+  });
+
   it("does not offer unsupported autostart controls", async () => {
     const user = (await import("@testing-library/user-event")).default.setup();
     const original = invokeMock.getMockImplementation()!;
