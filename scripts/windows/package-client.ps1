@@ -85,4 +85,6 @@ foreach ($installer in $installers) {
 Write-Host 'The installer includes a verified Eclipse Temurin Java 17 runtime and offline WebView2 installer.'
 Write-Host 'The target PC does not need Java, Maven, Node.js, pnpm, or Rust installed.'
 Write-Host 'The Rust meter executable, install script, and safe log viewer are bundled in the app meter directory.'
-Write-Host 'Run the installed app as Administrator on every launch. The startup page lets you save the server address and retry automatic meter-service installation or upgrade.'
+Write-Host 'The installer requests administrator approval and installs into protected Program Files.'
+Write-Host 'Desktop startup at Windows logon is enabled on first install; Settings can disable it and upgrades preserve that choice.'
+Write-Host 'Manual launches still require Administrator. The startup page lets you save the server address and retry meter-service installation or upgrade.'
