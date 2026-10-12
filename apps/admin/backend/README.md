@@ -3,6 +3,8 @@
 这是可独立部署的 Java 17 + Spring Boot 4 用户与管理员服务。它管理本系统用户、
 团队和个人 Token 配额，不再管理或下发官方 Codex 登录凭据。
 
+邮箱「登录辅助」独立配置管理员自有邮箱授权，仅为被授权团队用户代收新登录邮件的验证码；不存储官方会话凭据。配置步骤、服务商范围、任务期限和安全边界见[登录辅助文档](../../../docs/architecture/login-assistance.md)。
+
 ## 已提供的接口
 
 - `POST /api/v1/auth/register`：注册并登录
@@ -63,6 +65,7 @@
 
 可选变量：
 
+- `MAIL_ASSISTANCE_ENCRYPTION_KEY`：独立的 32 字节随机密钥的 Base64 编码；长期固定并备份，缺失仅禁用邮箱辅助功能。Windows DPAPI 部署可先运行 `scripts/initialize-mail-key.ps1` 后重启本服务。
 - `JWT_ISSUER`，默认 `codex-quota-guard`
 - `WEB_SERVER_PORT`，默认 `8080`
 - `SERVER_ADDRESS`，默认 `0.0.0.0`（监听所有网卡；Windows 上可能显示为 `::` 双栈监听）
