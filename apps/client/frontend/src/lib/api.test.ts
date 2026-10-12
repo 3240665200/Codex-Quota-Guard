@@ -39,6 +39,111 @@ const quotaOverview = {
   blockReason: null,
 };
 
+const loginAssistanceInfo = {
+  available: true,
+  reasonCode: null,
+  officialAccountId: "official-1",
+  accountLabel: "团队官方账户",
+  recipientEmail: "team@example.com",
+};
+const loginListener = {
+  id: "11111111-1111-4111-8111-111111111111",
+  state: "LISTENING",
+  startedAt: "2026-10-12T10:00:00Z",
+  expiresAt: "2026-10-12T10:02:00Z",
+  listeningAt: "2026-10-12T10:00:01Z",
+  receivedAt: null,
+  code: null,
+  errorCode: null,
+};
+
+describe("login assistance API boundary", () => {
+  beforeEach(() => invokeMock.mockReset());
+
+  it("uses only the four fixed commands with validated listener IDs", async () => {
+    invokeMock.mockResolvedValue(loginAssistanceInfo);
+    await expect(api.loginAssistanceInfo()).resolves.toEqual(
+      loginAssistanceInfo,
+    );
+    expect(invokeMock).toHaveBeenLastCalledWith("login_assistance_info");
+    invokeMock.mockResolvedValue(loginListener);
+    await expect(api.loginAssistanceStart()).resolves.toEqual(loginListener);
+    expect(invokeMock).toHaveBeenLastCalledWith("login_assistance_start");
+    await expect(api.loginAssistanceStatus(loginListener.id)).resolves.toEqual(
+      loginListener,
+    );
+    expect(invokeMock).toHaveBeenLastCalledWith("login_assistance_status", {
+      listenerId: loginListener.id,
+    });
+    await expect(api.loginAssistanceCancel(loginListener.id)).resolves.toEqual(
+      loginListener,
+    );
+    expect(invokeMock).toHaveBeenLastCalledWith("login_assistance_cancel", {
+      listenerId: loginListener.id,
+    });
+    invokeMock.mockClear();
+    for (const id of [
+      "",
+      "someone-else",
+      "https://mail.example.com/listen",
+      `${loginListener.id}/other`,
+    ]) {
+      await expect(api.loginAssistanceStatus(id)).rejects.toThrow();
+      await expect(api.loginAssistanceCancel(id)).rejects.toThrow();
+    }
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects additional mailbox credentials instead of retaining or silently accepting them", async () => {
+    for (const extra of [
+      { password: "synthetic-secret" },
+      { imapPassword: "synthetic-secret" },
+      { accessToken: "synthetic-token" },
+      { serverUrl: "https://mail.example.com" },
+    ]) {
+      invokeMock.mockResolvedValue({ ...loginAssistanceInfo, ...extra });
+      await expect(api.loginAssistanceInfo()).rejects.toThrow();
+      invokeMock.mockResolvedValue({ ...loginListener, ...extra });
+      await expect(api.loginAssistanceStart()).rejects.toThrow();
+    }
+  });
+
+  it("rejects malformed listener states and a code received before this listener became ready", async () => {
+    const received = {
+      ...loginListener,
+      state: "RECEIVED",
+      receivedAt: "2026-10-12T10:00:02Z",
+      code: "123456",
+    };
+    invokeMock.mockResolvedValue(received);
+    await expect(api.loginAssistanceStatus(loginListener.id)).resolves.toEqual(
+      received,
+    );
+    for (const change of [
+      { code: "12345" },
+      { code: "1234567" },
+      { code: 123456 },
+      { receivedAt: "not-an-instant" },
+      { receivedAt: "2026-10-12T09:59:59Z" },
+      { listeningAt: null },
+      { id: "22222222-2222-4222-8222-222222222222" },
+      { state: "HISTORICAL" },
+    ]) {
+      invokeMock.mockResolvedValue({ ...received, ...change });
+      await expect(
+        api.loginAssistanceStatus(loginListener.id),
+      ).rejects.toThrow();
+    }
+    invokeMock.mockResolvedValue({ ...loginListener, code: "123456" });
+    await expect(api.loginAssistanceStart()).rejects.toThrow();
+    invokeMock.mockResolvedValue({
+      ...loginListener,
+      expiresAt: loginListener.startedAt,
+    });
+    await expect(api.loginAssistanceStart()).rejects.toThrow();
+  });
+});
+
 describe("Tauri API boundary", () => {
   beforeEach(() => {
     invokeMock.mockReset();

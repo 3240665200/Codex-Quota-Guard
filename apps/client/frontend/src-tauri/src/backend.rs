@@ -528,6 +528,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn login_assistance_routes_accept_only_a_uuid_and_never_external_urls() {
+        let id = "b350ad52-7b5d-4a5e-bc26-73d17a8dbbaf";
+        let route = login_assistance_route(id).unwrap();
+        assert_eq!(fixed_url(43117, route), format!("http://127.0.0.1:43117/api/v1/login-assistance/listeners/{id}"));
+        assert_eq!(fixed_url(43117, ApiRoute::LoginAssistanceInfo), "http://127.0.0.1:43117/api/v1/login-assistance");
+        assert_eq!(fixed_url(43117, ApiRoute::LoginAssistanceStart), "http://127.0.0.1:43117/api/v1/login-assistance/listeners");
+        for invalid in ["", "../session/login", "https://example.com", "not-a-uuid", "x?code=123456"] {
+            assert!(login_assistance_route(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn login_assistance_errors_are_specific_and_never_echo_remote_details() {
+        let route = ApiRoute::LoginAssistanceStart;
+        assert!(matches!(classify_response(route, StatusCode::UNAUTHORIZED), BackendError::SystemLoginRequired));
+        assert!(matches!(classify_response(route, StatusCode::CONFLICT), BackendError::MailBusy));
+        assert!(matches!(classify_response(route, StatusCode::TOO_MANY_REQUESTS), BackendError::MailRateLimited));
+        assert!(matches!(classify_response(route, StatusCode::FORBIDDEN), BackendError::MailRejected));
+        assert!(matches!(classify_response(route, StatusCode::SERVICE_UNAVAILABLE), BackendError::ControlPlaneUnavailable));
+    }
+
+    #[test]
     fn usage_history_accepts_only_bounded_numeric_pagination() {
         assert!(validate_usage_page(0, 10).is_ok());
         assert!(validate_usage_page(100001, 10).is_err());
