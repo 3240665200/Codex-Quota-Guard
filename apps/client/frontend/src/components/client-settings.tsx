@@ -2,7 +2,7 @@ import { useId } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Power, RefreshCw } from "lucide-react";
 
-import { api } from "@/lib/api";
+import { api, getApiErrorMessage } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 
@@ -50,7 +50,7 @@ export function ClientSettings() {
       ) : query.isError ? (
         <div className="space-y-3">
           <p className="text-sm text-[var(--cqg-status-error)]" role="alert">
-            无法读取自启动状态，请检查系统权限后重试。
+            无法读取自启动状态。{getApiErrorMessage(query.error)}
           </p>
           <Button
             size="sm"
@@ -128,7 +128,8 @@ export function ClientSettings() {
               className="mt-3 text-sm text-[var(--cqg-status-error)]"
               role="alert"
             >
-              自启动设置失败，尚未确认保存成功。请以管理员身份运行，并刷新状态后重试。
+              自启动设置失败。{getApiErrorMessage(mutation.error)}{" "}
+              请刷新状态后重试。
             </p>
           ) : null}
         </>
