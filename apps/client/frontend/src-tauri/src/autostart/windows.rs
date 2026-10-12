@@ -627,3 +627,83 @@ pub(super) fn handle_startup(mode: LaunchMode) -> Option<i32> {
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn task_identity_accepts_current_account_names_as_the_same_sid() {
+        let handle = token(unsafe { GetCurrentProcess() }).expect("current process token");
+        let sid = token_sid(&handle).expect("current process SID");
+        let user = std::env::var("USERNAME").expect("current Windows username");
+        let domain = std::env::var("USERDOMAIN").expect("current Windows user domain");
+
+        assert!(same_account_sid(&BSTR::from(&sid), &sid));
+        assert!(same_account_sid(&BSTR::from(&user), &sid));
+        assert!(same_account_sid(
+            &BSTR::from(format!("{domain}\\{user}")),
+            &sid
+        ));
+    }
+
+    #[test]
+    fn task_identity_rejects_different_or_invalid_accounts() {
+        let expected = "S-1-5-18";
+        for account in [
+            "S-1-5-19",
+            "S-1-not-a-sid",
+            "codex-quota-guard-no-such-account-5a6d00e8",
+            "",
+            "S-1-5-18\0other-account",
+        ] {
+            assert!(!same_account_sid(&BSTR::from(account), expected), "{account:?}");
+        }
+        assert!(!same_account_sid(&BSTR::from_wide(&[0xd800]), expected));
+        assert!(!same_account_sid(&BSTR::from(expected), "S-1-invalid"));
+    }
+
+    #[test]
+    fn task_identity_accepts_only_product_marker_or_exact_canonical_uri() {
+        let sid = "S-1-5-21-100-200-300-1001";
+        for uri in [format!("{IDENTITY}/{sid}"), format!("\\{IDENTITY}.{sid}")] {
+            assert!(same_registration_uri(&BSTR::from(&uri), sid), "{uri}");
+        }
+        for uri in [
+            String::new(),
+            format!("{IDENTITY}/S-1-5-21-100-200-300-1002"),
+            format!("\\{IDENTITY}.S-1-5-21-100-200-300-1002"),
+            format!("\\folder\\{IDENTITY}.{sid}"),
+            format!("{IDENTITY}.{sid}"),
+            format!("\\{IDENTITY}.{sid}-other"),
+            format!("\\{IDENTITY}.{sid}\0"),
+        ] {
+            assert!(!same_registration_uri(&BSTR::from(&uri), sid), "{uri:?}");
+        }
+    }
+
+    #[test]
+    #[ignore = "read-only installed-task check; requires CQG_AUTOSTART_TEST_EXECUTABLE and CQG_AUTOSTART_TEST_ENABLED"]
+    fn read_installed_task_without_mutation() {
+        let executable = PathBuf::from(
+            std::env::var_os("CQG_AUTOSTART_TEST_EXECUTABLE")
+                .expect("explicit installed executable path"),
+        );
+        assert!(executable.is_absolute() && executable.is_file());
+        let enabled = match std::env::var("CQG_AUTOSTART_TEST_ENABLED").as_deref() {
+            Ok("true") => true,
+            Ok("false") => false,
+            _ => panic!("CQG_AUTOSTART_TEST_ENABLED must be true or false"),
+        };
+        let mut tasks = WindowsTasks::connect().expect("read-only local task scheduler connection");
+        // The unit-test executable is not the installation whose task is checked.
+        // Only the expected path in this in-memory reader is changed.
+        tasks.executable = executable;
+
+        assert_eq!(tasks.read(), Ok(Some(enabled)));
+        assert_eq!(tasks.read_legacy(), Ok(None));
+        let status = super::super::read_status(&tasks).expect("installed task status");
+        assert!(status.supported);
+        assert_eq!(status.enabled, enabled);
+    }
+}
