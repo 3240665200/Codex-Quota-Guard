@@ -1,6 +1,9 @@
 use super::{
-    initialize_default, same_logon_user, startup_action, uninstall, LaunchMode, StartupAction,
-    TaskStore, CONTEXT_ERROR, READ_ERROR, WRITE_ERROR,
+    initialize_default,
+    migration::{migrate, rollback, MigrationStore, RollbackStore},
+    same_logon_user, startup_action,
+    startup_entry::{EntrySnapshot, StartupEntry},
+    uninstall, LaunchMode, StartupAction, TaskStore, CONTEXT_ERROR, READ_ERROR, WRITE_ERROR,
 };
 use std::{
     ffi::OsString,
@@ -20,10 +23,8 @@ use windows::{
             },
             TaskScheduler::{
                 IExecAction, ILogonTrigger, IRegisteredTask, ITaskFolder, ITaskService,
-                TaskScheduler, TASK_ACTION_EXEC, TASK_CREATE_OR_UPDATE,
-                TASK_DONT_ADD_PRINCIPAL_ACE, TASK_INSTANCES_IGNORE_NEW,
-                TASK_LOGON_INTERACTIVE_TOKEN, TASK_RUNLEVEL_HIGHEST, TASK_RUNLEVEL_LUA,
-                TASK_TRIGGER_LOGON,
+                TaskScheduler, TASK_ACTION_EXEC, TASK_LOGON_INTERACTIVE_TOKEN,
+                TASK_RUNLEVEL_HIGHEST, TASK_RUNLEVEL_LUA, TASK_TRIGGER_LOGON,
             },
             Variant::VARIANT,
         },
@@ -88,15 +89,8 @@ impl ComApartment {
     }
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum TaskKind {
-    Limited,
-    LegacyHighest,
-}
-
 struct OwnedTask {
     registered: IRegisteredTask,
-    kind: TaskKind,
 }
 impl Drop for ComApartment {
     fn drop(&mut self) {
@@ -106,7 +100,11 @@ impl Drop for ComApartment {
 }
 
 pub(super) struct WindowsTasks {
-    service: ITaskService,
+    sid: String,
+    executable: PathBuf,
+}
+
+struct LegacyTasks {
     folder: ITaskFolder,
     sid: String,
     executable: PathBuf,
@@ -117,11 +115,21 @@ pub(super) struct WindowsTasks {
 impl WindowsTasks {
     pub(super) fn connect() -> Result<Self, &'static str> {
         let sid = current_desktop_user()?;
-        Self::connect_for_sid(sid)
+        let executable = std::env::current_exe().map_err(|_| PATH_ERROR)?;
+        Ok(Self { sid, executable })
     }
 
-    fn connect_for_sid(sid: String) -> Result<Self, &'static str> {
-        let executable = std::env::current_exe().map_err(|_| PATH_ERROR)?;
+    fn entry(&self) -> Result<StartupEntry, &'static str> {
+        StartupEntry::new(&self.executable)
+    }
+
+    fn legacy(&self) -> Result<LegacyTasks, &'static str> {
+        LegacyTasks::connect(&self.sid, &self.executable)
+    }
+}
+
+impl LegacyTasks {
+    fn connect(sid: &str, executable: &Path) -> Result<Self, &'static str> {
         let apartment = ComApartment::new()?;
         // SAFETY: COM is initialized above and all argument values are owned.
         let service: ITaskService =
@@ -131,10 +139,9 @@ impl WindowsTasks {
         unsafe { service.Connect(&empty, &empty, &empty, &empty) }.map_err(|_| READ_ERROR)?;
         let folder = unsafe { service.GetFolder(&BSTR::from("\\")) }.map_err(|_| READ_ERROR)?;
         Ok(Self {
-            service,
             folder,
-            sid,
-            executable,
+            sid: sid.to_owned(),
+            executable: executable.to_owned(),
             _apartment: apartment,
         })
     }
@@ -143,29 +150,22 @@ impl WindowsTasks {
         BSTR::from(format!("{IDENTITY}.{}", self.sid))
     }
 
-    fn marker(&self) -> String {
-        format!("{IDENTITY}/{}", self.sid)
-    }
-
     fn task(&self) -> Result<Option<OwnedTask>, &'static str> {
         // SAFETY: The folder is connected to the local scheduler; name is fixed
         // except for a SID obtained from a Windows token, never renderer input.
         match unsafe { self.folder.GetTask(&self.name()) } {
             Ok(task) => {
-                let kind = self.validate_identity(&task)?;
-                Ok(Some(OwnedTask {
-                    registered: task,
-                    kind,
-                }))
+                self.validate_identity(&task)?;
+                Ok(Some(OwnedTask { registered: task }))
             }
             Err(error) if error.code().0 as u32 == 0x80070002 => Ok(None),
             Err(_) => Err(READ_ERROR),
         }
     }
 
-    fn validate_identity(&self, task: &IRegisteredTask) -> Result<TaskKind, &'static str> {
+    fn validate_identity(&self, task: &IRegisteredTask) -> Result<(), &'static str> {
         let sid = self.sid.as_str();
-        let result = (|| -> windows::core::Result<Option<TaskKind>> {
+        let result = (|| -> windows::core::Result<bool> {
             // SAFETY: Every out parameter is initialized; COM owns the returned
             // interfaces and BSTR buffers. This function only reads task metadata.
             unsafe {
@@ -183,13 +183,13 @@ impl WindowsTasks {
                 let mut count = 0;
                 actions.Count(&mut count)?;
                 if count != 1 {
-                    return Ok(None);
+                    return Ok(false);
                 }
                 let action = actions.get_Item(1)?;
                 let mut action_type = TASK_ACTION_EXEC;
                 action.Type(&mut action_type)?;
                 if action_type != TASK_ACTION_EXEC {
-                    return Ok(None);
+                    return Ok(false);
                 }
                 let action: IExecAction = action.cast()?;
                 let mut executable = BSTR::default();
@@ -201,13 +201,13 @@ impl WindowsTasks {
                 let triggers = definition.Triggers()?;
                 triggers.Count(&mut count)?;
                 if count != 1 {
-                    return Ok(None);
+                    return Ok(false);
                 }
                 let trigger = triggers.get_Item(1)?;
                 let mut trigger_type = TASK_TRIGGER_LOGON;
                 trigger.Type(&mut trigger_type)?;
                 if trigger_type != TASK_TRIGGER_LOGON {
-                    return Ok(None);
+                    return Ok(false);
                 }
                 let trigger: ILogonTrigger = trigger.cast()?;
                 let mut trigger_user = BSTR::default();
@@ -224,20 +224,14 @@ impl WindowsTasks {
                         .is_some_and(|parent| same_path_text(&directory.to_string(), parent))
                     && arguments == ARGUMENT;
                 if !matches {
-                    return Ok(None);
+                    return Ok(false);
                 }
-                Ok(if level == TASK_RUNLEVEL_LUA {
-                    Some(TaskKind::Limited)
-                } else if level == TASK_RUNLEVEL_HIGHEST {
-                    Some(TaskKind::LegacyHighest)
-                } else {
-                    None
-                })
+                Ok(level == TASK_RUNLEVEL_LUA || level == TASK_RUNLEVEL_HIGHEST)
             }
         })();
         match result {
-            Ok(Some(kind)) => Ok(kind),
-            Ok(None) => Err(OWNERSHIP_ERROR),
+            Ok(true) => Ok(()),
+            Ok(false) => Err(OWNERSHIP_ERROR),
             Err(_) => Err(READ_ERROR),
         }
     }
@@ -245,86 +239,69 @@ impl WindowsTasks {
 
 impl TaskStore for WindowsTasks {
     fn read(&self) -> Result<Option<bool>, &'static str> {
-        self.task()?
-            .filter(|task| task.kind == TaskKind::Limited)
+        self.entry()?.read()
+    }
+
+    fn read_legacy(&self) -> Result<Option<bool>, &'static str> {
+        self.legacy()?
+            .task()?
             .map(|task| task_enabled(&task.registered))
             .transpose()
     }
 
-    fn read_legacy(&self) -> Result<Option<bool>, &'static str> {
-        self.task()?
-            .filter(|task| task.kind == TaskKind::LegacyHighest)
-            .map(|task| task_enabled(&task.registered))
-            .transpose()
+    fn registration_override(&self) -> Result<Option<bool>, &'static str> {
+        self.entry()?.registration_override()
     }
 
     fn write(&mut self, enabled: bool) -> Result<(), &'static str> {
         if !is_elevated()? {
             return Err(WRITE_ERROR);
         }
-        // Validate an existing entry before an atomic update. This also migrates
-        // a verified legacy Highest task to LUA, including its OFF choice.
-        self.task()?;
-        let directory = self.executable.parent().ok_or(PATH_ERROR)?;
-        // SAFETY: Definition properties are populated only with fixed values,
-        // the current token SID, and inspected installation paths. No task is run.
-        let result = unsafe {
-            (|| -> windows::core::Result<()> {
-                let definition = self.service.NewTask(0)?;
-                let information = definition.RegistrationInfo()?;
-                information.SetURI(&BSTR::from(self.marker()))?;
-                information.SetAuthor(&BSTR::from("Codex Quota Guard"))?;
-                information.SetDescription(&BSTR::from(
-                    "当前 Windows 用户登录时启动 Codex Quota Guard；可在客户端设置中关闭。",
-                ))?;
-                let principal = definition.Principal()?;
-                principal.SetUserId(&BSTR::from(&self.sid))?;
-                principal.SetLogonType(TASK_LOGON_INTERACTIVE_TOKEN)?;
-                principal.SetRunLevel(TASK_RUNLEVEL_LUA)?;
-                let trigger: ILogonTrigger =
-                    definition.Triggers()?.Create(TASK_TRIGGER_LOGON)?.cast()?;
-                trigger.SetEnabled(VARIANT_TRUE)?;
-                trigger.SetUserId(&BSTR::from(&self.sid))?;
-                trigger.SetDelay(&BSTR::from("PT5S"))?;
-                let action: IExecAction = definition.Actions()?.Create(TASK_ACTION_EXEC)?.cast()?;
-                action.SetPath(&path_bstr(&self.executable))?;
-                action.SetWorkingDirectory(&path_bstr(directory))?;
-                action.SetArguments(&BSTR::from(ARGUMENT))?;
-                let settings = definition.Settings()?;
-                settings.SetEnabled(if enabled { VARIANT_TRUE } else { VARIANT_FALSE })?;
-                settings.SetDisallowStartIfOnBatteries(VARIANT_FALSE)?;
-                settings.SetStopIfGoingOnBatteries(VARIANT_FALSE)?;
-                settings.SetStartWhenAvailable(VARIANT_FALSE)?;
-                settings.SetExecutionTimeLimit(&BSTR::from("PT0S"))?;
-                settings.SetMultipleInstances(TASK_INSTANCES_IGNORE_NEW)?;
-                // The current user can read/run/delete this LUA task so the
-                // currentUser uninstaller needs no administrator elevation.
-                // Only Administrators/SYSTEM can modify its action.
-                let sddl = format!(
-                    "O:BAG:BAD:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGXSD;;;{})",
-                    self.sid
-                );
-                self.folder.RegisterTaskDefinition(
-                    &self.name(),
-                    &definition,
-                    TASK_CREATE_OR_UPDATE.0 | TASK_DONT_ADD_PRINCIPAL_ACE.0,
-                    &VARIANT::from(self.sid.as_str()),
-                    &VARIANT::default(),
-                    TASK_LOGON_INTERACTIVE_TOKEN,
-                    &VARIANT::from(sddl.as_str()),
-                )?;
-                Ok(())
-            })()
+        let mut migration = NativeMigration {
+            entry: self.entry()?,
+            legacy: self.legacy()?,
+            last_entry: None,
         };
-        result.map_err(|_| WRITE_ERROR)
+        migrate(&mut migration, enabled)
+    }
+
+    fn migrate(&mut self, enabled: bool) -> Result<(), &'static str> {
+        if !is_elevated()? {
+            return Err(WRITE_ERROR);
+        }
+        let legacy = self.legacy()?;
+        legacy.task()?;
+        let entry = self.entry()?;
+        let snapshot = entry.snapshot()?;
+        if snapshot.enabled == Some(enabled) && !enabled {
+            // Preserve Task Manager's OFF record byte-for-byte, checking it
+            // before deletion. Do not restore over a later external change.
+            entry.ensure_matches(&snapshot)?;
+            legacy.remove()?;
+            if legacy.task()?.is_some() {
+                return Err(super::VERIFY_ERROR);
+            }
+            entry.ensure_matches(&snapshot)?;
+            return Ok(());
+        }
+        let mut migration = NativeMigration {
+            entry,
+            legacy,
+            last_entry: None,
+        };
+        migrate(&mut migration, enabled)
     }
 
     fn remove(&mut self) -> Result<(), &'static str> {
-        if self.task()?.is_some() {
-            // SAFETY: task() verified this current SID's fixed product name,
-            // marker, action, literal path, working directory, and logon trigger.
-            unsafe { self.folder.DeleteTask(&self.name(), 0) }.map_err(|_| WRITE_ERROR)?;
+        let entry = self.entry()?;
+        entry.snapshot()?;
+        let legacy = self.legacy()?;
+        legacy.task()?;
+        legacy.remove()?;
+        if legacy.task()?.is_some() {
+            return Err(super::VERIFY_ERROR);
         }
+        entry.remove()?;
         Ok(())
     }
 
@@ -339,6 +316,157 @@ impl TaskStore for WindowsTasks {
 
     fn remember(&mut self, enabled: bool) -> Result<(), &'static str> {
         remember_sid(&self.sid, enabled)
+    }
+}
+
+impl LegacyTasks {
+    fn remove(&self) -> Result<(), &'static str> {
+        if self.task()?.is_some() {
+            // SAFETY: task() verified the exact product/SID/action/trigger. This
+            // only deletes an owned old task; ordinary startup never creates one.
+            unsafe { self.folder.DeleteTask(&self.name(), 0) }.map_err(|_| WRITE_ERROR)?;
+        }
+        Ok(())
+    }
+}
+
+struct LegacySnapshot {
+    registered_enabled: bool,
+    actual_enabled: bool,
+}
+
+struct NativeMigration {
+    entry: StartupEntry,
+    legacy: LegacyTasks,
+    last_entry: Option<EntrySnapshot>,
+}
+
+impl MigrationStore for NativeMigration {
+    type Snapshot = (EntrySnapshot, Option<LegacySnapshot>);
+
+    fn checkpoint(&mut self) -> Result<Self::Snapshot, &'static str> {
+        let entry = self.entry.snapshot()?;
+        let legacy = self
+            .legacy
+            .task()?
+            .map(|task| -> Result<LegacySnapshot, &'static str> {
+                Ok(LegacySnapshot {
+                    // SAFETY: The task has passed the complete identity validation.
+                    registered_enabled: unsafe { task.registered.Enabled() }
+                        .map_err(|_| READ_ERROR)?
+                        .as_bool(),
+                    actual_enabled: task_enabled(&task.registered)?,
+                })
+            })
+            .transpose()?;
+        self.last_entry = Some(entry.clone());
+        Ok((entry, legacy))
+    }
+
+    fn stage_disabled(&mut self) -> Result<(), &'static str> {
+        let snapshot = self.last_entry.as_mut().ok_or(super::VERIFY_ERROR)?;
+        self.entry.set(false, snapshot)
+    }
+
+    fn disable_legacy(&mut self) -> Result<(), &'static str> {
+        if let Some(task) = self.legacy.task()? {
+            // SAFETY: Only the freshly verified old task's enabled flag changes.
+            unsafe { task.registered.SetEnabled(VARIANT_FALSE) }.map_err(|_| WRITE_ERROR)?;
+            if task_enabled(&task.registered)? {
+                return Err(super::VERIFY_ERROR);
+            }
+        }
+        Ok(())
+    }
+
+    fn activate(&mut self, enabled: bool) -> Result<(), &'static str> {
+        let snapshot = self.last_entry.as_mut().ok_or(super::VERIFY_ERROR)?;
+        self.entry.set(enabled, snapshot)
+    }
+
+    fn remove_legacy(&mut self) -> Result<(), &'static str> {
+        self.legacy.remove()
+    }
+
+    fn verify_removed(&self) -> Result<(), &'static str> {
+        if self.legacy.task()?.is_none() {
+            Ok(())
+        } else {
+            Err(super::VERIFY_ERROR)
+        }
+    }
+
+    fn rollback(&mut self, (entry, legacy): Self::Snapshot) -> Result<(), &'static str> {
+        rollback(self, &(entry, legacy))
+    }
+}
+
+impl RollbackStore for NativeMigration {
+    type Snapshot = (EntrySnapshot, Option<LegacySnapshot>);
+
+    fn hold_disabled(&mut self) -> Result<(), &'static str> {
+        // Keep the new entry inactive before restoring an old available task.
+        let expected = self.last_entry.as_mut().ok_or(super::VERIFY_ERROR)?;
+        self.entry.hold_disabled(expected)
+    }
+
+    fn restore_run(&mut self, (entry, _): &Self::Snapshot) -> Result<(), &'static str> {
+        let expected = self.last_entry.as_mut().ok_or(super::VERIFY_ERROR)?;
+        self.entry.restore_run(entry, expected)
+    }
+
+    fn remove_run(&mut self) -> Result<(), &'static str> {
+        let expected = self.last_entry.as_mut().ok_or(super::VERIFY_ERROR)?;
+        self.entry.remove_run(expected)
+    }
+
+    fn restore_legacy(&mut self, (_, legacy): &Self::Snapshot) -> Result<(), &'static str> {
+        if let Some(snapshot) = legacy.as_ref() {
+            let task = self
+                .legacy
+                .task()?
+                .ok_or(super::migration::ROLLBACK_ERROR)?;
+            // SAFETY: This read-only task was freshly validated above.
+            let actual = unsafe { task.registered.Enabled() }
+                .map_err(|_| READ_ERROR)?
+                .as_bool();
+            if actual == snapshot.registered_enabled {
+                return if task_enabled(&task.registered)? == snapshot.actual_enabled {
+                    Ok(())
+                } else {
+                    Err(super::startup_entry::CONCURRENT_ERROR)
+                };
+            }
+            if actual {
+                return Err(super::startup_entry::CONCURRENT_ERROR);
+            }
+            // SAFETY: Identity is validated again; restore only its original flag.
+            unsafe {
+                task.registered.SetEnabled(if snapshot.registered_enabled {
+                    VARIANT_TRUE
+                } else {
+                    VARIANT_FALSE
+                })
+            }
+            .map_err(|_| WRITE_ERROR)?;
+            if task_enabled(&task.registered)? != snapshot.actual_enabled {
+                return Err(super::VERIFY_ERROR);
+            }
+        }
+        Ok(())
+    }
+
+    fn restoring_available_legacy((_, legacy): &Self::Snapshot) -> bool {
+        // Remove Run before restoring an available old task, so status can
+        // observe the old entry directly and a new OFF entry cannot hide it.
+        legacy
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.actual_enabled)
+    }
+
+    fn restore_approval(&mut self, (entry, _): &Self::Snapshot) -> Result<(), &'static str> {
+        let expected = self.last_entry.as_mut().ok_or(super::VERIFY_ERROR)?;
+        self.entry.restore_approval(entry, expected)
     }
 }
 
@@ -427,10 +555,6 @@ fn remember_sid(sid: &str, enabled: bool) -> Result<(), &'static str> {
 
 fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(Some(0)).collect()
-}
-
-fn path_bstr(path: &Path) -> BSTR {
-    BSTR::from_wide(&path.as_os_str().encode_wide().collect::<Vec<_>>())
 }
 
 fn same_path_text(value: &str, path: &Path) -> bool {
@@ -824,14 +948,14 @@ mod tests {
             Ok("false") => false,
             _ => panic!("CQG_AUTOSTART_TEST_ENABLED must be true or false"),
         };
-        let mut tasks = WindowsTasks::connect().expect("read-only local task scheduler connection");
-        // The unit-test executable is not the installation whose task is checked.
+        let mut tasks = WindowsTasks::connect().expect("read-only current-user startup reader");
+        // The unit-test executable is not the installation whose entry is checked.
         // Only the expected path in this in-memory reader is changed.
         tasks.executable = executable;
 
-        assert_eq!(tasks.read(), Ok(Some(enabled)));
-        assert_eq!(tasks.read_legacy(), Ok(None));
-        let status = super::super::read_status(&tasks).expect("installed task status");
+        assert_eq!(tasks.read(), Ok(None));
+        assert_eq!(tasks.read_legacy(), Ok(Some(enabled)));
+        let status = super::super::read_status(&tasks).expect("installed startup entry status");
         assert!(status.supported);
         assert_eq!(status.enabled, enabled);
     }

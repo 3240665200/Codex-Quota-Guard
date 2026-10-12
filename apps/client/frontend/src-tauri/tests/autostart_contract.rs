@@ -23,6 +23,7 @@ struct FakeTasks {
     fail_write: bool,
     ignore_write: bool,
     ignore_legacy_cleanup: bool,
+    registration_override: Option<bool>,
 }
 
 impl TaskStore for FakeTasks {
@@ -74,6 +75,10 @@ impl TaskStore for FakeTasks {
     fn remember(&mut self, enabled: bool) -> Result<(), &'static str> {
         self.remembered = Some(enabled);
         Ok(())
+    }
+
+    fn registration_override(&self) -> Result<Option<bool>, &'static str> {
+        Ok(self.registration_override)
     }
 }
 
@@ -258,6 +263,28 @@ fn status_observes_external_changes_instead_of_a_cached_preference() {
 }
 
 #[test]
+fn status_observes_a_restored_legacy_entry_when_the_ordinary_entry_is_absent() {
+    for enabled in [false, true] {
+        let tasks = FakeTasks {
+            legacy_enabled: Some(enabled),
+            ..Default::default()
+        };
+        assert_eq!(read_status(&tasks).unwrap().enabled, enabled);
+    }
+    let tasks = FakeTasks {
+        legacy_read_error: Some("legacy read failed"),
+        ..Default::default()
+    };
+    assert_eq!(read_status(&tasks), Err("legacy read failed"));
+    let tasks = FakeTasks {
+        enabled: Some(false),
+        legacy_read_error: Some("scheduler unavailable"),
+        ..Default::default()
+    };
+    assert!(!read_status(&tasks).unwrap().enabled);
+}
+
+#[test]
 fn failed_or_ineffective_registration_is_not_reported_as_success() {
     let mut tasks = FakeTasks {
         fail_write: true,
@@ -407,7 +434,7 @@ fn migration_preserves_the_verified_legacy_tasks_actual_off_choice() {
     };
     assert!(
         !read_status(&tasks).unwrap().enabled,
-        "legacy Highest is not reported as the current LUA mechanism"
+        "the verified disabled legacy entry remains disabled before migration"
     );
     assert!(!initialize_default(&mut tasks).unwrap().enabled);
     assert_eq!(tasks.writes, [false]);
@@ -415,7 +442,7 @@ fn migration_preserves_the_verified_legacy_tasks_actual_off_choice() {
 }
 
 #[test]
-fn a_current_lua_task_wins_over_stale_legacy_preferences() {
+fn a_current_startup_entry_wins_over_stale_legacy_preferences() {
     let mut tasks = FakeTasks {
         enabled: Some(false),
         legacy_enabled: Some(true),
@@ -423,7 +450,22 @@ fn a_current_lua_task_wins_over_stale_legacy_preferences() {
         ..Default::default()
     };
     assert!(!initialize_default(&mut tasks).unwrap().enabled);
-    assert!(tasks.writes.is_empty());
+    assert_eq!(tasks.legacy_enabled, None);
+}
+
+#[test]
+fn an_orphaned_windows_disabled_marker_wins_over_enabled_task_and_preferences() {
+    let mut tasks = FakeTasks {
+        legacy_enabled: Some(true),
+        remembered: Some(true),
+        registration_override: Some(false),
+        ..Default::default()
+    };
+
+    assert!(!initialize_default(&mut tasks).unwrap().enabled);
+    assert_eq!(tasks.enabled, Some(false));
+    assert_eq!(tasks.legacy_enabled, None);
+    assert_eq!(tasks.remembered, Some(false));
 }
 
 #[test]

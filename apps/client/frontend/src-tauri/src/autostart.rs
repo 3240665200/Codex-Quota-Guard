@@ -1,4 +1,4 @@
-//! Autostart is the Windows task's actual registration, not a renderer preference.
+//! Autostart observes Windows' actual startup entry, not a renderer preference.
 use serde::Serialize;
 use std::sync::Mutex;
 
@@ -6,7 +6,12 @@ use std::sync::Mutex;
 #[path = "autostart/windows.rs"]
 mod windows;
 
-const READ_ERROR: &str = "无法读取开机自启动状态，请检查 Windows 任务计划程序。";
+#[path = "autostart/migration.rs"]
+mod migration;
+#[path = "autostart/startup_entry.rs"]
+mod startup_entry;
+
+const READ_ERROR: &str = "无法读取 Windows 开机自启动状态，请检查当前用户的启动应用设置。";
 const WRITE_ERROR: &str = "无法设置开机自启动，请以管理员身份运行客户端后重试。";
 const VERIFY_ERROR: &str = "Windows 未保存开机自启动设置，请重试。";
 const CONTEXT_ERROR: &str =
@@ -69,12 +74,22 @@ pub(crate) trait TaskStore {
     fn install_preference(&self) -> Result<Option<bool>, &'static str>;
     fn remember(&mut self, enabled: bool) -> Result<(), &'static str>;
     fn read_legacy(&self) -> Result<Option<bool>, &'static str>;
+    fn registration_override(&self) -> Result<Option<bool>, &'static str> {
+        Ok(None)
+    }
+    fn migrate(&mut self, enabled: bool) -> Result<(), &'static str> {
+        self.write(enabled)
+    }
 }
 
 pub(crate) fn read_status(tasks: &impl TaskStore) -> Result<AutostartStatus, &'static str> {
+    let enabled = match tasks.read()? {
+        Some(enabled) => enabled,
+        None => tasks.read_legacy()?.unwrap_or(false),
+    };
     Ok(AutostartStatus {
         supported: true,
-        enabled: tasks.read()?.unwrap_or(false),
+        enabled,
     })
 }
 
@@ -82,9 +97,11 @@ pub(crate) fn set_enabled(
     tasks: &mut impl TaskStore,
     enabled: bool,
 ) -> Result<AutostartStatus, &'static str> {
+    // Identity/read failures must be detected before any registration changes.
+    tasks.read()?;
+    tasks.read_legacy()?;
     tasks.write(enabled)?;
-    // A disabled task is retained so install/upgrade preserves the user's OFF choice.
-    if tasks.read()? != Some(enabled) {
+    if tasks.read()? != Some(enabled) || tasks.read_legacy()?.is_some() {
         return Err(VERIFY_ERROR);
     }
     tasks.remember(enabled)?;
@@ -97,16 +114,23 @@ pub(crate) fn set_enabled(
 pub(crate) fn initialize_default(
     tasks: &mut impl TaskStore,
 ) -> Result<AutostartStatus, &'static str> {
-    if let Some(enabled) = tasks.read()? {
-        // Subsequent launches observe even changes made in Task Scheduler;
-        // they never register again or turn an externally disabled task on.
+    let current = tasks.read()?;
+    let legacy = tasks.read_legacy()?;
+    if let Some(enabled) = current {
+        if legacy.is_some() {
+            tasks.migrate(enabled)?;
+            if tasks.read()? != Some(enabled) || tasks.read_legacy()?.is_some() {
+                return Err(VERIFY_ERROR);
+            }
+        }
+        // Observe Task Manager changes without rewriting its approval value.
         tasks.remember(enabled)?;
         return Ok(AutostartStatus {
             supported: true,
             enabled,
         });
     }
-    let enabled = match tasks.read_legacy()? {
+    let enabled = match tasks.registration_override()?.or(legacy) {
         Some(enabled) => enabled,
         None => tasks.install_preference()?.unwrap_or(true),
     };
@@ -115,9 +139,10 @@ pub(crate) fn initialize_default(
 
 pub(crate) fn uninstall(tasks: &mut impl TaskStore, updating: bool) -> Result<(), &'static str> {
     if !updating {
-        // Capture even a choice made directly in Windows Task Scheduler before
-        // the old installer removes the task during an interactive upgrade.
-        if let Some(enabled) = tasks.read()?.or(tasks.read_legacy()?) {
+        // Capture even a choice made directly in Windows before removing entries.
+        let current = tasks.read()?;
+        let legacy = tasks.read_legacy()?;
+        if let Some(enabled) = current.or(tasks.registration_override()?).or(legacy) {
             tasks.remember(enabled)?;
         }
         tasks.remove()?;
