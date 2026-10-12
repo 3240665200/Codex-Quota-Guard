@@ -10,6 +10,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   RefreshCw,
+  Settings2,
   ShieldCheck,
   UserCircle,
   Users,
@@ -18,6 +19,7 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 import { AppIcon } from "@/components/app-icon";
+import { ClientSettings } from "@/components/client-settings";
 import {
   api,
   getApiErrorMessage,
@@ -521,6 +523,13 @@ const workspaces = [
     description: "运行状态、版本更新与本机诊断日志。",
     Icon: Activity,
   },
+  {
+    id: "settings",
+    label: "设置",
+    title: "设置",
+    description: "管理桌面客户端的启动偏好。",
+    Icon: Settings2,
+  },
 ] as const;
 type WorkspaceId = (typeof workspaces)[number]["id"];
 
@@ -923,6 +932,8 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
                   description="请刷新重试；如问题持续，请联系管理员。"
                 />
               )
+            ) : workspace === "settings" ? (
+              <ClientSettings />
             ) : (
               <UsageActivityPanel
                 key={session.user!.id}

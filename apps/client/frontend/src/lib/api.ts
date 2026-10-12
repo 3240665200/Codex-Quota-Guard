@@ -14,6 +14,11 @@ const statusSchema = z.object({
   state: z.string(),
 });
 
+const autostartSchema = z.object({
+  supported: z.boolean(),
+  enabled: z.boolean(),
+});
+
 const meterStartSchema = z.enum([
   "RUNNING",
   "STARTED",
@@ -423,6 +428,9 @@ async function invokeValidated<T>(
 }
 
 export const api = {
+  autostartStatus: () => invokeValidated("autostart_status", autostartSchema),
+  setAutostart: (enabled: boolean) =>
+    invokeValidated("autostart_set", autostartSchema, { enabled }),
   startupGateCheck: () =>
     invokeValidated("startup_gate_check", startupGateSchema),
   startupGuardStatus: () =>
