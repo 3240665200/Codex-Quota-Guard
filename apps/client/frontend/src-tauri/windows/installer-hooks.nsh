@@ -1,4 +1,5 @@
 ; The currentUser installer accepts the user's selected install directory.
+!define CQG_COMPATIBILITY_SCRIPT "${__FILEDIR__}\installer-compatibility.ps1"
 ; Registration happens only after a normal client startup gains permission.
 !macro NSIS_HOOK_POSTINSTALL
   DetailPrint "首次以当前 Windows 用户的管理员权限启动后默认开启自启动；可在客户端设置中关闭。"

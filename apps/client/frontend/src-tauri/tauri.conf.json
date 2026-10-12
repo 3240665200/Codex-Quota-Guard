@@ -29,6 +29,7 @@
   },
   "bundle": {
     "active": true,
+    "publisher": "codexquotaguard",
     "targets": "all",
     "resources": {
       "resources/backend/codex-quota-guard-backend.jar": "backend/codex-quota-guard-backend.jar",
@@ -38,6 +39,7 @@
     "windows": {
       "nsis": {
         "installMode": "currentUser",
+        "template": "./windows/installer-template.nsi",
         "installerHooks": "./windows/installer-hooks.nsh",
         "languages": ["SimpChinese"]
       },

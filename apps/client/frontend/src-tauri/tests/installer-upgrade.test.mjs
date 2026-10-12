@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -47,4 +48,15 @@ test("migration waits for the selected destination and fails closed before insta
 test("installation does not create startup tasks or uninstall the independent meter service", () => {
   const hook = readFileSync(path.join(root, config.bundle.windows.nsis.installerHooks), "utf8");
   assert.doesNotMatch(hook, /--autostart-install|uninstall-meter-service|Stop-Service|schtasks/i);
+});
+
+test("the real compatibility policy resolves mocked installations and waits for mocked migration", {
+  skip: process.platform !== "win32",
+}, () => {
+  const powershell = path.join(process.env.SystemRoot, "System32/WindowsPowerShell/v1.0/powershell.exe");
+  const result = spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+    path.join(root, "tests/installer-compatibility.test.ps1")], { encoding: "utf8", windowsHide: true });
+  assert.equal(result.error, undefined, result.error?.message);
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.match(result.stdout, /assertions passed using mocked OS adapters/);
 });
