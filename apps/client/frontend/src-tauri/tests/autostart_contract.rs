@@ -4,15 +4,17 @@
 #[allow(dead_code)] // The policy target compiles but never invokes native OS writes.
 mod autostart;
 
-use autostart::{acl_is_protected, same_logon_user, WriteGrant};
+use autostart::same_logon_user;
 use autostart::{
-    install_default, parse_launch_mode, read_status, set_enabled, uninstall, LaunchMode, TaskStore,
+    initialize_default, parse_launch_mode, read_status, set_enabled, startup_action, uninstall,
+    LaunchMode, StartupAction, TaskStore,
 };
 
 #[derive(Default)]
 struct FakeTasks {
     enabled: Option<bool>,
     remembered: Option<bool>,
+    legacy_enabled: Option<bool>,
     writes: Vec<bool>,
     removals: usize,
     fail_read: bool,
@@ -50,6 +52,10 @@ impl TaskStore for FakeTasks {
         Ok(self.remembered)
     }
 
+    fn read_legacy(&self) -> Result<Option<bool>, &'static str> {
+        Ok(self.legacy_enabled)
+    }
+
     fn remember(&mut self, enabled: bool) -> Result<(), &'static str> {
         self.remembered = Some(enabled);
         Ok(())
@@ -57,23 +63,24 @@ impl TaskStore for FakeTasks {
 }
 
 #[test]
-fn a_new_install_registers_enabled_and_reports_the_actual_task() {
+fn first_startup_after_same_user_admin_permission_defaults_enabled() {
     let mut tasks = FakeTasks::default();
-    let state = install_default(&mut tasks).unwrap();
+    let state = initialize_default(&mut tasks).unwrap();
     assert!(state.supported && state.enabled);
     assert_eq!(tasks.writes, [true]);
 }
 
 #[test]
-fn upgrade_refreshes_registration_without_reenabling_a_disabled_task() {
+fn later_startup_observes_actual_lua_state_without_registering_again() {
     for enabled in [false, true] {
         let mut tasks = FakeTasks {
             enabled: Some(enabled),
             ..Default::default()
         };
-        let state = install_default(&mut tasks).unwrap();
+        let state = initialize_default(&mut tasks).unwrap();
         assert_eq!(state.enabled, enabled);
-        assert_eq!(tasks.writes, [enabled]);
+        assert!(tasks.writes.is_empty());
+        assert_eq!(tasks.remembered, Some(enabled));
     }
 }
 
@@ -82,8 +89,8 @@ fn explicit_disable_is_preserved_when_reinstalling() {
     let mut tasks = FakeTasks::default();
     assert!(!set_enabled(&mut tasks, false).unwrap().enabled);
     assert_eq!(tasks.enabled, Some(false));
-    assert!(!install_default(&mut tasks).unwrap().enabled);
-    assert_eq!(tasks.writes, [false, false]);
+    assert!(!initialize_default(&mut tasks).unwrap().enabled);
+    assert_eq!(tasks.writes, [false]);
 }
 
 #[test]
@@ -117,7 +124,7 @@ fn failed_or_ineffective_registration_is_not_reported_as_success() {
         ..Default::default()
     };
     assert!(read_status(&tasks).is_err());
-    assert!(install_default(&mut tasks).is_err());
+    assert!(initialize_default(&mut tasks).is_err());
     assert!(tasks.writes.is_empty());
 }
 
@@ -141,7 +148,7 @@ fn uninstall_before_upgrade_removes_the_task_but_preserves_the_users_off_choice(
     set_enabled(&mut tasks, false).unwrap();
     uninstall(&mut tasks, false).unwrap();
     assert_eq!(tasks.enabled, None);
-    assert!(!install_default(&mut tasks).unwrap().enabled);
+    assert!(!initialize_default(&mut tasks).unwrap().enabled);
 }
 
 #[test]
@@ -151,7 +158,7 @@ fn external_task_scheduler_disable_survives_uninstall_before_upgrade() {
     // A user changed the real Windows task after previously enabling it in UI.
     tasks.enabled = Some(false);
     uninstall(&mut tasks, false).unwrap();
-    assert!(!install_default(&mut tasks).unwrap().enabled);
+    assert!(!initialize_default(&mut tasks).unwrap().enabled);
 }
 
 fn args(values: &[&str]) -> Vec<String> {
@@ -159,12 +166,9 @@ fn args(values: &[&str]) -> Vec<String> {
 }
 
 #[test]
-fn installer_modes_are_fixed_headless_operations_without_arbitrary_commands() {
+fn launch_modes_only_accept_fixed_logon_elevation_and_uninstall_operations() {
     assert_eq!(parse_launch_mode(&args(&[])).unwrap(), LaunchMode::Desktop);
-    assert_eq!(
-        parse_launch_mode(&args(&["--autostart-install"])).unwrap(),
-        LaunchMode::Install
-    );
+    assert!(parse_launch_mode(&args(&["--autostart-install"])).is_err());
     assert_eq!(
         parse_launch_mode(&args(&["--autostart-uninstall"])).unwrap(),
         LaunchMode::Uninstall
@@ -173,53 +177,55 @@ fn installer_modes_are_fixed_headless_operations_without_arbitrary_commands() {
         parse_launch_mode(&args(&["--autostart-launch"])).unwrap(),
         LaunchMode::Logon
     );
+    assert_eq!(
+        parse_launch_mode(&args(&["--autostart-elevated"])).unwrap(),
+        LaunchMode::ElevatedLogon
+    );
     for invalid in [
         args(&["--autostart-install", "--command", "calc.exe"]),
         args(&["--autostart-install", "--user", "someone-else"]),
         args(&["--autostart-uninstall", "--autostart-install"]),
         args(&["--autostart-launch", "anything"]),
+        args(&["--autostart-elevated", "--user", "someone-else"]),
     ] {
         assert!(parse_launch_mode(&invalid).is_err());
     }
 }
 
 #[test]
-fn elevated_tasks_refuse_user_owned_or_user_writable_installation_objects() {
-    let administrators = "S-1-5-32-544";
-    let system = "S-1-5-18";
-    let trusted_installer = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
-    let user = "S-1-5-21-1-2-3-1001";
-    let grants = [
-        WriteGrant {
-            sid: administrators.to_owned(),
-            writable: true,
-        },
-        WriteGrant {
-            sid: system.to_owned(),
-            writable: true,
-        },
-        WriteGrant {
-            sid: trusted_installer.to_owned(),
-            writable: true,
-        },
-        WriteGrant {
-            sid: user.to_owned(),
-            writable: false,
-        },
-    ];
-    assert!(acl_is_protected(administrators, &grants));
-    assert!(acl_is_protected(trusted_installer, &grants));
-    assert!(!acl_is_protected(user, &grants));
-    let writable = [WriteGrant {
-        sid: user.to_owned(),
-        writable: true,
-    }];
-    assert!(!acl_is_protected(administrators, &writable));
-    let everyone = [WriteGrant {
-        sid: "S-1-1-0".to_owned(),
-        writable: true,
-    }];
-    assert!(!acl_is_protected(system, &everyone));
+fn manual_unelevated_start_does_not_initialize_and_logon_requests_uac() {
+    assert_eq!(startup_action(LaunchMode::Desktop, false, true).unwrap(), StartupAction::Desktop);
+    assert_eq!(startup_action(LaunchMode::Desktop, true, true).unwrap(), StartupAction::Initialize);
+    assert_eq!(startup_action(LaunchMode::Logon, false, true).unwrap(), StartupAction::Elevate);
+    assert_eq!(startup_action(LaunchMode::Logon, true, true).unwrap(), StartupAction::Initialize);
+    assert_eq!(startup_action(LaunchMode::ElevatedLogon, true, true).unwrap(), StartupAction::Initialize);
+    assert!(startup_action(LaunchMode::ElevatedLogon, false, true).is_err());
+    assert_eq!(startup_action(LaunchMode::Uninstall, false, true).unwrap(), StartupAction::Uninstall);
+}
+
+#[test]
+fn another_account_never_initializes_or_launches_the_client() {
+    for mode in [LaunchMode::Desktop, LaunchMode::Logon, LaunchMode::ElevatedLogon, LaunchMode::Uninstall] {
+        for elevated in [false, true] {
+            assert!(startup_action(mode, elevated, false).is_err());
+        }
+    }
+}
+
+#[test]
+fn migration_preserves_the_verified_legacy_tasks_actual_off_choice() {
+    let mut tasks = FakeTasks { legacy_enabled: Some(false), remembered: Some(true), ..Default::default() };
+    assert!(!read_status(&tasks).unwrap().enabled, "legacy Highest is not reported as the current LUA mechanism");
+    assert!(!initialize_default(&mut tasks).unwrap().enabled);
+    assert_eq!(tasks.writes, [false]);
+    assert_eq!(tasks.remembered, Some(false));
+}
+
+#[test]
+fn a_current_lua_task_wins_over_stale_legacy_preferences() {
+    let mut tasks = FakeTasks { enabled: Some(false), legacy_enabled: Some(true), remembered: Some(true), ..Default::default() };
+    assert!(!initialize_default(&mut tasks).unwrap().enabled);
+    assert!(tasks.writes.is_empty());
 }
 
 #[test]

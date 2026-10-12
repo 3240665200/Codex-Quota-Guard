@@ -1,6 +1,6 @@
 ; Compile-only fixture: the produced installer is never executed.
 Unicode true
-RequestExecutionLevel admin
+RequestExecutionLevel user
 !include LogicLib.nsh
 !define MAINBINARYNAME "codex-quota-guard"
 !define PRODUCTNAME "Codex Quota Guard"
