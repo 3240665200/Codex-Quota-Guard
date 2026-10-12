@@ -1005,7 +1005,10 @@ textarea {
   *::before,
   *::after {
     scroll-behavior: auto !important;
-    transition-duration: 0.01ms !important;
+    /* Even a tiny non-zero duration animates top/left (the default property is
+       all), breaking Ant Design's synchronous popup origin measurements. */
+    transition-duration: 0s !important;
+    transition-delay: 0s !important;
     animation-duration: 0.01ms !important;
   }
 }
