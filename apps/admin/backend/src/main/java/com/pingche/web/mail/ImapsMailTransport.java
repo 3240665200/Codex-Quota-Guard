@@ -18,6 +18,8 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
 import javax.net.SocketFactory;
@@ -31,6 +33,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.eclipse.angus.mail.imap.IMAPFolder;
+import org.eclipse.angus.mail.imap.IMAPStore;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 
@@ -38,6 +41,7 @@ import org.springframework.stereotype.Component;
 public class ImapsMailTransport implements MailTransport, DisposableBean {
     private enum ConnectionPhase { CONNECTING, FOLDER, CURSOR }
     private static final int MAX_ERROR_CAUSES = 32;
+    private static final Set<String> NETEASE_HOSTS = Set.of("imap.163.com", "imap.126.com", "imap.yeah.net");
     private final MailTargetPolicy targets;
     private final MailBodyReader reader;
     private final ScheduledExecutorService deadlines;
@@ -85,6 +89,9 @@ public class ImapsMailTransport implements MailTransport, DisposableBean {
             session.setDebug(false);
             store = session.getStore("imaps");
             store.connect(settings.host(), settings.port(), settings.username(), settings.credential());
+            if (NETEASE_HOSTS.contains(settings.host().toLowerCase(Locale.ROOT))
+                    && store instanceof IMAPStore imapStore && imapStore.hasCapability("ID"))
+                imapStore.id(Map.of("name", "Codex Quota Guard"));
             phase = ConnectionPhase.FOLDER;
             Folder selected = store.getFolder(settings.folder());
             if (!(selected instanceof IMAPFolder imap)) throw new MessagingException();
