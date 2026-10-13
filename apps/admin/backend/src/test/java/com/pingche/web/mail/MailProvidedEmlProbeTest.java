@@ -44,11 +44,13 @@ class MailProvidedEmlProbeTest {
             if (decoded) {
                 String sender = message.senders().get(0);
                 String expectedSender = System.getenv("CQG_LOCAL_EML_EXPECTED_SENDER");
-                senderMatchesConfiguration = expectedSender != null && expectedSender.equalsIgnoreCase(sender);
+                senderMatchesConfiguration = MailSenderPolicy.matches(expectedSender, sender);
                 Optional<String> code = new LoginMailMatcher().findCode(message, sender,
                         message.recipients().get(0), received.minusSeconds(1));
                 matched = code.isPresent();
                 sixDigits = code.map(value -> value.matches("[0-9]{6}")).orElse(false);
+                matched = matched && new LoginMailMatcher().findCode(message, expectedSender,
+                        message.recipients().get(0), received.minusSeconds(1)).equals(code);
             }
         } catch (Exception ignored) {
             // Parser/provider exceptions may contain email content. Report only the fixed outcome below.
@@ -56,10 +58,11 @@ class MailProvidedEmlProbeTest {
             if (bytes != null) Arrays.fill(bytes, (byte) 0);
         }
         System.out.println("LOCAL_EML_READER_ACCEPTED=" + decoded);
-        System.out.println("LOCAL_EML_CONFIGURED_SENDER_MATCHES=" + senderMatchesConfiguration);
-        System.out.println("LOCAL_EML_MATCH_USING_ACTUAL_SENDER=" + matched);
+        System.out.println("LOCAL_EML_EXPECTED_SENDERS_MATCH=" + senderMatchesConfiguration);
+        System.out.println("LOCAL_EML_MATCH_USING_EXPECTED_SENDERS=" + matched);
         System.out.println("LOCAL_EML_RETURNED_SIX_DIGIT_CODE=" + sixDigits);
         System.out.println("LOCAL_EML_RECEIPT_TIME_SIMULATED=true");
-        assertTrue(decoded && matched && sixDigits, "Provided local mail did not pass the offline matching check");
+        assertTrue(decoded && senderMatchesConfiguration && matched && sixDigits,
+                "Provided local mail did not pass the offline matching check");
     }
 }

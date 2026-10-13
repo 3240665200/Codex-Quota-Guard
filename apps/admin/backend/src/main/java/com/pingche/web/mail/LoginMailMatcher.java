@@ -29,7 +29,8 @@ public class LoginMailMatcher {
             + "|\\b(?:your\\s+(?:(?:verification|temporary|one-time)\\s+)?code"
             + "|(?:verification|temporary|one-time)\\s+code"
             + "|(?:enter|use)\\s+(?:this|the(?:\\s+following)?|following)\\s+code)\\b|^code\\b|" + CHINESE_CODE + ")"
-            + "(?:" + LOGIN_SUFFIX + "|\\s*以\\s*(?:继续|繼續))?\\s*(?:(?:is|是|为|為)\\s*)?:?\\s*([0-9]{6})");
+            + "(?:" + LOGIN_SUFFIX + "|\\s+to\\s+continue\\b|\\s*以\\s*(?:继续|繼續))?"
+            + "\\s*(?:(?:is|是|为|為)\\s*)?:?\\s*([0-9]{6})");
     private static final Pattern CODE = Pattern.compile("[0-9]{6}");
     private static final Pattern NON_LOGIN_PURPOSE = Pattern.compile(
             "\\b(?:password\\s+reset|reset(?:ting)?\\s+(?:(?:your|the)\\s+)?(?:(?:chatgpt|openai)\\s+)?password"
@@ -39,14 +40,15 @@ public class LoginMailMatcher {
             + "|(?:账户|帐户|帳戶|账号|帐号|帳號)\\s*(?:恢复|恢復|復原|找回)");
     private static final Pattern SAFETY_REMINDER = Pattern.compile(
             "(?:\\bif\\s+(?:(?:this|that|it)\\s+(?:wasn't|was not|isn't|is not)\\s+you"
-            + "|you\\s+(?:didn't|did not)\\s+(?:request|initiate))"
+            + "|you\\s+(?:didn't|did not)\\s+(?:request|initiate)"
+            + "|you\\s+were\\s+not\\s+trying\\s+to\\s+" + ENGLISH_LOGIN + "\\b)"
             + "|(?:如果|若|如)(?:不是|非|(?:你|您)\\s*(?:无意|無意)\\s*" + CHINESE_LOGIN
             + "))[^.!?。！？]{0,240}(?:[.!?。！？]|$)");
 
     public Optional<String> findCode(LoginMailMessage message, String sender, String recipient, Instant armedAt) {
         if (message == null || message.receivedAt() == null || message.receivedAt().isBefore(armedAt.truncatedTo(ChronoUnit.SECONDS))
                 || message.senders() == null || message.senders().size() != 1
-                || !sender.equalsIgnoreCase(message.senders().get(0))
+                || !MailSenderPolicy.matches(sender, message.senders().get(0))
                 || message.recipients() == null || message.recipients().stream().noneMatch(recipient::equalsIgnoreCase)
                 || message.body() == null || message.body().length() > MAX_BODY_CHARS
                 || message.subject() != null && message.subject().length() > MAX_SUBJECT_CHARS) return Optional.empty();

@@ -82,6 +82,11 @@ public class MailAssistanceService implements DisposableBean {
     public MailboxResponse saveConfig(UUID accountId, MailboxRequest request) {
         cipher.encrypt("readiness", "readiness");
         validate(request);
+        String sender;
+        try { sender = MailSenderPolicy.normalize(request.senderEmail()); }
+        catch (IllegalArgumentException ignored) {
+            throw error("MAIL_CONFIG_INVALID", "Mailbox sender addresses are invalid", HttpStatus.BAD_REQUEST);
+        }
         try {
             MailboxResponse response = inTransaction(() -> {
                 requireAccount(accountId, true);
@@ -102,7 +107,7 @@ public class MailAssistanceService implements DisposableBean {
                 if (identityChanged) { config.passwordCipher = null; config.clientSecretCipher = null; config.refreshTokenCipher = null; }
                 config.enabled = request.enabled(); config.provider = request.provider(); config.host = host;
                 config.port = request.port(); config.username = username; config.recipientEmail = recipient;
-                config.folder = request.folder().trim(); config.senderEmail = request.senderEmail().trim().toLowerCase(Locale.ROOT);
+                config.folder = request.folder().trim(); config.senderEmail = sender;
                 config.authMode = request.authMode(); config.oauthClientId = emptyToNull(request.oauthClientId());
                 config.oauthTenant = emptyToNull(request.oauthTenant()); config.mailboxKey = key; config.revision = UUID.randomUUID();
                 config.connectionTestUntil = null;
