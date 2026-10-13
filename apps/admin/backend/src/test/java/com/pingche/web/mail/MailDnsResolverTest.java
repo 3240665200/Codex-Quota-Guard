@@ -43,11 +43,21 @@ class MailDnsResolverTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"10.0.0.1", "127.0.0.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "fc00::1"})
+    @ValueSource(strings = {"10.0.0.1", "127.0.0.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "fc00::1",
+            "fdfe:dcba:9876:1::1", "fdfe:dcba:9875:ffff::1", "fdfe:dcbb:9876::1", "fdfd:dcba:9876::1"})
     void nonPublicSystemAnswersRemainForPolicyToBlockWithoutDoh(String literal) throws Exception {
         InetAddress[] expected = {address(literal), address("198.18.0.1")};
         assertThat(resolver(host -> expected).resolve(HOST)).containsExactly(expected);
         verifyNoInteractions(client);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"fdfe:dcba:9876::", "fdfe:dcba:9876::38", "fdfe:dcba:9876:0:ffff:ffff:ffff:ffff"})
+    void mihomoDefaultIpv6FakeRangeAlongsideIpv4FakeUsesDoh(String literal) throws Exception {
+        reply(200, payload(1, record(HOST, 1, "1.1.1.1")));
+        InetAddress[] systemAnswers = {address("198.18.0.68"), address(literal)};
+        assertThat(resolver(host -> systemAnswers).resolve(HOST)).containsExactly(address("1.1.1.1"));
+        assertThat(requests).hasSize(1);
     }
 
     @Test void fakeIpIsReplacedWithPublicAddressesFromFixedCloudflareEndpoint() throws Exception {
@@ -111,7 +121,7 @@ class MailDnsResolverTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"::1", "fc00::1", "fe80::1", "2002:0808:0808::", "::ffff:8.8.8.8", "2606:4700:4700::1111%1", "[2606:4700:4700::1111]", "example.com"})
+    @ValueSource(strings = {"::1", "fc00::1", "fdfe:dcba:9876::38", "fe80::1", "2002:0808:0808::", "::ffff:8.8.8.8", "2606:4700:4700::1111%1", "[2606:4700:4700::1111]", "example.com"})
     void aaaaRecordsRejectPrivateTransitionScopedAndNonLiteralData(String literal) throws Exception {
         reply(200, payload(1), payload(28, record(HOST, 28, literal)));
         assertDnsFailure(unknownHostResolver());
