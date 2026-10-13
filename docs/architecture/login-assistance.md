@@ -66,6 +66,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\apps\admin\backend\scripts
 
 代理兼容改动已通过 170 项常规后端测试（1 项公网测试默认跳过）；公网测试另外显式运行，在系统仍返回 IPv4/IPv6 Fake-IP 时，通过实际 Angus IMAPS 连接完成证书验证并读到欢迎响应。此验证不代表邮箱账号/授权码已验证成功，完整登录需管理员在页面执行“测试连接”。
 
+## 配置与连接诊断
+
+- 「邮箱登录用户名」填写邮箱服务商的登录名，163 应使用完整邮箱地址，不是 Quota Guard 系统账号。
+- 「邮件文件夹」默认 `INBOX`，表示服务端收件箱，不是本机目录。「真实发件邮箱」用于匹配登录邮件的 From 地址，通常不是自己的收件地址；请以邮件详情为准。
+- 「测试已保存配置」不会使用表单中尚未保存的修改。更换授权码或其他字段后先点「保存」，再测试；留空授权字段会保留原有授权。
+- 测试失败返回固定安全分类：`MAIL_DNS_FAILED`、`MAIL_HOST_BLOCKED`、`MAIL_AUTH_FAILED`、`MAIL_TLS_FAILED`、`MAIL_CONNECTION_TIMEOUT`、`MAIL_FOLDER_FAILED`、`MAIL_CURSOR_UNAVAILABLE`。认证失败可能来自授权码、IMAP 服务开关或服务商安全策略，不等于能断言密码必错。日志只记录固定提示，不记录原始服务商异常、邮箱地址或凭据。
+- 根据[网易官方 IMAP ID 说明](https://help.mail.163.com/faqDetail.do?code=d7a5dc8471cd0c0e8b4b8f4f8e49998b374173cfe9171305fa1ce630d7f67ac2eda07326646e6eb0)，对 `imap.163.com`、`imap.126.com`、`imap.yeah.net` 在认证成功且支持 ID 时、打开收件箱前发送固定产品名。不会把用户邮箱或授权码作为身份描述字段；该声明针对当前连接，后续 STATUS 池连接的服务商行为仍需真实监听验收。
+
+`MailSavedConfigurationProbeTest` 默认禁用。仅在取得对应邮箱所有者的明确许可后，才能临时注入已有受保护配置、目标账户名称，并设置 `CQG_SAVED_MAILBOX_PROBE=APPROVED_READ_ONLY` 执行。它只读本地数据库中的单份指定 163/993/INBOX 配置，尝试一次只读连接和游标验证，不读取邮件正文、不发送邮件、不修改配置；只输出固定结果码。不要在普通构建或 CI 长期设置这些诊断环境变量。
+
 ## 新邮件与隔离规则
 
 - 建立连接后保存 `UIDVALIDITY`、`UIDNEXT` 与监听就绪时间，只处理新 UID；历史未读邮件也不会被当作新验证码。
