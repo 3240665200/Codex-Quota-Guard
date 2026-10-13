@@ -140,7 +140,9 @@ class MailAssistanceIntegrationTest {
         assertThat(cipher.decrypt(stored.codeCipher, stored.aad())).isEqualTo("123456");
         mvc.perform(get("/api/v1/client/login-assistance/listeners/{id}", started.id()).header(HttpHeaders.AUTHORIZATION, token(owner)))
                 .andExpect(status().isOk()).andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
-                .andExpect(jsonPath("$.code").value("123456"));
+                .andExpect(jsonPath("$.code").value("123456"))
+                .andExpect(jsonPath("$.body").doesNotExist()).andExpect(jsonPath("$.subject").doesNotExist())
+                .andExpect(jsonPath("$.senders").doesNotExist()).andExpect(jsonPath("$.recipients").doesNotExist());
         MailListenerResponse repeated = service.start(owner.getId());
         awaitState(repeated.id(), MailListener.State.RECEIVED);
         assertThat(repeated.id()).isNotEqualTo(started.id());
@@ -161,10 +163,28 @@ class MailAssistanceIntegrationTest {
     }
 
     @Test
-    void rejectsOldUidAndOldInternalReceiptDateEvenIfTemplateMatches() {
-        configure(); FakeConnection connection = new FakeConnection();
+    void acceptsNewUidReceivedBetweenBaselineAndListeningStatePublication() {
+        configure();
+        FakeConnection connection = new FakeConnection(() -> now.set(NOW.plusSeconds(2)));
         connection.batch.set(new MailTransport.Batch(10, 101, List.of(
-                new MailTransport.Candidate(99, message(NOW.plusSeconds(1))),
+                new MailTransport.Candidate(100, message(NOW.plusSeconds(1))))));
+        when(transport.open(any())).thenReturn(connection);
+
+        MailListenerResponse started = service.start(owner.getId());
+        awaitState(started.id(), MailListener.State.RECEIVED);
+
+        MailListenerResponse received = service.poll(owner.getId(), started.id());
+        assertThat(received.startedAt()).isEqualTo(NOW);
+        assertThat(received.listeningAt()).isEqualTo(NOW.plusSeconds(2));
+        assertThat(received.code()).isEqualTo("123456");
+        await().atMost(Duration.ofSeconds(5)).untilTrue(connection.closed);
+    }
+
+    @Test
+    void rejectsOldUidAndOldInternalReceiptDateEvenIfTemplateMatches() {
+        configure(); FakeConnection connection = new FakeConnection(() -> now.set(NOW.plusSeconds(2)));
+        connection.batch.set(new MailTransport.Batch(10, 101, List.of(
+                new MailTransport.Candidate(99, message(NOW.plusSeconds(3))),
                 new MailTransport.Candidate(100, message(NOW.minusSeconds(1))))));
         when(transport.open(any())).thenReturn(connection);
         MailListenerResponse started = service.start(owner.getId());
@@ -325,10 +345,17 @@ class MailAssistanceIntegrationTest {
         await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> assertThat(service.poll(owner.getId(), id).state()).isEqualTo(expected));
     }
     private static final class FakeConnection implements MailTransport.Connection {
+        private final Runnable afterBaselineSnapshot;
         final AtomicBoolean closed = new AtomicBoolean();
         final AtomicBoolean polled = new AtomicBoolean();
         final AtomicReference<MailTransport.Batch> batch = new AtomicReference<>();
-        @Override public MailTransport.Cursor baseline() { return new MailTransport.Cursor(10, 100); }
+        FakeConnection() { this(() -> { }); }
+        FakeConnection(Runnable afterBaselineSnapshot) { this.afterBaselineSnapshot = afterBaselineSnapshot; }
+        @Override public MailTransport.Cursor baseline() {
+            MailTransport.Cursor cursor = new MailTransport.Cursor(10, 100);
+            afterBaselineSnapshot.run();
+            return cursor;
+        }
         @Override public MailTransport.Batch poll(long nextUid) {
             polled.set(true); MailTransport.Batch result = batch.getAndSet(null);
             return result == null ? new MailTransport.Batch(10, nextUid, List.of()) : result;
