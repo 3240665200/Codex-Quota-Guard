@@ -53,7 +53,7 @@ class MailParsingSecurityTest {
         MailTargetPolicy policy = new MailTargetPolicy();
         for (String host : new String[] {"localhost", "127.0.0.1", "169.254.169.254", "http://imap.example.com", "mail.local"})
             assertThatThrownBy(() -> policy.validateHost(host)).isInstanceOf(DomainException.class);
-        for (String ip : new String[] {"127.0.0.1", "169.254.169.254", "10.0.0.1", "172.16.1.1", "192.168.1.1", "100.64.0.1", "::1", "fe80::1", "fd00::1"})
+        for (String ip : new String[] {"127.0.0.1", "169.254.169.254", "10.0.0.1", "172.16.1.1", "192.168.1.1", "100.64.0.1", "::1", "fe80::1", "fd00::1", "198.51.100.1", "203.0.113.1", "2001:db8::1"})
             assertThat(MailTargetPolicy.isPublic(InetAddress.getByName(ip))).as(ip).isFalse();
         assertThat(MailTargetPolicy.isPublic(InetAddress.getByName("8.8.8.8"))).isTrue();
         policy.validateHost("imap.gmail.com");
