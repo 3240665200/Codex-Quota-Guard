@@ -14,21 +14,34 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.pingche.web.auth.DomainException;
+import jakarta.mail.AuthenticationFailedException;
 import jakarta.mail.Folder;
+import jakarta.mail.FolderNotFoundException;
 import jakarta.mail.Message;
 import jakarta.mail.MessagingException;
 import jakarta.mail.Session;
 import jakarta.mail.Store;
 import java.io.IOException;
+import java.net.SocketTimeoutException;
+import java.net.http.HttpTimeoutException;
+import java.security.cert.CertificateException;
 import java.time.Instant;
 import java.util.List;
 import java.util.Properties;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Stream;
 import javax.net.SocketFactory;
+import javax.net.ssl.SSLException;
+import javax.net.ssl.SSLHandshakeException;
 import org.eclipse.angus.mail.imap.IMAPFolder;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.http.HttpStatus;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -152,9 +165,104 @@ class ImapsMailTransportTest {
         try (MockedStatic<Session> mocked = mockStatic(Session.class)) {
             mocked.when(() -> Session.getInstance(any(Properties.class))).thenReturn(session);
             assertThatThrownBy(() -> new ImapsMailTransport(targets, reader, deadlines).open(request(MailboxConfig.AuthMode.PASSWORD)))
-                    .isInstanceOf(DomainException.class);
+                    .isInstanceOfSatisfying(DomainException.class, error -> {
+                        assertThat(error.getCode()).isEqualTo("MAIL_CONNECTION_TIMEOUT");
+                        assertThat(error).hasMessage("Mailbox connection timed out").hasNoCause();
+                    });
             assertThat(raw.get().isClosed()).isTrue(); verify(task).cancel(false);
         }
+    }
+
+    @ParameterizedTest
+    @MethodSource("connectionFailures")
+    void connectionFailuresKeepSafeCategoriesWithoutProviderDetails(MessagingException providerError,
+            String code, String message) throws Exception {
+        doThrow(providerError).when(store).connect(anyString(), eq(993), anyString(), anyString());
+        try (MockedStatic<Session> mocked = mockStatic(Session.class)) {
+            mocked.when(() -> Session.getInstance(any(Properties.class))).thenReturn(session);
+            assertOpenFailure(code, message);
+            verify(store).close();
+            verify(folder, never()).open(Folder.READ_ONLY);
+        }
+    }
+
+    private static Stream<Arguments> connectionFailures() {
+        String privateDetail = "owner@example.com synthetic-credential raw-provider-response";
+        MessagingException chained = new MessagingException(privateDetail);
+        chained.setNextException(new AuthenticationFailedException(privateDetail));
+        MessagingException cycle = mock(MessagingException.class);
+        when(cycle.getNextException()).thenReturn(cycle);
+        when(cycle.getCause()).thenReturn(new SSLException(privateDetail));
+        return Stream.of(
+                Arguments.of(new AuthenticationFailedException(privateDetail), "MAIL_AUTH_FAILED", "Mailbox authentication failed"),
+                Arguments.of(chained, "MAIL_AUTH_FAILED", "Mailbox authentication failed"),
+                Arguments.of(new MessagingException(privateDetail, new SSLHandshakeException(privateDetail)),
+                        "MAIL_TLS_FAILED", "Mailbox TLS verification failed"),
+                Arguments.of(new MessagingException(privateDetail, new CertificateException(privateDetail)),
+                        "MAIL_TLS_FAILED", "Mailbox TLS verification failed"),
+                Arguments.of(cycle, "MAIL_TLS_FAILED", "Mailbox TLS verification failed"),
+                Arguments.of(new MessagingException(privateDetail, new SocketTimeoutException(privateDetail)),
+                        "MAIL_CONNECTION_TIMEOUT", "Mailbox connection timed out"),
+                Arguments.of(new MessagingException(privateDetail, new HttpTimeoutException(privateDetail)),
+                        "MAIL_CONNECTION_TIMEOUT", "Mailbox connection timed out"),
+                Arguments.of(new MessagingException(privateDetail), "MAIL_CONNECTION_FAILED",
+                        "Mailbox connection failed; verify saved settings and authorization"));
+    }
+
+    @ParameterizedTest
+    @MethodSource("dnsFailures")
+    void dnsPolicyFailureCodeIsPreservedButItsOriginalMessageIsNot(String code, String message, HttpStatus status) {
+        when(targets.pinnedSocketFactory("imap.example.com", 993)).thenThrow(
+                new DomainException(code, "owner@example.com synthetic-credential raw-provider-response", status));
+        assertOpenFailure(code, message);
+    }
+
+    private static Stream<Arguments> dnsFailures() {
+        return Stream.of(
+                Arguments.of("MAIL_DNS_FAILED", "Mailbox server DNS resolution failed", HttpStatus.BAD_GATEWAY),
+                Arguments.of("MAIL_HOST_BLOCKED", "Mailbox host must be a public IMAPS server", HttpStatus.BAD_REQUEST));
+    }
+
+    @Test void unknownDomainErrorIsReplacedByFixedConnectionFailure() {
+        when(targets.pinnedSocketFactory("imap.example.com", 993)).thenThrow(
+                new DomainException("PRIVATE_PROVIDER_CODE", "owner@example.com synthetic-credential", HttpStatus.BAD_GATEWAY));
+        assertOpenFailure("MAIL_CONNECTION_FAILED", "Mailbox connection failed; verify saved settings and authorization");
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void openingFolderAfterAuthenticationHasItsOwnSafeFailure(boolean missing) throws Exception {
+        MessagingException error = missing ? new FolderNotFoundException(folder, "private-provider-response")
+                : new MessagingException("private-provider-response");
+        doThrow(error).when(folder).open(Folder.READ_ONLY);
+        try (MockedStatic<Session> mocked = mockStatic(Session.class)) {
+            mocked.when(() -> Session.getInstance(any(Properties.class))).thenReturn(session);
+            assertOpenFailure("MAIL_FOLDER_FAILED", "Mailbox folder could not be opened");
+            verify(store).connect("imap.example.com", 993, "owner@example.com", "synthetic-credential");
+            verify(folder).close(false); verify(store).close();
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"notSticky", "validity", "next"})
+    void unavailableInitialUidCursorHasItsOwnSafeFailure(String invalid) throws Exception {
+        if (invalid.equals("notSticky")) when(folder.getUIDNotSticky()).thenReturn(true);
+        if (invalid.equals("validity")) when(folder.getUIDValidity()).thenReturn(0L);
+        if (invalid.equals("next")) when(folder.getUIDNext()).thenReturn(-1L);
+        try (MockedStatic<Session> mocked = mockStatic(Session.class)) {
+            mocked.when(() -> Session.getInstance(any(Properties.class))).thenReturn(session);
+            assertOpenFailure("MAIL_CURSOR_UNAVAILABLE", "Mailbox UID cursor is unavailable");
+            verify(folder).close(false); verify(store).close();
+        }
+    }
+
+    private void assertOpenFailure(String code, String message) {
+        assertThatThrownBy(() -> transport.open(request(MailboxConfig.AuthMode.PASSWORD)))
+                .isInstanceOfSatisfying(DomainException.class, error -> {
+                    assertThat(error.getCode()).isEqualTo(code);
+                    assertThat(error).hasMessage(message).hasNoCause();
+                    assertThat(error.getSuppressed()).isEmpty();
+                });
     }
 
     private MailTransport.Settings request(MailboxConfig.AuthMode mode) {
