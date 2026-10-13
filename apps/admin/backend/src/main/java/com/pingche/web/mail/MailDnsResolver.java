@@ -203,7 +203,12 @@ public class MailDnsResolver {
 
     private static boolean isFakeIp(InetAddress address) {
         byte[] bytes = address.getAddress();
-        return bytes.length == 4 && (bytes[0] & 255) == 198 && ((bytes[1] & 255) == 18 || (bytes[1] & 255) == 19);
+        if (bytes.length == 4)
+            return (bytes[0] & 255) == 198 && ((bytes[1] & 255) == 18 || (bytes[1] & 255) == 19);
+        // Mihomo's default IPv6 Fake-IP range is exactly fdfe:dcba:9876::/64, not arbitrary ULA space.
+        return bytes.length == 16 && (bytes[0] & 255) == 0xfd && (bytes[1] & 255) == 0xfe
+                && (bytes[2] & 255) == 0xdc && (bytes[3] & 255) == 0xba
+                && (bytes[4] & 255) == 0x98 && (bytes[5] & 255) == 0x76 && bytes[6] == 0 && bytes[7] == 0;
     }
 
     private static DomainException failure() {
