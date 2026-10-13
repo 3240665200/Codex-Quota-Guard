@@ -14,17 +14,19 @@ const authLabels: Record<MailboxAuthMode, string> = {
 };
 const secretNames = ['password', 'oauthClientSecret', 'oauthRefreshToken'] as const;
 
-type FormValues = OfficialAccountMailboxInput;
+type FormValues = OfficialAccountMailboxInput & { secondSenderEmail: string };
 
 function valuesFor(config: OfficialAccountMailbox, providers: MailboxProvider[]): FormValues {
   const provider = providers.find((item) => item.id === config.provider)
     ?? providers.find((item) => item.id === 'CUSTOM') ?? providers[0];
+  const senders = (config.senderEmail ?? '').split(/[,;，；\r\n]+/).map((value) => value.trim()).filter(Boolean);
   return {
     enabled: config.configured && config.enabled,
     provider: config.provider ?? provider?.id ?? '', host: config.host ?? provider?.host ?? '',
     port: config.port ?? provider?.port ?? 993, username: config.username ?? '',
     recipientEmail: config.recipientEmail ?? '', folder: config.folder ?? 'INBOX',
-    senderEmail: config.senderEmail ?? '', authMode: config.authMode ?? provider?.authModes[0] ?? 'PASSWORD',
+    senderEmail: senders[0] ?? '', secondSenderEmail: senders.slice(1).join(','),
+    authMode: config.authMode ?? provider?.authModes[0] ?? 'PASSWORD',
     oauthClientId: config.oauthClientId ?? '', oauthTenant: config.oauthTenant ?? '',
     password: '', oauthClientSecret: '', oauthRefreshToken: '',
   };
@@ -49,6 +51,18 @@ export default function MailboxConfigModal({ account, onClose }: {
   const enabled = Form.useWatch('enabled', form);
   const provider = providers.find((item) => item.id === selectedProvider);
   const busy = loading || saving || deleting;
+
+  const validateSender = async (_rule: unknown, value?: string) => {
+    const address = value?.trim() ?? '';
+    if (address && /[\s*?<>()\[\]\\",;，；\x00-\x1f\x7f]/.test(address)) {
+      throw new Error('请输入完整发件邮箱，每个输入框只填一个地址');
+    }
+  };
+  const validateSenderLength = async () => {
+    const addresses = [form.getFieldValue('senderEmail'), form.getFieldValue('secondSenderEmail')]
+      .map((item: string | undefined) => item?.trim() ?? '').filter(Boolean);
+    if (addresses.join(',').length > 320) throw new Error('发件地址总长度不能超过 320 个字符');
+  };
 
   const clearSecrets = () => form.setFieldsValue({ password: '', oauthClientSecret: '', oauthRefreshToken: '' });
   const close = () => {
@@ -86,7 +100,9 @@ export default function MailboxConfigModal({ account, onClose }: {
     const body: OfficialAccountMailboxInput = {
       enabled: values.enabled, provider: values.provider, host: values.host.trim(), port: values.port,
       username: values.username.trim(), recipientEmail: values.recipientEmail.trim(),
-      folder: values.folder.trim(), senderEmail: values.senderEmail.trim(), authMode: values.authMode,
+      folder: values.folder.trim(),
+      senderEmail: [values.senderEmail, values.secondSenderEmail].map((value) => value?.trim() ?? '').filter(Boolean).join(','),
+      authMode: values.authMode,
       oauthClientId: values.authMode === 'PASSWORD' ? '' : values.oauthClientId.trim(),
       oauthTenant: values.authMode === 'MICROSOFT_OAUTH2' ? values.oauthTenant.trim() : '',
     };
@@ -198,11 +214,23 @@ export default function MailboxConfigModal({ account, onClose }: {
               <Input maxLength={120} />
             </Form.Item></Col>
           </Row>
-          <Form.Item name="senderEmail" label="真实发件邮箱"
-            extra="填写邮件详情中的完整发件地址；显示名称不能用于筛选，请勿根据截图猜测。"
-            rules={[{ required: true, message: '请输入真实发件邮箱' }, { type: 'email', message: '请输入有效的真实发件邮箱' }]}>
-            <Input maxLength={320} placeholder="例如：邮件详情中的 sender@example.com" />
-          </Form.Item>
+          <Typography.Paragraph type="secondary">
+            填写邮件详情中的完整发件邮箱；两个地址同时生效，任意一个精确匹配即可，不支持域名或通配符。
+          </Typography.Paragraph>
+          <Row gutter={16}>
+            <Col xs={24} sm={12}><Form.Item name="senderEmail" label="发件地址 1" dependencies={['secondSenderEmail']} validateFirst
+              rules={[{ required: true, whitespace: true, message: '请输入真实发件邮箱' },
+                { type: 'email', transform: (value: string) => value?.trim(), message: '请输入完整发件邮箱' },
+                { validator: validateSender }, { validator: validateSenderLength }]}>
+              <Input maxLength={320} placeholder="邮件详情中的完整发件地址" />
+            </Form.Item></Col>
+            <Col xs={24} sm={12}><Form.Item name="secondSenderEmail" label="发件地址 2" validateFirst
+              extra="可选；没有第二个地址时留空。"
+              rules={[{ type: 'email', transform: (value: string) => value?.trim(), message: '请输入完整发件邮箱' },
+                { validator: validateSender }]}>
+              <Input maxLength={320} placeholder="另一个已确认的发件地址（可选）" />
+            </Form.Item></Col>
+          </Row>
           <Form.Item name="authMode" label="认证方式" rules={[{ required: true, message: '请选择认证方式' }]}>
             <Select options={(provider?.authModes ?? []).map((mode) => ({ value: mode, label: authLabels[mode] }))}
               onChange={() => { clearSecrets(); setTestResult(null); }} />
