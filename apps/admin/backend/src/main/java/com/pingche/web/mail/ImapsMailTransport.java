@@ -34,6 +34,7 @@ import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.eclipse.angus.mail.imap.IMAPFolder;
 import org.eclipse.angus.mail.imap.IMAPStore;
+import org.eclipse.angus.mail.imap.protocol.IMAPProtocol;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 
@@ -41,6 +42,7 @@ import org.springframework.stereotype.Component;
 public class ImapsMailTransport implements MailTransport, DisposableBean {
     private enum ConnectionPhase { CONNECTING, FOLDER, CURSOR }
     private static final int MAX_ERROR_CAUSES = 32;
+    private static final long MAX_IMAP_UID = 4_294_967_295L;
     private static final Set<String> NETEASE_HOSTS = Set.of("imap.163.com", "imap.126.com", "imap.yeah.net");
     private final MailTargetPolicy targets;
     private final MailBodyReader reader;
@@ -89,8 +91,8 @@ public class ImapsMailTransport implements MailTransport, DisposableBean {
             session.setDebug(false);
             store = session.getStore("imaps");
             store.connect(settings.host(), settings.port(), settings.username(), settings.credential());
-            if (NETEASE_HOSTS.contains(settings.host().toLowerCase(Locale.ROOT))
-                    && store instanceof IMAPStore imapStore && imapStore.hasCapability("ID"))
+            boolean netEaseHost = NETEASE_HOSTS.contains(settings.host().toLowerCase(Locale.ROOT));
+            if (netEaseHost && store instanceof IMAPStore imapStore && imapStore.hasCapability("ID"))
                 imapStore.id(Map.of("name", "Codex Quota Guard"));
             phase = ConnectionPhase.FOLDER;
             Folder selected = store.getFolder(settings.folder());
@@ -100,7 +102,7 @@ public class ImapsMailTransport implements MailTransport, DisposableBean {
             phase = ConnectionPhase.CURSOR;
             if (folder.getUIDNotSticky()) throw new MessagingException();
             IMAPFolder statusFolder = (IMAPFolder) store.getFolder(settings.folder());
-            ImapsConnection connection = new ImapsConnection(store, folder, statusFolder, socketFactory.get());
+            ImapsConnection connection = new ImapsConnection(store, folder, statusFolder, socketFactory.get(), netEaseHost);
             if (expired.get()) throw new MessagingException();
             return connection;
         } catch (MessagingException | RuntimeException error) {
@@ -117,15 +119,33 @@ public class ImapsMailTransport implements MailTransport, DisposableBean {
         private final IMAPFolder statusFolder;
         private final Cursor baseline;
         private final SocketFactory socketFactory;
-        ImapsConnection(Store store, IMAPFolder folder, IMAPFolder statusFolder, SocketFactory socketFactory) throws MessagingException {
+        private final IMAPProtocol uidLowerBoundProtocol;
+        ImapsConnection(Store store, IMAPFolder folder, IMAPFolder statusFolder, SocketFactory socketFactory,
+                boolean allowUidLowerBound) throws MessagingException {
             this.store = store; this.folder = folder; this.statusFolder = statusFolder;
             this.socketFactory = socketFactory;
-            baseline = new Cursor(folder.getUIDValidity(), folder.getUIDNext());
-            if (baseline.uidValidity() <= 0 || baseline.nextUid() <= 0) throw new MessagingException();
+            long validity = folder.getUIDValidity();
+            long next = folder.getUIDNext();
+            if (validity <= 0) throw new MessagingException();
+            if (allowUidLowerBound && next == -1) {
+                synchronized (folder) {
+                    UidSnapshot snapshot = uidSnapshot(validity, null);
+                    uidLowerBoundProtocol = snapshot.protocol();
+                    // This is an internal query lower bound, not a server-supplied UIDNEXT.
+                    baseline = new Cursor(validity, snapshot.lastUid() + 1);
+                }
+            } else {
+                uidLowerBoundProtocol = null;
+                baseline = new Cursor(validity, next);
+                if (next <= 0) throw new MessagingException();
+            }
         }
         @Override public Cursor baseline() { return baseline; }
         @Override public Batch poll(long nextUid) {
             try {
+                if (uidLowerBoundProtocol != null) {
+                    synchronized (folder) { return pollUidLowerBound(nextUid); }
+                }
                 if (!folder.isOpen()) throw new MessagingException();
                 long validity = statusFolder.getUIDValidity();
                 long currentNext = statusFolder.getUIDNext();
@@ -149,11 +169,72 @@ public class ImapsMailTransport implements MailTransport, DisposableBean {
                 return new Batch(validity, end + 1, List.copyOf(candidates));
             } catch (MessagingException ignored) { throw failure(); }
         }
+        private Batch pollUidLowerBound(long nextUid) throws MessagingException {
+            if (nextUid <= 0 || nextUid > MAX_IMAP_UID) throw new MessagingException();
+            long validity = baseline.uidValidity();
+            long end = uidSnapshot(validity, uidLowerBoundProtocol).lastUid();
+            // Deletions can lower the last present UID; the listener's lower bound never rewinds.
+            if (end < nextUid) return new Batch(validity, nextUid, List.of());
+            Message[] messages = folder.getMessagesByUID(nextUid, end);
+            if (messages == null || messages.length > 50) throw new MessagingException();
+            requireSelectedSession(validity, uidLowerBoundProtocol);
+            List<Candidate> candidates = new ArrayList<>();
+            for (Message message : messages) {
+                long uid = folder.getUID(message);
+                if (uid < nextUid || uid > end) continue;
+                try {
+                    LoginMailMessage parsed = reader.read(message);
+                    if (parsed != null) candidates.add(new Candidate(uid, parsed));
+                } catch (IOException ignored) { /* Unsupported MIME is ignored without reading attachments. */ }
+            }
+            requireSelectedSession(validity, uidLowerBoundProtocol);
+            return new Batch(validity, end + 1, List.copyOf(candidates));
+        }
+        private UidSnapshot uidSnapshot(long validity, IMAPProtocol expected) throws MessagingException {
+            requireOpenValidity(validity);
+            IMAPProtocol selected = (IMAPProtocol) folder.doCommand(protocol -> {
+                if (expected != null && protocol != expected) throw cursorChanged();
+                protocol.noop();
+                return protocol;
+            });
+            if (selected == null) throw new MessagingException();
+            requireOpenValidity(validity);
+            int count = folder.getMessageCount();
+            if (count < 0) throw new MessagingException();
+            long lastUid = 0;
+            if (count > 0) {
+                Message tail = folder.getMessage(count);
+                if (tail == null || tail.isExpunged()) throw new MessagingException();
+                lastUid = folder.getUID(tail);
+                if (tail.isExpunged() || lastUid <= 0 || lastUid >= MAX_IMAP_UID) throw new MessagingException();
+            }
+            requireSelectedSession(validity, selected);
+            return new UidSnapshot(selected, lastUid);
+        }
+        private void requireSelectedSession(long validity, IMAPProtocol expected) throws MessagingException {
+            requireOpenValidity(validity);
+            folder.doCommand(protocol -> {
+                if (protocol != expected) throw cursorChanged();
+                return null;
+            });
+            requireOpenValidity(validity);
+        }
+        private void requireOpenValidity(long validity) throws MessagingException {
+            if (!folder.isOpen()) throw new MessagingException();
+            // Open-folder UIDVALIDITY is cached. Safety depends on the same continuous selected session;
+            // these checks are not a claim to re-fetch remote UIDVALIDITY on every poll.
+            if (folder.getUIDValidity() != validity) throw cursorChanged();
+        }
+        private DomainException cursorChanged() {
+            return new DomainException("MAIL_CURSOR_CHANGED", "Mailbox cursor changed; start a new listener", HttpStatus.CONFLICT);
+        }
         @Override public void close() {
             // Closing the raw sockets first interrupts FETCH/read before acquiring Jakarta Mail's folder locks.
             MailTargetPolicy.closeSockets(socketFactory); closeQuietly(store, folder);
         }
     }
+
+    private record UidSnapshot(IMAPProtocol protocol, long lastUid) { }
 
     private void closeQuietly(Store store, IMAPFolder folder) {
         try { if (folder != null && folder.isOpen()) folder.close(false); } catch (MessagingException | RuntimeException ignored) { }
