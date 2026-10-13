@@ -4,10 +4,22 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.sql.DriverManager;
 import java.sql.SQLException;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
+import java.util.HexFormat;
 import java.util.Properties;
 import java.util.Set;
 import java.util.UUID;
+import jakarta.mail.Folder;
+import jakarta.mail.MessagingException;
+import jakarta.mail.Session;
+import jakarta.mail.Store;
+import javax.net.SocketFactory;
+import org.eclipse.angus.mail.imap.IMAPFolder;
+import org.eclipse.angus.mail.imap.IMAPStore;
+import org.eclipse.angus.mail.imap.protocol.Status;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import tools.jackson.databind.ObjectMapper;
@@ -19,6 +31,8 @@ class MailSavedConfigurationProbeTest {
     void opensOnlyTheApprovedSavedNeteaseInboxOnceWithoutReadingMailBodies() {
         String result = "PROBE_CONFIGURATION_UNAVAILABLE";
         boolean attempted = false;
+        boolean savedCredentialPresent = false;
+        Boolean matchesProvidedCredential = null;
         try {
             String label = required("CQG_MAIL_PROBE_LABEL");
             Properties database = new Properties();
@@ -58,8 +72,22 @@ class MailSavedConfigurationProbeTest {
                                 "PROBE_TARGET_OUTSIDE_APPROVAL");
                         UUID accountId = row.getObject("official_account_id", UUID.class);
                         MailSecretCipher cipher = new MailSecretCipher(required("MAIL_ASSISTANCE_ENCRYPTION_KEY"));
-                        String credential = cipher.decrypt(row.getString("password_cipher"),
+                        String encrypted = row.getString("password_cipher");
+                        savedCredentialPresent = encrypted != null && !encrypted.isBlank();
+                        require(savedCredentialPresent, "PROBE_CREDENTIAL_NOT_SAVED");
+                        String credential = cipher.decrypt(encrypted,
                                 new MailboxConfig(accountId).aad("password"));
+                        String expectedFingerprint = System.getenv("CQG_MAIL_PROBE_EXPECTED_SHA256");
+                        if (expectedFingerprint != null) {
+                            require(expectedFingerprint.matches("[0-9a-f]{64}"), "PROBE_CONFIGURATION_UNAVAILABLE");
+                            byte[] plaintext = credential.getBytes(StandardCharsets.UTF_8);
+                            try {
+                                matchesProvidedCredential = MessageDigest.isEqual(
+                                        HexFormat.of().parseHex(expectedFingerprint),
+                                        MessageDigest.getInstance("SHA-256").digest(plaintext));
+                            } finally { java.util.Arrays.fill(plaintext, (byte) 0); }
+                            require(matchesProvidedCredential, "PROBE_SAVED_CREDENTIAL_MISMATCH");
+                        }
                         settings = new MailTransport.Settings(host, port, username, folder, MailboxConfig.AuthMode.PASSWORD, credential);
                         require(!row.next(), "PROBE_CONFIGURATION_AMBIGUOUS");
                     }
@@ -69,7 +97,10 @@ class MailSavedConfigurationProbeTest {
                     new MailTargetPolicy(new MailDnsResolver(new ObjectMapper())), new MailBodyReader());
             try {
                 attempted = true;
-                try (MailTransport.Connection mailbox = transport.open(settings)) {
+                if ("CURSOR_METADATA".equals(System.getenv("CQG_MAIL_PROBE_MODE"))) {
+                    inspectCursorMetadata(settings);
+                    result = "CURSOR_METADATA_COLLECTED";
+                } else try (MailTransport.Connection mailbox = transport.open(settings)) {
                     var cursor = mailbox.baseline();
                     require(cursor.uidValidity() > 0 && cursor.nextUid() > 0, "MAIL_CURSOR_UNAVAILABLE");
                     result = "CONNECTED_READ_ONLY";
@@ -82,14 +113,62 @@ class MailSavedConfigurationProbeTest {
             result = allowed.contains(failure.getCode()) ? failure.getCode() : "PROBE_FAILED";
         } catch (SQLException failure) {
             result = "PROBE_DATABASE_UNAVAILABLE";
+        } catch (NoSuchAlgorithmException failure) {
+            result = "PROBE_CONFIGURATION_UNAVAILABLE";
+        } catch (MessagingException failure) {
+            result = failure instanceof jakarta.mail.AuthenticationFailedException ? "MAIL_AUTH_FAILED" : "PROBE_METADATA_UNAVAILABLE";
         } catch (ProbeRejected failure) {
             result = failure.safeCode;
         } catch (RuntimeException failure) {
             result = "PROBE_FAILED";
         }
         System.out.println("SAVED_MAILBOX_PROBE_ATTEMPTED=" + attempted);
+        System.out.println("SAVED_MAILBOX_CREDENTIAL_PRESENT=" + savedCredentialPresent);
+        System.out.println("SAVED_MAILBOX_CREDENTIAL_MATCHES_PROVIDED=" + matchesProvidedCredential);
         System.out.println("SAVED_MAILBOX_PROBE_RESULT=" + result);
-        assertTrue("CONNECTED_READ_ONLY".equals(result), result);
+        assertTrue("CONNECTED_READ_ONLY".equals(result) || "CURSOR_METADATA_COLLECTED".equals(result), result);
+    }
+
+    /** No SEARCH/FETCH/message reads; only authentication, EXAMINE and one STATUS metadata command. */
+    private static void inspectCursorMetadata(MailTransport.Settings settings) throws MessagingException {
+        SocketFactory sockets = new MailTargetPolicy(new MailDnsResolver(new ObjectMapper()))
+                .pinnedSocketFactory(settings.host(), settings.port());
+        Properties properties = new Properties();
+        properties.put("mail.imaps.ssl.enable", "true");
+        properties.put("mail.imaps.ssl.checkserveridentity", "true");
+        properties.put("mail.imaps.ssl.protocols", "TLSv1.3 TLSv1.2");
+        properties.put("mail.imaps.connectiontimeout", "10000");
+        properties.put("mail.imaps.timeout", "10000");
+        properties.put("mail.imaps.writetimeout", "10000");
+        properties.put("mail.imaps.socketFactory", sockets);
+        properties.put("mail.imaps.socketFactory.fallback", "false");
+        Session session = Session.getInstance(properties);
+        session.setDebug(false);
+        Store store = session.getStore("imaps");
+        IMAPFolder folder = null;
+        try {
+            store.connect(settings.host(), settings.port(), settings.username(), settings.credential());
+            if (store instanceof IMAPStore imap && imap.hasCapability("ID")) imap.id(java.util.Map.of("name", "Codex Quota Guard"));
+            folder = (IMAPFolder) store.getFolder(settings.folder());
+            folder.open(Folder.READ_ONLY);
+            System.out.println("MAIL_METADATA_UID_NOT_STICKY=" + folder.getUIDNotSticky());
+            System.out.println("MAIL_METADATA_OPEN_VALIDITY_PRESENT=" + (folder.getUIDValidity() > 0));
+            System.out.println("MAIL_METADATA_OPEN_NEXT_PRESENT=" + (folder.getUIDNext() > 0));
+            System.out.println("MAIL_METADATA_EMPTY_MAILBOX=" + (folder.getMessageCount() == 0));
+            final String folderName = folder.getFullName();
+            try {
+                Status status = (Status) folder.doCommand(protocol -> protocol.status(folderName, new String[] {"UIDVALIDITY", "UIDNEXT"}));
+                System.out.println("MAIL_METADATA_STATUS_VALIDITY_PRESENT=" + (status != null && status.uidvalidity > 0));
+                System.out.println("MAIL_METADATA_STATUS_NEXT_PRESENT=" + (status != null && status.uidnext > 0));
+                System.out.println("MAIL_METADATA_STATUS_VALIDITY_MATCHES=" + (status != null && status.uidvalidity == folder.getUIDValidity()));
+            } catch (MessagingException unavailable) {
+                System.out.println("MAIL_METADATA_STATUS_UNAVAILABLE=true");
+            }
+        } finally {
+            MailTargetPolicy.closeSockets(sockets);
+            try { if (folder != null && folder.isOpen()) folder.close(false); } catch (MessagingException ignored) { }
+            try { if (store.isConnected()) store.close(); } catch (MessagingException ignored) { }
+        }
     }
 
     private static String required(String name) {

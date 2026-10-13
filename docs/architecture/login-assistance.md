@@ -71,14 +71,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\apps\admin\backend\scripts
 - 「邮箱登录用户名」填写邮箱服务商的登录名，163 应使用完整邮箱地址，不是 Quota Guard 系统账号。
 - 「邮件文件夹」默认 `INBOX`，表示服务端收件箱，不是本机目录。「真实发件邮箱」用于匹配登录邮件的 From 地址，通常不是自己的收件地址；请以邮件详情为准。
 - 「测试已保存配置」不会使用表单中尚未保存的修改。更换授权码或其他字段后先点「保存」，再测试；留空授权字段会保留原有授权。
+- 保存或重新打开弹窗后，授权输入框会刻意清空、不回显；服务端只返回 `hasPassword` 状态，空框不表示已删除授权。可通过已授权的只读诊断核对密文是否存在及是否与指定授权码一致，诊断不输出原文或指纹。
 - 测试失败返回固定安全分类：`MAIL_DNS_FAILED`、`MAIL_HOST_BLOCKED`、`MAIL_AUTH_FAILED`、`MAIL_TLS_FAILED`、`MAIL_CONNECTION_TIMEOUT`、`MAIL_FOLDER_FAILED`、`MAIL_CURSOR_UNAVAILABLE`。认证失败可能来自授权码、IMAP 服务开关或服务商安全策略，不等于能断言密码必错。日志只记录固定提示，不记录原始服务商异常、邮箱地址或凭据。
 - 根据[网易官方 IMAP ID 说明](https://help.mail.163.com/faqDetail.do?code=d7a5dc8471cd0c0e8b4b8f4f8e49998b374173cfe9171305fa1ce630d7f67ac2eda07326646e6eb0)，对 `imap.163.com`、`imap.126.com`、`imap.yeah.net` 在认证成功且支持 ID 时、打开收件箱前发送固定产品名。不会把用户邮箱或授权码作为身份描述字段；该声明针对当前连接，后续 STATUS 池连接的服务商行为仍需真实监听验收。
 
-`MailSavedConfigurationProbeTest` 默认禁用。仅在取得对应邮箱所有者的明确许可后，才能临时注入已有受保护配置、目标账户名称，并设置 `CQG_SAVED_MAILBOX_PROBE=APPROVED_READ_ONLY` 执行。它只读本地数据库中的单份指定 163/993/INBOX 配置，尝试一次只读连接和游标验证，不读取邮件正文、不发送邮件、不修改配置；只输出固定结果码。不要在普通构建或 CI 长期设置这些诊断环境变量。
+`MailSavedConfigurationProbeTest` 默认禁用。仅在取得对应邮箱所有者的明确许可后，才能临时注入已有受保护配置、目标账户名称，并设置 `CQG_SAVED_MAILBOX_PROBE=APPROVED_READ_ONLY` 执行。它只读本地数据库中的单份指定 163/993/INBOX 配置，尝试一次只读连接和游标验证，不读取邮件正文、不发送邮件、不修改配置；只输出固定结果码。可选 `CQG_MAIL_PROBE_EXPECTED_SHA256` 只校验指定授权码指纹，不一致则在连接前停止；`CQG_MAIL_PROBE_MODE=CURSOR_METADATA` 只检查文件夹的定位元数据。不要在普通构建或 CI 长期设置这些诊断环境变量。
 
 ## 新邮件与隔离规则
 
-- 建立连接后保存 `UIDVALIDITY`、`UIDNEXT` 与监听就绪时间，只处理新 UID；历史未读邮件也不会被当作新验证码。
+- 建立连接后优先保存服务端 `UIDVALIDITY`、`UIDNEXT` 与监听就绪时间，只处理新 UID；历史未读邮件也不会被当作新验证码。
+- 网易三个已支持主机可能不提供 `UIDNEXT`。仅在 UID 稳定、UIDVALIDITY 有效且缺失值为 `-1` 时，使用独立高水位模式：显式 NOOP 同步后，只读取最后一封现存邮件的 UID（不读取头或正文、不遍历历史），把最大已见 UID 加一作为后续查询下界。这个下界不是伪造的服务端 UIDNEXT；空箱使用下界 1，已分配但删除的 UID 缺口不会造成旧邮件被读取。
+- 高水位路径始终使用同一条已选中连接，固定协议实例，不借用新状态连接或透明重连。每轮通过 NOOP 与尾 UID 检测增长，查询下界不后退；依赖 IMAP 同一 selected session 内 UID 稳定的规范保证，缓存的 UIDVALIDITY 不等于每轮远端复查。断线、协议切换、尾邮件已删除/UID 未知、UID 不稳定、编号耗尽或批量异常均停止监听，不通过遍历历史或 expunge 修改邮箱来恢复。
 - UID 不要求连续；游标发生变化、邮件批量异常或无法确认基线时终止任务，不退回搜索历史邮箱。
 - 匹配真实 `From` 地址、收件邮箱、正文中的 `ChatGPT Log-in Code` 标题和已确认的登录提示，提取紧接提示的唯一六位数字。截图中的具体数字不会进入代码。
 - 邮件中的“不是本人操作请重设密码”安全提醒不等于密码重置邮件，不能简单凭这句话拒绝正常模板；独立密码重置/恢复邮件、未知模板、多码和超大邮件不返回验证码。
