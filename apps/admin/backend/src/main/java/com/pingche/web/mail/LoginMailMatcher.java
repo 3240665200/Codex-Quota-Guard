@@ -32,8 +32,8 @@ public class LoginMailMatcher {
             + LOGIN_SUFFIX + "?\\s*(?:(?:is|是|为|為)\\s*)?:?\\s*([0-9]{6})");
     private static final Pattern CODE = Pattern.compile("[0-9]{6}");
     private static final Pattern NON_LOGIN_PURPOSE = Pattern.compile(
-            "\\b(?:password\\s+reset|reset(?:ting)?\\s+(?:(?:your|the)\\s+)?password"
-            + "|account\\s+recovery|recover(?:ing)?\\s+(?:(?:your|the)\\s+)?account)\\b"
+            "\\b(?:password\\s+reset|reset(?:ting)?\\s+(?:(?:your|the)\\s+)?(?:(?:chatgpt|openai)\\s+)?password"
+            + "|account\\s+recovery|recover(?:ing)?\\s+(?:(?:your|the)\\s+)?(?:(?:chatgpt|openai)\\s+)?account)\\b"
             + "|(?:重置|重设|重設)[^.!?。！？]{0,40}(?:密码|密碼)"
             + "|(?:密码|密碼)\\s*(?:重置|重设|重設)"
             + "|(?:账户|帐户|帳戶|账号|帐号|帳號)\\s*(?:恢复|恢復|復原|找回)");
