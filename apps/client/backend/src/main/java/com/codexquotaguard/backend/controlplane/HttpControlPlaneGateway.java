@@ -6,13 +6,11 @@ import java.net.Proxy;
 import java.net.ProxySelector;
 import java.net.SocketAddress;
 import java.net.URI;
-import java.net.URISyntaxException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.List;
-import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -307,32 +305,7 @@ final class HttpControlPlaneGateway implements ControlPlaneGateway {
     }
 
     static URI normalizeBaseUri(String baseUrl) {
-        if (baseUrl == null || baseUrl.isBlank()) {
-            throw new IllegalArgumentException("Control-plane base URL is required.");
-        }
-        final URI raw;
-        try {
-            raw = new URI(baseUrl.trim());
-        } catch (URISyntaxException exception) {
-            throw new IllegalArgumentException("Control-plane base URL is invalid.");
-        }
-        String scheme = raw.getScheme();
-        boolean httpScheme = "http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme);
-        if (!httpScheme
-                || raw.getHost() == null || raw.getUserInfo() != null || raw.getQuery() != null
-                || raw.getFragment() != null || !isRootPath(raw.getPath())) {
-            throw new IllegalArgumentException("Control-plane base URL must be an HTTP or HTTPS origin.");
-        }
-        try {
-            String host = "0.0.0.0".equals(raw.getHost()) ? "127.0.0.1" : raw.getHost();
-            return new URI(scheme.toLowerCase(Locale.ROOT), null, host, raw.getPort(), "/", null, null);
-        } catch (URISyntaxException exception) {
-            throw new IllegalArgumentException("Control-plane base URL is invalid.");
-        }
-    }
-
-    private static boolean isRootPath(String path) {
-        return path == null || path.isEmpty() || "/".equals(path);
+        return ControlPlaneOrigin.normalize(baseUrl);
     }
 
     private record LoginBody(String email, String password) {
@@ -361,7 +334,7 @@ final class HttpControlPlaneGateway implements ControlPlaneGateway {
             SystemUser user
     ) {
         ControlPlaneAuthSession toSession() {
-            return new ControlPlaneAuthSession(accessToken, refreshToken, user);
+            return new ControlPlaneAuthSession(accessToken, refreshToken, user, refreshExpiresIn);
         }
     }
 }

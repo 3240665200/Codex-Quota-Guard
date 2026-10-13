@@ -12,14 +12,21 @@ public final class ControlPlaneAuthSession {
     private final String accessToken;
     private final String refreshToken;
     private final SystemUser user;
+    private final long refreshExpiresIn;
 
     public ControlPlaneAuthSession(String accessToken, String refreshToken, SystemUser user) {
-        if (isBlank(accessToken) || isBlank(refreshToken) || user == null) {
+        this(accessToken, refreshToken, user, 30L * 24 * 60 * 60);
+    }
+
+    public ControlPlaneAuthSession(String accessToken, String refreshToken, SystemUser user, long refreshExpiresIn) {
+        if (isBlank(accessToken) || isBlank(refreshToken) || user == null || refreshExpiresIn <= 0
+                || accessToken.length() > 4096 || refreshToken.length() > 4096) {
             throw new IllegalArgumentException("A complete authentication session is required.");
         }
         this.accessToken = accessToken;
         this.refreshToken = refreshToken;
         this.user = user;
+        this.refreshExpiresIn = refreshExpiresIn;
     }
 
     public String accessToken() {
@@ -33,6 +40,8 @@ public final class ControlPlaneAuthSession {
     public SystemUser user() {
         return user;
     }
+
+    public long refreshExpiresIn() { return refreshExpiresIn; }
 
     @Override
     public String toString() {

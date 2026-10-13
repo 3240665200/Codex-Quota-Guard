@@ -10,6 +10,12 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 @RestControllerAdvice
 public final class LocalSessionExceptionHandler {
 
+    @ExceptionHandler(SessionStorageException.class)
+    public ResponseEntity<ErrorBody> sessionStorageUnavailable() {
+        return response(HttpStatus.LOCKED, "SESSION_STORAGE_UNAVAILABLE",
+                "本机登录存储不可用，请关闭其他客户端并检查用户目录权限后重试。");
+    }
+
     @ExceptionHandler(LoginAssistanceException.class)
     public ResponseEntity<ErrorBody> loginAssistance(LoginAssistanceException exception) {
         return switch (exception.reason()) {

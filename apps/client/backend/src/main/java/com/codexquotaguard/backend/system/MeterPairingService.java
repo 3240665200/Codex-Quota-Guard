@@ -22,6 +22,9 @@ public final class MeterPairingService {
     private final Path deviceIdFile;
     private final Path pairingInbox;
     private volatile String state = "NOT_INSTALLED";
+    private UUID pairedUser;
+    private UUID pairedDevice;
+    private long pairedGeneration = -1;
 
     @Autowired
     public MeterPairingService(SystemSessionService session, ObjectMapper mapper,
@@ -36,7 +39,7 @@ public final class MeterPairingService {
     }
 
     /** Never returns a device token or official credential to the renderer. */
-    public boolean pairIfInstalled() {
+    public synchronized boolean pairIfInstalled() {
         if (!Files.isRegularFile(deviceIdFile, LinkOption.NOFOLLOW_LINKS)) {
             state = "NOT_INSTALLED";
             return false;
@@ -46,7 +49,10 @@ public final class MeterPairingService {
         try {
             if (Files.size(deviceIdFile) > 100) throw new IOException();
             UUID deviceId = UUID.fromString(Files.readString(deviceIdFile).trim());
-            MeterEnrollment enrollment = session.enrollMeter(deviceId);
+            SystemSessionService.Probe probe = session.pairingProbe();
+            UUID userId = probe.overview().user().id();
+            if (deviceId.equals(pairedDevice) && userId.equals(pairedUser) && probe.generation() == pairedGeneration) return true;
+            MeterEnrollment enrollment = session.enrollMeter(deviceId, probe);
             if (!deviceId.equals(enrollment.deviceId())) throw new IllegalStateException();
             payload = mapper.writeValueAsBytes(new PairingInbox(deviceId, enrollment.deviceToken()));
             Path parent = pairingInbox.getParent();
@@ -56,8 +62,15 @@ public final class MeterPairingService {
             Files.write(temporary, payload);
             Files.move(temporary, pairingInbox, StandardCopyOption.ATOMIC_MOVE,
                     StandardCopyOption.REPLACE_EXISTING);
+            session.requireCurrent(probe);
+            pairedDevice = deviceId;
+            pairedUser = userId;
+            pairedGeneration = probe.generation();
             state = "PAIRING_SENT";
             return true;
+        } catch (ControlPlaneUnavailableException | SessionStorageException | SystemSessionRequiredException exception) {
+            state = "PAIRING_FAILED";
+            throw exception;
         } catch (IOException | RuntimeException exception) {
             state = "PAIRING_FAILED";
             throw new IllegalStateException("Meter pairing is unavailable");

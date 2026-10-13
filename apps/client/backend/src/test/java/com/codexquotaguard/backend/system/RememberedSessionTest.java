@@ -253,7 +253,7 @@ class RememberedSessionTest {
     }
 
     private void save(String token, Instant expiresAt) {
-        try (var storage = store(ORIGIN)) { storage.save(new SavedSession(token, USER.id(), NOW.minusSeconds(1), expiresAt)); }
+        try (var storage = store(ORIGIN)) { storage.save(new SavedSession(token, USER.id(), expiresAt.minus(Duration.ofDays(7)), expiresAt)); }
     }
 
     private static ControlPlaneGateway gateway(String access, String refresh, long ttl) {

@@ -30,21 +30,30 @@ public final class SystemSessionController {
 
     @PostMapping("/login")
     public SystemSessionOverview login(@Valid @RequestBody LoginRequest request) {
-        SystemSessionOverview result = sessionService.login(request.email(), request.password());
+        return paired(sessionService.loginProbe(request.email(), request.password()));
+    }
+
+    private SystemSessionOverview paired(SystemSessionService.Probe probe) {
+        if (!probe.overview().authenticated()) return probe.overview();
+        sessionService.requireCurrent(probe);
         try {
             pairing.pairIfInstalled();
+        } catch (ControlPlaneUnavailableException | SessionStorageException | SystemSessionRequiredException exception) {
+            // A transient outage cannot prove the remembered credential revoked.
+            throw exception;
         } catch (RuntimeException exception) {
             // An installed meter belongs to exactly one system user. Do not
             // display another user's quota while the service bills the first.
-            sessionService.logout();
+            sessionService.logoutIfGeneration(probe.generation());
             throw new MeterPairingRequiredException();
         }
-        return result;
+        sessionService.requireCurrent(probe);
+        return probe.overview();
     }
 
     @GetMapping("/current")
     public SystemSessionOverview current() {
-        return sessionService.currentOverview();
+        return paired(sessionService.currentProbe());
     }
 
     @PostMapping("/logout")

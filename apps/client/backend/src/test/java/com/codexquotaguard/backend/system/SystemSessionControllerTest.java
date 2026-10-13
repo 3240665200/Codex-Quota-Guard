@@ -17,15 +17,15 @@ class SystemSessionControllerTest {
         var pairing = mock(MeterPairingService.class);
         var user = new SystemUser(UUID.randomUUID(), "member@example.com", "Member",
                 "USER", "ACTIVE", null, null, null, null, null, null, null);
-        when(sessions.login("member@example.com", "password"))
-                .thenReturn(SystemSessionOverview.signedIn(user));
+        when(sessions.loginProbe("member@example.com", "password"))
+                .thenReturn(new SystemSessionService.Probe(SystemSessionOverview.signedIn(user), 1));
         when(pairing.pairIfInstalled()).thenThrow(new IllegalStateException("Meter pairing is unavailable"));
 
         var controller = new SystemSessionController(sessions, pairing);
         assertThatThrownBy(() -> controller.login(
                 new SystemSessionController.LoginRequest("member@example.com", "password")))
                 .isInstanceOf(MeterPairingRequiredException.class);
-        verify(sessions).logout();
+        verify(sessions).logoutIfGeneration(1);
     }
 
     @Test
@@ -34,7 +34,7 @@ class SystemSessionControllerTest {
         var pairing = mock(MeterPairingService.class);
         var user = new SystemUser(UUID.randomUUID(), "member@example.com", "Member",
                 "USER", "ACTIVE", null, null, null, null, null, null, null);
-        when(sessions.currentOverview()).thenReturn(SystemSessionOverview.signedIn(user));
+        when(sessions.currentProbe()).thenReturn(new SystemSessionService.Probe(SystemSessionOverview.signedIn(user), 1));
         when(pairing.pairIfInstalled()).thenThrow(new IllegalStateException("Meter pairing is unavailable"));
 
         assertThatThrownBy(() -> new SystemSessionController(sessions, pairing).current())

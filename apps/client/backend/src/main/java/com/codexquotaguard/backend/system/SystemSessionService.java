@@ -3,341 +3,396 @@ package com.codexquotaguard.backend.system;
 import com.codexquotaguard.backend.controlplane.ControlPlaneAuthSession;
 import com.codexquotaguard.backend.controlplane.ControlPlaneException;
 import com.codexquotaguard.backend.controlplane.ControlPlaneGateway;
+import com.codexquotaguard.backend.controlplane.LoginAssistanceInfo;
+import com.codexquotaguard.backend.controlplane.LoginAssistanceListener;
+import com.codexquotaguard.backend.controlplane.MeterEnrollment;
 import com.codexquotaguard.backend.controlplane.OfficialCodexRateLimits;
 import com.codexquotaguard.backend.controlplane.PersonalQuotaOverview;
 import com.codexquotaguard.backend.controlplane.PersonalUsageAnalytics;
-import com.codexquotaguard.backend.controlplane.MeterEnrollment;
 import com.codexquotaguard.backend.controlplane.SystemUser;
 import com.codexquotaguard.backend.controlplane.UserUsageEventPage;
-import com.codexquotaguard.backend.controlplane.LoginAssistanceInfo;
-import com.codexquotaguard.backend.controlplane.LoginAssistanceListener;
 import com.codexquotaguard.backend.usage.CodexUsageEvent;
 import jakarta.annotation.PreDestroy;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.locks.ReentrantLock;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
-/**
- * Keeps product access and refresh tokens only in this local Java process.
- *
- * <p>The WebView communicates through the Tauri allow-list and receives only
- * {@link SystemUser} or {@link PersonalQuotaOverview}; no controller exposes
- * this service's token-bearing state.</p>
- */
+/** Keeps access tokens in memory and only the sealed refresh token on disk. */
 @Service
 public final class SystemSessionService {
-
+    private static final Duration REMEMBERED_LIFETIME = Duration.ofDays(7);
     private final ControlPlaneGateway controlPlane;
+    private final SessionStorage storage;
+    private final Clock clock;
     private final Object lock = new Object();
+    private final ReentrantLock transitions = new ReentrantLock(true);
     private Session session;
     private long loginGeneration;
+    private long credentialVersion;
+    private boolean restoreAllowed = true;
+    private boolean closed;
 
     public SystemSessionService(ControlPlaneGateway controlPlane) {
-        if (controlPlane == null) {
-            throw new IllegalArgumentException("Control-plane gateway is required.");
-        }
+        this(controlPlane, SessionStorageConfiguration.create("", "", false, "http://127.0.0.1"), Clock.systemUTC());
+    }
+
+    @Autowired
+    public SystemSessionService(ControlPlaneGateway controlPlane, SessionStorage storage, Clock clock) {
+        if (controlPlane == null || storage == null || clock == null) throw new IllegalArgumentException("Complete session configuration is required.");
         this.controlPlane = controlPlane;
+        this.storage = storage;
+        this.clock = clock;
     }
 
-    public SystemSessionOverview login(String email, String password) {
-        final ControlPlaneAuthSession authenticated;
+    public SystemSessionOverview login(String email, String password) { return loginProbe(email, password).overview(); }
+
+    Probe loginProbe(String email, String password) {
+        final long attempt;
+        final Instant loginAt = clock.instant();
+        synchronized (lock) {
+            ensureStorage();
+            attempt = ++loginGeneration;
+        }
+        transitions.lock();
+        ControlPlaneAuthSession authenticated = null;
         try {
-            authenticated = controlPlane.login(email, password);
-        } catch (ControlPlaneException exception) {
-            throw translateLogin(exception);
-        } catch (RuntimeException exception) {
-            throw new ControlPlaneUnavailableException();
-        }
-        // Do not clear an existing usable session until a replacement has
-        // successfully arrived from the central service.
-        Session replacement = Session.from(authenticated);
-        synchronized (lock) {
-            session = replacement;
-            loginGeneration++;
-        }
-        return SystemSessionOverview.signedIn(replacement.user());
+            checkEpoch(attempt);
+            try { authenticated = controlPlane.login(email, password); }
+            catch (ControlPlaneException failure) { throw translateLogin(failure); }
+            catch (RuntimeException failure) { throw new ControlPlaneUnavailableException(); }
+            if (!activeUser(authenticated.user(), null)) throw new LoginDeniedException();
+            SavedSession remembered = new SavedSession(authenticated.refreshToken(), authenticated.user().id(), loginAt,
+                    limitedDeadline(loginAt.plus(REMEMBERED_LIFETIME), loginAt, authenticated.refreshExpiresIn()));
+            return commit(authenticated, remembered, attempt, true);
+        } catch (SessionStorageException | SystemSessionRequiredException | LoginDeniedException failure) {
+            if (authenticated != null) revoke(authenticated.accessToken(), authenticated.refreshToken(), false);
+            throw failure;
+        } finally { transitions.unlock(); }
     }
 
-    /** Safe startup probe. A missing or revoked session is not an application error. */
-    public SystemSessionOverview currentOverview() {
+    public SystemSessionOverview currentOverview() { return currentProbe().overview(); }
+
+    Probe currentProbe() {
         try {
-            return SystemSessionOverview.signedIn(current());
-        } catch (SystemSessionRequiredException exception) {
-            return SystemSessionOverview.signedOut();
+            restoreIfNeeded();
+            Result<SystemUser> current = invoke(controlPlane::current, null);
+            return new Probe(SystemSessionOverview.signedIn(current.value()), current.generation());
+        } catch (SystemSessionRequiredException signedOut) {
+            synchronized (lock) { return new Probe(SystemSessionOverview.signedOut(), loginGeneration); }
         }
     }
 
-    /** Requires a valid central product-user session. */
-    public SystemUser current() {
-        return invokeAuthenticated(controlPlane::current);
-    }
-
-    public PersonalQuotaOverview quotaOverview() {
-        return invokeAuthenticated(controlPlane::quotaOverview);
-    }
-
-    public LoginAssistanceInfo loginAssistanceInfo() {
-        return invokeLoginAssistance(controlPlane::loginAssistanceInfo);
-    }
-
-    public LoginAssistanceListener startLoginAssistance() {
-        return invokeLoginAssistance(controlPlane::startLoginAssistance);
-    }
-
-    public LoginAssistanceListener loginAssistanceStatus(UUID listenerId) {
-        return invokeLoginAssistance(token -> controlPlane.loginAssistanceStatus(token, listenerId));
-    }
-
-    public LoginAssistanceListener cancelLoginAssistance(UUID listenerId) {
-        return invokeLoginAssistance(token -> controlPlane.cancelLoginAssistance(token, listenerId));
-    }
-
-    private <T> T invokeLoginAssistance(TokenOperation<T> operation) {
-        final long generation;
-        final UUID userId;
-        synchronized (lock) {
-            userId = requireSession().user().id();
-            generation = loginGeneration;
-        }
-        T result = invokeAuthenticated(userId, operation);
-        synchronized (lock) {
-            if (session == null || generation != loginGeneration || !userId.equals(session.user().id())) {
-                throw new SystemSessionRequiredException();
-            }
-        }
+    public SystemUser current() { restoreIfNeeded(); return invoke(controlPlane::current, null).value(); }
+    public PersonalQuotaOverview quotaOverview() { return invoke(controlPlane::quotaOverview, null).value(); }
+    public LoginAssistanceInfo loginAssistanceInfo() { return invoke(controlPlane::loginAssistanceInfo, null).value(); }
+    public LoginAssistanceListener startLoginAssistance() { return invoke(controlPlane::startLoginAssistance, null).value(); }
+    public LoginAssistanceListener loginAssistanceStatus(UUID listenerId) { return invoke(token -> controlPlane.loginAssistanceStatus(token, listenerId), null).value(); }
+    public LoginAssistanceListener cancelLoginAssistance(UUID listenerId) { return invoke(token -> controlPlane.cancelLoginAssistance(token, listenerId), null).value(); }
+    public UserUsageEventPage usageEvents(int page, int size) { return invoke(token -> controlPlane.usageEvents(token, page, size), null).value(); }
+    public PersonalUsageAnalytics usageAnalytics(int days) { return invoke(token -> controlPlane.usageAnalytics(token, days), null).value(); }
+    public MeterEnrollment enrollMeter(UUID deviceId) { return invoke(token -> controlPlane.enrollMeter(token, deviceId), null).value(); }
+    MeterEnrollment enrollMeter(UUID deviceId, Probe expected) {
+        requireCurrent(expected);
+        MeterEnrollment result = invoke(token -> controlPlane.enrollMeter(token, deviceId), expected.overview().user().id()).value();
+        requireCurrent(expected);
         return result;
     }
-
-    public UserUsageEventPage usageEvents(int page, int size) {
-        return invokeAuthenticated(token -> controlPlane.usageEvents(token, page, size));
+    public PersonalQuotaOverview reportUsage(UUID expectedUserId, List<CodexUsageEvent> events) {
+        return invoke(token -> controlPlane.reportUsage(token, events), expectedUserId).value();
+    }
+    public void reportOfficialQuota(OfficialCodexRateLimits snapshot) {
+        invoke(token -> { controlPlane.reportOfficialQuota(token, snapshot); return null; }, null);
     }
 
-    public PersonalUsageAnalytics usageAnalytics(int days) {
-        return invokeAuthenticated(token -> controlPlane.usageAnalytics(token, days));
-    }
-
-    public MeterEnrollment enrollMeter(UUID deviceId) {
-        return invokeAuthenticated(accessToken -> controlPlane.enrollMeter(accessToken, deviceId));
-    }
-
-    /** Active product user for local scanner attribution; no network call or credential is exposed. */
-    public java.util.Optional<UUID> localUserId() {
+    /** Passive scanner attribution never restores an unverified saved identity. */
+    public Optional<UUID> localUserId() {
         synchronized (lock) {
-            return session == null ? java.util.Optional.empty() : java.util.Optional.of(session.user().id());
+            expireSession();
+            return session == null ? Optional.empty() : Optional.of(session.user().id());
         }
     }
-
-    public UUID requireLocalUserId() {
-        return requireSession().user().id();
+    public UUID requireLocalUserId() { synchronized (lock) { return requireSession().user().id(); } }
+    long generation() { synchronized (lock) { return loginGeneration; } }
+    Probe pairingProbe() {
+        synchronized (lock) { return new Probe(SystemSessionOverview.signedIn(requireSession().user()), loginGeneration); }
     }
-
-    public PersonalQuotaOverview reportUsage(UUID expectedUserId, List<CodexUsageEvent> events) {
-        return invokeAuthenticated(expectedUserId,
-                accessToken -> controlPlane.reportUsage(accessToken, events));
-    }
-
-    public void reportOfficialQuota(OfficialCodexRateLimits snapshot) {
-        invokeAuthenticated(accessToken -> {
-            controlPlane.reportOfficialQuota(accessToken, snapshot);
-            return null;
-        });
-    }
-
-    /** Clears this process immediately, then makes a best-effort central logout. */
-    public void logout() {
-        Session previous;
+    boolean matches(Probe probe) {
         synchronized (lock) {
+            expireSession();
+            return session != null && !closed && loginGeneration == probe.generation()
+                    && probe.overview().user() != null && session.user().id().equals(probe.overview().user().id());
+        }
+    }
+    void requireCurrent(Probe probe) { if (!matches(probe)) throw new SystemSessionRequiredException(); }
+
+    public void logout() { logout(null); }
+    void logoutIfGeneration(long generation) { logout(generation); }
+
+    private void logout(Long expected) {
+        Session previous;
+        SavedSession unrestored = null;
+        SessionStorageException storageFailure = null;
+        synchronized (lock) {
+            if (expected != null && expected != loginGeneration) return;
             previous = session;
             session = null;
             loginGeneration++;
+            restoreAllowed = false;
+            try {
+                ensureStorage();
+                if (previous == null) unrestored = storage.load().orElse(null);
+                storage.clear();
+            } catch (SessionStorageException failure) { storageFailure = failure; }
         }
-        if (previous == null) {
-            return;
+        if (previous != null) {
+            transitions.lock();
+            try { revoke(previous.accessToken(), previous.refreshToken(), true); }
+            finally { transitions.unlock(); }
+        } else if (unrestored != null && !transitions.isHeldByCurrentThread()) {
+            transitions.lock();
+            try {
+                ControlPlaneAuthSession token = controlPlane.refresh(unrestored.refreshToken());
+                if (token != null) revoke(token.accessToken(), token.refreshToken(), false);
+            } catch (RuntimeException ignored) { }
+            finally { transitions.unlock(); }
         }
-
-        try {
-            controlPlane.logout(previous.accessToken(), previous.refreshToken());
-        } catch (ControlPlaneException exception) {
-            // A short-lived access token may expire just before manual logout.
-            // Refresh once to revoke the rotated refresh-token family too; no
-            // refreshed value is ever reattached to the local session.
-            if (exception.reason() == ControlPlaneException.Reason.UNAUTHORIZED) {
-                try {
-                    ControlPlaneAuthSession refreshed = controlPlane.refresh(previous.refreshToken());
-                    controlPlane.logout(refreshed.accessToken(), refreshed.refreshToken());
-                } catch (RuntimeException ignored) {
-                    // Local logout must never leave a usable session behind.
-                }
-            }
-        } catch (RuntimeException ignored) {
-            // The in-process session is already cleared; never expose an
-            // implementation exception through the local desktop API.
-        }
+        if (storageFailure != null) throw storageFailure;
     }
 
     @PreDestroy
     void clearOnShutdown() {
-        synchronized (lock) {
-            session = null;
-        }
-    }
-
-    private <T> T invokeAuthenticated(TokenOperation<T> operation) {
-        return invokeAuthenticated(null, operation);
-    }
-
-    private <T> T invokeAuthenticated(UUID expectedUserId, TokenOperation<T> operation) {
-        Session attempted = requireSession();
-        requireExpectedUser(attempted, expectedUserId);
+        // Finish any serialized rotation's durable commit before releasing the
+        // process lock to a replacement app. Closing itself is not logout.
+        transitions.lock();
         try {
-            T result = operation.call(attempted.accessToken());
-            updateUserIfCurrent(attempted, extractUser(result));
-            return result;
-        } catch (ControlPlaneException exception) {
-            if (exception.reason() != ControlPlaneException.Reason.UNAUTHORIZED) {
-                throw translate(exception);
-            }
-        } catch (RuntimeException exception) {
-            throw new ControlPlaneUnavailableException();
-        }
+            synchronized (lock) { closed = true; loginGeneration++; session = null; }
+            storage.close();
+        } finally { transitions.unlock(); }
+    }
 
-        Session refreshed = refreshAfterUnauthorized(attempted);
-        requireExpectedUser(refreshed, expectedUserId);
+    private void restoreIfNeeded() {
+        synchronized (lock) {
+            ensureStorage();
+            expireSession();
+            if (session != null || !restoreAllowed) return;
+        }
+        transitions.lock();
+        ControlPlaneAuthSession restored = null;
+        long attempt = -1;
         try {
-            T result = operation.call(refreshed.accessToken());
-            updateUserIfCurrent(refreshed, extractUser(result));
-            return result;
-        } catch (ControlPlaneException exception) {
-            if (exception.reason() == ControlPlaneException.Reason.UNAUTHORIZED) {
-                clearIfCurrent(refreshed);
-                throw new SystemSessionRequiredException();
+            SavedSession saved;
+            synchronized (lock) {
+                ensureStorage();
+                expireSession();
+                if (session != null || !restoreAllowed) return;
+                saved = storage.load().orElse(null);
+                if (saved == null) return;
+                if (!saved.expiresAt().isAfter(clock.instant()) || saved.loginAt().isAfter(clock.instant())) {
+                    storage.clear();
+                    restoreAllowed = false;
+                    loginGeneration++;
+                    return;
+                }
+                attempt = ++loginGeneration;
             }
-            throw translate(exception);
-        } catch (RuntimeException exception) {
-            throw new ControlPlaneUnavailableException();
-        }
-    }
-
-    private static void requireExpectedUser(Session session, UUID expectedUserId) {
-        if (expectedUserId != null && !expectedUserId.equals(session.user().id())) {
-            throw new SystemSessionRequiredException();
-        }
-    }
-
-    private static SystemUser extractUser(Object result) {
-        if (result instanceof SystemUser user) {
-            return user;
-        }
-        if (result instanceof PersonalQuotaOverview overview) {
-            return overview.user();
-        }
-        return null;
-    }
-
-    private void updateUserIfCurrent(Session source, SystemUser user) {
-        if (user == null) {
-            return;
-        }
-        synchronized (lock) {
-            // A slow response from an older login must never overwrite the
-            // identity attached to a newer session.
-            if (session == source) {
-                session = source.withUser(user);
-            }
-        }
-    }
-
-    private Session requireSession() {
-        synchronized (lock) {
-            if (session == null) {
-                throw new SystemSessionRequiredException();
-            }
-            return session;
-        }
-    }
-
-    private Session refreshAfterUnauthorized(Session rejected) {
-        synchronized (lock) {
-            if (session == null) {
-                throw new SystemSessionRequiredException();
-            }
-            if (session != rejected) {
-                return session;
-            }
-            try {
-                session = Session.from(controlPlane.refresh(rejected.refreshToken()));
-                return session;
-            } catch (ControlPlaneException exception) {
-                if (exception.reason() == ControlPlaneException.Reason.UNAUTHORIZED) {
-                    session = null;
+            Instant requestAt = clock.instant();
+            try { restored = controlPlane.refresh(saved.refreshToken()); }
+            catch (ControlPlaneException failure) {
+                if (failure.reason() == ControlPlaneException.Reason.UNAUTHORIZED || failure.reason() == ControlPlaneException.Reason.ACCESS_DENIED) {
+                    invalidate(attempt);
                     throw new SystemSessionRequiredException();
                 }
-                throw translate(exception);
-            } catch (RuntimeException exception) {
-                throw new ControlPlaneUnavailableException();
+                throw translate(failure);
+            } catch (RuntimeException failure) { throw new ControlPlaneUnavailableException(); }
+            if (!activeUser(restored.user(), saved.userId())) {
+                invalidate(attempt);
+                throw new SystemSessionRequiredException();
             }
-        }
+            SavedSession rotated = new SavedSession(restored.refreshToken(), saved.userId(), saved.loginAt(),
+                    limitedDeadline(saved.expiresAt(), requestAt, restored.refreshExpiresIn()));
+            commit(restored, rotated, attempt, true);
+        } catch (SessionStorageException | SystemSessionRequiredException failure) {
+            if (restored != null) revoke(restored.accessToken(), restored.refreshToken(), false);
+            throw failure;
+        } finally { transitions.unlock(); }
     }
 
-    private void clearIfCurrent(Session rejected) {
+    private <T> Result<T> invoke(TokenOperation<T> operation, UUID expectedUser) {
+        Session attempted;
+        long epoch;
         synchronized (lock) {
-            if (session == rejected) {
-                session = null;
+            attempted = requireSession();
+            if (expectedUser != null && !expectedUser.equals(attempted.user().id())) throw new SystemSessionRequiredException();
+            epoch = loginGeneration;
+        }
+        try { return finish(operation.call(attempted.accessToken()), attempted, epoch); }
+        catch (ControlPlaneException failure) {
+            if (failure.reason() != ControlPlaneException.Reason.UNAUTHORIZED) throw translate(failure);
+        } catch (SessionStorageException | SystemSessionRequiredException failure) { throw failure; }
+        catch (RuntimeException failure) { throw new ControlPlaneUnavailableException(); }
+
+        Session refreshed = refresh(attempted, epoch);
+        try { return finish(operation.call(refreshed.accessToken()), refreshed, epoch); }
+        catch (ControlPlaneException failure) {
+            if (failure.reason() == ControlPlaneException.Reason.UNAUTHORIZED || failure.reason() == ControlPlaneException.Reason.ACCESS_DENIED) {
+                invalidate(epoch);
+                throw new SystemSessionRequiredException();
             }
+            throw translate(failure);
+        } catch (SessionStorageException | SystemSessionRequiredException failure) { throw failure; }
+        catch (RuntimeException failure) { throw new ControlPlaneUnavailableException(); }
+    }
+
+    private Session refresh(Session rejected, long epoch) {
+        transitions.lock();
+        ControlPlaneAuthSession renewed = null;
+        try {
+            Session previous;
+            synchronized (lock) {
+                checkEpoch(epoch);
+                previous = requireSession();
+                if (!previous.user().id().equals(rejected.user().id())) throw new SystemSessionRequiredException();
+                // Metadata updates never change this credential version.
+                if (previous.version() != rejected.version()) return previous;
+            }
+            Instant requestAt = clock.instant();
+            try { renewed = controlPlane.refresh(previous.refreshToken()); }
+            catch (ControlPlaneException failure) {
+                if (failure.reason() == ControlPlaneException.Reason.UNAUTHORIZED || failure.reason() == ControlPlaneException.Reason.ACCESS_DENIED) {
+                    invalidate(epoch);
+                    throw new SystemSessionRequiredException();
+                }
+                throw translate(failure);
+            } catch (RuntimeException failure) { throw new ControlPlaneUnavailableException(); }
+            if (!activeUser(renewed.user(), previous.user().id())) {
+                invalidate(epoch);
+                throw new SystemSessionRequiredException();
+            }
+            SavedSession remembered = new SavedSession(renewed.refreshToken(), previous.user().id(), previous.saved().loginAt(),
+                    limitedDeadline(previous.saved().expiresAt(), requestAt, renewed.refreshExpiresIn()));
+            commit(renewed, remembered, epoch, false);
+            synchronized (lock) { checkEpoch(epoch); return requireSession(); }
+        } catch (SessionStorageException | SystemSessionRequiredException failure) {
+            if (renewed != null) revoke(renewed.accessToken(), renewed.refreshToken(), false);
+            throw failure;
+        } finally { transitions.unlock(); }
+    }
+
+    private Probe commit(ControlPlaneAuthSession authenticated, SavedSession remembered, long attempt, boolean newLogin) {
+        synchronized (lock) {
+            checkEpoch(attempt);
+            if (!remembered.expiresAt().isAfter(clock.instant())) {
+                invalidate(attempt);
+                throw new SystemSessionRequiredException();
+            }
+            try { storage.save(remembered); }
+            catch (SessionStorageException failure) {
+                session = null;
+                restoreAllowed = false;
+                loginGeneration++;
+                try { storage.clear(); } catch (SessionStorageException ignored) { }
+                throw failure;
+            }
+            if (newLogin) loginGeneration++;
+            session = new Session(authenticated.accessToken(), authenticated.refreshToken(), authenticated.user(), remembered, ++credentialVersion);
+            restoreAllowed = true;
+            return new Probe(SystemSessionOverview.signedIn(session.user()), loginGeneration);
         }
     }
 
-    private static RuntimeException translate(ControlPlaneException exception) {
-        return switch (exception.reason()) {
+    private <T> Result<T> finish(T result, Session attempted, long epoch) {
+        synchronized (lock) {
+            checkEpoch(epoch);
+            Session active = requireSession();
+            SystemUser user = extractUser(result);
+            if (!active.user().id().equals(attempted.user().id()) || (user != null && !activeUser(user, active.user().id()))) {
+                invalidate(epoch);
+                throw new SystemSessionRequiredException();
+            }
+            if (user != null && active.version() == attempted.version()) session = active.withUser(user);
+            return new Result<>(result, epoch);
+        }
+    }
+
+    private void invalidate(long expected) {
+        synchronized (lock) {
+            if (loginGeneration != expected) return;
+            session = null;
+            restoreAllowed = false;
+            loginGeneration++;
+            storage.clear();
+        }
+    }
+    private Session requireSession() {
+        expireSession();
+        if (closed || session == null) throw new SystemSessionRequiredException();
+        return session;
+    }
+    private void expireSession() {
+        if (session != null && (!session.saved().expiresAt().isAfter(clock.instant()) || session.saved().loginAt().isAfter(clock.instant()))) {
+            session = null;
+            restoreAllowed = false;
+            loginGeneration++;
+            storage.clear();
+        }
+    }
+    private void ensureStorage() {
+        if (closed) throw new SessionStorageException();
+        storage.ensureAvailable();
+    }
+    private void checkEpoch(long expected) {
+        synchronized (lock) { if (closed || expected != loginGeneration) throw new SystemSessionRequiredException(); }
+    }
+    private static Instant limitedDeadline(Instant original, Instant requestAt, long ttl) {
+        Instant serverLimit = requestAt.plusSeconds(Math.min(ttl, REMEMBERED_LIFETIME.toSeconds()));
+        return original.isBefore(serverLimit) ? original : serverLimit;
+    }
+    private static boolean activeUser(SystemUser user, UUID expected) {
+        return user != null && "ACTIVE".equals(user.status()) && (expected == null || expected.equals(user.id()));
+    }
+    private static SystemUser extractUser(Object result) {
+        if (result instanceof SystemUser user) return user;
+        if (result instanceof PersonalQuotaOverview overview) return overview.user();
+        return null;
+    }
+    private void revoke(String access, String refresh, boolean refreshExpiredAccess) {
+        try { controlPlane.logout(access, refresh); }
+        catch (ControlPlaneException failure) {
+            if (refreshExpiredAccess && failure.reason() == ControlPlaneException.Reason.UNAUTHORIZED) {
+                try {
+                    ControlPlaneAuthSession renewed = controlPlane.refresh(refresh);
+                    controlPlane.logout(renewed.accessToken(), renewed.refreshToken());
+                } catch (RuntimeException ignored) { }
+            }
+        } catch (RuntimeException ignored) { }
+    }
+    private static RuntimeException translate(ControlPlaneException failure) {
+        return switch (failure.reason()) {
             case UNAUTHORIZED -> new SystemSessionRequiredException();
             case ACCESS_DENIED -> new CodexAccessDeniedException();
             case INVALID_REQUEST -> new ControlPlaneRequestRejectedException();
             case UNAVAILABLE -> new ControlPlaneUnavailableException();
-            case MAIL_BUSY, MAIL_RATE_LIMITED, MAIL_REJECTED -> new LoginAssistanceException(exception.reason());
+            case MAIL_BUSY, MAIL_RATE_LIMITED, MAIL_REJECTED -> new LoginAssistanceException(failure.reason());
         };
     }
-
-    private static RuntimeException translateLogin(ControlPlaneException exception) {
-        return switch (exception.reason()) {
+    private static RuntimeException translateLogin(ControlPlaneException failure) {
+        return switch (failure.reason()) {
             case UNAUTHORIZED, INVALID_REQUEST -> new LoginDeniedException();
-            case ACCESS_DENIED, UNAVAILABLE, MAIL_BUSY, MAIL_RATE_LIMITED, MAIL_REJECTED -> new ControlPlaneUnavailableException();
+            default -> new ControlPlaneUnavailableException();
         };
     }
 
-    @FunctionalInterface
-    private interface TokenOperation<T> {
-        T call(String accessToken);
+    record Probe(SystemSessionOverview overview, long generation) { }
+    private record Result<T>(T value, long generation) { }
+    private record Session(String accessToken, String refreshToken, SystemUser user, SavedSession saved, long version) {
+        Session withUser(SystemUser replacement) { return new Session(accessToken, refreshToken, replacement, saved, version); }
+        @Override public String toString() { return "Session[redacted]"; }
     }
-
-    private static final class Session {
-        private final String accessToken;
-        private final String refreshToken;
-        private final SystemUser user;
-
-        private Session(String accessToken, String refreshToken, SystemUser user) {
-            this.accessToken = accessToken;
-            this.refreshToken = refreshToken;
-            this.user = user;
-        }
-
-        static Session from(ControlPlaneAuthSession session) {
-            return new Session(session.accessToken(), session.refreshToken(), session.user());
-        }
-
-        String accessToken() {
-            return accessToken;
-        }
-
-        String refreshToken() {
-            return refreshToken;
-        }
-
-        SystemUser user() {
-            return user;
-        }
-
-        Session withUser(SystemUser replacement) {
-            return new Session(accessToken, refreshToken, replacement);
-        }
-    }
+    @FunctionalInterface private interface TokenOperation<T> { T call(String accessToken); }
 }

@@ -10,6 +10,10 @@ spring:
 
 quota-guard:
   api-token: ${QUOTA_GUARD_API_TOKEN:}
+  session-storage:
+    directory: ${QUOTA_GUARD_SESSION_STORAGE_DIR:}
+    key: ${QUOTA_GUARD_SESSION_STORAGE_KEY:}
+    required: ${QUOTA_GUARD_SESSION_STORAGE_REQUIRED:false}
   control-plane:
     # The desktop shell validates and passes the selected central origin.
     # Both HTTP and HTTPS origins are supported.
