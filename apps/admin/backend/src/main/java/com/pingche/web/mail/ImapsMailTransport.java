@@ -1,16 +1,27 @@
 package com.pingche.web.mail;
 
 import com.pingche.web.auth.DomainException;
+import jakarta.mail.AuthenticationFailedException;
 import jakarta.mail.Folder;
 import jakarta.mail.Message;
 import jakarta.mail.MessagingException;
 import jakarta.mail.Session;
 import jakarta.mail.Store;
 import java.io.IOException;
+import java.net.SocketTimeoutException;
+import java.net.http.HttpTimeoutException;
+import java.security.cert.CertPathBuilderException;
+import java.security.cert.CertPathValidatorException;
+import java.security.cert.CertificateException;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Properties;
+import java.util.Set;
 import javax.net.SocketFactory;
+import javax.net.ssl.SSLException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -25,6 +36,8 @@ import org.springframework.stereotype.Component;
 
 @Component
 public class ImapsMailTransport implements MailTransport, DisposableBean {
+    private enum ConnectionPhase { CONNECTING, FOLDER, CURSOR }
+    private static final int MAX_ERROR_CAUSES = 32;
     private final MailTargetPolicy targets;
     private final MailBodyReader reader;
     private final ScheduledExecutorService deadlines;
@@ -41,6 +54,7 @@ public class ImapsMailTransport implements MailTransport, DisposableBean {
     @Override public Connection open(Settings settings) {
         Store store = null;
         IMAPFolder folder = null;
+        ConnectionPhase phase = ConnectionPhase.CONNECTING;
         AtomicReference<SocketFactory> socketFactory = new AtomicReference<>();
         AtomicBoolean expired = new AtomicBoolean();
         ScheduledFuture<?> deadline = deadlines.schedule(() -> {
@@ -71,19 +85,22 @@ public class ImapsMailTransport implements MailTransport, DisposableBean {
             session.setDebug(false);
             store = session.getStore("imaps");
             store.connect(settings.host(), settings.port(), settings.username(), settings.credential());
+            phase = ConnectionPhase.FOLDER;
             Folder selected = store.getFolder(settings.folder());
             if (!(selected instanceof IMAPFolder imap)) throw new MessagingException();
             folder = imap;
             folder.open(Folder.READ_ONLY);
+            phase = ConnectionPhase.CURSOR;
             if (folder.getUIDNotSticky()) throw new MessagingException();
             IMAPFolder statusFolder = (IMAPFolder) store.getFolder(settings.folder());
             ImapsConnection connection = new ImapsConnection(store, folder, statusFolder, socketFactory.get());
             if (expired.get()) throw new MessagingException();
             return connection;
-        } catch (MessagingException | RuntimeException ignored) {
+        } catch (MessagingException | RuntimeException error) {
+            DomainException safeFailure = connectionFailure(error, phase, expired.get());
             MailTargetPolicy.closeSockets(socketFactory.get());
             closeQuietly(store, folder);
-            throw failure();
+            throw safeFailure;
         } finally { deadline.cancel(false); }
     }
 
@@ -136,8 +153,48 @@ public class ImapsMailTransport implements MailTransport, DisposableBean {
         try { if (store != null) store.close(); } catch (MessagingException | RuntimeException ignored) { }
     }
     private DomainException failure() {
-        return new DomainException("MAIL_CONNECTION_FAILED", "Mailbox connection failed; verify saved settings and authorization",
-                HttpStatus.BAD_GATEWAY);
+        return failure("MAIL_CONNECTION_FAILED");
+    }
+    private DomainException connectionFailure(Throwable error, ConnectionPhase phase, boolean expired) {
+        if (expired) return failure("MAIL_CONNECTION_TIMEOUT");
+        Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        ArrayDeque<Throwable> pending = new ArrayDeque<>();
+        pending.add(error);
+        while (!pending.isEmpty() && seen.size() < MAX_ERROR_CAUSES) {
+            Throwable current = pending.removeFirst();
+            if (!seen.add(current)) continue;
+            if (current instanceof DomainException domain
+                    && ("MAIL_DNS_FAILED".equals(domain.getCode()) || "MAIL_HOST_BLOCKED".equals(domain.getCode())))
+                return failure(domain.getCode());
+            if (current instanceof AuthenticationFailedException) return failure("MAIL_AUTH_FAILED");
+            if (current instanceof SSLException || current instanceof CertificateException
+                    || current instanceof CertPathValidatorException || current instanceof CertPathBuilderException)
+                return failure("MAIL_TLS_FAILED");
+            if (current instanceof SocketTimeoutException || current instanceof HttpTimeoutException)
+                return failure("MAIL_CONNECTION_TIMEOUT");
+            if (current.getCause() != null) pending.addLast(current.getCause());
+            if (current instanceof MessagingException messaging && messaging.getNextException() != null)
+                pending.addLast(messaging.getNextException());
+        }
+        return failure(switch (phase) {
+            case CONNECTING -> "MAIL_CONNECTION_FAILED";
+            case FOLDER -> "MAIL_FOLDER_FAILED";
+            case CURSOR -> "MAIL_CURSOR_UNAVAILABLE";
+        });
+    }
+    private DomainException failure(String code) {
+        String message = switch (code) {
+            case "MAIL_DNS_FAILED" -> "Mailbox server DNS resolution failed";
+            case "MAIL_HOST_BLOCKED" -> "Mailbox host must be a public IMAPS server";
+            case "MAIL_AUTH_FAILED" -> "Mailbox authentication failed";
+            case "MAIL_TLS_FAILED" -> "Mailbox TLS verification failed";
+            case "MAIL_CONNECTION_TIMEOUT" -> "Mailbox connection timed out";
+            case "MAIL_FOLDER_FAILED" -> "Mailbox folder could not be opened";
+            case "MAIL_CURSOR_UNAVAILABLE" -> "Mailbox UID cursor is unavailable";
+            default -> "Mailbox connection failed; verify saved settings and authorization";
+        };
+        return new DomainException(code, message,
+                "MAIL_HOST_BLOCKED".equals(code) ? HttpStatus.BAD_REQUEST : HttpStatus.BAD_GATEWAY);
     }
     @Override public void destroy() { deadlines.shutdownNow(); }
 }
