@@ -37,7 +37,7 @@ public class MailDnsResolver {
             "https://cloudflare-dns.com/dns-query", "https://dns.google/resolve");
     private static final int MAX_BODY_BYTES = 16_384;
     private static final int MAX_ADDRESSES = 32;
-    private static final long REQUEST_NANOS = TimeUnit.SECONDS.toNanos(2);
+    private static final long REQUEST_NANOS = TimeUnit.SECONDS.toNanos(4);
     private static final long TOTAL_NANOS = TimeUnit.SECONDS.toNanos(8);
     private final ObjectMapper mapper;
     private final HttpClient client;
@@ -45,7 +45,7 @@ public class MailDnsResolver {
 
     @Autowired
     public MailDnsResolver(ObjectMapper mapper) {
-        this(mapper, HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2))
+        this(mapper, HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(4))
                 .followRedirects(HttpClient.Redirect.NEVER).build(), InetAddress::getAllByName);
     }
 

@@ -29,10 +29,8 @@ class MailProxyNetworkProbeTest {
         properties.put("mail.imaps.timeout", "10000");
         try (Socket socket = SocketFetcher.getSocket(host, 993, properties, "mail.imaps", true)) {
             assertThat(socket).isInstanceOf(SSLSocket.class);
-            byte[] greeting = new byte[128];
-            int received = socket.getInputStream().read(greeting);
-            assertThat(received).isPositive();
-            assertThat(new String(greeting, 0, received, StandardCharsets.US_ASCII)).startsWith("* OK");
+            byte[] greeting = socket.getInputStream().readNBytes(4);
+            assertThat(new String(greeting, StandardCharsets.US_ASCII)).isEqualTo("* OK");
         } finally { MailTargetPolicy.closeSockets(factory); }
     }
 }

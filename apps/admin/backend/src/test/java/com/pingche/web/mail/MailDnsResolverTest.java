@@ -180,7 +180,8 @@ class MailDnsResolverTest {
         });
         when(client.sendAsync(any(HttpRequest.class), any(HttpResponse.BodyHandler.class))).thenReturn(pending);
         assertDnsFailure(unknownHostResolver());
-        assertThat(waits).hasSize(2).allSatisfy(wait -> assertThat(wait).isPositive().isLessThanOrEqualTo(TimeUnit.SECONDS.toNanos(2)));
+        assertThat(waits).hasSize(2).allSatisfy(wait -> assertThat(wait).isPositive().isLessThanOrEqualTo(TimeUnit.SECONDS.toNanos(4)));
+        assertThat(waits.stream().mapToLong(Long::longValue).sum()).isLessThanOrEqualTo(TimeUnit.SECONDS.toNanos(8));
         verify(pending, org.mockito.Mockito.times(2)).cancel(true);
     }
 
