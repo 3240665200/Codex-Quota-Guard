@@ -9,10 +9,19 @@ import java.net.SocketAddress;
 import javax.net.SocketFactory;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import org.springframework.http.HttpStatus;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
+import tools.jackson.databind.ObjectMapper;
 
 @Component
 public class MailTargetPolicy {
+    private final MailDnsResolver resolver;
+
+    public MailTargetPolicy() { this(new MailDnsResolver(new ObjectMapper())); }
+
+    @Autowired
+    public MailTargetPolicy(MailDnsResolver resolver) { this.resolver = resolver; }
+
     public void validateHost(String host) {
         if (host == null || host.length() > 253 || !host.matches("(?i)[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?")
                 || host.contains("..") || !host.contains(".") || host.endsWith(".localhost")
@@ -21,12 +30,10 @@ public class MailTargetPolicy {
 
     SocketFactory pinnedSocketFactory(String host, int port) {
         validateHost(host);
-        try {
-            InetAddress[] addresses = InetAddress.getAllByName(host);
-            if (addresses.length == 0) throw blocked();
-            for (InetAddress address : addresses) if (!isPublic(address)) throw blocked();
-            return new PinnedSocketFactory(addresses[0], port);
-        } catch (IOException ignored) { throw blocked(); }
+        InetAddress[] addresses = resolver.resolve(host);
+        if (addresses == null || addresses.length == 0 || addresses.length > 32) throw blocked();
+        for (InetAddress address : addresses) if (address == null || !isPublic(address)) throw blocked();
+        return new PinnedSocketFactory(addresses[0], port);
     }
 
     static boolean isPublic(InetAddress address) {
@@ -37,10 +44,13 @@ public class MailTargetPolicy {
             int first = b[0] & 255, second = b[1] & 255;
             return first != 0 && first < 224 && !(first == 100 && second >= 64 && second <= 127)
                     && !(first == 198 && (second == 18 || second == 19))
+                    && !(first == 198 && second == 51 && (b[2] & 255) == 100)
+                    && !(first == 203 && second == 0 && (b[2] & 255) == 113)
                     && !(first == 192 && second == 0);
         }
         // Allow globally routable IPv6 only; reject ULA, mapped addresses and transition mechanisms.
         return b.length == 16 && (b[0] & 0xe0) == 0x20 && !(b[0] == 0x20 && b[1] == 0x02)
+                && !(b[0] == 0x20 && b[1] == 0x01 && (b[2] & 255) == 0x0d && (b[3] & 255) == 0xb8)
                 && !(b[0] == 0x20 && b[1] == 0x01 && b[2] == 0 && b[3] == 0);
     }
 
