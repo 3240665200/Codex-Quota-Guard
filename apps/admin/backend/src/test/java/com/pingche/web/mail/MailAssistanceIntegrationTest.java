@@ -27,6 +27,8 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -43,9 +45,11 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.http.HttpStatus;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import tools.jackson.databind.ObjectMapper;
 
 @SpringBootTest(properties = {
         "MAIL_ASSISTANCE_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
@@ -56,6 +60,7 @@ import org.springframework.test.web.servlet.MockMvc;
 class MailAssistanceIntegrationTest {
     private static final Instant NOW = Instant.parse("2026-10-12T10:00:00Z");
     private static final String BODY = "ChatGPT Log-in Code\nWe noticed a suspicious log-in on your account. If that was you, enter this code:\n123456\nIf this wasn't you, reset your password.";
+    private static final ObjectMapper JSON = new ObjectMapper();
     @Autowired MailAssistanceService service;
     @Autowired MailboxConfigRepository mailboxes;
     @Autowired MailListenerRepository listeners;
@@ -122,6 +127,68 @@ class MailAssistanceIntegrationTest {
         assertThat(connection.polled.get()).isFalse(); assertThat(connection.closed.get()).isTrue();
         mvc.perform(delete(configUrl()).header(HttpHeaders.AUTHORIZATION, token(admin))).andExpect(status().isNoContent());
         assertThat(mailboxes.findById(account.getId())).isEmpty();
+    }
+
+    @Test
+    void multipleSenderConfigurationIsCanonicalAndPreservesAuthorizationWhileInvalidatingListeners() throws Exception {
+        configure();
+        MailboxConfig previous = mailboxes.findById(account.getId()).orElseThrow();
+        String previousSecret = previous.passwordCipher;
+        UUID previousRevision = previous.revision;
+        FakeConnection connection = new FakeConnection();
+        when(transport.open(any())).thenReturn(connection);
+        MailListenerResponse active = service.start(owner.getId());
+        awaitState(active.id(), MailListener.State.LISTENING);
+
+        mvc.perform(put(configUrl()).header(HttpHeaders.AUTHORIZATION, token(admin)).contentType(MediaType.APPLICATION_JSON)
+                        .content(configJson("", " Sender@Example.com ; second@example.com\r\nSENDER@example.com， SECOND@example.com；sender@example.com ")))
+                .andExpect(status().isOk()).andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
+                .andExpect(jsonPath("$.senderEmail").value("sender@example.com,second@example.com"))
+                .andExpect(jsonPath("$.hasPassword").value(true)).andExpect(jsonPath("$.password").doesNotExist());
+
+        MailboxConfig saved = mailboxes.findById(account.getId()).orElseThrow();
+        assertThat(saved.passwordCipher).isEqualTo(previousSecret);
+        assertThat(saved.revision).isNotEqualTo(previousRevision);
+        assertThat(saved.senderEmail).isEqualTo("sender@example.com,second@example.com");
+        assertThat(listeners.findById(active.id()).orElseThrow().state).isEqualTo(MailListener.State.CANCELLED);
+        await().atMost(Duration.ofSeconds(5)).untilTrue(connection.closed);
+    }
+
+    @Test
+    void senderConfigurationRejectsInvalidAddressesAndLimitsWithoutEchoingInput() throws Exception {
+        configure();
+        String tooMany = IntStream.range(0, 3).mapToObj(index -> "sender" + index + "@example.com").collect(Collectors.joining(","));
+        String tooLong = String.join(",", java.util.Collections.nCopies(5, "a".repeat(60) + "@example.com"));
+        String[] invalidSenders = { null, "", " ", "example.com", "@example.com", "sender@", "*@example.com",
+                "sender@*.example.com", "Display Name <sender@example.com>", "sender@example.com (comment)",
+                "sender@example.com\t", "sender@example.com\u0000", "sender@example.com;not-an-address", tooMany, tooLong };
+        for (String sender : invalidSenders) {
+            var response = mvc.perform(put(configUrl()).header(HttpHeaders.AUTHORIZATION, token(admin)).contentType(MediaType.APPLICATION_JSON)
+                            .content(configJson("", sender)))
+                    .andExpect(status().isBadRequest());
+            if (sender != null && !sender.isBlank() && sender.length() <= 320)
+                response.andExpect(jsonPath("$.code").value("MAIL_CONFIG_INVALID"))
+                        .andExpect(jsonPath("$.message").value("Mailbox sender addresses are invalid"));
+            assertThatThrownBy(() -> service.saveConfig(account.getId(), request("", MailboxConfig.AuthMode.PASSWORD, sender)))
+                    .isInstanceOfSatisfying(DomainException.class, failure -> {
+                        assertThat(failure.getCode()).isEqualTo("MAIL_CONFIG_INVALID");
+                        assertThat(failure.getStatus()).isEqualTo(HttpStatus.BAD_REQUEST);
+                        assertThat(failure.getMessage()).isEqualTo("Mailbox sender addresses are invalid");
+                    });
+            assertThat(mailboxes.findById(account.getId()).orElseThrow().senderEmail).isEqualTo("sender@example.com");
+        }
+    }
+
+    @Test
+    void senderConfigurationAcceptsTwoExactAddressesAndSingleAddressRemainsCompatible() throws Exception {
+        String two = "sender@example.com,second@example.com";
+        mvc.perform(put(configUrl()).header(HttpHeaders.AUTHORIZATION, token(admin)).contentType(MediaType.APPLICATION_JSON)
+                        .content(configJson("synthetic-password", two)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.senderEmail").value(two));
+        mvc.perform(put(configUrl()).header(HttpHeaders.AUTHORIZATION, token(admin)).contentType(MediaType.APPLICATION_JSON)
+                        .content(configJson("", " Sender@Example.com ")))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.senderEmail").value("sender@example.com"))
+                .andExpect(jsonPath("$.hasPassword").value(true));
     }
 
     @Test
@@ -342,17 +409,23 @@ class MailAssistanceIntegrationTest {
     }
     private void configure() { service.saveConfig(account.getId(), request("synthetic-password", MailboxConfig.AuthMode.PASSWORD)); }
     private MailboxRequest request(String password, MailboxConfig.AuthMode mode) {
+        return request(password, mode, "sender@example.com");
+    }
+    private MailboxRequest request(String password, MailboxConfig.AuthMode mode, String sender) {
         return new MailboxRequest(true, "QQ", "imap.qq.com", 993, "owner@example.com", "owner@example.com",
-                "INBOX", "sender@example.com", mode, null, null, password, null, null);
+                "INBOX", sender, mode, null, null, password, null, null);
     }
     private String token(User user) { return "Bearer " + jwt.create(user.getId(), user.getRole().name(), user.getSessionVersion()); }
     private String configUrl() { return "/api/v1/admin/official-accounts/" + account.getId() + "/mailbox"; }
     private String configJson(String password) {
+        return configJson(password, "sender@example.com");
+    }
+    private String configJson(String password, String sender) {
         return """
                 {"enabled":true,"provider":"QQ","host":"imap.qq.com","port":993,"username":"owner@example.com",
-                 "recipientEmail":"owner@example.com","folder":"INBOX","senderEmail":"sender@example.com",
-                 "authMode":"PASSWORD","password":"%s"}
-                """.formatted(password);
+                 "recipientEmail":"owner@example.com","folder":"INBOX","senderEmail":%s,
+                 "authMode":"PASSWORD","password":%s}
+                """.formatted(JSON.writeValueAsString(sender), JSON.writeValueAsString(password));
     }
     private LoginMailMessage message(Instant received) { return new LoginMailMessage(List.of("sender@example.com"), List.of("owner@example.com"), "ChatGPT Log-in Code", BODY, received); }
     private FakeConnection codeConnection(long uid, long validity) {
