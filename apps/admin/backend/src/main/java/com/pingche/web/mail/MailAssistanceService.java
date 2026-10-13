@@ -33,9 +33,12 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @Service
 public class MailAssistanceService implements DisposableBean {
+    private static final Logger log = LoggerFactory.getLogger(MailAssistanceService.class);
     private final UserRepository users;
     private final TeamRepository teams;
     private final OfficialAccountRepository accounts;
@@ -146,8 +149,11 @@ public class MailAssistanceService implements DisposableBean {
             try (MailTransport.Connection connection = transport.open(settings(config))) {
                 connection.baseline();
                 return new TestResult(true, "连接成功，已验证只读 IMAPS 文件夹；未读取邮件正文。");
-            } catch (RuntimeException ignored) {
-                return new TestResult(false, "连接失败，请检查 IMAPS 设置、服务商授权和服务器网络。");
+            } catch (RuntimeException failure) {
+                String message = connectionFailureMessage(failure);
+                // Only fixed classification text; never log the provider exception or credentials.
+                log.warn("mailbox_connection_test_failed result={}", message);
+                return new TestResult(false, message);
             }
         } finally {
             if (reserved) testConnections.release();
@@ -158,6 +164,21 @@ public class MailAssistanceService implements DisposableBean {
                 }); return null;
             });
         }
+    }
+
+    static String connectionFailureMessage(RuntimeException failure) {
+        String code = failure instanceof DomainException domain && domain.getCode() != null ? domain.getCode() : "";
+        return switch (code) {
+            case "MAIL_DNS_FAILED" -> "无法解析邮箱服务器，请检查代理与 DNS 网络。（MAIL_DNS_FAILED）";
+            case "MAIL_HOST_BLOCKED" -> "邮箱服务器未解析到允许的公网地址，请检查主机与代理设置。（MAIL_HOST_BLOCKED）";
+            case "MAIL_AUTH_FAILED" -> "邮箱认证未通过，请检查完整邮箱地址、客户端授权码、IMAP 开关及服务商安全设置。（MAIL_AUTH_FAILED）";
+            case "MAIL_TLS_FAILED" -> "邮箱服务器的 TLS 证书验证失败，请检查代理与证书设置。（MAIL_TLS_FAILED）";
+            case "MAIL_CONNECTION_TIMEOUT" -> "连接邮箱超时，请稍后重试并检查代理网络。（MAIL_CONNECTION_TIMEOUT）";
+            case "MAIL_FOLDER_FAILED" -> "已登录邮箱，但无法打开邮件文件夹，请确认 INBOX 存在且允许访问。（MAIL_FOLDER_FAILED）";
+            case "MAIL_CURSOR_UNAVAILABLE" -> "邮箱未提供可靠的新邮件游标，暂时无法安全监听新邮件。（MAIL_CURSOR_UNAVAILABLE）";
+            case "MAIL_OAUTH_FAILED" -> "邮箱 OAuth 授权未通过，请更新对应的邮箱授权配置。（MAIL_OAUTH_FAILED）";
+            default -> "无法建立邮箱连接，请检查 IMAPS 主机、端口和网络。（MAIL_CONNECTION_FAILED）";
+        };
     }
 
     public LoginAssistanceResponse availability(UUID userId) {
