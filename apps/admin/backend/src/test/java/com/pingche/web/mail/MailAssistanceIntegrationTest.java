@@ -149,6 +149,25 @@ class MailAssistanceIntegrationTest {
     }
 
     @Test
+    void chineseLoginMailPublishesOnlyTheCodeAndStopsItsListener() throws Exception {
+        configure();
+        FakeConnection connection = new FakeConnection();
+        LoginMailMessage chinese = new LoginMailMessage(List.of("sender@example.com"), List.of("owner@example.com"),
+                "你的临时 ChatGPT 登录代码", "请使用以下验证码完成登录：123456。如果不是你本人操作，请忽略。", NOW.plusSeconds(1));
+        connection.batch.set(new MailTransport.Batch(10, 101, List.of(new MailTransport.Candidate(100, chinese))));
+        when(transport.open(any())).thenReturn(connection);
+
+        MailListenerResponse started = service.start(owner.getId());
+        awaitState(started.id(), MailListener.State.RECEIVED);
+        await().atMost(Duration.ofSeconds(5)).untilTrue(connection.closed);
+        mvc.perform(get("/api/v1/client/login-assistance/listeners/{id}", started.id()).header(HttpHeaders.AUTHORIZATION, token(owner)))
+                .andExpect(status().isOk()).andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
+                .andExpect(jsonPath("$.state").value("RECEIVED")).andExpect(jsonPath("$.code").value("123456"))
+                .andExpect(jsonPath("$.body").doesNotExist()).andExpect(jsonPath("$.subject").doesNotExist())
+                .andExpect(jsonPath("$.senders").doesNotExist()).andExpect(jsonPath("$.recipients").doesNotExist());
+    }
+
+    @Test
     void sharedAccountIsBusyAndAnotherUserCannotPollOrCancelOwnerResult() throws Exception {
         configure(); MailListenerResponse started = service.start(owner.getId());
         awaitState(started.id(), MailListener.State.LISTENING);
