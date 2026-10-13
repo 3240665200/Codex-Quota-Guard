@@ -7,6 +7,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
@@ -27,6 +28,7 @@ import java.net.http.HttpTimeoutException;
 import java.security.cert.CertificateException;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
@@ -34,6 +36,7 @@ import javax.net.SocketFactory;
 import javax.net.ssl.SSLException;
 import javax.net.ssl.SSLHandshakeException;
 import org.eclipse.angus.mail.imap.IMAPFolder;
+import org.eclipse.angus.mail.imap.IMAPStore;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.AfterEach;
@@ -47,6 +50,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import static org.mockito.Mockito.doAnswer;
 import org.mockito.MockedStatic;
+import org.mockito.InOrder;
 
 class ImapsMailTransportTest {
     private final MailTargetPolicy targets = mock(MailTargetPolicy.class);
@@ -256,6 +260,63 @@ class ImapsMailTransportTest {
         }
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"imap.163.com", "imap.126.com", "imap.yeah.net"})
+    void neteaseIdentityIsSentAfterAuthenticationBeforeReadOnlyFolderOpen(String host) throws Exception {
+        IMAPStore imapStore = mockImapStore(host, true);
+        // A successful ID NIL response returns null; it must not be treated as a failed login.
+        when(imapStore.id(any())).thenReturn(null);
+        try (MockedStatic<Session> mocked = mockStatic(Session.class)) {
+            mocked.when(() -> Session.getInstance(any(Properties.class))).thenReturn(session);
+            try (MailTransport.Connection connection = transport.open(request(host, MailboxConfig.AuthMode.PASSWORD))) {
+                assertThat(connection.baseline()).isEqualTo(new MailTransport.Cursor(10, 100));
+            }
+            InOrder order = inOrder(imapStore, folder);
+            order.verify(imapStore).connect(host, 993, "owner@example.com", "synthetic-credential");
+            order.verify(imapStore).hasCapability("ID");
+            order.verify(imapStore).id(Map.of("name", "Codex Quota Guard"));
+            order.verify(folder).open(Folder.READ_ONLY);
+        }
+    }
+
+    @ParameterizedTest
+    @MethodSource("providersWithoutIdentity")
+    void identityIsNotSentToOtherProvidersOrWhenTheCapabilityIsAbsent(String host, boolean capability) throws Exception {
+        IMAPStore imapStore = mockImapStore(host, capability);
+        try (MockedStatic<Session> mocked = mockStatic(Session.class)) {
+            mocked.when(() -> Session.getInstance(any(Properties.class))).thenReturn(session);
+            try (MailTransport.Connection connection = transport.open(request(host, MailboxConfig.AuthMode.PASSWORD))) {
+                assertThat(connection.baseline()).isEqualTo(new MailTransport.Cursor(10, 100));
+            }
+            verify(imapStore, never()).id(any());
+            if (capability) verify(imapStore, never()).hasCapability(anyString());
+        }
+    }
+
+    private static Stream<Arguments> providersWithoutIdentity() {
+        return Stream.of(Arguments.of("imap.163.com", false), Arguments.of("imap.example.com", true),
+                Arguments.of("imap.163.com.example.com", true), Arguments.of("private.imap.163.com", true));
+    }
+
+    @Test void neteaseHostWithANonImapStoreDoesNotRequireAnIdentityExtension() throws Exception {
+        when(targets.pinnedSocketFactory("imap.163.com", 993)).thenReturn(SocketFactory.getDefault());
+        try (MockedStatic<Session> mocked = mockStatic(Session.class)) {
+            mocked.when(() -> Session.getInstance(any(Properties.class))).thenReturn(session);
+            try (MailTransport.Connection connection = transport.open(request("imap.163.com", MailboxConfig.AuthMode.PASSWORD))) {
+                assertThat(connection.baseline()).isEqualTo(new MailTransport.Cursor(10, 100));
+            }
+        }
+    }
+
+    private IMAPStore mockImapStore(String host, boolean capability) throws Exception {
+        IMAPStore imapStore = mock(IMAPStore.class);
+        when(targets.pinnedSocketFactory(host, 993)).thenReturn(SocketFactory.getDefault());
+        when(session.getStore("imaps")).thenReturn(imapStore);
+        when(imapStore.getFolder("INBOX")).thenReturn(folder, status);
+        when(imapStore.hasCapability("ID")).thenReturn(capability);
+        return imapStore;
+    }
+
     private void assertOpenFailure(String code, String message) {
         assertThatThrownBy(() -> transport.open(request(MailboxConfig.AuthMode.PASSWORD)))
                 .isInstanceOfSatisfying(DomainException.class, error -> {
@@ -266,6 +327,10 @@ class ImapsMailTransportTest {
     }
 
     private MailTransport.Settings request(MailboxConfig.AuthMode mode) {
-        return new MailTransport.Settings("imap.example.com", 993, "owner@example.com", "INBOX", mode, "synthetic-credential");
+        return request("imap.example.com", mode);
+    }
+
+    private MailTransport.Settings request(String host, MailboxConfig.AuthMode mode) {
+        return new MailTransport.Settings(host, 993, "owner@example.com", "INBOX", mode, "synthetic-credential");
     }
 }
