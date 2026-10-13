@@ -311,7 +311,9 @@ public class MailAssistanceService implements DisposableBean {
             MailboxConfig config = requireConfig(accountId);
             for (MailTransport.Candidate candidate : batch.messages()) {
                 if (candidate == null || candidate.uid() < requestedNext || candidate.uid() >= batch.nextUid()) continue;
-                var code = matcher.findCode(candidate.message(), config.senderEmail, config.recipientEmail, listener.listeningAt);
+                // The UID baseline excludes existing mail. Use request time so mail arriving between
+                // that snapshot and publishing LISTENING is not lost to the later readiness timestamp.
+                var code = matcher.findCode(candidate.message(), config.senderEmail, config.recipientEmail, listener.startedAt);
                 if (code.isPresent()) {
                     listener.codeCipher = cipher.encrypt(code.get(), listener.aad()); listener.state = MailListener.State.RECEIVED;
                     listener.activeAccountId = null; listener.receivedAt = clock.instant();
