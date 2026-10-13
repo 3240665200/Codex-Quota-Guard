@@ -86,6 +86,21 @@ class LoginMailMimeCompatibilityTest {
     }
 
     @Test
+    void recognizesEnglishHtmlWithRepeatedPreheaderCodeAndNotTryingReminder() throws Exception {
+        MimeMessage message = message("Your temporary ChatGPT login code");
+        message.setContent("""
+                <html><body><div style="display:none">Enter this temporary verification code to continue: 123456.</div>
+                <h1>ChatGPT Log-in Code</h1><p>Hi there,</p>
+                <p>We noticed a suspicious log-in on your account. If that was you, enter this code:</p>
+                <h2>123456</h2><p>If you were not trying to log in to ChatGPT, please
+                <a href="https://example.com/reset">reset your password</a>.</p>
+                <p>Best,<br>The ChatGPT team</p></body></html>
+                """, "text/html; charset=US-ASCII");
+        message.setHeader("Content-Transfer-Encoding", "7bit");
+        assertCode(message);
+    }
+
+    @Test
     void doesNotReturnAResetCodeFromEncodedHtmlMail() throws Exception {
         MimeMessage message = message("重置你的 ChatGPT 密码");
         message.setContent("<h1>ChatGPT 密码重置</h1><p>验证码：123456</p><footer>登录帮助</footer>", "text/html; charset=UTF-8");

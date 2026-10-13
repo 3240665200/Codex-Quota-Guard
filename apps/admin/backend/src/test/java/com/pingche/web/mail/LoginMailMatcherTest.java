@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class LoginMailMatcherTest {
     private static final Instant ARMED = Instant.parse("2026-10-12T01:00:00Z");
@@ -17,6 +18,15 @@ class LoginMailMatcherTest {
             We noticed a suspicious log-in on your account. If that was you, enter this code:
             123456
             If this wasn't you, reset your password to secure your account.
+            """;
+    private static final String ENGLISH_TEMPORARY_BODY = """
+            Enter this temporary verification code to continue: 123456.
+            ChatGPT Log-in Code
+            Hi there,
+            We noticed a suspicious log-in on your account. If that was you, enter this code: 123456
+            If you were not trying to log in to ChatGPT, please reset your password.
+            For more information, see One-Time Passwords.
+            Best, The ChatGPT team
             """;
     private final LoginMailMatcher matcher = new LoginMailMatcher();
 
@@ -43,6 +53,12 @@ class LoginMailMatcherTest {
                         "Your one-time code is: 123456\nThis code expires shortly."),
                 Arguments.of("English short code label", "Your ChatGPT login code", "Code: 123456"),
                 Arguments.of("English following-code prompt", "ChatGPT login code", "Enter the following code: 123456"),
+                Arguments.of("English temporary verification-code continuation prompt", "Your temporary ChatGPT login code",
+                        "Enter this temporary verification code to continue: 123456."),
+                Arguments.of("English unintended-login safety reminder", "Your temporary ChatGPT login code",
+                        "Your login code is 123456. If you were not trying to log in to ChatGPT, please reset your password."),
+                Arguments.of("English observed temporary-template structure", "Your temporary ChatGPT login code",
+                        ENGLISH_TEMPORARY_BODY),
                 Arguments.of("English body establishes product and purpose", "Security verification",
                         "ChatGPT\nEnter this code to sign in: 123456"),
                 Arguments.of("English lowercase and Unicode hyphen", "CHATGPT SIGN\u2011IN CODE",
@@ -162,6 +178,15 @@ class LoginMailMatcherTest {
                         "账户恢复。输入此临时验证码以继续：123456 如果你无意登录 ChatGPT，请重置密码。"),
                 Arguments.of("Reset subject with the observed continuation prompt", "重置你的 ChatGPT 密码",
                         "输入此临时验证码以继续：123456 如果你无意登录 ChatGPT，请重置密码。"),
+                Arguments.of("English continuation prompt does not establish a login purpose", "Your temporary ChatGPT verification code",
+                        "Enter this temporary verification code to continue: 123456."
+                                + " If you were not trying to log in to ChatGPT, please reset your password."),
+                Arguments.of("English different preview and body codes", "Your temporary ChatGPT login code",
+                        ENGLISH_TEMPORARY_BODY.replaceFirst("123456", "654321")),
+                Arguments.of("English reset subject with the observed temporary template", "Reset your ChatGPT password",
+                        ENGLISH_TEMPORARY_BODY),
+                Arguments.of("English reset purpose before the unintended-login reminder", "Your temporary ChatGPT login code",
+                        "Reset your password. " + ENGLISH_TEMPORARY_BODY),
                 Arguments.of("Login subject cannot turn reference into code", "ChatGPT login code",
                         "Please review this message. Reference number: 123456"),
                 Arguments.of("Subject label cannot cross into a body reference", "ChatGPT login code",
@@ -190,6 +215,25 @@ class LoginMailMatcherTest {
             LoginMailMessage wrong = new LoginMailMessage(senders, List.of("owner@example.com"),
                     "ChatGPT 登录验证码", "登录验证码：123456", ARMED.plusSeconds(1));
             assertThat(matcher.findCode(wrong, "sender@example.com", "owner@example.com", ARMED)).isEmpty();
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"sender@example.com", "second@example.com"})
+    void acceptsEachExactlyConfiguredSender(String actualSender) {
+        LoginMailMessage allowed = new LoginMailMessage(List.of(actualSender), List.of("owner@example.com"),
+                "ChatGPT Log-in Code", BODY, ARMED.plusSeconds(1));
+        assertThat(matcher.findCode(allowed, "sender@example.com,second@example.com", "owner@example.com", ARMED))
+                .contains("123456");
+    }
+
+    @Test
+    void rejectsUnlistedAndMultipleActualSendersWhenSeveralSendersAreConfigured() {
+        for (List<String> senders : List.of(List.of("attacker@example.com"),
+                List.of("sender@example.com.attacker.test"), List.of("sender@example.com", "second@example.com"))) {
+            LoginMailMessage wrong = new LoginMailMessage(senders, List.of("owner@example.com"),
+                    "ChatGPT Log-in Code", BODY, ARMED.plusSeconds(1));
+            assertThat(matcher.findCode(wrong, "sender@example.com,second@example.com", "owner@example.com", ARMED)).isEmpty();
         }
     }
 

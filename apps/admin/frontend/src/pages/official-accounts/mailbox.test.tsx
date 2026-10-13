@@ -82,9 +82,56 @@ describe('官方账户的用户自有邮箱配置', () => {
     mocks.getOfficialAccountMailbox.mockResolvedValue({ ...saved, senderEmail: '' });
     const dialog = await openMailbox();
     await waitFor(() => expect(within(dialog).getByLabelText('邮箱登录用户名')).toHaveValue('owner@qq.com'));
-    expect(within(dialog).getByLabelText('真实发件邮箱')).toHaveValue('');
+    expect(within(dialog).getByLabelText('发件地址 1')).toHaveValue('');
     fireEvent.click(within(dialog).getByRole('button', { name: /^保\s*存$/ }));
     expect(await within(dialog).findByText('请输入真实发件邮箱')).toBeInTheDocument();
+    expect(mocks.saveOfficialAccountMailbox).not.toHaveBeenCalled();
+  });
+
+  it('saves two sender fields without clearing authorization and displays the normalized response', async () => {
+    const normalized = 'first@example.com,second@example.com';
+    mocks.saveOfficialAccountMailbox.mockResolvedValue({ ...saved, senderEmail: normalized });
+    const dialog = await openMailbox();
+    await within(dialog).findByDisplayValue('actual-sender@example.com');
+    const first = within(dialog).getByLabelText('发件地址 1');
+    const second = within(dialog).getByLabelText('发件地址 2');
+    expect(first.tagName).toBe('INPUT');
+    expect(second).toHaveValue('');
+    expect(within(dialog).getByText(/两个地址.*同时生效.*精确匹配/)).toBeInTheDocument();
+    fireEvent.change(first, { target: { value: 'first@example.com' } });
+    fireEvent.change(second, { target: { value: 'SECOND@example.com' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: /^保\s*存$/ }));
+    await waitFor(() => expect(mocks.saveOfficialAccountMailbox).toHaveBeenCalledOnce());
+    expect(mocks.saveOfficialAccountMailbox.mock.calls[0][1]).toMatchObject({
+      senderEmail: 'first@example.com,SECOND@example.com',
+    });
+    expect(mocks.saveOfficialAccountMailbox.mock.calls[0][1]).not.toHaveProperty('password');
+    await waitFor(() => expect(first).toHaveValue('first@example.com'));
+    expect(second).toHaveValue('second@example.com');
+  });
+
+  it('keeps a saved sender list editable and compatible with the existing string API', async () => {
+    const senderEmail = 'first@example.com,second@example.com';
+    mocks.getOfficialAccountMailbox.mockResolvedValue({ ...saved, senderEmail });
+    mocks.saveOfficialAccountMailbox.mockResolvedValue({ ...saved, senderEmail });
+    const dialog = await openMailbox();
+    await within(dialog).findByDisplayValue('first@example.com');
+    expect(within(dialog).getByLabelText('发件地址 2')).toHaveValue('second@example.com');
+    fireEvent.click(within(dialog).getByRole('button', { name: /^保\s*存$/ }));
+    await waitFor(() => expect(mocks.saveOfficialAccountMailbox).toHaveBeenCalledOnce());
+    expect(mocks.saveOfficialAccountMailbox.mock.calls[0][1].senderEmail).toBe(senderEmail);
+  });
+
+  it.each([
+    '*@example.com', 'example.com', 'first@example.com,broken', 'ChatGPT <first@example.com>',
+    'first@example.com,second@example.com,third@example.com',
+    'a'.repeat(310) + '@example.com',
+  ])('rejects invalid, wildcard or oversized sender lists: %s', async (senderEmail) => {
+    const dialog = await openMailbox();
+    await within(dialog).findByDisplayValue('actual-sender@example.com');
+    fireEvent.change(within(dialog).getByLabelText('发件地址 1'), { target: { value: senderEmail } });
+    fireEvent.click(within(dialog).getByRole('button', { name: /^保\s*存$/ }));
+    expect(await within(dialog).findByText(/请输入完整发件邮箱|发件地址总长度/)).toBeInTheDocument();
     expect(mocks.saveOfficialAccountMailbox).not.toHaveBeenCalled();
   });
 
