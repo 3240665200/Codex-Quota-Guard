@@ -74,6 +74,18 @@ class LoginMailMimeCompatibilityTest {
     }
 
     @Test
+    void recognizesShortChineseHtmlWithConditionalSecurityReminder() throws Exception {
+        MimeMessage message = message("你的临时 ChatGPT 登录代码");
+        message.setContent("""
+                <html><body><p>输入此临时验证码以继续：</p><div>123456</div>
+                <p>如果你无意登录 ChatGPT，请<a href="https://example.com/reset">重置密码</a>。</p>
+                <p>谨致问候<br>ChatGPT 团队</p><footer>ChatGPT 帮助中心</footer></body></html>
+                """, "text/html; charset=UTF-8");
+        message.setHeader("Content-Transfer-Encoding", "quoted-printable");
+        assertCode(message);
+    }
+
+    @Test
     void doesNotReturnAResetCodeFromEncodedHtmlMail() throws Exception {
         MimeMessage message = message("重置你的 ChatGPT 密码");
         message.setContent("<h1>ChatGPT 密码重置</h1><p>验证码：123456</p><footer>登录帮助</footer>", "text/html; charset=UTF-8");
