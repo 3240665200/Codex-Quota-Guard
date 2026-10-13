@@ -9,6 +9,9 @@ import com.pingche.web.auth.AuthResponse;
 import com.pingche.web.auth.AuthService;
 import com.pingche.web.user.User;
 import com.pingche.web.user.UserRepository;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -26,6 +29,7 @@ class OfficialQuotaSnapshotIntegrationTest {
     @Autowired MockMvc mvc;
     @Autowired AuthService auth;
     @Autowired UserRepository users;
+    @Autowired Clock clock;
 
     @Test
     void clientReportsSafeOfficialQuotaAndOnlyAdminReadsAnotherUsersSnapshot() throws Exception {
@@ -40,15 +44,16 @@ class OfficialQuotaSnapshotIntegrationTest {
         adminSession = auth.login("official-snapshot-admin@example.com",
                 "test-password-with-sufficient-length");
 
+        Instant fetchedAt = clock.instant();
         mvc.perform(put("/api/v1/client/official-quota")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + member.accessToken())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
-                                {"planType":"plus","fetchedAt":"2026-10-06T00:00:00Z",
+                                {"planType":"plus","fetchedAt":"%s",
                                 "windows":[{"limitId":"codex","slot":"primary",
                                 "windowDurationMins":300,"usedPercent":25.5,
-                                "resetsAt":"2026-10-06T05:00:00Z"}]}
-                                """))
+                                "resetsAt":"%s"}]}
+                                """.formatted(fetchedAt, fetchedAt.plus(Duration.ofHours(5)))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.planType").value("plus"));
         mvc.perform(get("/api/v1/admin/users/{id}/official-quota", memberUser.getId())

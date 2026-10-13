@@ -52,6 +52,20 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\apps\admin\backend\scripts
 
 正式部署应同时为管理后台和客户端到中央服务的连接配置 HTTPS。邮件服务器链路本身始终使用 TLS；既有局域网 HTTP 开发选项并不能保护管理页提交的邮箱授权信息。
 
+## 代理与 Fake-IP 解析
+
+后台保留代理/TUN 时，如果系统把邮箱域名解析为已知的 Fake-IP 范围 `198.18.0.0/15` 或 `fdfe:dcba:9876::/64`（包含两者同时返回），或者系统无法解析该域名，会通过固定的 Cloudflare / Google HTTPS DNS 接口尝试取得真实公网地址。普通公网 DNS 结果不走备用通道。系统结果若混有这些范围之外的回环、私网或链路本地地址则仍直接拒绝，不能借备用解析绕过目标限制；备用答案也绝不允许上述 Fake-IP 或私网地址。
+
+备用查询只发送邮箱服务器域名与 A/AAAA 类型，不发送邮箱账号、授权码或邮件内容；不跟随 HTTP 重定向，验证 HTTPS 证书，限制响应大小为 16 KiB，并设置总时限。查询结果逐一检查，连接固定到校验过的公网 IP；IMAPS 仍按原邮箱域名校验 TLS 证书，不直接信任 Fake-IP，也不修改操作系统或代理软件的 DNS 设置。
+
+适用于当前 TUN/Fake-IP 场景，不等于自动支持所有 HTTP/SOCKS 代理配置。备用 DNS 的 HTTPS 地址也必须可访问；完全断网或代理不可用时会失败，不降级为明文。邮箱主机继续填写 `imap.163.com` 等域名，无需手填或固定服务商 IP。
+
+本次只更新中央 Java 后端，不需要重新安装桌面客户端。可选的 `CQG_MAIL_PROXY_PROBE=1` 测试仅连接公开的 163 IMAPS 服务、校验 TLS 并读取连接欢迎信息，不发送登录指令、不读取业务邮件；正常测试默认不访问公网。
+
+协议依据：[Cloudflare DoH JSON](https://github.com/cloudflare/cloudflare-docs/blob/production/src/content/docs/1.1.1.1/encryption/dns-over-https/make-api-requests/dns-json.mdx)、[Mihomo Fake-IP 配置](https://wiki.metacubex.one/en/config/dns/)。若代理自定义了其他 Fake-IP 范围，不会自动把任意私网地址当作代理地址放行。
+
+代理兼容改动已通过 170 项常规后端测试（1 项公网测试默认跳过）；公网测试另外显式运行，在系统仍返回 IPv4/IPv6 Fake-IP 时，通过实际 Angus IMAPS 连接完成证书验证并读到欢迎响应。此验证不代表邮箱账号/授权码已验证成功，完整登录需管理员在页面执行“测试连接”。
+
 ## 新邮件与隔离规则
 
 - 建立连接后保存 `UIDVALIDITY`、`UIDNEXT` 与监听就绪时间，只处理新 UID；历史未读邮件也不会被当作新验证码。
