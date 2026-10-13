@@ -1,6 +1,6 @@
 {
   "name": "@codex-quota-guard/client",
-  "version": "0.3.9",
+  "version": "0.3.10",
   "private": true,
   "description": "Cross-platform Codex quota dashboard with a Java Spring Boot backend",
   "type": "module",
@@ -15,6 +15,7 @@
     "build:runtime": "node prepare-java-runtime.mjs",
     "build:meter": "node prepare-meter.mjs",
     "test:backend": "mvn -f ../backend/pom.xml test",
+    "test:session-persistence": "node --test session-persistence.test.mjs",
     "test:packaging": "node --test native-build.test.mjs",
     "test:autostart-installer": "node --test src-tauri/tests/autostart-installer.test.mjs",
     "test:installer": "node --test src-tauri/tests/*test.mjs",

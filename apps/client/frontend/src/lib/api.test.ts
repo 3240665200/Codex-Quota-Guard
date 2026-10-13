@@ -708,8 +708,11 @@ describe("Tauri API boundary", () => {
   });
 
   it("shows only allow-listed Tauri string errors", () => {
-    const sessionStorageMessage = "本机登录存储不可用，请关闭其他客户端并检查用户目录权限后重试。";
-    expect(getApiErrorMessage(sessionStorageMessage)).toBe(sessionStorageMessage);
+    const sessionStorageMessage =
+      "本机登录存储不可用，请关闭其他客户端并检查用户目录权限后重试。";
+    expect(getApiErrorMessage(sessionStorageMessage)).toBe(
+      sessionStorageMessage,
+    );
     expect(getApiErrorMessage("本地服务暂时不可用，请稍后重试。")).toBe(
       "本地服务暂时不可用，请稍后重试。",
     );

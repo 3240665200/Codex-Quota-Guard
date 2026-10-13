@@ -85,9 +85,13 @@ describe("ClientApp system session gate", () => {
       command === "system_current" ? signedIn : original(command, args),
     );
     renderClientApp();
-    expect(await screen.findByRole("heading", { name: "个人 Token" })).toBeVisible();
+    expect(
+      await screen.findByRole("heading", { name: "个人 Token" }),
+    ).toBeVisible();
     expect(screen.queryByLabelText("密码")).not.toBeInTheDocument();
-    expect(invokeMock.mock.calls.some(([command]) => command === "system_login")).toBe(false);
+    expect(
+      invokeMock.mock.calls.some(([command]) => command === "system_login"),
+    ).toBe(false);
   });
   beforeEach(() => {
     invokeMock.mockClear();
