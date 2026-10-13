@@ -28,7 +28,7 @@ public class LoginMailMatcher {
     private static final Pattern LABELED_CODE = Pattern.compile("(?:" + LOGIN_CODE_LABEL
             + "|\\b(?:your\\s+(?:(?:verification|temporary|one-time)\\s+)?code"
             + "|(?:verification|temporary|one-time)\\s+code"
-            + "|(?:enter|use)\\s+(?:this|the|following)\\s+code)\\b|" + CHINESE_CODE + ")"
+            + "|(?:enter|use)\\s+(?:this|the(?:\\s+following)?|following)\\s+code)\\b|^code\\b|" + CHINESE_CODE + ")"
             + LOGIN_SUFFIX + "?\\s*(?:(?:is|是|为|為)\\s*)?:?\\s*([0-9]{6})");
     private static final Pattern CODE = Pattern.compile("[0-9]{6}");
     private static final Pattern NON_LOGIN_PURPOSE = Pattern.compile(
@@ -68,15 +68,18 @@ public class LoginMailMatcher {
         }
         if (uniqueCode == null) return Optional.empty();
 
-        Matcher labeled = LABELED_CODE.matcher(content);
-        while (labeled.find()) {
-            if (uniqueCode.equals(labeled.group(1)) && hasCodeBoundaries(content, labeled.start(1), labeled.end(1))) {
-                return Optional.of(uniqueCode);
-            }
-        }
+        if (hasLabeledCode(subject, uniqueCode) || hasLabeledCode(body, uniqueCode)) return Optional.of(uniqueCode);
         // A code-only body is safe only when the subject itself identifies a ChatGPT login code.
         return body.equals(uniqueCode) && PRODUCT.matcher(subject).find() && LOGIN_PURPOSE.matcher(subject).find()
                 ? Optional.of(uniqueCode) : Optional.empty();
+    }
+
+    private static boolean hasLabeledCode(String text, String code) {
+        Matcher labeled = LABELED_CODE.matcher(text);
+        while (labeled.find()) {
+            if (code.equals(labeled.group(1)) && hasCodeBoundaries(text, labeled.start(1), labeled.end(1))) return true;
+        }
+        return false;
     }
 
     private static String normalize(String text) {
