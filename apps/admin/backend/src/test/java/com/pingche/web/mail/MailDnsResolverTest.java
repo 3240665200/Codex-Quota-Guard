@@ -72,7 +72,8 @@ class MailDnsResolverTest {
         assertThat(request.bodyPublisher()).isEmpty();
         assertThat(request.headers().firstValue("Accept")).contains("application/dns-json");
         assertThat(request.headers().firstValue("Authorization")).isEmpty();
-        assertThat(request.timeout()).hasValueSatisfying(timeout -> assertThat(timeout).isLessThanOrEqualTo(Duration.ofSeconds(2)));
+        assertThat(request.timeout()).hasValueSatisfying(timeout -> assertThat(timeout).isLessThanOrEqualTo(Duration.ofSeconds(4))
+                .isGreaterThan(Duration.ofSeconds(3)));
     }
 
     @Test void unknownSystemHostUsesDohAndAcceptsUnorderedCanonicalNameChain() throws Exception {
