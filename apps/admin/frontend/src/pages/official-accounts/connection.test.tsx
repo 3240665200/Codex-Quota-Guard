@@ -108,6 +108,17 @@ describe('官方账户授权与只读会话', () => {
     expect(mocks.refreshOfficialAccountConnection).not.toHaveBeenCalled();
   });
 
+  it('clears official identity and sessions when a refresh invalidates the saved snapshot', async () => {
+    mocks.refreshOfficialAccountConnection.mockRejectedValue({ code: 'OFFICIAL_ACCESS_BLOCKED', status: 502 });
+    const dialog = await openConnection();
+    await within(dialog).findByText('official@example.com');
+    fireEvent.click(within(dialog).getByRole('button', { name: '刷新官方账户与会话' }));
+    await waitFor(() => expect(mocks.refreshOfficialAccountConnection).toHaveBeenCalledOnce());
+    await waitFor(() => expect(within(dialog).queryByText('official@example.com')).not.toBeInTheDocument());
+    expect(within(dialog).queryByText('办公电脑')).not.toBeInTheDocument();
+    expect(within(dialog).getByText(/官方站点拒绝了本次访问/)).toBeInTheDocument();
+  });
+
   it.each(['transport', 'encryption'])('blocks authorization writes when %s is unavailable', async (reason) => {
     if (reason === 'transport') mocks.isSecureManagementContext.mockReturnValue(false);
     else mocks.getOfficialAccountConnection.mockResolvedValue({ ...connection, encryptionReady: false });
@@ -120,7 +131,7 @@ describe('官方账户授权与只读会话', () => {
     let dialog = await openConnection();
     await within(dialog).findByText('official@example.com');
     fireEvent.change(within(dialog).getByLabelText('官方 Authorization'), { target: { value: 'temporary-fixture' } });
-    fireEvent.click(within(dialog).getByRole('button', { name: /^关\s*闭$/ }));
+    fireEvent.click(within(dialog).getAllByRole('button', { name: /^关\s*闭$/ })[0]);
     await waitFor(() => expect(screen.queryByDisplayValue('temporary-fixture')).not.toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: '授权与会话 研发账户' }));
     dialog = await screen.findByRole('dialog', { name: /授权与会话/ });
