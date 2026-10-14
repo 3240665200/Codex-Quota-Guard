@@ -111,6 +111,16 @@ export type TeamUpdate = Partial<
   >
 >;
 
+export interface TeamMemberChange {
+  userId: string;
+  expectedTeamId: string | null;
+  selected: boolean;
+}
+
+export interface TeamMembersUpdate {
+  changes: TeamMemberChange[];
+}
+
 export interface UserQuotaPolicy {
   teamId: string | null;
   fiveHourQuotaPercent: number | null;
@@ -484,11 +494,13 @@ let refreshPromise: Promise<AuthResponse> | null = null;
 
 export class ApiError extends Error {
   readonly status: number;
+  readonly code?: string;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, code?: string) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -609,7 +621,9 @@ export async function request<T>(
         : response.status === 403
           ? '当前账号没有访问权限'
           : '请求失败，请稍后重试';
-    throw new ApiError(getErrorMessage(payload, fallback), response.status);
+    const code = payload && typeof payload === 'object' && 'code' in payload
+      && typeof payload.code === 'string' ? payload.code : undefined;
+    throw new ApiError(getErrorMessage(payload, fallback), response.status, code);
   }
 
   return payload as T;
@@ -815,6 +829,13 @@ export function updateTeam(id: string, body: TeamUpdate): Promise<TeamResponse> 
   return request<TeamResponse>(`/api/v1/admin/teams/${encodeURIComponent(id)}`, {
     body: JSON.stringify(body),
     method: 'PATCH',
+  });
+}
+
+export function updateTeamMembers(id: string, body: TeamMembersUpdate): Promise<TeamResponse> {
+  return request<TeamResponse>(`/api/v1/admin/teams/${encodeURIComponent(id)}/members`, {
+    body: JSON.stringify(body),
+    method: 'PUT',
   });
 }
 

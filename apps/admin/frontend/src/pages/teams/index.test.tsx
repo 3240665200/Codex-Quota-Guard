@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { App as AntApp } from 'antd';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { App as AntApp, ConfigProvider } from 'antd';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import TeamsPage from './index';
@@ -46,9 +46,11 @@ const team: TeamResponse = {
 
 function renderPage() {
   return render(
-    <AntApp>
-      <TeamsPage />
-    </AntApp>,
+    <ConfigProvider theme={{ token: { motion: false } }}>
+      <AntApp>
+        <TeamsPage />
+      </AntApp>
+    </ConfigProvider>,
   );
 }
 
@@ -141,15 +143,17 @@ describe('团队与 Token 配额页面', () => {
 
     await waitFor(() => expect(listTeams).toHaveBeenCalledTimes(2));
     expect(await screen.findByRole('button', { name: '研发 成员 3 人' })).toBeInTheDocument();
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: '管理成员：研发' })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText('管理成员：研发')).not.toBeInTheDocument());
   });
 
   it('also opens the independent member dialog from the member count', async () => {
     vi.mocked(listTeams).mockResolvedValue([team]);
     renderPage();
     fireEvent.click(await screen.findByRole('button', { name: '研发 成员 2 人' }));
-    expect(await screen.findByRole('dialog', { name: '管理成员：研发' })).toBeInTheDocument();
-    expect(screen.queryByLabelText('团队名称')).not.toBeInTheDocument();
+    const title = await screen.findByText('管理成员：研发');
+    const dialog = title.closest('[role="dialog"]') as HTMLElement;
+    await waitFor(() => expect(dialog).toBeVisible());
+    expect(within(dialog).queryByLabelText('团队名称')).not.toBeInTheDocument();
   });
 
   it('updates token limits without any managed account assignment', async () => {

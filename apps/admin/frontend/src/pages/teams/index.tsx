@@ -29,6 +29,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { getErrorMessage } from '../../components/AdminState';
 import { TokenAmount } from '../../components/TokenAmount';
+import TeamMembersModal from './TeamMembersModal';
 import {
   createTeam,
   deleteTeam,
@@ -113,6 +114,7 @@ export default function TeamsPage() {
   const [officialAccounts, setOfficialAccounts] = useState<OfficialAccountResponse[]>([]);
   const [quotaByTeam, setQuotaByTeam] = useState<Record<string, TeamQuotaOverview>>({});
   const [editing, setEditing] = useState<TeamResponse | null>(null);
+  const [managingMembers, setManagingMembers] = useState<TeamResponse | null>(null);
   const [error, setError] = useState('');
   const [formOpen, setFormOpen] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -388,7 +390,16 @@ export default function TeamsPage() {
       },
       {
         dataIndex: 'memberCount',
-        render: (value: number) => `${value} 人`,
+        render: (value: number, team) => (
+          <Button
+            aria-label={`${team.name} 成员 ${value} 人`}
+            onClick={() => setManagingMembers(team)}
+            type="link"
+            style={{ padding: 0 }}
+          >
+            {value} 人
+          </Button>
+        ),
         title: '成员数',
         width: 100,
       },
@@ -401,6 +412,13 @@ export default function TeamsPage() {
       {
         render: (_, team) => (
           <Space size={2}>
+            <Button
+              aria-label={`管理成员 ${team.name}`}
+              onClick={() => setManagingMembers(team)}
+              size="small"
+            >
+              管理成员
+            </Button>
             <Tooltip title="编辑">
               <Button
                 aria-label={`编辑 ${team.name}`}
@@ -428,7 +446,7 @@ export default function TeamsPage() {
           </Space>
         ),
         title: '操作',
-        width: 180,
+        width: 260,
       },
     ],
     [busyId, confirmDelete, officialAccounts, openEdit, quotaByTeam, toggleTeam],
@@ -487,9 +505,21 @@ export default function TeamsPage() {
           }}
           pagination={false}
           rowKey="id"
-          scroll={{ x: 1520 }}
+          scroll={{ x: 1600 }}
         />
       </ProCard>
+      {managingMembers && (
+        <TeamMembersModal
+          team={managingMembers}
+          teams={data ?? []}
+          onCancel={() => setManagingMembers(null)}
+          onSaved={() => {
+            setManagingMembers(null);
+            message.success('团队成员已更新');
+            void load(true);
+          }}
+        />
+      )}
 
       <Modal
         forceRender
