@@ -21,7 +21,7 @@ initialize() {
   fi
   [[ $# -eq 2 ]] || { usage; exit 1; }
   local origin="$1" email="$2" host port password repeated tmp_file
-  local postgres_secret database_secret jwt_secret mail_secret
+  local postgres_secret database_secret jwt_secret mail_secret official_secret proxy_secret
   # This entry point intentionally handles IP/domain + HTTP, not paths or userinfo.
   [[ "$origin" =~ ^http://([A-Za-z0-9][A-Za-z0-9.-]*)(:([0-9]{1,5}))?$ ]] \
     || fail '地址应为 http://服务器IP:8080，不要带路径、账号或末尾斜杠。'
@@ -46,9 +46,13 @@ initialize() {
   database_secret="$(openssl rand -hex 32)" || fail '生成数据库应用密钥失败。'
   jwt_secret="$(openssl rand -hex 32)" || fail '生成 JWT 密钥失败。'
   mail_secret="$(openssl rand -base64 32)" || fail '生成邮箱加密密钥失败。'
+  official_secret="$(openssl rand -base64 32)" || fail '生成官方账户加密密钥失败。'
+  proxy_secret="$(openssl rand -base64 32)" || fail '生成代理节点加密密钥失败。'
   [[ "$postgres_secret" =~ ^[a-f0-9]{64}$ && "$database_secret" =~ ^[a-f0-9]{64}$ && "$jwt_secret" =~ ^[a-f0-9]{64}$ ]] \
     || fail '随机生成器返回了无效的密钥。'
   [[ "$mail_secret" =~ ^[A-Za-z0-9+/]{43}=$ ]] || fail '随机生成器返回了无效的邮箱密钥。'
+  [[ "$official_secret" =~ ^[A-Za-z0-9+/]{43}=$ && "$proxy_secret" =~ ^[A-Za-z0-9+/]{43}=$ ]] \
+    || fail '随机生成器返回了无效的账户或代理密钥。'
   tmp_file="$(mktemp "$deploy_dir/.env.tmp.XXXXXX")"
   # Single-quoted dotenv password preserves literal $/# without shell evaluation.
   if ! {
@@ -57,6 +61,8 @@ initialize() {
     printf 'DATABASE_PASSWORD=%s\n' "$database_secret"
     printf 'JWT_SECRET=%s\nJWT_ISSUER=codex-quota-guard\n' "$jwt_secret"
     printf 'MAIL_ASSISTANCE_ENCRYPTION_KEY=%s\n' "$mail_secret"
+    printf 'OFFICIAL_SESSION_ENCRYPTION_KEY=%s\n' "$official_secret"
+    printf 'MANAGED_PROXY_ENCRYPTION_KEY=%s\n' "$proxy_secret"
     printf "ADMIN_BOOTSTRAP_EMAIL=%s\nADMIN_BOOTSTRAP_PASSWORD='%s'\n" "$email" "$password"
   } > "$tmp_file"; then
     rm -f -- "$tmp_file"
