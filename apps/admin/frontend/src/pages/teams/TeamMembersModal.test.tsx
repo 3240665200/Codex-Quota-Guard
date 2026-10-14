@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { App as AntApp } from 'antd';
+import { App as AntApp, ConfigProvider } from 'antd';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import TeamMembersModal from './TeamMembersModal';
@@ -39,12 +39,16 @@ function deferred<T>() {
 const onCancel = vi.fn();
 const onSaved = vi.fn();
 function modal(target = team) {
-  return <AntApp><TeamMembersModal team={target} teams={[team, otherTeam]} onCancel={onCancel} onSaved={onSaved} /></AntApp>;
+  return <ConfigProvider theme={{ token: { motion: false } }}>
+    <AntApp><TeamMembersModal team={target} teams={[team, otherTeam]} onCancel={onCancel} onSaved={onSaved} /></AntApp>
+  </ConfigProvider>;
 }
 function checkbox(name: string) { return screen.getByRole('checkbox', { name: `选择 ${name}` }); }
 async function openConfirmation() {
   fireEvent.click(screen.getByRole('button', { name: '保存成员' }));
-  return screen.findByRole('dialog', { name: '确认成员变更' });
+  // AntD's test environment gives both dialogs the same aria-labelledby ID.
+  const title = await screen.findByText('确认成员变更');
+  return title.closest('[role="dialog"]') as HTMLElement;
 }
 async function confirm() {
   const dialog = await openConfirmation();
@@ -67,6 +71,21 @@ describe('团队成员管理', () => {
     expect(within(row).getByText('设计')).toBeInTheDocument();
     expect(within(row).getByText('停用')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '保存成员' })).toBeDisabled();
+  });
+
+  it('keeps member actions outside a single viewport-bounded scrolling body', async () => {
+    vi.mocked(listUsers).mockResolvedValue(page(Array.from({ length: 20 }, (_, index) => user(`用户${index}`))));
+    render(modal());
+    await screen.findByText('用户19@example.com');
+    const dialog = screen.getByText('管理成员：研发').closest('[role="dialog"]') as HTMLElement;
+    const body = dialog.querySelector('.ant-modal-body') as HTMLElement;
+
+    expect(body).toHaveStyle({ maxHeight: 'calc(100dvh - 180px)', overflowY: 'auto' });
+    expect(dialog).toHaveStyle({ top: '24px' });
+    expect(body).toContainElement(within(dialog).getByRole('table'));
+    expect(body).not.toContainElement(within(dialog).getByRole('button', { name: '保存成员' }));
+    expect(body).not.toContainElement(within(dialog).getByRole('button', { name: /取\s*消/ }));
+    expect(body).not.toContainElement(screen.getByText('管理成员：研发'));
   });
 
   it('saves only explicit deltas and confirms the source team and session consequences', async () => {
@@ -133,7 +152,7 @@ describe('团队成员管理', () => {
     fireEvent.click(await screen.findByRole('checkbox', { name: '选择 新成员' }));
     const dialog = await openConfirmation();
     fireEvent.click(within(dialog).getByRole('button', { name: /返\s*回/ }));
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: '确认成员变更' })).not.toBeInTheDocument());
+    await waitFor(() => expect(dialog).not.toBeVisible());
     expect(checkbox(candidate.displayName)).toBeChecked();
     expect(updateTeamMembers).not.toHaveBeenCalled();
   });
@@ -199,6 +218,20 @@ describe('团队成员管理', () => {
     expect(onSaved).not.toHaveBeenCalled();
   });
 
+  it('requires reopening a fresh team after a non-membership conflict', async () => {
+    vi.mocked(updateTeamMembers).mockRejectedValueOnce(Object.assign(new Error('private details'), {
+      status: 409, code: 'TEAM_STATE_CHANGED',
+    }));
+    render(modal());
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选择 新成员' }));
+    await confirm();
+    expect(await screen.findByText(/团队状态已变化.*关闭弹窗.*刷新团队列表/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '刷新并重新选择' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /关\s*闭/ }));
+    expect(onCancel).toHaveBeenCalledOnce();
+    expect(listUsers).toHaveBeenCalledOnce();
+  });
+
   it('submits a pending save only once even when confirmation is clicked twice', async () => {
     const save = deferred<TeamResponse>();
     vi.mocked(updateTeamMembers).mockReturnValue(save.promise);
@@ -222,6 +255,7 @@ describe('团队成员管理', () => {
     const search = screen.getByPlaceholderText('搜索姓名或邮箱');
     fireEvent.change(search, { target: { value: '旧搜索' } });
     fireEvent.keyDown(search, { key: 'Enter', code: 'Enter', keyCode: 13 });
+    fireEvent.keyUp(search, { key: 'Enter', code: 'Enter', keyCode: 13 });
     fireEvent.change(search, { target: { value: '新搜索' } });
     fireEvent.keyDown(search, { key: 'Enter', code: 'Enter', keyCode: 13 });
     await screen.findByText(candidate.email);
