@@ -2,15 +2,34 @@
 
 镜像仓库：
 
-- 后端：`minjm/codex-quota-guard-backend`
-- 管理网页：`minjm/codex-quota-guard-web`
+- 后端：[minjm/codex-quota-guard-backend](https://hub.docker.com/r/minjm/codex-quota-guard-backend)
+- 管理网页：[minjm/codex-quota-guard-web](https://hub.docker.com/r/minjm/codex-quota-guard-web)
 - 数据库：官方 `postgres:17-alpine`，不重新发布数据库镜像。
 
 此版本面向 **Linux amd64 / x86_64**，不是 Windows 容器，也不是 ARM 镜像。公开镜像可直接拉取；不需要源码、Java、Node.js、Maven 或离线镜像文件。服务器仍需安装 Docker Engine、Compose v2.24+、Bash、OpenSSL，并能访问 Docker Hub。
 
 ## 首次部署
 
-把拉取部署包解压到服务器，在包含 `start.sh` 的目录执行：
+已拿到拉取部署包时，先解压到服务器。如果没有部署包，可直接下载这 5 个小配置文件，无需下载源码；下载步骤额外需要 `curl`：
+
+```bash
+(
+  set -e
+  mkdir codex-quota-guard-server
+  cd codex-quota-guard-server
+  qg_base="https://raw.githubusercontent.com/3240665200/Codex-Quota-Guard/5a3e2b09db918edcab56c18c89288da36e6e2a80/deploy/docker"
+  curl -fSL --fail-early --remote-name-all \
+    "$qg_base/registry/compose.yaml" \
+    "$qg_base/registry/start.sh" \
+    "$qg_base/deploy.sh" \
+    "$qg_base/.env.example" \
+    "$qg_base/init-db.sql"
+)
+```
+
+下载地址固定到与 `0.3.10` 镜像配套的部署配置提交；这里不使用 `v0.3.10` 源码标签，因为部署文件是在该标签之后加入的。已有同名目录时下载步骤会停止，不覆盖已有部署。
+
+进入包含 `start.sh` 的目录（上述下载方式为 `cd codex-quota-guard-server`），替换服务器 IP 和管理员邮箱后执行：
 
 ```bash
 bash start.sh init http://服务器IP:8080 管理员邮箱

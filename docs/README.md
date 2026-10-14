@@ -4,7 +4,9 @@
 
 ## 服务器部署
 
-- [Linux Docker 一键部署：中央后端、管理网页与 PostgreSQL](../deploy/docker/README.md)
+- [Docker Hub 拉取部署（推荐，无需源码）](../deploy/docker/registry/README.md)
+- [离线镜像部署](../deploy/docker/offline/README.md)
+- [Linux Docker 源码构建部署](../deploy/docker/README.md)
 
 ## 架构
 

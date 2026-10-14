@@ -11,11 +11,13 @@
   <img src="https://img.shields.io/badge/安装包-Windows%20x64-1677ff?logo=windows11&logoColor=white" alt="Windows x64 安装包">
   <img src="https://img.shields.io/badge/桌面端-Tauri%202-24c8db?logo=tauri&logoColor=white" alt="Tauri 2">
   <img src="https://img.shields.io/badge/后端-Java%2017-ed8b00?logo=openjdk&logoColor=white" alt="Java 17">
+  <a href="https://hub.docker.com/r/minjm/codex-quota-guard-backend"><img src="https://img.shields.io/badge/Docker%20Hub-公开镜像-2496ed?logo=docker&logoColor=white" alt="Docker Hub 公开镜像"></a>
 </p>
 
 <p align="center">
   <a href="https://github.com/3240665200/Codex-Quota-Guard/releases/latest">下载 Windows 安装包</a>
   · <a href="#快速开始">快速开始</a>
+  · <a href="#docker-服务器部署">Docker 部署</a>
   · <a href="#功能概览">功能概览</a>
   · <a href="#界面预览">界面预览</a>
   · <a href="./docs/README.md">项目文档</a>
@@ -57,11 +59,48 @@ v0.3.10 包含「登录辅助」：管理员可为团队关联的官方账户配
 
 截图中的账户名和邮箱已由提供者遮挡；额度数值仅为截图时的状态，不代表默认配置或固定套餐额度。
 
+## Docker 服务器部署
+
+服务器镜像已发布到 Docker Hub，**公开拉取，无需上传源码或在服务器编译**：
+
+- [后端 · minjm/codex-quota-guard-backend](https://hub.docker.com/r/minjm/codex-quota-guard-backend)
+- [管理网页 · minjm/codex-quota-guard-web](https://hub.docker.com/r/minjm/codex-quota-guard-web)
+
+当前提供 `0.3.10` 和 `latest` 标签，支持 **Linux amd64 / x86_64**。部署配置固定使用 `0.3.10`，数据库使用官方 `postgres:17-alpine`。Windows 桌面客户端和 Rust 统计服务仍安装在用户电脑，不放进服务器容器。
+
+服务器准备好 **Docker Engine、Docker Compose v2.24+、Bash、curl 和 OpenSSL** 后，替换下面的服务器 IP 和管理员邮箱，执行首次部署：
+
+```bash
+(
+  set -e
+  mkdir codex-quota-guard-server
+  cd codex-quota-guard-server
+  qg_base="https://raw.githubusercontent.com/3240665200/Codex-Quota-Guard/5a3e2b09db918edcab56c18c89288da36e6e2a80/deploy/docker"
+  curl -fSL --fail-early --remote-name-all \
+    "$qg_base/registry/compose.yaml" \
+    "$qg_base/registry/start.sh" \
+    "$qg_base/deploy.sh" \
+    "$qg_base/.env.example" \
+    "$qg_base/init-db.sql"
+  bash start.sh init http://服务器IP:8080 管理员邮箱
+  bash start.sh up
+)
+```
+
+以上下载地址固定到本次镜像对应的部署配置提交，只下载 5 个小文件，不下载整个项目；已有同名目录时会停止，避免覆盖旧部署。初始化会提示设置管理员密码，自动生成并保存独立密钥到 `.env`。启动后，**管理网页和桌面客户端都使用 `http://服务器IP:8080`**。按需放行服务器 8080 端口，不要单独开放数据库端口。
+
+> [!WARNING]
+> HTTP 不加密，只用于可信网络；公网正式使用请增加 HTTPS 反向代理。新部署不会带入原电脑的用户和流水，需要另行迁移数据库。升级前先备份，保留原 `.env` 和数据库卷，**不要执行 `docker compose down -v`**。`latest` 后续可能变化，生产部署建议固定版本。
+
+进入 `codex-quota-guard-server` 目录后，可用 `bash start.sh status` 查看状态、`bash start.sh logs backend` 查看日志、`bash start.sh backup` 备份、`bash start.sh stop` 停止并保留数据。
+
+详细说明：[Docker Hub 拉取部署](./deploy/docker/registry/README.md) · [离线镜像部署](./deploy/docker/offline/README.md) · [从源码构建镜像](./deploy/docker/README.md)。
+
 ## 快速开始
 
 当前发布的安装包为 **Windows x64**。它已经包含本地 Java 运行时、WebView2 离线安装器和 Rust 统计程序；用户电脑**不需要**安装 Java、Maven、Node.js、pnpm 或 Rust。
 
-1. 部署中央 Java API、PostgreSQL 和管理后台。Linux 服务器可使用 [Docker 一键部署](./deploy/docker/README.md)，默认支持 IP + HTTP；管理员创建系统用户、团队并设置额度。手动部署见[管理端后端文档](./apps/admin/backend/README.md)。
+1. 部署中央 Java API、PostgreSQL 和管理后台。Linux 服务器推荐使用上面的 [Docker 镜像部署](#docker-服务器部署)，默认支持 IP + HTTP；管理员创建系统用户、团队并设置额度。手动部署见[管理端后端文档](./apps/admin/backend/README.md)。
 2. 从 [GitHub Releases 下载最新安装包](https://github.com/3240665200/Codex-Quota-Guard/releases/latest)，在用户电脑安装。在登录页的“服务器设置”中保存中央服务地址，例如 `https://your-server.example.com`；可信局域网开发测试可临时填写 `http://<服务器 IP>:8080`。保存后从**系统托盘菜单退出客户端**，不要只关闭窗口。`0.0.0.0` 是监听地址，不能作为其他电脑的连接地址。
 3. 以**管理员身份运行安装后的桌面程序**，让客户端安装、升级并启动 `CodexQuotaGuardMeter` Windows 服务；然后登录 Quota Guard **系统账户**完成设备配对。0.2.20 起每次启动都要求管理员权限，启动检查页也可保存服务器地址并重试。
 4. 在该电脑的**官方 Codex 应用或 CLI** 中自行登录官方账户。回到 Quota Guard 查看官方额度、个人/团队用量、逐笔流水和统计程序状态。
@@ -139,6 +178,7 @@ apps/
     backend/    本地 Java 服务
     meter/      Windows Rust 统计程序
 docs/          架构、API 与产品文档
+deploy/docker/ 镜像拉取、离线与源码构建部署
 scripts/       启动、打包与诊断脚本
 ```
 
