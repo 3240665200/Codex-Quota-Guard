@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
-const source = fileURLToPath(new URL('../', import.meta.url));
+const source = process.env.TEST_DEPLOY_SOURCE || fileURLToPath(new URL('../', import.meta.url));
 const bash = process.env.TEST_BASH || (process.platform === 'win32' ? 'C:/Program Files/Git/bin/bash.exe' : 'bash');
 const posix = (value) => value.replaceAll('\\', '/').replace(/^([A-Za-z]):/, (_, drive) => `/${drive.toLowerCase()}`);
 const password = 'Synthetic$Password#123';
@@ -45,12 +45,12 @@ esac
   const log = path.join(dir, 'docker-commands.log');
   const envPath = path.join(deployment, '.env');
   function run(args, options = {}) {
-    return spawnSync(bash, [posix(path.join(deployment, 'deploy.sh')), ...args], {
+    return spawnSync(bash, ['-c', 'export PATH="$TEST_BIN:$PATH"; exec bash "$@"', 'deploy-test', posix(path.join(deployment, 'deploy.sh')), ...args], {
       cwd: dir,
       input: options.input ?? '',
       encoding: 'utf8',
       timeout: 15000,
-      env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, MOCK_LOG: posix(log), MSYS2_ARG_CONV_EXCL: '*', ...options.env },
+      env: { ...process.env, TEST_BIN: posix(bin), MOCK_LOG: posix(log), MSYS2_ARG_CONV_EXCL: '*', ...options.env },
     });
   }
   function init() {
@@ -183,6 +183,8 @@ test('Nginx preserves /api, sanitizes forwarding and disables buffering for stre
   assert.match(config, /proxy_set_header X-Forwarded-For \$remote_addr;/);
   assert.match(config, /proxy_set_header X-Forwarded-Proto \$scheme;/);
   assert.match(config, /proxy_buffering off;/);
+  assert.doesNotMatch(config, /location = \/index\.html\s*\{[^}]*add_header/,
+    'index cache control must preserve server-level security headers');
 });
 
 test('build contexts exclude credentials, private mail fixtures, local runtimes and unrelated projects', () => {
