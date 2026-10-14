@@ -125,6 +125,7 @@
                         <include>com/pingche/web/codex/CodexLoginUrl*</include>
                         <include>com/pingche/web/codex/OfficialCodexLoginGateway*</include>
                         <include>com/pingche/web/mail/*</include>
+                        <include>com/pingche/web/team/TeamMembership*</include>
                     </includes>
                 </configuration>
                 <executions>

@@ -22,6 +22,7 @@
 | --- | --- | --- |
 | GET/POST | `/admin/teams` | 查询/创建团队 |
 | GET/PATCH/DELETE | `/admin/teams/{id}` | 查询/修改/删除团队 |
+| PUT | `/admin/teams/{id}/members` | 管理员批量加入、转入或移出指定用户；只修改显式提交的成员变更 |
 | PUT | `/admin/teams/{id}/token-limits` | 设置团队 5 小时/7 天共享上限、累计总额及只读官方账户关联 |
 | PUT | `/admin/users/{id}/quota-policy` | 设置用户团队归属 |
 | PUT | `/admin/users/{id}/token-limits` | 设置独立的个人 Token 上限 |
@@ -30,6 +31,33 @@
 | GET | `/admin/users/{id}/usage-events?page=0&size=20` | 管理员分页查看该用户已入库的 Token 用量流水；`size` 为 1–100，按服务端接收时间倒序 |
 | POST | `/client/usage/events` | 客户端幂等上报本机 Codex 会话中的 Token 事件 |
 | GET | `/client/usage/events?page=0&size=10` | 登录用户分页查看自己的已接收流水；`page` 为 0–100000，`size` 为 1–100，不接受用户 ID 切换查询归属，响应 `Cache-Control: no-store` |
+
+### 团队成员批量管理
+
+团队页面的“管理成员”使用已有 `GET /admin/users?page=0&size=20&q=...` 分页搜索姓名/邮箱，并以用户返回的 `teamId` 作为操作前快照。保存时向 `PUT /admin/teams/{id}/members` 提交增量变更，不发送当前页或筛选结果作为全量成员列表，未提交的用户不受影响。
+
+例如目标团队为 `aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa`：
+
+```json
+{
+  "changes": [
+    {"userId":"10000000-0000-4000-8000-000000000001","expectedTeamId":null,"selected":true},
+    {"userId":"10000000-0000-4000-8000-000000000002","expectedTeamId":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","selected":false},
+    {"userId":"10000000-0000-4000-8000-000000000003","expectedTeamId":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","selected":true}
+  ]
+}
+```
+
+- `selected=true` 表示加入目标团队，已属于其他团队时为转入；一个用户仍只属于一个团队。`selected=false` 表示移出目标团队，不能据此清除其他团队的成员归属。
+- 每次 1–100 项，用户 ID 必须唯一且存在；格式无效、重复、空列表或超过上限返回 400。目标团队不存在返回 404。
+- 每一项的实际团队必须与 `expectedTeamId` 相同（`null` 表示原来无团队），否则整批返回 409 `TEAM_MEMBERSHIP_CONFLICT`。前端须刷新后重新选择，不能自动用新快照重试覆盖。
+- 停用团队不允许新增或从其他团队转入，返回 409 `TEAM_UNAVAILABLE`；允许移出现有成员。已处于所选状态且快照匹配的操作为无变化，不撤销会话。
+- 同一事务内先校验所有用户，再保存全部变更。只改变团队关联，保留个人 Token 上限、重置起点、已有百分比兼容字段、角色和状态，不改团队限额或已入库流水。
+- 仅实际变化用户的本系统 access/refresh 会话失效，官方 Codex 登录不受影响；若管理员也修改自己的团队，需要重新登录本系统。
+
+成功返回 200 和最新 `TeamResponse`（包含 `memberCount`）；失败不会出现部分用户已加入、部分用户未加入的中间提交。
+
+### 用量上报
 
 `POST /client/usage/events` 只接受当前系统用户的事件，不接受账户 ID 或用户 ID。请求示例：
 

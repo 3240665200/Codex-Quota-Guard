@@ -35,6 +35,10 @@ public interface UserRepository extends JpaRepository<User, UUID>, JpaSpecificat
     Optional<User> findByIdForUpdate(@Param("id") UUID id);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select user from User user where user.id in :ids order by user.id")
+    List<User> findByIdsForUpdate(@Param("ids") List<UUID> ids);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select user from User user where user.teamId = :teamId order by user.id")
     List<User> findByTeamIdForUpdate(@Param("teamId") UUID teamId);
 
