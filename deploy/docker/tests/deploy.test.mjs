@@ -183,7 +183,9 @@ test('container contract: one public port, persistent DB, non-superuser app and 
 
 test('backend bundles a pinned, independently executable proxy core without privileges', () => {
   const dockerfile = readFileSync(path.join(source, 'backend.Dockerfile'), 'utf8');
-  assert.match(dockerfile, /FROM ghcr\.io\/sagernet\/sing-box:1\.13\.14(?:@sha256:[a-f0-9]+)? AS proxy-core/);
+  assert.match(dockerfile, /FROM alpine:[\d.]+ AS proxy-core/);
+  assert.match(dockerfile, /sing-box-1\.13\.14-linux-amd64\.tar\.gz/);
+  assert.match(dockerfile, /f48703461a15476951ac4967cdad339d986f4b8096b4eb3ff0829a500502d697/);
   assert.match(dockerfile, /COPY --from=proxy-core \/usr\/local\/bin\/sing-box \/usr\/local\/bin\/sing-box/);
   assert.match(dockerfile, /MANAGED_PROXY_SING_BOX_PATH=\/usr\/local\/bin\/sing-box/);
   assert.match(dockerfile, /USER 10001:10001/);
