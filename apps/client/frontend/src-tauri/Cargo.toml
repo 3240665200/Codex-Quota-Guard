@@ -6,6 +6,13 @@ authors = ["Codex Quota Guard contributors"]
 edition = "2021"
 rust-version = "1.77"
 
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
+# Keep optimized desktop builds within the memory budget of ordinary PCs.
+[profile.release.package.codex-quota-guard]
+codegen-units = 1
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
