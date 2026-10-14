@@ -60,7 +60,9 @@ struct App {
 }
 impl Device {
     fn is_codex(&self) -> bool {
-        self.app_sessions.iter().any(|a| a.client_name.trim().eq_ignore_ascii_case("Codex"))
+        self.app_sessions
+            .iter()
+            .any(|a| a.client_name.trim().eq_ignore_ascii_case("Codex"))
     }
 }
 
@@ -74,14 +76,15 @@ pub fn compare(auth: &[u8], snapshot: &[u8]) -> Result<ProbeReport, ProbeError> 
     if !auth.is_object() {
         return Err(ProbeError("E_INVALID_AUTH"));
     }
-    let snapshot: Snapshot = serde_json::from_slice(snapshot).map_err(|_| ProbeError("E_INVALID_SNAPSHOT"))?;
+    let snapshot: Snapshot =
+        serde_json::from_slice(snapshot).map_err(|_| ProbeError("E_INVALID_SNAPSHOT"))?;
     if !snapshot.show_session_manager || snapshot.devices.len() > 1000 {
         return Err(ProbeError("E_INVALID_SNAPSHOT"));
     }
     let mut ids = HashSet::new();
     for device in &snapshot.devices {
         if let Some(id) = device.session_id.as_deref().filter(|s| !s.is_empty()) {
-            if id.len() > 256 || id.chars().any(char::is_control) || !ids.insert(id) {
+            if id.trim().is_empty() || id.len() > 256 || id.chars().any(char::is_control) || !ids.insert(id) {
                 return Err(ProbeError("E_INVALID_SNAPSHOT"));
             }
         }
@@ -99,8 +102,16 @@ pub fn compare(auth: &[u8], snapshot: &[u8]) -> Result<ProbeReport, ProbeError> 
         ],
     };
     for token_kind in ["access_token", "id_token"] {
-        let token = auth.get("tokens").and_then(|v| v.get(token_kind)).and_then(Value::as_str);
-        let mut summary = TokenReport { token_kind, status: "MISSING", string_claims_examined: 0, session_claim_names_present: Vec::new() };
+        let token = auth
+            .get("tokens")
+            .and_then(|v| v.get(token_kind))
+            .and_then(Value::as_str);
+        let mut summary = TokenReport {
+            token_kind,
+            status: "MISSING",
+            string_claims_examined: 0,
+            session_claim_names_present: Vec::new(),
+        };
         if let Some(token) = token.filter(|t| !t.is_empty()) {
             summary.status = "UNREADABLE_OR_OPAQUE";
             if let Some(claims) = decode_claims(token) {
@@ -120,7 +131,9 @@ fn decode_claims(token: &str) -> Option<Value> {
     let _header = parts.next()?;
     let payload = parts.next()?;
     let _signature = parts.next()?;
-    if parts.next().is_some() { return None; }
+    if parts.next().is_some() {
+        return None;
+    }
     let decoded = URL_SAFE_NO_PAD.decode(payload).ok()?;
     let value: Value = serde_json::from_slice(&decoded).ok()?;
     value.is_object().then_some(value)
@@ -128,32 +141,53 @@ fn decode_claims(token: &str) -> Option<Value> {
 
 fn claim_kind(key: &str) -> &'static str {
     match key {
-        "sid" => "sid", "session_id" => "session_id", "sessionId" => "sessionId",
-        "session_uuid" => "session_uuid", "jti" => "jti",
+        "sid" => "sid",
+        "session_id" => "session_id",
+        "sessionId" => "sessionId",
+        "session_uuid" => "session_uuid",
+        "jti" => "jti",
         _ => "other_string_claim",
     }
 }
 
-fn walk_claims(value: &Value, key: &str, depth: usize, snapshot: &Snapshot,
-    summary: &mut TokenReport, matches: &mut Vec<ClaimMatch>) -> Result<(), ProbeError> {
-    if depth > 16 { return Err(ProbeError("E_CLAIMS_TOO_DEEP")); }
+fn walk_claims(
+    value: &Value,
+    key: &str,
+    depth: usize,
+    snapshot: &Snapshot,
+    summary: &mut TokenReport,
+    matches: &mut Vec<ClaimMatch>,
+) -> Result<(), ProbeError> {
+    if depth > 16 {
+        return Err(ProbeError("E_CLAIMS_TOO_DEEP"));
+    }
     match value {
-        Value::Object(fields) => for (key, value) in fields {
-            if claim_kind(key) != "other_string_claim" {
-                summary.session_claim_names_present.push(claim_kind(key));
+        Value::Object(fields) => {
+            for (key, value) in fields {
+                if claim_kind(key) != "other_string_claim" {
+                    summary.session_claim_names_present.push(claim_kind(key));
+                }
+                walk_claims(value, key, depth + 1, snapshot, summary, matches)?;
             }
-            walk_claims(value, key, depth + 1, snapshot, summary, matches)?;
-        },
-        Value::Array(items) => for item in items {
-            walk_claims(item, key, depth + 1, snapshot, summary, matches)?;
-        },
+        }
+        Value::Array(items) => {
+            for item in items {
+                walk_claims(item, key, depth + 1, snapshot, summary, matches)?;
+            }
+        }
         Value::String(text) => {
             summary.string_claims_examined += 1;
             for (row, device) in snapshot.devices.iter().enumerate() {
                 if !text.is_empty() && device.session_id.as_deref() == Some(text.as_str()) {
-                    if matches.len() >= 1000 { return Err(ProbeError("E_TOO_MANY_MATCHES")); }
-                    matches.push(ClaimMatch { snapshot_row: row, is_codex: device.is_codex(),
-                        token_kind: summary.token_kind, claim_kind: claim_kind(key) });
+                    if matches.len() >= 1000 {
+                        return Err(ProbeError("E_TOO_MANY_MATCHES"));
+                    }
+                    matches.push(ClaimMatch {
+                        snapshot_row: row,
+                        is_codex: device.is_codex(),
+                        token_kind: summary.token_kind,
+                        claim_kind: claim_kind(key),
+                    });
                 }
             }
         }
