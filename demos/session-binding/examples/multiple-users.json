@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "context": {
+    "user_id": "carol-demo",
+    "device_id": "pc-c-demo",
+    "profile_id": "codex-profile-c-demo",
+    "official_account_id": "shared-account-demo"
+  },
+  "before": {
+    "show_session_manager": true,
+    "devices": [
+      { "session_id": "alice-session-demo", "app_sessions": [{ "client_name": "Codex" }] },
+      { "session_id": "bob-session-demo", "app_sessions": [{ "client_name": "Codex" }] },
+      { "session_id": "historical-session-demo", "app_sessions": [{ "client_name": "Codex" }] }
+    ]
+  },
+  "after": {
+    "show_session_manager": true,
+    "devices": [
+      { "session_id": "alice-session-demo", "app_sessions": [{ "client_name": "Codex" }] },
+      { "session_id": "bob-session-demo", "app_sessions": [{ "client_name": "Codex" }] },
+      { "session_id": "historical-session-demo", "app_sessions": [{ "client_name": "Codex" }] },
+      { "session_id": "new-session-demo", "app_sessions": [{ "client_name": "Codex" }] }
+    ]
+  },
+  "bindings": [
+    {
+      "official_account_id": "shared-account-demo", "session_id": "alice-session-demo",
+      "user_id": "alice-demo", "device_id": "pc-a-demo", "profile_id": "codex-profile-a-demo",
+      "evidence": "operator_confirmed", "confirmed_by": "operator-demo"
+    },
+    {
+      "official_account_id": "shared-account-demo", "session_id": "bob-session-demo",
+      "user_id": "bob-demo", "device_id": "pc-b-demo", "profile_id": "codex-profile-b-demo",
+      "evidence": "operator_confirmed", "confirmed_by": "operator-demo"
+    }
+  ]
+}

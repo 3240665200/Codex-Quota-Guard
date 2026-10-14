@@ -127,6 +127,7 @@ pub struct Report {
     sessions: Vec<SessionReport>,
     stale_bindings: Vec<StaleBinding>,
     candidate_count: usize,
+    account_scope_verified: bool,
     enforcement_allowed: bool,
     warnings: Vec<&'static str>,
 }
@@ -376,10 +377,12 @@ pub fn analyze(case: &Case) -> Result<Report, DemoError> {
         sessions,
         stale_bindings,
         candidate_count,
+        account_scope_verified: false,
         enforcement_allowed: false,
         warnings: vec![
             "OFFLINE_EDITABLE_INPUT_NOT_IDENTITY_VERIFICATION",
             "OPERATOR_RECORDS_ARE_NOT_CRYPTOGRAPHIC_AUTHENTICATION",
+            "ACCOUNT_SCOPE_AND_SNAPSHOT_FRESHNESS_ARE_OPERATOR_SUPPLIED_NOT_VERIFIED",
             "AUTOMATIC_ENFORCEMENT_DISABLED",
         ],
     })
