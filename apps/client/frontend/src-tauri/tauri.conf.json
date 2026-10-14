@@ -6,6 +6,8 @@
   "build": {
     "beforeDevCommand": "pnpm build:backend && pnpm dev:renderer",
     "beforeBuildCommand": "pnpm build:desktop",
+    "beforeBundleCommand": "node verify-desktop-package.mjs",
+    "features": ["custom-protocol"],
     "devUrl": "http://localhost:3000",
     "frontendDist": "../dist"
   },
