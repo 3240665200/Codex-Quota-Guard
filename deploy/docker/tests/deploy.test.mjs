@@ -26,6 +26,12 @@ function fixture(t) {
   }
   const bin = path.join(dir, 'bin');
   mkdirSync(bin);
+  const openssl = spawnSync(bash, ['-c', 'command -v openssl'], { encoding: 'utf8' }).stdout.trim();
+  assert.ok(openssl, 'test prerequisite: openssl');
+  writeFileSync(path.join(bin, 'openssl'), `#!/usr/bin/env bash
+if [[ "${'$'}{MOCK_RAND_FAIL:-0}" = 1 ]]; then exit 1; fi
+exec '${openssl}' "$@"
+`, { mode: 0o755 });
   writeFileSync(path.join(bin, 'docker'), `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$MOCK_LOG"
 case "$*" in
@@ -77,6 +83,15 @@ test('init is idempotent and cannot replace an existing configuration', (t) => {
   const before = f.init();
   assert.equal(f.run(['init']).status, 0);
   assert.equal(readFileSync(f.envPath, 'utf8'), before);
+});
+
+test('init aborts random generator failure without publishing empty secrets', (t) => {
+  const f = fixture(t);
+  const result = f.run(['init', 'http://192.0.2.10:8080', 'admin@example.com'], {
+    input: `${password}\n${password}\n`, env: { MOCK_RAND_FAIL: '1' },
+  });
+  assert.notEqual(result.status, 0);
+  assert.equal(existsSync(f.envPath), false);
 });
 
 test('init refuses invalid origins, emails, short or mismatched passwords without leaving .env', (t) => {
