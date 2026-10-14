@@ -35,7 +35,7 @@ v0.3.10 包含「登录辅助」：管理员可为团队关联的官方账户配
 | --- | --- |
 | 📊 **额度看板** | 桌面端查看官方账户返回的额度窗口百分比，以及本系统单独配置的个人、团队 Token 额度。管理后台可查看已上报的官方额度摘要。 |
 | 🧮 **用量与费用** | 查看输入、输出、缓存、思考 Token、模型名称、思考等级、趋势和逐笔流水；按可配置的模型单价估算 USD。 |
-| 👥 **团队管理** | 管理系统用户、团队、个人/团队额度及团队累计总额；支持额度重置、设备状态查看和系统账户强制下线。 |
+| 👥 **团队管理** | 在团队页面搜索并批量选择成员，加入、移出或跨团队转移；管理个人/团队额度及累计总额，支持额度重置、设备状态查看和系统账户强制下线。 |
 | 🛠️ **常驻统计与诊断** | Windows Rust 统计程序独立于桌面窗口运行，增量上报用量与心跳；桌面端可查看消耗流水和运行诊断。 |
 | 🎨 **独立工作区** | v0.3.0 桌面端采用可收起侧栏，分开查看额度、统计、流水与诊断；支持浅色、深色、跟随系统，流水明细在弹窗中展开。 |
 
@@ -66,7 +66,9 @@ v0.3.10 包含「登录辅助」：管理员可为团队关联的官方账户配
 - [后端 · minjm/codex-quota-guard-backend](https://hub.docker.com/r/minjm/codex-quota-guard-backend)
 - [管理网页 · minjm/codex-quota-guard-web](https://hub.docker.com/r/minjm/codex-quota-guard-web)
 
-当前提供 `0.3.10` 和 `latest` 标签，支持 **Linux amd64 / x86_64**。部署配置固定使用 `0.3.10`，数据库使用官方 `postgres:17-alpine`。Windows 桌面客户端和 Rust 统计服务仍安装在用户电脑，不放进服务器容器。
+当前服务器镜像为 `0.3.11`，`latest` 指向同一版本；保留 `0.3.10` 供回退。支持 **Linux amd64 / x86_64**，部署配置固定使用 `0.3.11`，数据库使用官方 `postgres:17-alpine`。Windows 桌面客户端和 Rust 统计服务仍安装在用户电脑，不放进服务器容器。
+
+服务器版 `0.3.11` 新增「团队与额度策略 → 管理成员」：按姓名或邮箱搜索、跨页批量选择、确认加入/移出/转移，保留个人额度与历史流水。受影响用户需要重新登录本系统，不会退出官方 Codex；无需重新安装现有 Windows 客户端。
 
 服务器准备好 **Docker Engine、Docker Compose v2.24+、Bash、curl 和 OpenSSL** 后，替换下面的服务器 IP 和管理员邮箱，执行首次部署：
 
@@ -75,7 +77,7 @@ v0.3.10 包含「登录辅助」：管理员可为团队关联的官方账户配
   set -e
   mkdir codex-quota-guard-server
   cd codex-quota-guard-server
-  qg_base="https://raw.githubusercontent.com/3240665200/Codex-Quota-Guard/5a3e2b09db918edcab56c18c89288da36e6e2a80/deploy/docker"
+  qg_base="https://raw.githubusercontent.com/3240665200/Codex-Quota-Guard/server-v0.3.11/deploy/docker"
   curl -fSL --fail-early --remote-name-all \
     "$qg_base/registry/compose.yaml" \
     "$qg_base/registry/start.sh" \
@@ -87,12 +89,14 @@ v0.3.10 包含「登录辅助」：管理员可为团队关联的官方账户配
 )
 ```
 
-以上下载地址固定到本次镜像对应的部署配置提交，只下载 5 个小文件，不下载整个项目；已有同名目录时会停止，避免覆盖旧部署。初始化会提示设置管理员密码，自动生成并保存独立密钥到 `.env`。启动后，**管理网页和桌面客户端都使用 `http://服务器IP:8080`**。按需放行服务器 8080 端口，不要单独开放数据库端口。
+以上下载地址固定到本次镜像对应的 `server-v0.3.11` 服务器源码标签，只下载 5 个小文件，不下载整个项目；已有同名目录时会停止，避免覆盖旧部署。初始化会提示设置管理员密码，自动生成并保存独立密钥到 `.env`。启动后，**管理网页和桌面客户端都使用 `http://服务器IP:8080`**。按需放行服务器 8080 端口，不要单独开放数据库端口。
 
 > [!WARNING]
 > HTTP 不加密，只用于可信网络；公网正式使用请增加 HTTPS 反向代理。新部署不会带入原电脑的用户和流水，需要另行迁移数据库。升级前先备份，保留原 `.env` 和数据库卷，**不要执行 `docker compose down -v`**。`latest` 后续可能变化，生产部署建议固定版本。
 
 进入 `codex-quota-guard-server` 目录后，可用 `bash start.sh status` 查看状态、`bash start.sh logs backend` 查看日志、`bash start.sh backup` 备份、`bash start.sh stop` 停止并保留数据。
+
+已有 `0.3.10` 部署请先备份，再将现有 `compose.yaml` 中后端和网页的镜像标签都改为 `0.3.11`，执行 `bash start.sh up`。不要重新执行初始化，不要替换 `.env` 或删除数据库卷；具体步骤见[升级说明](./deploy/docker/registry/README.md#从-0310-升级)。
 
 详细说明：[Docker Hub 拉取部署](./deploy/docker/registry/README.md) · [离线镜像部署](./deploy/docker/offline/README.md) · [从源码构建镜像](./deploy/docker/README.md)。
 

@@ -17,7 +17,7 @@
   set -e
   mkdir codex-quota-guard-server
   cd codex-quota-guard-server
-  qg_base="https://raw.githubusercontent.com/3240665200/Codex-Quota-Guard/5a3e2b09db918edcab56c18c89288da36e6e2a80/deploy/docker"
+  qg_base="https://raw.githubusercontent.com/3240665200/Codex-Quota-Guard/server-v0.3.11/deploy/docker"
   curl -fSL --fail-early --remote-name-all \
     "$qg_base/registry/compose.yaml" \
     "$qg_base/registry/start.sh" \
@@ -27,7 +27,7 @@
 )
 ```
 
-下载地址固定到与 `0.3.10` 镜像配套的部署配置提交；这里不使用 `v0.3.10` 源码标签，因为部署文件是在该标签之后加入的。已有同名目录时下载步骤会停止，不覆盖已有部署。
+下载地址固定到与 `0.3.11` 镜像配套的 `server-v0.3.11` 服务器源码标签，与 Windows 安装包版本独立。已有同名目录时下载步骤会停止，不覆盖已有部署。
 
 进入包含 `start.sh` 的目录（上述下载方式为 `cd codex-quota-guard-server`），替换服务器 IP 和管理员邮箱后执行：
 
@@ -40,7 +40,22 @@ bash start.sh up
 
 访问 `http://服务器IP:8080`。桌面客户端也填写同一个中央服务地址。HTTP 不加密，请限制可信网络访问；公网正式部署应在前面配置 HTTPS 反向代理。数据库和 Java 内部端口不单独开放。
 
-默认 Compose 固定应用版本 `0.3.10`，不跟随 `latest` 自动跨版本升级。`latest` 只是最新发布镜像的别名；升级前备份并明确选择版本。
+默认 Compose 固定应用版本 `0.3.11`，不跟随 `latest` 自动跨版本升级。`latest` 只是最新发布镜像的别名；升级前备份并明确选择版本。`0.3.10` 标签保留，旧离线镜像包不会自动更新。
+
+## 从 0.3.10 升级
+
+`0.3.11` 新增团队页面批量成员管理，无新增数据库迁移，不需要重装 Windows 客户端。升级前进入原部署目录，先执行 `bash start.sh backup` 并确认备份成功。
+
+只修改现有 `compose.yaml` 中两个应用镜像，保留其余自定义配置：
+
+```text
+minjm/codex-quota-guard-backend:0.3.11
+minjm/codex-quota-guard-web:0.3.11
+```
+
+然后执行 `bash start.sh up`，会拉取新镜像、替换应用容器并等待健康检查；期间可能短暂中断连接。保留原 `.env`、项目名和数据库卷，不要重新初始化，不要运行 `docker compose down -v`。完成后刷新浏览器，在「团队与额度策略 → 管理成员」使用新功能。
+
+需要回退时，将上述两个标签都改回 `0.3.10`，再次执行 `bash start.sh up`。本次更新未改变数据库结构；回退不会撤销已经保存的成员变更。
 
 ## 日常操作
 
@@ -58,8 +73,8 @@ bash start.sh stop
 只想单独下载应用镜像时：
 
 ```bash
-docker pull minjm/codex-quota-guard-backend:0.3.10
-docker pull minjm/codex-quota-guard-web:0.3.10
+docker pull minjm/codex-quota-guard-backend:0.3.11
+docker pull minjm/codex-quota-guard-web:0.3.11
 ```
 
 下载镜像本身不会完成数据库初始化、设置管理员或启动完整系统，请使用配套 Compose 和脚本。
