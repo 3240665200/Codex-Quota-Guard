@@ -1,0 +1,6 @@
+# Linux deployment scripts must remain executable by bash after Windows checkouts.
+deploy/docker/*.sh text eol=lf
+deploy/docker/*.sql text eol=lf
+deploy/docker/*.conf text eol=lf
+deploy/docker/*.yaml text eol=lf
+deploy/docker/*.Dockerfile text eol=lf

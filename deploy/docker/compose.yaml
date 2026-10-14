@@ -1,0 +1,106 @@
+name: codex-quota-guard
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: quota_guard
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run deploy.sh init first}
+      APP_DB_PASSWORD: ${DATABASE_PASSWORD:?Database password is required}
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/10-quota-guard.sql:ro
+    networks: [database]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -h 127.0.0.1 -U postgres -d quota_guard"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 20s
+    shm_size: 128mb
+    logging: *logging
+
+  backend:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/backend.Dockerfile
+    restart: unless-stopped
+    init: true
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      # Direct Spring property override: REQUIRE_HTTPS alone cannot override prod.
+      # This deployment explicitly supports IP + HTTP on a trusted network.
+      APP_REQUIRE_HTTPS: "false"
+      DATABASE_URL: jdbc:postgresql://postgres:5432/quota_guard
+      DATABASE_USERNAME: quota_guard
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:?Database password is required}
+      JWT_SECRET: ${JWT_SECRET:?JWT secret is required}
+      JWT_ISSUER: ${JWT_ISSUER:-codex-quota-guard}
+      MAIL_ASSISTANCE_ENCRYPTION_KEY: ${MAIL_ASSISTANCE_ENCRYPTION_KEY:?Preserve the mailbox encryption key}
+      ADMIN_BOOTSTRAP_EMAIL: ${ADMIN_BOOTSTRAP_EMAIL:-}
+      ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD:-}
+      ADMIN_BOOTSTRAP_DISPLAY_NAME: Administrator
+      CORS_ALLOWED_ORIGINS: ${PUBLIC_ORIGIN:?Set the public web origin}
+      SERVER_ADDRESS: 0.0.0.0
+      WEB_SERVER_PORT: "8080"
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=70 -Duser.timezone=UTC
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [database, application]
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=128m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 1g
+    healthcheck:
+      # 401 is the expected unauthenticated response, not a database probe.
+      test: [CMD-SHELL, "test \"$$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 3 http://127.0.0.1:8080/api/v1/users/me)\" = 401"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    logging: *logging
+
+  web:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/web.Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${HTTP_BIND:-0.0.0.0}:${HTTP_PORT:-8080}:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [application]
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    healthcheck:
+      test: [CMD-SHELL, "wget -q -O /dev/null http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    logging: *logging
+
+volumes:
+  pgdata:
+
+networks:
+  database:
+    internal: true
+  # Must allow outbound IMAPS, OAuth HTTPS and DNS for login assistance.
+  application:

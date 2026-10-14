@@ -9,6 +9,10 @@ codex-quota-guard-authorizations/
 apps/*/*/.env
 !apps/*/*/.env.example
 
+# Server deployment secrets and database backups
+deploy/docker/.env.tmp.*
+deploy/docker/backups/
+
 # Java build outputs
 apps/*/backend/target/
 .m2/
