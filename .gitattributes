@@ -4,3 +4,4 @@ deploy/docker/*.sql text eol=lf
 deploy/docker/*.conf text eol=lf
 deploy/docker/*.yaml text eol=lf
 deploy/docker/*.Dockerfile text eol=lf
+deploy/docker/offline/*.sh text eol=lf
