@@ -75,6 +75,11 @@ test('init generates independent secrets, an explicit HTTP origin and literal pa
   assert.equal(new Set([jwt, db, adminDb]).size, 3);
   const mail = config.match(/^MAIL_ASSISTANCE_ENCRYPTION_KEY=(.+)$/m)?.[1];
   assert.equal(Buffer.from(mail, 'base64').length, 32);
+  const official = config.match(/^OFFICIAL_SESSION_ENCRYPTION_KEY=(.+)$/m)?.[1];
+  const proxy = config.match(/^MANAGED_PROXY_ENCRYPTION_KEY=(.+)$/m)?.[1];
+  assert.equal(Buffer.from(official ?? '', 'base64').length, 32);
+  assert.equal(Buffer.from(proxy ?? '', 'base64').length, 32);
+  assert.equal(new Set([mail, official, proxy]).size, 3);
   assert.equal(f.commands(), '', 'init must not contact a Docker daemon');
 });
 
@@ -168,10 +173,20 @@ test('container contract: one public port, persistent DB, non-superuser app and 
   assert.match(compose, /pgdata:\/var\/lib\/postgresql\/data/);
   assert.match(compose, /condition: service_healthy/);
   assert.match(compose, /MAIL_ASSISTANCE_ENCRYPTION_KEY:.*\$\{/);
+  assert.match(compose, /OFFICIAL_SESSION_ENCRYPTION_KEY:.*\$\{/);
+  assert.match(compose, /MANAGED_PROXY_ENCRYPTION_KEY:.*\$\{/);
   assert.doesNotMatch(compose, /network_mode: host|privileged: true|:latest/);
   const sql = readFileSync(path.join(source, 'init-db.sql'), 'utf8');
   assert.match(sql, /CREATE ROLE quota_guard LOGIN/);
   assert.doesNotMatch(sql, /LOGIN SUPERUSER/);
+});
+
+test('backend bundles a pinned, independently executable proxy core without privileges', () => {
+  const dockerfile = readFileSync(path.join(source, 'backend.Dockerfile'), 'utf8');
+  assert.match(dockerfile, /FROM ghcr\.io\/sagernet\/sing-box:1\.13\.14(?:@sha256:[a-f0-9]+)? AS proxy-core/);
+  assert.match(dockerfile, /COPY --from=proxy-core \/usr\/local\/bin\/sing-box \/usr\/local\/bin\/sing-box/);
+  assert.match(dockerfile, /MANAGED_PROXY_SING_BOX_PATH=\/usr\/local\/bin\/sing-box/);
+  assert.match(dockerfile, /USER 10001:10001/);
 });
 
 test('Nginx preserves /api, sanitizes forwarding and disables buffering for streaming', () => {
