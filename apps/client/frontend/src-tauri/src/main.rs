@@ -5,6 +5,8 @@ mod backend;
 mod codex_connection;
 mod conflict_notice;
 mod meter_service;
+mod package_check;
+mod package_smoke;
 mod server_config;
 mod session_vault;
 mod startup_gate;
@@ -275,6 +277,19 @@ async fn system_logout(state: State<'_, BackendState>) -> CommandResult<()> {
 }
 
 fn main() {
+    let context = tauri::generate_context!();
+    if let Some(exit_code) = package_check::handle_launch_mode(&context) {
+        std::process::exit(exit_code);
+    }
+    let arguments: Vec<_> = std::env::args_os().skip(1).collect();
+    if arguments.iter().any(|argument| {
+        argument == "--smoke-package" || argument.to_string_lossy().starts_with("--smoke-package=")
+    }) {
+        if arguments.len() != 1 || arguments[0] != "--smoke-package" {
+            std::process::exit(1);
+        }
+        std::process::exit(package_smoke::run(context));
+    }
     if let Some(exit_code) = autostart::handle_launch_mode() {
         std::process::exit(exit_code);
     }
@@ -353,7 +368,7 @@ fn main() {
             server_config_save
         ]);
 
-    let app = match builder.build(tauri::generate_context!()) {
+    let app = match builder.build(context) {
         Ok(app) => app,
         Err(_) => {
             eprintln!("Unable to start Codex Quota Guard desktop shell.");

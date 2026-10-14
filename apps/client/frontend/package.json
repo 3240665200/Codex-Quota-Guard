@@ -16,7 +16,7 @@
     "build:meter": "node prepare-meter.mjs",
     "test:backend": "mvn -f ../backend/pom.xml test",
     "test:session-persistence": "node --test session-persistence.test.mjs",
-    "test:packaging": "node --test native-build.test.mjs",
+    "test:packaging": "node --test native-build.test.mjs verify-desktop-package.test.mjs",
     "test:autostart-installer": "node --test src-tauri/tests/autostart-installer.test.mjs",
     "test:installer": "node --test src-tauri/tests/*test.mjs",
     "typecheck": "tsc --noEmit",
