@@ -1,0 +1,172 @@
+{
+  "name": "codex-quota-guard",
+  "networks": {
+    "application": {},
+    "database": {
+      "internal": true
+    }
+  },
+  "services": {
+    "backend": {
+      "cap_drop": [
+        "ALL"
+      ],
+      "depends_on": {
+        "postgres": {
+          "condition": "service_healthy",
+          "required": true
+        }
+      },
+      "environment": {
+        "ADMIN_BOOTSTRAP_DISPLAY_NAME": "Administrator",
+        "ADMIN_BOOTSTRAP_EMAIL": "${ADMIN_BOOTSTRAP_EMAIL:-}",
+        "ADMIN_BOOTSTRAP_PASSWORD": "${ADMIN_BOOTSTRAP_PASSWORD:-}",
+        "APP_REQUIRE_HTTPS": "false",
+        "CORS_ALLOWED_ORIGINS": "${PUBLIC_ORIGIN:?Set the public web origin}",
+        "DATABASE_PASSWORD": "${DATABASE_PASSWORD:?Database password is required}",
+        "DATABASE_URL": "jdbc:postgresql://postgres:5432/quota_guard",
+        "DATABASE_USERNAME": "quota_guard",
+        "JAVA_TOOL_OPTIONS": "-XX:MaxRAMPercentage=70 -Duser.timezone=UTC",
+        "JWT_ISSUER": "${JWT_ISSUER:-codex-quota-guard}",
+        "JWT_SECRET": "${JWT_SECRET:?JWT secret is required}",
+        "MAIL_ASSISTANCE_ENCRYPTION_KEY": "${MAIL_ASSISTANCE_ENCRYPTION_KEY:?Preserve the mailbox encryption key}",
+        "SERVER_ADDRESS": "0.0.0.0",
+        "SPRING_PROFILES_ACTIVE": "prod",
+        "WEB_SERVER_PORT": "8080"
+      },
+      "healthcheck": {
+        "interval": "10s",
+        "retries": 12,
+        "start_period": "40s",
+        "test": [
+          "CMD-SHELL",
+          "test \"$$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 3 http://127.0.0.1:8080/api/v1/users/me)\" = 401"
+        ],
+        "timeout": "5s"
+      },
+      "init": true,
+      "logging": {
+        "driver": "json-file",
+        "options": {
+          "max-file": "3",
+          "max-size": "10m"
+        }
+      },
+      "mem_limit": "1g",
+      "networks": {
+        "application": null,
+        "database": null
+      },
+      "read_only": true,
+      "restart": "unless-stopped",
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "tmpfs": [
+        "/tmp:rw,noexec,nosuid,size=128m"
+      ],
+      "image": "minjm/codex-quota-guard-backend:0.3.10",
+      "platform": "linux/amd64",
+      "pull_policy": "missing"
+    },
+    "postgres": {
+      "environment": {
+        "APP_DB_PASSWORD": "${DATABASE_PASSWORD:?Database password is required}",
+        "POSTGRES_DB": "quota_guard",
+        "POSTGRES_INITDB_ARGS": "--auth-host=scram-sha-256",
+        "POSTGRES_PASSWORD": "${POSTGRES_PASSWORD:?Run deploy.sh init first}",
+        "POSTGRES_USER": "postgres"
+      },
+      "healthcheck": {
+        "interval": "5s",
+        "retries": 20,
+        "start_period": "20s",
+        "test": [
+          "CMD-SHELL",
+          "pg_isready -h 127.0.0.1 -U postgres -d quota_guard"
+        ],
+        "timeout": "3s"
+      },
+      "image": "postgres:17-alpine",
+      "logging": {
+        "driver": "json-file",
+        "options": {
+          "max-file": "3",
+          "max-size": "10m"
+        }
+      },
+      "networks": {
+        "database": null
+      },
+      "restart": "unless-stopped",
+      "shm_size": "128mb",
+      "volumes": [
+        {
+          "source": "pgdata",
+          "target": "/var/lib/postgresql/data",
+          "type": "volume",
+          "volume": {}
+        },
+        {
+          "bind": {
+            "create_host_path": false
+          },
+          "read_only": true,
+          "source": "./init-db.sql",
+          "target": "/docker-entrypoint-initdb.d/10-quota-guard.sql",
+          "type": "bind"
+        }
+      ],
+      "platform": "linux/amd64",
+      "pull_policy": "missing"
+    },
+    "web": {
+      "cap_drop": [
+        "ALL"
+      ],
+      "depends_on": {
+        "backend": {
+          "condition": "service_healthy",
+          "required": true
+        }
+      },
+      "healthcheck": {
+        "interval": "10s",
+        "retries": 6,
+        "test": [
+          "CMD-SHELL",
+          "wget -q -O /dev/null http://127.0.0.1:8080/healthz"
+        ],
+        "timeout": "3s"
+      },
+      "logging": {
+        "driver": "json-file",
+        "options": {
+          "max-file": "3",
+          "max-size": "10m"
+        }
+      },
+      "mem_limit": "256m",
+      "networks": {
+        "application": null
+      },
+      "ports": [
+        "${HTTP_BIND:-0.0.0.0}:${HTTP_PORT:-8080}:8080"
+      ],
+      "read_only": true,
+      "restart": "unless-stopped",
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "tmpfs": [
+        "/tmp:rw,noexec,nosuid,size=64m"
+      ],
+      "image": "minjm/codex-quota-guard-web:0.3.10",
+      "platform": "linux/amd64",
+      "pull_policy": "missing"
+    }
+  },
+  "volumes": {
+    "pgdata": {}
+  }
+}

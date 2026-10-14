@@ -12,6 +12,8 @@ apps/*/*/.env
 # Server deployment secrets and database backups
 deploy/docker/.env.tmp.*
 deploy/docker/backups/
+deploy/docker/registry/.env.tmp.*
+deploy/docker/registry/backups/
 
 # Java build outputs
 apps/*/backend/target/
