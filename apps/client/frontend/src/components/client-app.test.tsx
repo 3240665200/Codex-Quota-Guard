@@ -288,6 +288,62 @@ describe("ClientApp system session gate", () => {
     expect(screen.getByText(/未保存更改可能丢失/)).toBeVisible();
   });
 
+  it("blocks session requests on restore failure and retries recovery explicitly", async () => {
+    const user = userEvent.setup();
+    const original = invokeMock.getMockImplementation()!;
+    let attempts = 0;
+    invokeMock.mockImplementation(async (command, args) => {
+      if (command === "startup_gate_check") {
+        attempts += 1;
+        return attempts === 1
+          ? {
+              state: "CODEX_RESTORE_FAILED",
+              ccSwitchTerminated: true,
+              codexConnectionRestored: false,
+              codexRestoreError: "无法写入 Codex 配置，请检查文件权限。",
+            }
+          : {
+              state: "READY",
+              ccSwitchTerminated: true,
+              codexConnectionRestored: true,
+              codexRestoreError: null,
+            };
+      }
+      return original(command, args);
+    });
+    renderClientApp();
+    expect(await screen.findByText(/Codex 连接配置恢复失败/)).toBeVisible();
+    expect(screen.getByText(/请检查文件权限/)).toBeVisible();
+    expect(invokeMock).not.toHaveBeenCalledWith("system_current");
+    await user.click(screen.getByRole("button", { name: "重新检查" }));
+    expect(await screen.findByText("登录 Quota Guard")).toBeVisible();
+    expect(screen.getByText(/已恢复 Codex 连接配置/)).toBeVisible();
+    expect(attempts).toBe(2);
+  });
+
+  it("shows a background restoration failure when the next monitor result arrives", async () => {
+    const interval = vi.spyOn(window, "setInterval");
+    try {
+      renderClientApp();
+      await screen.findByText("登录 Quota Guard");
+      const poll = interval.mock.calls.find((call) => call[1] === 3_000)?.[0];
+      invokeMock.mockResolvedValueOnce({
+        state: "CODEX_RESTORE_FAILED",
+        ccSwitchTerminated: true,
+        codexRestoreError: "未找到可用的恢复来源。",
+      });
+      await act(async () => {
+        (poll as () => void)();
+      });
+      expect(await screen.findByText(/Codex 连接配置恢复失败/)).toBeVisible();
+      expect(screen.getByText(/未找到可用的恢复来源/)).toBeVisible();
+      expect(screen.queryByText("登录 Quota Guard")).toBeNull();
+      expect(screen.getByRole("button", { name: "重新检查" })).toBeVisible();
+    } finally {
+      interval.mockRestore();
+    }
+  });
+
   it("shows signed-out tray scan feedback without bypassing the login gate", async () => {
     renderClientApp();
     await screen.findByText("登录 Quota Guard");

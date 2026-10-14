@@ -2,6 +2,7 @@
 
 mod autostart;
 mod backend;
+mod codex_connection;
 mod conflict_notice;
 mod meter_service;
 mod server_config;

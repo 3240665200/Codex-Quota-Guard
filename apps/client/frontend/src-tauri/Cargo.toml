@@ -1,6 +1,6 @@
 [package]
 name = "codex-quota-guard"
-version = "0.3.10"
+version = "0.3.12"
 description = "Secure desktop shell for Codex Quota Guard"
 authors = ["Codex Quota Guard contributors"]
 edition = "2021"
@@ -13,6 +13,8 @@ tauri-build = { version = "2", features = [] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+toml_edit = "0.22"
 tauri = { version = "2", features = ["tray-icon"] }
 thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
@@ -21,4 +23,4 @@ uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 zeroize = "1"
 windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_Ole", "Win32_System_TaskScheduler", "Win32_System_Variant"] }
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_System_Com", "Win32_System_JobObjects", "Win32_System_Registry", "Win32_System_Services", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_JobObjects", "Win32_System_Registry", "Win32_System_Services", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

@@ -19,6 +19,15 @@ pub(crate) struct NoticeEvent {
     pub(crate) epoch: String,
     pub(crate) count: u64,
     pub(crate) last_terminated_at: Option<u64>,
+    pub(crate) recovery: RestoreNotice,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RestoreNotice {
+    Pending,
+    Restored,
+    Unchanged,
+    Failed(&'static str),
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -31,13 +40,17 @@ struct NoticeKey {
 struct NoticeBatch {
     confirmed_processes: u64,
     last_terminated_at: Option<u64>,
+    recovery: RestoreNotice,
+    observation: u64,
 }
 
 impl NoticeBatch {
-    fn from_event(event: &NoticeEvent, delta: u64) -> Self {
+    fn from_event(event: &NoticeEvent, delta: u64, observation: u64) -> Self {
         Self {
             confirmed_processes: delta,
             last_terminated_at: event.last_terminated_at,
+            recovery: event.recovery,
+            observation,
         }
     }
 
@@ -51,7 +64,19 @@ impl NoticeBatch {
             (None, Some(incoming)) => Some(incoming),
             (None, None) => None,
         };
+        // A failed presenter can requeue an old batch after a newer recovery
+        // succeeded. Keep every process count, but report the latest outcome.
+        if other.observation > self.observation {
+            self.recovery = other.recovery;
+            self.observation = other.observation;
+        }
     }
+}
+
+#[derive(Clone, Copy)]
+struct NoticeProgress {
+    count: u64,
+    recovery: RestoreNotice,
 }
 
 #[derive(Default)]
@@ -62,8 +87,9 @@ struct State {
     // This is the dispatch commit point; stop never waits for it to clear.
     in_flight: bool,
     pending: Option<NoticeBatch>,
-    high_water_counts: HashMap<NoticeKey, u64>,
+    high_water_counts: HashMap<NoticeKey, NoticeProgress>,
     high_water_order: VecDeque<NoticeKey>,
+    observation: u64,
 }
 
 trait NoticePresenter: Send + Sync + 'static {
@@ -135,20 +161,18 @@ impl ConflictNotices {
                 return;
             }
 
-            if event.count > 0 {
-                let key = NoticeKey {
-                    lease_id: event.lease_id.clone(),
-                    epoch: event.epoch.clone(),
-                };
-                let previous = touch_high_water(&mut state, key, event.count);
-                if event.count > previous {
-                    let incoming = NoticeBatch::from_event(&event, event.count - previous);
-                    match state.pending.as_mut() {
-                        Some(pending) => pending.merge(incoming),
-                        None => state.pending = Some(incoming),
-                    }
-                    self.inner.changed.notify_one();
+            let key = NoticeKey {
+                lease_id: event.lease_id.clone(),
+                epoch: event.epoch.clone(),
+            };
+            if let Some(delta) = touch_high_water(&mut state, key, &event) {
+                state.observation = state.observation.saturating_add(1);
+                let incoming = NoticeBatch::from_event(&event, delta, state.observation);
+                match state.pending.as_mut() {
+                    Some(pending) => pending.merge(incoming),
+                    None => state.pending = Some(incoming),
                 }
+                self.inner.changed.notify_one();
             }
 
             if state.pending.is_some() && !state.worker_started {
@@ -292,8 +316,16 @@ fn finish_worker(inner: &Inner, state: &mut State) {
     inner.changed.notify_all();
 }
 
-fn touch_high_water(state: &mut State, key: NoticeKey, count: u64) -> u64 {
-    let previous = state.high_water_counts.get(&key).copied().unwrap_or(0);
+fn touch_high_water(state: &mut State, key: NoticeKey, event: &NoticeEvent) -> Option<u64> {
+    let previous = state.high_water_counts.get(&key).copied();
+    if previous.is_some_and(|previous| {
+        event.count < previous.count
+            || (event.count == previous.count
+                && (event.recovery == previous.recovery
+                    || event.recovery == RestoreNotice::Pending))
+    }) {
+        return None;
+    }
     if let Some(index) = state
         .high_water_order
         .iter()
@@ -305,11 +337,29 @@ fn touch_high_water(state: &mut State, key: NoticeKey, count: u64) -> u64 {
             state.high_water_counts.remove(&expired);
         }
     }
-    state
-        .high_water_counts
-        .insert(key.clone(), previous.max(count));
+    state.high_water_counts.insert(
+        key.clone(),
+        NoticeProgress {
+            count: event.count,
+            recovery: event.recovery,
+        },
+    );
     state.high_water_order.push_back(key);
-    previous
+    let delta = event
+        .count
+        .saturating_sub(previous.map_or(0, |progress| progress.count));
+    // An ordinary first check with nothing to restore needs no native dialog.
+    if delta == 0
+        && previous.is_none()
+        && matches!(
+            event.recovery,
+            RestoreNotice::Pending | RestoreNotice::Unchanged
+        )
+    {
+        None
+    } else {
+        Some(delta)
+    }
 }
 
 fn lock_state(state: &Mutex<State>) -> MutexGuard<'_, State> {
@@ -345,13 +395,18 @@ fn present_native_notice(batch: &NoticeBatch) -> Result<(), ()> {
 }
 
 fn notice_text(batch: &NoticeBatch) -> String {
-    format!(
-        "已强制结束 CC Switch（本次共 {} 个进程）。\r\n\r\n\
-         原因：CC Switch 会影响 Codex 请求路由，可能导致用量归属到错误的账号或统计范围。\r\n\r\n\
-         CC Switch 中未保存的修改可能丢失。\r\n\r\n\
-         请勿在 Quota Guard 运行期间重新打开 CC Switch；需要使用它或恢复官方直连配置时，请先从系统托盘退出 Quota Guard，再检查 Codex 连接配置。",
-        batch.confirmed_processes
-    )
+    let termination = if batch.confirmed_processes > 0 {
+        format!("已强制结束 CC Switch（本次共 {} 个进程）。\r\nCC Switch 中未保存的修改可能丢失。\r\n\r\n", batch.confirmed_processes)
+    } else {
+        String::new()
+    };
+    let recovery = match batch.recovery {
+        RestoreNotice::Restored => "已恢复 Codex 连接配置。若当前聊天仍报错，请重启 Codex 或重新打开会话以重载连接。".to_owned(),
+        RestoreNotice::Unchanged => "已检查 Codex 连接配置，未发现需要恢复的 CC Switch 路由，未修改配置。".to_owned(),
+        RestoreNotice::Failed(error) => format!("Codex 连接配置恢复失败：{error}\r\n请打开 Quota Guard，处理上述问题后点击“重新检查”。"),
+        RestoreNotice::Pending => "尚未确认 CC Switch 已全部退出，暂未恢复 Codex 连接配置。请打开 Quota Guard 查看守护状态并重试。".to_owned(),
+    };
+    format!("{termination}{recovery}\r\n\r\n请勿在 Quota Guard 运行期间重新打开 CC Switch，以免再次改变 Codex 请求路由。")
 }
 
 #[cfg(not(windows))]
@@ -416,6 +471,7 @@ mod tests {
             epoch: epoch.to_string(),
             count,
             last_terminated_at,
+            recovery: RestoreNotice::Pending,
         }
     }
 
@@ -444,6 +500,8 @@ mod tests {
             NoticeBatch {
                 confirmed_processes: 1,
                 last_terminated_at: Some(10),
+                recovery: RestoreNotice::Pending,
+                observation: 1,
             }
         );
         {
@@ -477,6 +535,8 @@ mod tests {
                 Some(NoticeBatch {
                     confirmed_processes: 4,
                     last_terminated_at: Some(20),
+                    recovery: RestoreNotice::Pending,
+                    observation: 5,
                 })
             );
         }
@@ -487,6 +547,8 @@ mod tests {
             NoticeBatch {
                 confirmed_processes: 4,
                 last_terminated_at: Some(20),
+                recovery: RestoreNotice::Pending,
+                observation: 5,
             }
         );
         results.send(Ok(())).expect("release second mock presenter");
@@ -519,6 +581,8 @@ mod tests {
                 Some(NoticeBatch {
                     confirmed_processes: 65,
                     last_terminated_at: Some(75),
+                    recovery: RestoreNotice::Pending,
+                    observation: 66,
                 })
             );
         }
@@ -529,6 +593,8 @@ mod tests {
             NoticeBatch {
                 confirmed_processes: 65,
                 last_terminated_at: Some(75),
+                recovery: RestoreNotice::Pending,
+                observation: 66,
             }
         );
         results.send(Ok(())).expect("release merged mock presenter");
@@ -537,18 +603,78 @@ mod tests {
     }
 
     #[test]
-    fn notice_text_explains_manual_recovery_without_promising_auto_restore() {
+    fn notice_text_reports_recovery_without_promising_network_connectivity() {
         let text = notice_text(&NoticeBatch {
             confirmed_processes: 2,
             last_terminated_at: Some(10),
+            recovery: RestoreNotice::Restored,
+            observation: 1,
         });
 
         assert!(text.contains("已强制结束 CC Switch（本次共 2 个进程）。"));
         assert!(text.contains("CC Switch 中未保存的修改可能丢失。"));
         assert!(text.contains("请勿在 Quota Guard 运行期间重新打开 CC Switch"));
-        assert!(text.contains("先从系统托盘退出 Quota Guard，再检查 Codex 连接配置。"));
-        assert!(!text.contains("即可恢复直连"));
-        assert!(!text.contains("官方客户端"));
+        assert!(text.contains("已恢复 Codex 连接配置。"));
+        assert!(text.contains("重启 Codex 或重新打开会话以重载连接。"));
+        assert!(!text.contains("连接成功"));
+    }
+
+    #[test]
+    fn recovery_failure_is_visible_without_a_new_termination_and_retry_does_not_recount() {
+        let (notices, calls, results) = fixture(Duration::from_millis(10));
+        let mut observation = event("lease-a", "initial-restore", 0, None);
+        observation.recovery = RestoreNotice::Failed("配置不可写。");
+        notices.observe_event(observation.clone());
+        let failed = receive_call(&calls);
+        assert_eq!(failed.confirmed_processes, 0);
+        assert!(notice_text(&failed).contains("Codex 连接配置恢复失败：配置不可写。"));
+        assert!(notice_text(&failed).contains("重新检查"));
+        notices.observe_event(observation.clone());
+        assert!(lock_state(&notices.inner.state).pending.is_none());
+
+        observation.recovery = RestoreNotice::Restored;
+        notices.observe_event(observation);
+        results.send(Ok(())).unwrap();
+        let restored = receive_call(&calls);
+        assert_eq!(restored.confirmed_processes, 0);
+        assert_eq!(restored.recovery, RestoreNotice::Restored);
+        results.send(Ok(())).unwrap();
+        notices.stop();
+        assert!(notices.wait_for_worker_stop(Duration::from_secs(3)));
+    }
+
+    #[test]
+    fn requeued_failure_cannot_overwrite_newer_recovery_or_drop_process_counts() {
+        let (notices, calls, results) = fixture(Duration::from_millis(10));
+        let mut observation = event("lease-a", "epoch-a", 1, Some(10));
+        observation.recovery = RestoreNotice::Failed("配置不可写。");
+        notices.observe_event(observation.clone());
+        assert_eq!(receive_call(&calls).confirmed_processes, 1);
+        observation.count = 3;
+        observation.recovery = RestoreNotice::Restored;
+        notices.observe_event(observation);
+        results.send(Err(())).unwrap();
+        let merged = receive_call(&calls);
+        assert_eq!(merged.confirmed_processes, 3);
+        assert_eq!(merged.recovery, RestoreNotice::Restored);
+        results.send(Ok(())).unwrap();
+        notices.stop();
+        assert!(notices.wait_for_worker_stop(Duration::from_secs(3)));
+    }
+
+    #[test]
+    fn unchanged_initial_check_is_silent_and_does_not_claim_recovery() {
+        let mut state = State::default();
+        let mut observation = event("lease-a", "initial-restore", 0, None);
+        observation.recovery = RestoreNotice::Unchanged;
+        let key = NoticeKey {
+            lease_id: "lease-a".to_owned(),
+            epoch: "initial-restore".to_owned(),
+        };
+        assert_eq!(touch_high_water(&mut state, key, &observation), None);
+        let text = notice_text(&NoticeBatch::from_event(&observation, 0, 1));
+        assert!(text.contains("未修改配置"));
+        assert!(!text.contains("已恢复"));
     }
 
     #[test]
