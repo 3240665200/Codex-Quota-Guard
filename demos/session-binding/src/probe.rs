@@ -84,7 +84,11 @@ pub fn compare(auth: &[u8], snapshot: &[u8]) -> Result<ProbeReport, ProbeError> 
     let mut ids = HashSet::new();
     for device in &snapshot.devices {
         if let Some(id) = device.session_id.as_deref().filter(|s| !s.is_empty()) {
-            if id.trim().is_empty() || id.len() > 256 || id.chars().any(char::is_control) || !ids.insert(id) {
+            if id.trim().is_empty()
+                || id.len() > 256
+                || id.chars().any(char::is_control)
+                || !ids.insert(id)
+            {
                 return Err(ProbeError("E_INVALID_SNAPSHOT"));
             }
         }
