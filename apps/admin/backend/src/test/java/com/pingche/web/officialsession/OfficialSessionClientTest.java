@@ -1,0 +1,208 @@
+package com.pingche.web.officialsession;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
+
+import com.pingche.web.auth.DomainException;
+import com.pingche.web.proxy.ManagedProxyGateway;
+import java.net.Proxy;
+import java.net.ProxySelector;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpHeaders;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Flow;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicReference;
+import org.junit.jupiter.api.Test;
+import tools.jackson.databind.ObjectMapper;
+
+class OfficialSessionClientTest {
+    static final String ME = """
+            {"id":"official-user-one","email":"owner@example.com","name":"Owner","unwanted_secret":"private-profile"}
+            """;
+    static final String ACCOUNTS = """
+            {"account_ordering":["not-the-id"],"accounts":{"not-the-id":{
+              "account":{"account_id":"official-account-one","name":"Personal","plan_type":"plus",
+                "account_user_role":"owner","is_deactivated":false},
+              "entitlement":{"has_active_subscription":true,"renews_at":{"unknown":"unverified-type"}},
+              "can_access_with_session":true}}}
+            """;
+    static final String SESSIONS = """
+            {"show_session_manager":true,"devices":[{
+              "render_id":"row-one","session_id":"session-one","platform":"windows","display_name":"Codex desktop",
+              "device_model":"PC","human_readable_description":"Windows PC","os_version":"11",
+              "is_current_device":true,"is_trusted_device":false,"can_untrust":false,"hashed_device_id":"private-hash",
+              "last_signed_in_timestamp_second":1791964800,"session_created_at_seconds":1791878400,
+              "last_signed_in_city":"Synthetic City","last_signed_in_region_code":"SC","last_signed_in_country":"ZZ",
+              "app_sessions":[{"client_name":"Codex"},{"client_name":"ChatGPT"}]},
+              {"render_id":"row-two","session_id":null,"platform":"linux","is_current_device":false,
+               "is_trusted_device":true,"app_sessions":[]} ]}
+            """;
+
+    @Test
+    void fetchesOnlyThreeFixedReadEndpointsAndMatchesAccountFieldInsteadOfMapKey() {
+        HttpClient http = mock(HttpClient.class);
+        ManagedProxyGateway proxy = mock(ManagedProxyGateway.class);
+        List<HttpRequest> requests = success(http);
+        AtomicReference<ProxySelector> selected = new AtomicReference<>();
+        OfficialSessionClient client = new OfficialSessionClient(new ObjectMapper(), proxy,
+                selector -> { selected.set(selector); return http; });
+        OfficialSessionSnapshot result = client.fetch(credentials(), null);
+
+        assertThat(requests).extracting(request -> request.uri().toString()).containsExactly(
+                "https://chatgpt.com/backend-api/me",
+                "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27",
+                "https://chatgpt.com/backend-api/accounts/sessions");
+        for (HttpRequest request : requests) {
+            assertThat(request.method()).isEqualTo("GET");
+            assertThat(request.headers().firstValue("Authorization")).contains("Bearer synthetic-access");
+            assertThat(request.headers().firstValue("Cookie")).contains("synthetic_session=private-cookie");
+            assertThat(request.headers().firstValue("ChatGPT-Account-ID")).contains("official-account-one");
+        }
+        assertThat(selected.get().select(URI.create("https://chatgpt.com"))).containsExactly(Proxy.NO_PROXY);
+        verifyNoInteractions(proxy);
+        assertThat(result.account().accountId()).isEqualTo("official-account-one");
+        assertThat(result.account().userId()).isEqualTo("official-user-one");
+        assertThat(result.account().activeSubscription()).isTrue();
+        assertThat(result.sessions().showSessionManager()).isTrue();
+        assertThat(result.sessions().devices()).hasSize(2);
+        assertThat(result.sessions().devices().get(0).applications()).containsExactly("Codex", "ChatGPT");
+        assertThat(result.sessions().devices().get(0).lastSignedInAt()).isEqualTo(Instant.ofEpochSecond(1791964800));
+        assertThat(result.sessions().devices().get(1).sessionId()).isNull();
+        String safe = new ObjectMapper().writeValueAsString(result);
+        assertThat(safe).doesNotContain("private-profile", "private-hash", "unwanted_secret", "renews_at", "authorization");
+        assertThat(credentials().toString()).doesNotContain("synthetic-access", "private-cookie");
+    }
+
+    @Test
+    void chosenProxyLeaseIsUsedAndAlwaysClosedWithoutFallingBackToDirect() {
+        HttpClient http = mock(HttpClient.class);
+        success(http);
+        ManagedProxyGateway gateway = mock(ManagedProxyGateway.class);
+        ManagedProxyGateway.ProxyLease lease = mock(ManagedProxyGateway.ProxyLease.class);
+        ProxySelector selector = mock(ProxySelector.class);
+        UUID nodeId = UUID.randomUUID();
+        when(gateway.open(nodeId)).thenReturn(lease);
+        when(lease.proxySelector()).thenReturn(selector);
+        OfficialSessionClient client = new OfficialSessionClient(new ObjectMapper(), gateway,
+                actual -> { assertThat(actual).isSameAs(selector); return http; });
+        client.fetch(credentials(), nodeId);
+        verify(lease).close();
+        when(gateway.open(nodeId)).thenThrow(new DomainException("PROXY_UNAVAILABLE", "Proxy is unavailable", org.springframework.http.HttpStatus.BAD_GATEWAY));
+        assertThatThrownBy(() -> client.fetch(credentials(), nodeId)).isInstanceOf(DomainException.class);
+    }
+
+    @Test
+    void upstreamFailuresAreFixedAndNeverExposeHeadersBodyOrChallengeHtml() {
+        for (int status : new int[] {301, 401, 403, 429, 500}) {
+            String expected = switch (status) {
+                case 401 -> "OFFICIAL_AUTH_REQUIRED";
+                case 403 -> "OFFICIAL_ACCESS_BLOCKED";
+                case 429 -> "OFFICIAL_RATE_LIMITED";
+                default -> "OFFICIAL_UNAVAILABLE";
+            };
+            HttpClient http = mock(HttpClient.class);
+            when(http.sendAsync(any(HttpRequest.class), any(HttpResponse.BodyHandler.class)))
+                    .thenReturn(CompletableFuture.completedFuture(response(status, "private-token <html>challenge</html>")));
+            assertFailure(http, expected);
+        }
+        for (String malformed : new String[] {"<html>private-token challenge</html>", "{}", "{\"id\":123}", "x".repeat(1_048_577)}) {
+            HttpClient http = mock(HttpClient.class);
+            when(http.sendAsync(any(HttpRequest.class), any(HttpResponse.BodyHandler.class)))
+                    .thenReturn(CompletableFuture.completedFuture(response(200, malformed)));
+            assertFailure(http, "OFFICIAL_RESPONSE_INVALID");
+        }
+    }
+
+    @Test
+    void accountMismatchMalformedSessionListAndHeaderInjectionFailClosed() {
+        HttpClient mismatch = mock(HttpClient.class);
+        success(mismatch, ACCOUNTS.replace("official-account-one", "other-account"), SESSIONS);
+        assertFailure(mismatch, "OFFICIAL_ACCOUNT_MISMATCH");
+        for (String malformed : new String[] {"{}", "{\"show_session_manager\":true,\"devices\":{}}",
+                "{\"show_session_manager\":true,\"devices\":[{\"render_id\":\"x\",\"app_sessions\":\"wrong\"}]}"}) {
+            HttpClient http = mock(HttpClient.class);
+            success(http, ACCOUNTS, malformed);
+            assertFailure(http, "OFFICIAL_RESPONSE_INVALID");
+        }
+        HttpClient http = mock(HttpClient.class);
+        OfficialSessionClient client = client(http);
+        assertThatThrownBy(() -> client.fetch(new OfficialSessionCredentials("Bearer x\r\nHost: evil", null, "account"), null))
+                .isInstanceOf(DomainException.class);
+        verifyNoInteractions(http);
+    }
+
+    @Test
+    void deadlineCancelsStalledBodyAndSubscriberCancelsOversizedBody() throws Exception {
+        HttpClient http = mock(HttpClient.class);
+        CompletableFuture<HttpResponse<byte[]>> pending = mock(CompletableFuture.class);
+        when(pending.get(10, TimeUnit.SECONDS)).thenThrow(new TimeoutException());
+        when(http.sendAsync(any(HttpRequest.class), any(HttpResponse.BodyHandler.class))).thenReturn(pending);
+        assertFailure(http, "OFFICIAL_UNAVAILABLE");
+        verify(pending).cancel(true);
+        OfficialSessionClient.LimitedBodySubscriber subscriber = new OfficialSessionClient.LimitedBodySubscriber();
+        Flow.Subscription subscription = mock(Flow.Subscription.class);
+        subscriber.onSubscribe(subscription);
+        subscriber.onNext(List.of(ByteBuffer.wrap(new byte[1_048_577])));
+        assertThat(subscriber.getBody().toCompletableFuture()).isCompletedExceptionally();
+        verify(subscription).cancel();
+    }
+
+    private OfficialSessionClient client(HttpClient http) {
+        return new OfficialSessionClient(new ObjectMapper(), mock(ManagedProxyGateway.class), ignored -> http);
+    }
+
+    private void assertFailure(HttpClient http, String code) {
+        assertThatThrownBy(() -> client(http).fetch(credentials(), null)).isInstanceOfSatisfying(DomainException.class, error -> {
+            assertThat(error.getCode()).isEqualTo(code);
+            assertThat(error.getMessage()).doesNotContain("private-token", "synthetic-access", "private-cookie");
+            assertThat(error.getCause()).isNull();
+        });
+    }
+
+    private OfficialSessionCredentials credentials() {
+        return new OfficialSessionCredentials("Bearer synthetic-access", "synthetic_session=private-cookie", "official-account-one");
+    }
+
+    private List<HttpRequest> success(HttpClient http) { return success(http, ACCOUNTS, SESSIONS); }
+    private List<HttpRequest> success(HttpClient http, String accounts, String sessions) {
+        List<HttpRequest> requests = new ArrayList<>();
+        when(http.sendAsync(any(HttpRequest.class), any(HttpResponse.BodyHandler.class))).thenAnswer(call -> {
+            HttpRequest request = call.getArgument(0);
+            requests.add(request);
+            String body = switch (request.uri().getPath()) {
+                case "/backend-api/me" -> ME;
+                case "/backend-api/accounts/check/v4-2023-04-27" -> accounts;
+                case "/backend-api/accounts/sessions" -> sessions;
+                default -> throw new AssertionError("Unexpected outbound endpoint");
+            };
+            return CompletableFuture.completedFuture(response(200, body));
+        });
+        return requests;
+    }
+
+    @SuppressWarnings("unchecked")
+    private HttpResponse<byte[]> response(int status, String body) {
+        HttpResponse<byte[]> response = mock(HttpResponse.class);
+        when(response.statusCode()).thenReturn(status);
+        when(response.body()).thenReturn(body.getBytes(StandardCharsets.UTF_8));
+        when(response.headers()).thenReturn(HttpHeaders.of(Map.of("Content-Type", List.of("application/json")), (key, value) -> true));
+        return response;
+    }
+}
