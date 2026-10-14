@@ -1,0 +1,13 @@
+# Optional overlay: docker compose --env-file .env -f compose.yaml -f compose.https.yaml up -d
+# Requires Docker Compose >= 2.24.4 and an operator-provided, trusted TLS certificate.
+services:
+  backend:
+    environment:
+      APP_REQUIRE_HTTPS: "true"
+  web:
+    ports: !override
+      - "${HTTP_BIND:-0.0.0.0}:${HTTP_PORT:-8080}:8080"
+      - "${HTTPS_BIND:-0.0.0.0}:443:8443"
+    volumes:
+      - ./nginx.https.conf:/etc/nginx/nginx.conf:ro
+      - ${TLS_CERT_DIRECTORY:?Set an absolute TLS certificate directory}:/etc/quota-tls:ro
