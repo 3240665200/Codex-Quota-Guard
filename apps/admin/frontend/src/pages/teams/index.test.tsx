@@ -8,7 +8,9 @@ import {
   getTeamQuotaOverview,
   listTeams,
   listOfficialAccounts,
+  listUsers,
   updateTeam,
+  updateTeamMembers,
   updateTeamTokenLimits,
 } from '../../services/api';
 import type { TeamResponse } from '../../services/api';
@@ -19,7 +21,9 @@ vi.mock('../../services/api', () => ({
   deleteTeam: vi.fn(),
   listTeams: vi.fn(),
   listOfficialAccounts: vi.fn(),
+  listUsers: vi.fn(),
   updateTeam: vi.fn(),
+  updateTeamMembers: vi.fn(),
   updateTeamTokenLimits: vi.fn(),
 }));
 
@@ -71,6 +75,14 @@ describe('团队与 Token 配额页面', () => {
     vi.mocked(createTeam).mockResolvedValue(team);
     vi.mocked(updateTeam).mockResolvedValue(team);
     vi.mocked(updateTeamTokenLimits).mockResolvedValue(team);
+    vi.mocked(updateTeamMembers).mockResolvedValue({ ...team, memberCount: 3 });
+    vi.mocked(listUsers).mockResolvedValue({ items: [{
+      id: 'candidate', displayName: '待加入用户', email: 'candidate@example.com',
+      teamId: null, role: 'USER', status: 'ACTIVE',
+      fiveHourQuotaPercent: null, weeklyQuotaPercent: null,
+      fiveHourTokenLimit: null, weeklyTokenLimit: null,
+      createdAt: team.createdAt, updatedAt: team.updatedAt,
+    }], page: 0, size: 20, totalElements: 1, totalPages: 1 });
   });
 
   it('creates a team with a direct token limit and legacy percent defaults hidden', async () => {
@@ -114,6 +126,30 @@ describe('团队与 Token 配额页面', () => {
     expect(await screen.findByTitle('精确值：120 Token')).toBeInTheDocument();
     expect(screen.getByTitle('精确值：49,880 Token')).toBeInTheDocument();
     expect(getTeamQuotaOverview).toHaveBeenCalledWith(team.id);
+  });
+
+  it('opens member management from a visible team action and reloads member counts after saving', async () => {
+    vi.mocked(listTeams).mockResolvedValueOnce([team])
+      .mockResolvedValue([{ ...team, memberCount: 3 }]);
+    renderPage();
+    const manage = await screen.findByRole('button', { name: '管理成员 研发' });
+    expect(manage).toHaveTextContent('管理成员');
+    fireEvent.click(manage);
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选择 待加入用户' }));
+    fireEvent.click(screen.getByRole('button', { name: '保存成员' }));
+    fireEvent.click(await screen.findByRole('button', { name: '确认变更' }));
+
+    await waitFor(() => expect(listTeams).toHaveBeenCalledTimes(2));
+    expect(await screen.findByRole('button', { name: '研发 成员 3 人' })).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '管理成员：研发' })).not.toBeInTheDocument());
+  });
+
+  it('also opens the independent member dialog from the member count', async () => {
+    vi.mocked(listTeams).mockResolvedValue([team]);
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: '研发 成员 2 人' }));
+    expect(await screen.findByRole('dialog', { name: '管理成员：研发' })).toBeInTheDocument();
+    expect(screen.queryByLabelText('团队名称')).not.toBeInTheDocument();
   });
 
   it('updates token limits without any managed account assignment', async () => {

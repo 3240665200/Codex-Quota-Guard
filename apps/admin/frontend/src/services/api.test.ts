@@ -22,6 +22,7 @@ import {
   PermissionDeniedError,
   setSession,
   updateTeam,
+  updateTeamMembers,
   updateTeamTokenLimits,
   updateUserQuotaPolicy,
   updateUserTokenLimits,
@@ -240,6 +241,38 @@ describe('admin API client', () => {
 
     await expect(listUsers()).rejects.toMatchObject({ status: 401 });
     expect(getSession()).toBeNull();
+  });
+
+  it('updates only explicit team membership changes using the authenticated batch contract', async () => {
+    setSession({ accessToken: 'admin-access-token', user: adminUser });
+    const result = { id: 'team/id', memberCount: 3 };
+    const body = { changes: [
+      { userId: 'new-user', expectedTeamId: null, selected: true },
+      { userId: 'moved-user', expectedTeamId: 'source-team', selected: true },
+      { userId: 'old-user', expectedTeamId: 'team/id', selected: false },
+    ] };
+    fetchMock.mockResolvedValue(response(result));
+
+    await expect(updateTeamMembers('team/id', body)).resolves.toEqual(result);
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(path).toBe('/api/v1/admin/teams/team%2Fid/members');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(init.body as string)).toEqual(body);
+    expect((init.headers as Headers).get('Authorization')).toBe('Bearer admin-access-token');
+  });
+
+  it('preserves the team membership conflict code without clearing the administrator session', async () => {
+    setSession({ accessToken: 'admin-access-token', user: adminUser });
+    fetchMock.mockResolvedValue(response({
+      code: 'TEAM_MEMBERSHIP_CONFLICT', message: '用户团队归属已发生变化',
+    }, 409));
+
+    await expect(updateTeamMembers('team-id', { changes: [
+      { userId: 'new-user', expectedTeamId: null, selected: true },
+    ] })).rejects.toMatchObject({ status: 409, code: 'TEAM_MEMBERSHIP_CONFLICT' });
+    expect(getSession()?.accessToken).toBe('admin-access-token');
   });
 
   it('refreshes an expired access token and retries the authenticated request', async () => {
