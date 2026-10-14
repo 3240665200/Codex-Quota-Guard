@@ -183,9 +183,34 @@ test('Nginx preserves /api, sanitizes forwarding and disables buffering for stre
   assert.match(config, /proxy_set_header X-Forwarded-For \$remote_addr;/);
   assert.match(config, /proxy_set_header X-Forwarded-Proto \$scheme;/);
   assert.match(config, /proxy_buffering off;/);
-  assert.doesNotMatch(config, /location = \/index\.html\s*\{[^}]*add_header/,
+  assert.doesNotMatch(config.replace(/#.*$/gm, ''), /location = \/index\.html\s*\{[^}]*add_header/,
     'index cache control must preserve server-level security headers');
 });
+
+if (process.env.COMPOSE_BINARY) {
+  test('official Compose parser validates generated credentials and isolated service topology', (t) => {
+    const f = fixture(t);
+    f.init();
+    const cleanEnv = { ...process.env };
+    for (const key of ['HTTP_BIND', 'HTTP_PORT', 'PUBLIC_ORIGIN', 'POSTGRES_PASSWORD', 'DATABASE_PASSWORD', 'JWT_SECRET', 'JWT_ISSUER', 'MAIL_ASSISTANCE_ENCRYPTION_KEY', 'ADMIN_BOOTSTRAP_EMAIL', 'ADMIN_BOOTSTRAP_PASSWORD']) delete cleanEnv[key];
+    const parsed = spawnSync(process.env.COMPOSE_BINARY, ['--project-name', 'codex-quota-guard', '--env-file', f.envPath, '-f', path.join(source, 'compose.yaml'), 'config', '--format', 'json'], {
+      encoding: 'utf8', timeout: 15000, env: cleanEnv,
+    });
+    assert.equal(parsed.status, 0, parsed.stderr);
+    // Compose config escapes every $ as $$ for safe re-use of its rendered model.
+    // Undo only this serialization escape; the actual runtime variable stays literal.
+    const config = JSON.parse(parsed.stdout.replaceAll('$$', '$'));
+    assert.equal(config.services.backend.environment.ADMIN_BOOTSTRAP_PASSWORD, password);
+    assert.equal(config.services.backend.environment.APP_REQUIRE_HTTPS, 'false');
+    assert.equal(config.services.backend.environment.CORS_ALLOWED_ORIGINS, 'http://192.0.2.10:8080');
+    assert.equal(config.services.backend.ports, undefined);
+    assert.equal(config.services.postgres.ports, undefined);
+    assert.equal(config.services.web.ports[0].published, '8080');
+    assert.equal(config.networks.database.internal, true);
+    assert.notEqual(config.networks.application.internal, true);
+    assert.equal(config.volumes.pgdata.name, 'codex-quota-guard_pgdata');
+  });
+}
 
 test('build contexts exclude credentials, private mail fixtures, local runtimes and unrelated projects', () => {
   const ignore = readFileSync(path.resolve(source, '../../.dockerignore'), 'utf8');

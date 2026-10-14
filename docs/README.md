@@ -2,6 +2,10 @@
 
 文档按用途分层维护，避免架构说明、接口契约和产品需求混在同一目录。
 
+## 服务器部署
+
+- [Linux Docker 一键部署：中央后端、管理网页与 PostgreSQL](../deploy/docker/README.md)
+
 ## 架构
 
 - [当前系统架构与部署边界](architecture/current-system-architecture.md)

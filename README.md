@@ -61,7 +61,7 @@ v0.3.10 包含「登录辅助」：管理员可为团队关联的官方账户配
 
 当前发布的安装包为 **Windows x64**。它已经包含本地 Java 运行时、WebView2 离线安装器和 Rust 统计程序；用户电脑**不需要**安装 Java、Maven、Node.js、pnpm 或 Rust。
 
-1. 部署中央 Java API、PostgreSQL 和管理后台。管理员创建系统用户、团队并设置额度。部署说明见[管理端后端文档](./apps/admin/backend/README.md)。
+1. 部署中央 Java API、PostgreSQL 和管理后台。Linux 服务器可使用 [Docker 一键部署](./deploy/docker/README.md)，默认支持 IP + HTTP；管理员创建系统用户、团队并设置额度。手动部署见[管理端后端文档](./apps/admin/backend/README.md)。
 2. 从 [GitHub Releases 下载最新安装包](https://github.com/3240665200/Codex-Quota-Guard/releases/latest)，在用户电脑安装。在登录页的“服务器设置”中保存中央服务地址，例如 `https://your-server.example.com`；可信局域网开发测试可临时填写 `http://<服务器 IP>:8080`。保存后从**系统托盘菜单退出客户端**，不要只关闭窗口。`0.0.0.0` 是监听地址，不能作为其他电脑的连接地址。
 3. 以**管理员身份运行安装后的桌面程序**，让客户端安装、升级并启动 `CodexQuotaGuardMeter` Windows 服务；然后登录 Quota Guard **系统账户**完成设备配对。0.2.20 起每次启动都要求管理员权限，启动检查页也可保存服务器地址并重试。
 4. 在该电脑的**官方 Codex 应用或 CLI** 中自行登录官方账户。回到 Quota Guard 查看官方额度、个人/团队用量、逐笔流水和统计程序状态。

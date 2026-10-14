@@ -21,6 +21,7 @@ initialize() {
   fi
   [[ $# -eq 2 ]] || { usage; exit 1; }
   local origin="$1" email="$2" host port password repeated tmp_file
+  local postgres_secret database_secret jwt_secret mail_secret
   # This entry point intentionally handles IP/domain + HTTP, not paths or userinfo.
   [[ "$origin" =~ ^http://([A-Za-z0-9][A-Za-z0-9.-]*)(:([0-9]{1,5}))?$ ]] \
     || fail '地址应为 http://服务器IP:8080，不要带路径、账号或末尾斜杠。'
@@ -41,14 +42,21 @@ initialize() {
     || fail '密码需 12～72 个字符；请勿使用单引号、反斜杠或换行。'
   [[ "$password" != *[!\ -~]* ]] || fail '初始化密码请使用 ASCII 字符。'
 
+  postgres_secret="$(openssl rand -hex 32)" || fail '生成数据库管理员密钥失败。'
+  database_secret="$(openssl rand -hex 32)" || fail '生成数据库应用密钥失败。'
+  jwt_secret="$(openssl rand -hex 32)" || fail '生成 JWT 密钥失败。'
+  mail_secret="$(openssl rand -base64 32)" || fail '生成邮箱加密密钥失败。'
+  [[ "$postgres_secret" =~ ^[a-f0-9]{64}$ && "$database_secret" =~ ^[a-f0-9]{64}$ && "$jwt_secret" =~ ^[a-f0-9]{64}$ ]] \
+    || fail '随机生成器返回了无效的密钥。'
+  [[ "$mail_secret" =~ ^[A-Za-z0-9+/]{43}=$ ]] || fail '随机生成器返回了无效的邮箱密钥。'
   tmp_file="$(mktemp "$deploy_dir/.env.tmp.XXXXXX")"
   # Single-quoted dotenv password preserves literal $/# without shell evaluation.
   if ! {
     printf 'HTTP_BIND=0.0.0.0\nHTTP_PORT=%s\nPUBLIC_ORIGIN=%s\n' "$port" "$origin"
-    printf 'POSTGRES_PASSWORD=%s\n' "$(openssl rand -hex 32)"
-    printf 'DATABASE_PASSWORD=%s\n' "$(openssl rand -hex 32)"
-    printf 'JWT_SECRET=%s\nJWT_ISSUER=codex-quota-guard\n' "$(openssl rand -hex 32)"
-    printf 'MAIL_ASSISTANCE_ENCRYPTION_KEY=%s\n' "$(openssl rand -base64 32)"
+    printf 'POSTGRES_PASSWORD=%s\n' "$postgres_secret"
+    printf 'DATABASE_PASSWORD=%s\n' "$database_secret"
+    printf 'JWT_SECRET=%s\nJWT_ISSUER=codex-quota-guard\n' "$jwt_secret"
+    printf 'MAIL_ASSISTANCE_ENCRYPTION_KEY=%s\n' "$mail_secret"
     printf "ADMIN_BOOTSTRAP_EMAIL=%s\nADMIN_BOOTSTRAP_PASSWORD='%s'\n" "$email" "$password"
   } > "$tmp_file"; then
     rm -f -- "$tmp_file"
