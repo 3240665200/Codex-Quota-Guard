@@ -55,7 +55,7 @@ function SessionError({
 }
 
 const guardExplanation =
-  "CC Switch 可改变 Codex 的请求路由，影响用量归属。Quota Guard 运行期间，统计程序会自动强制结束当前 Windows 用户会话中的 CC Switch，未保存的更改可能丢失。若 Codex 仍指向代理，请先退出 Quota Guard 并恢复官方直连。";
+  "CC Switch 可改变 Codex 的请求路由，影响用量归属。Quota Guard 运行期间，统计程序会自动强制结束当前 Windows 用户会话中的 CC Switch，未保存的更改可能丢失。确认退出后会检查并恢复 Codex 中可识别的 CC Switch 连接配置。恢复后若当前聊天仍报错，请重启 Codex 或重新打开会话以重载连接。";
 
 function StartupGatePage({
   result,
@@ -96,13 +96,15 @@ function StartupGatePage({
       ? "请从系统托盘退出客户端，右键点击程序并选择“以管理员身份运行”，然后重试。"
       : state === "METER_UNAVAILABLE"
         ? "统计程序未安装、未启动或更新失败。请确认安装包完整，并以管理员身份重试。"
-        : state === "BACKEND_UNAVAILABLE"
-          ? "本地 Java 服务未能启动，请检查安装包后重试。"
-          : state === "UNSUPPORTED"
-            ? "当前平台暂不支持 Windows 统计程序门禁。"
-            : state === "GUARD_ERROR"
-              ? "无法确认 CC Switch 已关闭，或统计服务无法核实守护状态。请手动退出 CC Switch 后重试。"
-              : "正在验证管理员权限、统计程序与 CC Switch 状态…";
+        : state === "CODEX_RESTORE_FAILED"
+          ? `Codex 连接配置恢复失败。${result?.codexRestoreError ?? "无法安全恢复当前连接配置。"}处理后点击“重新检查”重试。`
+          : state === "BACKEND_UNAVAILABLE"
+            ? "本地 Java 服务未能启动，请检查安装包后重试。"
+            : state === "UNSUPPORTED"
+              ? "当前平台暂不支持 Windows 统计程序门禁。"
+              : state === "GUARD_ERROR"
+                ? "无法确认 CC Switch 已关闭，或统计服务无法核实守护状态。请手动退出 CC Switch 后重试。"
+                : "正在验证管理员权限、统计程序、CC Switch 状态与 Codex 连接配置…";
   return (
     <main className="relative flex min-h-screen items-center justify-center bg-background px-6 py-12">
       <ThemeSwitcher compact className="absolute right-6 top-5" />
@@ -157,6 +159,7 @@ export function ClientApp() {
   const [gate, setGate] = useState<StartupGateResult | null>(null);
   const [gateRetrying, setGateRetrying] = useState(false);
   const [ccSwitchStopped, setCcSwitchStopped] = useState(false);
+  const [codexConnectionRestored, setCodexConnectionRestored] = useState(false);
   const gateAttempt = useRef(0);
   const previouslyReady = useRef(false);
   const gateQuery = useQuery({
@@ -183,6 +186,7 @@ export function ClientApp() {
 
   useEffect(() => {
     if (gate?.ccSwitchTerminated) setCcSwitchStopped(true);
+    if (gate?.codexConnectionRestored) setCodexConnectionRestored(true);
     if (gate?.state === "READY") {
       previouslyReady.current = true;
     } else if (previouslyReady.current) {
@@ -292,6 +296,7 @@ export function ClientApp() {
       <summary className="cursor-pointer rounded py-1 leading-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
         <span role="status">
           {ccSwitchStopped ? "已停止 CC Switch。" : ""}
+          {codexConnectionRestored ? "已恢复 Codex 连接配置。" : ""}
           运行期间会强制结束 CC Switch，未保存更改可能丢失。
         </span>
         <span className="ml-2 text-primary">查看说明</span>

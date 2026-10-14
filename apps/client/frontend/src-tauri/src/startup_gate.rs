@@ -1,10 +1,12 @@
 use crate::{
     backend::BackendState,
-    conflict_notice::{ConflictNotices, NoticeEvent},
+    codex_connection::{self, RestoreOutcome},
+    conflict_notice::{ConflictNotices, NoticeEvent, RestoreNotice},
     meter_service, tray,
 };
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -32,6 +34,7 @@ pub(crate) enum GateState {
     AdminRequired,
     MeterUnavailable,
     GuardError,
+    CodexRestoreFailed,
     BackendUnavailable,
     #[cfg(not(windows))]
     Unsupported,
@@ -42,6 +45,8 @@ pub(crate) enum GateState {
 pub(crate) struct GateResult {
     pub state: GateState,
     pub cc_switch_terminated: bool,
+    pub codex_connection_restored: bool,
+    pub codex_restore_error: Option<&'static str>,
 }
 
 impl GateResult {
@@ -53,6 +58,8 @@ impl GateResult {
         Self {
             state,
             cc_switch_terminated: false,
+            codex_connection_restored: false,
+            codex_restore_error: None,
         }
     }
 
@@ -60,6 +67,8 @@ impl GateResult {
         Self {
             state: GateState::Ready,
             cc_switch_terminated: terminated,
+            codex_connection_restored: false,
+            codex_restore_error: None,
         }
     }
 
@@ -69,6 +78,55 @@ impl GateResult {
         } else {
             self
         }
+    }
+}
+
+#[derive(Default)]
+struct RestoreTracker {
+    lease_id: String,
+    attempts: HashMap<String, (u64, Result<RestoreOutcome, &'static str>)>,
+    latest: Option<Result<RestoreOutcome, &'static str>>,
+    latest_event: Option<NoticeEvent>,
+}
+
+impl RestoreTracker {
+    fn restore(
+        &mut self,
+        lease_id: &str,
+        event: Option<&NoticeEvent>,
+        retry_failed: bool,
+        restore: impl FnOnce() -> Result<RestoreOutcome, &'static str>,
+    ) -> Result<RestoreOutcome, &'static str> {
+        if self.lease_id != lease_id {
+            self.lease_id = lease_id.to_owned();
+            self.attempts.clear();
+            self.latest = None;
+            self.latest_event = None;
+        }
+        let effective_event = event.cloned().or_else(|| self.latest_event.clone());
+        let (epoch, count) = effective_event
+            .as_ref()
+            .map_or(("initial", 0), |event| (event.epoch.as_str(), event.count));
+        // A legacy service may clear its event metadata after TERMINATED.
+        // Absence of that record is not another termination.
+        let previous = if event.is_none() {
+            self.latest
+        } else {
+            self.attempts
+                .get(epoch)
+                .filter(|(previous_count, _)| *previous_count >= count)
+                .map(|(_, result)| *result)
+        };
+        if let Some(previous) = previous {
+            if previous.is_ok() || !retry_failed {
+                return previous;
+            }
+        }
+        let result = restore();
+        self.attempts.insert(epoch.to_owned(), (count, result));
+        self.latest = Some(result);
+        self.latest_event = effective_event;
+        result
     }
 }
 
@@ -106,6 +164,7 @@ pub(crate) struct StartupGate {
     lease: Mutex<Option<GuardLease>>,
     ready: Arc<AtomicBool>,
     closed: AtomicBool,
+    restore: Mutex<RestoreTracker>,
 }
 
 impl Default for StartupGate {
@@ -115,6 +174,7 @@ impl Default for StartupGate {
             lease: Mutex::new(None),
             ready: Arc::new(AtomicBool::new(false)),
             closed: AtomicBool::new(false),
+            restore: Mutex::new(RestoreTracker::default()),
         }
     }
 }
@@ -215,7 +275,7 @@ impl StartupGate {
         })
     }
 
-    fn inspect_guard(&self, app: &AppHandle, lease_id: &str) -> GateResult {
+    fn inspect_guard(&self, app: &AppHandle, lease_id: &str, retry_failed: bool) -> GateResult {
         let Some(path) = guard_status_path(app) else {
             return GateResult::new(GateState::GuardError);
         };
@@ -228,18 +288,72 @@ impl StartupGate {
         let Ok(bytes) = fs::read(&path) else {
             return GateResult::new(GateState::Checking);
         };
-        if let Some(status) = validated_guard_status(&bytes, lease_id, unix_seconds()) {
-            if let Some(notice) = termination_notice(&status, lease_id) {
-                if !self.closed.load(Ordering::Acquire)
-                    && self.current_lease_id().as_deref() == Some(lease_id)
-                {
-                    if let Some(notices) = app.try_state::<ConflictNotices>() {
-                        notices.observe(app, notice);
-                    }
-                }
-            }
+        let now = unix_seconds();
+        let Some(status) = validated_guard_status(&bytes, lease_id, now) else {
+            return GateResult::new(GateState::Checking);
+        };
+        let mut result = classify_guard_status(&bytes, lease_id, now);
+        let mut notice = termination_notice(&status, lease_id);
+        // All callers hold operation. Keep the lease stable while restoring,
+        // and check shutdown both before touching files and before publishing.
+        let Ok(held) = self.lease.lock() else {
+            return GateResult::new(GateState::GuardError);
+        };
+        if self.closed.load(Ordering::Acquire)
+            || held.as_ref().map_or(true, |lease| {
+                lease.id != lease_id || !lease.healthy.load(Ordering::Acquire)
+            })
+        {
+            return GateResult::new(GateState::GuardError);
         }
-        classify_guard_status(&bytes, lease_id, unix_seconds())
+        if result.state == GateState::Ready {
+            let Ok(mut tracker) = self.restore.lock() else {
+                return GateResult::new(GateState::GuardError);
+            };
+            let restoration = tracker.restore(
+                lease_id,
+                notice.as_ref(),
+                retry_failed,
+                codex_connection::restore,
+            );
+            if notice.is_none() {
+                // Legacy CLEAR records lose their termination fields. Keep
+                // the original event key for notice deduplication and retries.
+                notice = tracker.latest_event.clone();
+            }
+            let recovery = match restoration {
+                Ok(RestoreOutcome::Restored) => {
+                    result.codex_connection_restored = true;
+                    RestoreNotice::Restored
+                }
+                Ok(RestoreOutcome::Unchanged) => RestoreNotice::Unchanged,
+                Err(error) => {
+                    result.state = GateState::CodexRestoreFailed;
+                    result.codex_restore_error = Some(error);
+                    RestoreNotice::Failed(error)
+                }
+            };
+            notice
+                .get_or_insert_with(|| NoticeEvent {
+                    lease_id: lease_id.to_owned(),
+                    epoch: "initial-restore".to_owned(),
+                    count: 0,
+                    last_terminated_at: None,
+                    recovery: RestoreNotice::Pending,
+                })
+                .recovery = recovery;
+        }
+        if self.closed.load(Ordering::Acquire)
+            || held
+                .as_ref()
+                .map_or(true, |lease| !lease.healthy.load(Ordering::Acquire))
+        {
+            return GateResult::new(GateState::GuardError);
+        }
+        if let (Some(notice), Some(notices)) = (notice, app.try_state::<ConflictNotices>()) {
+            notices.observe(app, notice);
+        }
+        result
     }
 
     pub(crate) fn check(&self, app: &AppHandle) -> GateResult {
@@ -283,7 +397,7 @@ impl StartupGate {
                 {
                     break GateResult::new(GateState::GuardError);
                 }
-                let result = self.inspect_guard(app, &lease_id);
+                let result = self.inspect_guard(app, &lease_id, true);
                 if result.state != GateState::Checking {
                     break result;
                 }
@@ -317,7 +431,7 @@ impl StartupGate {
             {
                 return self.block(app, GateResult::new(GateState::GuardError));
             }
-            let current_guard = self.inspect_guard(app, &lease_id);
+            let current_guard = self.inspect_guard(app, &lease_id, false);
             if current_guard.state != GateState::Ready {
                 return self.block(app, current_guard.settle());
             }
@@ -333,7 +447,13 @@ impl StartupGate {
                 return self.block(app, GateResult::new(GateState::GuardError));
             }
             self.ready.store(true, Ordering::Release);
-            GateResult::ready(guard.cc_switch_terminated || current_guard.cc_switch_terminated)
+            GateResult {
+                cc_switch_terminated: guard.cc_switch_terminated
+                    || current_guard.cc_switch_terminated,
+                codex_connection_restored: guard.codex_connection_restored
+                    || current_guard.codex_connection_restored,
+                ..current_guard
+            }
         }
     }
 
@@ -347,7 +467,7 @@ impl StartupGate {
         let Some(lease_id) = self.current_lease_id() else {
             return self.block(app, GateResult::new(GateState::GuardError));
         };
-        let result = self.inspect_guard(app, &lease_id);
+        let result = self.inspect_guard(app, &lease_id, false);
         if result.state != GateState::Ready {
             return self.block(app, result.settle());
         }
@@ -391,7 +511,10 @@ fn classify_guard_status(bytes: &[u8], lease_id: &str, now: u64) -> GateResult {
     };
     let mut result = match status.get("ccSwitchGuard").and_then(|v| v.as_str()) {
         Some("CLEAR") => GateResult::ready(false),
-        Some("TERMINATED") => GateResult::ready(true),
+        Some("TERMINATED") if termination_notice(&status, lease_id).is_some() => {
+            GateResult::ready(true)
+        }
+        Some("TERMINATED") => GateResult::new(GateState::GuardError),
         Some("ERROR") => GateResult::new(GateState::GuardError),
         _ => GateResult::new(GateState::Checking),
     };
@@ -438,6 +561,7 @@ fn termination_notice(status: &serde_json::Value, lease_id: &str) -> Option<Noti
             epoch: Uuid::from_u128(u128::from(checked_at)).to_string(),
             count: 1,
             last_terminated_at: Some(checked_at),
+            recovery: RestoreNotice::Pending,
         });
     }
     let epoch = Uuid::parse_str(status.get("ccSwitchTerminationEpoch")?.as_str()?).ok()?;
@@ -451,6 +575,7 @@ fn termination_notice(status: &serde_json::Value, lease_id: &str) -> Option<Noti
         epoch: epoch.to_string(),
         count,
         last_terminated_at: Some(terminated_at),
+        recovery: RestoreNotice::Pending,
     })
 }
 
@@ -582,6 +707,148 @@ fn is_elevated_admin() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn restore_event(epoch: &str, count: u64) -> NoticeEvent {
+        NoticeEvent {
+            lease_id: "lease-a".to_owned(),
+            epoch: epoch.to_owned(),
+            count,
+            last_terminated_at: Some(90),
+            recovery: RestoreNotice::Pending,
+        }
+    }
+
+    #[test]
+    fn restores_initial_residue_once_per_lease_even_without_a_termination() {
+        let mut tracker = RestoreTracker::default();
+        assert_eq!(
+            tracker.restore("lease-a", None, false, || Ok(RestoreOutcome::Restored)),
+            Ok(RestoreOutcome::Restored)
+        );
+        assert_eq!(
+            tracker.restore("lease-a", None, true, || panic!("already restored")),
+            Ok(RestoreOutcome::Restored)
+        );
+        assert_eq!(
+            tracker.restore("lease-b", None, false, || Ok(RestoreOutcome::Unchanged)),
+            Ok(RestoreOutcome::Unchanged)
+        );
+    }
+
+    #[test]
+    fn new_terminations_restore_but_repeated_or_regressed_counts_do_not() {
+        let mut tracker = RestoreTracker::default();
+        let first = restore_event("epoch-a", 2);
+        tracker
+            .restore("lease-a", Some(&first), false, || {
+                Ok(RestoreOutcome::Restored)
+            })
+            .unwrap();
+        tracker
+            .restore("lease-a", Some(&first), true, || panic!("duplicate event"))
+            .unwrap();
+        tracker
+            .restore("lease-a", Some(&restore_event("epoch-a", 1)), false, || {
+                panic!("regressed event")
+            })
+            .unwrap();
+        tracker
+            .restore("lease-a", Some(&restore_event("epoch-a", 3)), false, || {
+                Ok(RestoreOutcome::Unchanged)
+            })
+            .unwrap();
+        tracker
+            .restore("lease-a", Some(&restore_event("epoch-b", 1)), false, || {
+                Ok(RestoreOutcome::Restored)
+            })
+            .unwrap();
+        tracker
+            .restore("lease-a", Some(&first), false, || {
+                panic!("previous epoch already covered")
+            })
+            .unwrap();
+        tracker
+            .restore("lease-a", None, false, || panic!("legacy event cleared"))
+            .unwrap();
+        assert_eq!(tracker.latest_event.as_ref().unwrap().epoch, "epoch-b");
+    }
+
+    #[test]
+    fn failed_restore_is_sticky_until_explicit_retry_or_a_new_termination() {
+        let mut tracker = RestoreTracker::default();
+        let first = restore_event("epoch-a", 1);
+        assert_eq!(
+            tracker.restore("lease-a", Some(&first), false, || Err("无法写入配置。")),
+            Err("无法写入配置。")
+        );
+        assert_eq!(
+            tracker.restore("lease-a", Some(&first), false, || panic!(
+                "monitor must not retry unchanged failure"
+            )),
+            Err("无法写入配置。")
+        );
+        tracker
+            .restore("lease-a", Some(&first), true, || {
+                Ok(RestoreOutcome::Restored)
+            })
+            .unwrap();
+        assert_eq!(
+            tracker.restore(
+                "lease-a",
+                Some(&restore_event("epoch-a", 2)),
+                false,
+                || Err("无法读取配置。")
+            ),
+            Err("无法读取配置。")
+        );
+        tracker
+            .restore("lease-a", Some(&restore_event("epoch-a", 3)), false, || {
+                Ok(RestoreOutcome::Restored)
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn retry_after_legacy_clear_keeps_the_original_event_key() {
+        let mut tracker = RestoreTracker::default();
+        let first = restore_event("legacy-epoch", 1);
+        assert!(tracker
+            .restore("lease-a", Some(&first), false, || Err("无法写入配置。"))
+            .is_err());
+        tracker
+            .restore("lease-a", None, true, || Ok(RestoreOutcome::Restored))
+            .unwrap();
+        assert_eq!(tracker.latest_event.as_ref(), Some(&first));
+        tracker
+            .restore("lease-a", Some(&first), false, || {
+                panic!("retry must update original event result")
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn restore_failure_has_a_distinct_serialized_gate_state_and_safe_detail() {
+        let result = GateResult {
+            state: GateState::CodexRestoreFailed,
+            codex_restore_error: Some("无法读取配置。"),
+            ..GateResult::ready(true)
+        };
+        let serialized = serde_json::to_value(result).unwrap();
+        assert_eq!(serialized["state"], "CODEX_RESTORE_FAILED");
+        assert_eq!(serialized["codexRestoreError"], "无法读取配置。");
+        assert_eq!(serialized["codexConnectionRestored"], false);
+    }
+
+    #[test]
+    fn malformed_termination_metadata_cannot_skip_a_new_restore() {
+        let mut status = notification_status("TERMINATED", 1);
+        status["ccSwitchTerminationEpoch"] = serde_json::json!("invalid");
+        let bytes = serde_json::to_vec(&status).unwrap();
+        assert_eq!(
+            classify_guard_status(&bytes, "lease-current", 100).state,
+            GateState::GuardError
+        );
+    }
 
     fn notification_status(state: &str, count: u64) -> serde_json::Value {
         serde_json::json!({

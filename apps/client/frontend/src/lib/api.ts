@@ -38,10 +38,13 @@ const startupGateSchema = z.object({
     "ADMIN_REQUIRED",
     "METER_UNAVAILABLE",
     "GUARD_ERROR",
+    "CODEX_RESTORE_FAILED",
     "BACKEND_UNAVAILABLE",
     "UNSUPPORTED",
   ]),
   ccSwitchTerminated: z.boolean(),
+  codexConnectionRestored: z.boolean().optional(),
+  codexRestoreError: z.string().min(1).max(512).nullable().optional(),
 });
 
 const meterVersionSchema = z.object({
