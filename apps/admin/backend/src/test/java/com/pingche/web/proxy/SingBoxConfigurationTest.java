@@ -1,7 +1,9 @@
 package com.pingche.web.proxy;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.pingche.web.auth.DomainException;
 import java.net.InetAddress;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.JsonNode;
@@ -9,6 +11,20 @@ import tools.jackson.databind.ObjectMapper;
 
 class SingBoxConfigurationTest {
     private final ObjectMapper json = new ObjectMapper();
+
+    @Test
+    void rejectsPublicMetadataChangedWithoutAuthenticatedConfiguration() throws Exception {
+        ProxyNodeDefinition original = new ProxyNodeParser(json).parse("https://alice:synthetic-password@proxy.example.com:8443");
+        InetAddress pinned = InetAddress.getByAddress(new byte[] {8, 8, 8, 8});
+        ProxyNodeDefinition alteredHost = new ProxyNodeDefinition(original.label(), original.protocol(), "attacker.example.com",
+                original.port(), original.outboundJson(), true);
+        ProxyNodeDefinition alteredPort = new ProxyNodeDefinition(original.label(), original.protocol(), original.host(),
+                443, original.outboundJson(), true);
+        for (ProxyNodeDefinition altered : java.util.List.of(alteredHost, alteredPort)) {
+            assertThatThrownBy(() -> new SingBoxConfiguration(json).build(altered, pinned, 12345))
+                    .isInstanceOf(DomainException.class).hasMessageNotContaining("synthetic-password");
+        }
+    }
 
     @Test
     void exposesOnlyLoopbackAndRoutesOnlyFixedOfficialTlsTargetWithoutDirectFallback() throws Exception {
