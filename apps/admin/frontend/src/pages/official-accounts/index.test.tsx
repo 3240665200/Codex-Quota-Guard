@@ -12,7 +12,7 @@ vi.mock('../../services/api', () => ({
   updateOfficialAccount: vi.fn(),
 }));
 
-describe('官方账户只读登记页', () => {
+describe('官方账户登记与授权入口', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(listOfficialAccounts).mockResolvedValue([{
@@ -27,12 +27,12 @@ describe('官方账户只读登记页', () => {
     }]);
   });
 
-  it('shows a recent official snapshot without exposing credential controls', async () => {
+  it('keeps reported quota and exposes a separate authorization and session entry', async () => {
     render(<AntApp><OfficialAccountsPage /></AntApp>);
     expect(await screen.findByText('研发账户')).toBeInTheDocument();
     expect(screen.getByText('7 天剩余 60%')).toBeInTheDocument();
     expect(screen.queryByText('5 小时剩余')).not.toBeInTheDocument();
-    expect(screen.getByText(/不托管官方账户会话凭证/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '授权与会话 研发账户' })).toBeInTheDocument();
   });
 
   it('registers an account estimate and reporting user, not a credential', async () => {
