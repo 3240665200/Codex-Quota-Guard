@@ -15,12 +15,12 @@ const result = (status = 'ACCEPTED') => ({ planId: 'plan-UNBOUND', mode: 'UNBOUN
 const deferred = <T,>() => { let resolve!: (value: T) => void; let reject!: (value: unknown) => void;
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 async function preview(mode = 'UNBOUND') {
-  fireEvent.click(screen.getByRole('button', { name: mode === 'ALL' ? '登出所有会话' : '登出所有未绑定会话', exact: true }));
+  fireEvent.click(screen.getByRole('button', { name: mode === 'ALL' ? '登出所有会话' : '登出所有未绑定会话' }));
   return screen.findByRole('region', { name: '登出预览' });
 }
 async function confirm() {
   fireEvent.click(screen.getByRole('checkbox', { name: /我已核对预览/ }));
-  fireEvent.click(screen.getByRole('button', { name: '确认登出所有未绑定会话', exact: true }));
+  fireEvent.click(screen.getByRole('button', { name: '确认登出所有未绑定会话' }));
 }
 
 describe('官方会话登出面板', () => {
@@ -48,9 +48,9 @@ describe('官方会话登出面板', () => {
     await preview('ALL');
     expect(screen.getByText(/包括已绑定、受信任及当前官方管理会话/)).toBeInTheDocument();
     expect(screen.getByText(/不会退出本系统管理账户/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '确认登出所有会话', exact: true })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '确认登出所有会话' })).toBeDisabled();
     fireEvent.click(screen.getByRole('checkbox', { name: /我已核对预览/ }));
-    fireEvent.click(screen.getByRole('button', { name: '确认登出所有会话', exact: true }));
+    fireEvent.click(screen.getByRole('button', { name: '确认登出所有会话' }));
     await waitFor(() => expect(mocks.confirmSessionLogout).toHaveBeenCalledWith('account-1', 'plan-ALL', 'ALL'));
   });
 
@@ -115,18 +115,18 @@ describe('官方会话登出面板', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: /我已核对预览/ }));
     await preview('ALL');
     expect(screen.getByRole('checkbox', { name: /我已核对预览/ })).not.toBeChecked();
-    expect(screen.getByRole('button', { name: '确认登出所有会话', exact: true })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '确认登出所有会话' })).toBeDisabled();
   });
 
   it('ignores a late preview after switching accounts and clears all old confirmation state', async () => {
     const pending = deferred<ReturnType<typeof plan>>(); mocks.previewSessionLogout.mockReturnValueOnce(pending.promise);
     const view = render(<SessionLogoutPanel accountId="account-1" />);
-    fireEvent.click(screen.getByRole('button', { name: '登出所有未绑定会话', exact: true }));
+    fireEvent.click(screen.getByRole('button', { name: '登出所有未绑定会话' }));
     view.rerender(<SessionLogoutPanel accountId="account-2" />);
     await act(async () => pending.resolve(plan()));
     expect(screen.queryByRole('region', { name: '登出预览' })).not.toBeInTheDocument();
     expect(mocks.confirmSessionLogout).not.toHaveBeenCalled();
-    expect(screen.getByRole('button', { name: '登出所有会话', exact: true })).toBeEnabled();
+    expect(screen.getByRole('button', { name: '登出所有会话' })).toBeEnabled();
   });
 
   it('clears a preview when the saved authorization version changes', async () => {
@@ -164,6 +164,6 @@ describe('官方会话登出面板', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: /我已核对预览/ }));
     expect(screen.getByRole('button', { name: '确认登出所有未绑定会话' })).toBeDisabled();
     view.rerender(<SessionLogoutPanel accountId="account-1" disabled />);
-    expect(screen.getByRole('button', { name: '登出所有会话', exact: true })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '登出所有会话' })).toBeDisabled();
   });
 });
