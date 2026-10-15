@@ -220,6 +220,72 @@ class OfficialSessionClientTest {
     }
 
     @Test
+    void officialLogoutUsesFixedPostEndpointsAndNeverRetries() throws Exception {
+        HttpClient http = mock(HttpClient.class);
+        List<HttpRequest> requests = new ArrayList<>();
+        when(http.sendAsync(any(HttpRequest.class), any(HttpResponse.BodyHandler.class))).thenAnswer(call -> {
+            requests.add(call.getArgument(0));
+            return CompletableFuture.completedFuture(response(200, "{\"success\":true}"));
+        });
+        OfficialSessionClient client = client(http);
+        assertThat(client.logoutAll(credentials(), null).status()).isEqualTo("ACCEPTED");
+        assertThat(client.revokeSession(credentials(), null, "synthetic-session").status()).isEqualTo("ACCEPTED");
+        assertThat(requests).extracting(request -> request.uri().toString()).containsExactly(
+                "https://chatgpt.com/backend-api/accounts/logout_all",
+                "https://chatgpt.com/backend-api/accounts/sessions/revoke");
+        assertThat(requests).allSatisfy(request -> {
+            assertThat(request.method()).isEqualTo("POST");
+            assertThat(request.headers().firstValue("Authorization")).contains("Bearer synthetic-access");
+            assertThat(request.headers().firstValue("ChatGPT-Account-ID")).contains("official-account-one");
+        });
+        assertThat(requests.get(0).bodyPublisher().orElseThrow().contentLength()).isZero();
+        var bytes = new java.io.ByteArrayOutputStream();
+        var done = new CompletableFuture<Void>();
+        requests.get(1).bodyPublisher().orElseThrow().subscribe(new Flow.Subscriber<ByteBuffer>() {
+            public void onSubscribe(Flow.Subscription subscription) { subscription.request(Long.MAX_VALUE); }
+            public void onNext(ByteBuffer buffer) { byte[] chunk = new byte[buffer.remaining()];buffer.get(chunk);bytes.writeBytes(chunk); }
+            public void onError(Throwable error) { done.completeExceptionally(error); }
+            public void onComplete() { done.complete(null); }
+        });
+        done.get(1,TimeUnit.SECONDS);
+        assertThat(new ObjectMapper().readTree(bytes.toByteArray()).get("session_id").asString()).isEqualTo("synthetic-session");
+    }
+
+    @Test
+    void logoutDistinguishesRejectionFromUnknownEffectsAndDoesNotExposeBodies() {
+        for (int status : new int[]{200,204,401,403,429,500,302}) {
+            HttpClient http=mock(HttpClient.class);
+            when(http.sendAsync(any(HttpRequest.class),any(HttpResponse.BodyHandler.class)))
+                    .thenReturn(CompletableFuture.completedFuture(response(status,status==204?"":"{\"success\":true,\"private\":\"secret-marker\"}")));
+            OfficialSessionWriteResult result=client(http).logoutAll(credentials(),null);
+            assertThat(result.status()).isEqualTo(status==200||status==204?"ACCEPTED":status==401||status==403||status==429?"REJECTED":"UNKNOWN");
+            assertThat(result.toString()).doesNotContain("secret-marker","synthetic-access","private-cookie");
+            verify(http).sendAsync(any(HttpRequest.class),any(HttpResponse.BodyHandler.class));
+        }
+        for(String body : List.of("<html>private-token</html>","{\"success\":false}","{\"error\":\"private-token\"}")) {
+            HttpClient http=mock(HttpClient.class);
+            when(http.sendAsync(any(HttpRequest.class),any(HttpResponse.BodyHandler.class))).thenReturn(CompletableFuture.completedFuture(response(200,body)));
+            assertThat(client(http).logoutAll(credentials(),null).status()).isEqualTo("UNKNOWN");
+            verify(http).sendAsync(any(HttpRequest.class),any(HttpResponse.BodyHandler.class));
+        }
+    }
+
+    @Test
+    void ambiguousLogoutTimeoutIsNotRetriedAndInvalidSessionNeverSends() throws Exception {
+        HttpClient http=mock(HttpClient.class);
+        CompletableFuture<HttpResponse<byte[]>> pending=mock(CompletableFuture.class);
+        when(pending.get(10,TimeUnit.SECONDS)).thenThrow(new TimeoutException());
+        when(http.sendAsync(any(HttpRequest.class),any(HttpResponse.BodyHandler.class))).thenReturn(pending);
+        assertThat(client(http).logoutAll(credentials(),null).status()).isEqualTo("UNKNOWN");
+        verify(pending).cancel(true);
+        verify(http).sendAsync(any(HttpRequest.class),any(HttpResponse.BodyHandler.class));
+        HttpClient noRequest=mock(HttpClient.class);
+        for(String invalid : new String[]{null,"", " ","x\r\ninvalid","x".repeat(513)})
+            assertThat(client(noRequest).revokeSession(credentials(),null,invalid).status()).isEqualTo("REJECTED");
+        verifyNoInteractions(noRequest);
+    }
+
+    @Test
     void deadlineCancelsStalledBodyAndSubscriberCancelsOversizedBody() throws Exception {
         HttpClient http = mock(HttpClient.class);
         CompletableFuture<HttpResponse<byte[]>> pending = mock(CompletableFuture.class);
