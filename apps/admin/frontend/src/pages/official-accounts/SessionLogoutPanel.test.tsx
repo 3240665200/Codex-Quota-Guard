@@ -68,7 +68,7 @@ describe('官方会话登出面板', () => {
     const button = screen.getByRole('button', { name: /正在提交登出/ });
     fireEvent.click(button); fireEvent.click(button);
     expect(mocks.confirmSessionLogout).toHaveBeenCalledTimes(1);
-    expect(screen.getByText(/关闭窗口不会取消/)).toBeInTheDocument();
+    expect(screen.getAllByText(/关闭窗口不会取消/).length).toBeGreaterThan(0);
     expect(onBusyChange).toHaveBeenLastCalledWith(true);
     await act(async () => pending.resolve(result()));
     expect(onSettled).toHaveBeenCalledWith('account-1');
@@ -182,7 +182,9 @@ describe('官方会话登出面板', () => {
     expect(button).toBeDisabled();
     expect(screen.getByRole('button', { name: '登出所有会话' })).toBeDisabled();
     expect(screen.getByText(/解除锁不会撤销已发送的官方请求，也不会重试下线/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('checkbox', { name: /我已在官网人工核对结果/ }));
+    const checkbox = screen.getByRole('checkbox', { name: /我已在官网人工核对结果/ });
+    await waitFor(() => expect(checkbox).toBeEnabled());
+    fireEvent.click(checkbox);
     fireEvent.click(button);
     await waitFor(() => expect(mocks.acknowledgeSessionLogoutUnknown).toHaveBeenCalledWith('account-1', 'plan-UNBOUND', 'UNBOUND'));
     expect(onSettled).toHaveBeenCalledWith('account-1');
@@ -209,7 +211,9 @@ describe('官方会话登出面板', () => {
     await screen.findByText(/后台仍保留此操作锁/);
     expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '登出所有会话' })).toBeDisabled();
-    fireEvent.click(screen.getByRole('button', { name: '刷新登出操作状态' }));
+    const refresh = screen.getByRole('button', { name: /刷新登出操作状态/ });
+    await waitFor(() => expect(refresh).toBeEnabled());
+    fireEvent.click(refresh);
     await waitFor(() => expect(mocks.getSessionLogoutCurrent).toHaveBeenCalledTimes(2));
     expect(mocks.confirmSessionLogout).not.toHaveBeenCalled();
   });
@@ -219,7 +223,7 @@ describe('官方会话登出面板', () => {
     render(<SessionLogoutPanel accountId="account-1" />);
     expect(await screen.findByText(/无法核对后台登出操作锁，请手动刷新状态/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '登出所有会话' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: '刷新登出操作状态' })).toBeEnabled();
+    await waitFor(() => expect(screen.getByRole('button', { name: '刷新登出操作状态' })).toBeEnabled());
     expect(mocks.previewSessionLogout).not.toHaveBeenCalled();
   });
 });

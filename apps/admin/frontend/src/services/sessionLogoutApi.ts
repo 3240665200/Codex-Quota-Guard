@@ -20,7 +20,7 @@ export interface SessionLogoutPreview {
   excluded: { session: SessionLogoutDevice; reason: SessionLogoutExclusionReason }[];
   warnings: string[];
 }
-export type SessionLogoutStatus = 'ACCEPTED' | 'PARTIAL' | 'FAILED' | 'UNKNOWN' | 'RESOLVED_UNKNOWN';
+export type SessionLogoutStatus = 'EXECUTING' | 'ACCEPTED' | 'PARTIAL' | 'FAILED' | 'UNKNOWN' | 'RESOLVED_UNKNOWN';
 export interface SessionLogoutResult {
   planId: string;
   mode: SessionLogoutMode;
@@ -28,6 +28,10 @@ export interface SessionLogoutResult {
   requiresReauthorization: boolean;
   results: { sessionId: string | null; status: 'ACCEPTED' | 'FAILED' | 'UNKNOWN' | 'NOT_ATTEMPTED'; errorCode: string | null }[];
   message: string;
+}
+export interface SessionLogoutOperation extends SessionLogoutResult {
+  canAcknowledge: boolean;
+  canAcknowledgeAt: string | null;
 }
 const reasons: readonly string[] = ['MISSING_SESSION_ID', 'DUPLICATE_SESSION_ID', 'DUPLICATE_ROW_ID', 'ACTIVE_BINDING',
   'TRUSTED_DEVICE', 'TRUSTED_DEVICE_UNKNOWN', 'CURRENT_SESSION', 'CURRENT_SESSION_UNKNOWN'];
@@ -39,6 +43,16 @@ const device = (value: unknown): value is SessionLogoutDevice => record(value)
   && nullableBoolean(value.trustedDevice) && nullableBoolean(value.current);
 const invalid = () => new Error('Invalid official session logout response');
 const base = (id: string) => `/api/v1/admin/official-accounts/${encodeURIComponent(id)}/session-logout`;
+const resultFields = (value: Record<string, unknown>) => typeof value.planId === 'string' && !!value.planId.trim()
+  && ['ALL', 'UNBOUND'].includes(value.mode as string)
+  && typeof value.requiresReauthorization === 'boolean' && typeof value.message === 'string'
+  && Array.isArray(value.results) && value.results.every((item) => record(item) && nullableString(item.sessionId)
+    && ['ACCEPTED', 'FAILED', 'UNKNOWN', 'NOT_ATTEMPTED'].includes(item.status as string) && nullableString(item.errorCode));
+function validateResult(value: unknown, planId: string, mode: SessionLogoutMode, statuses: readonly string[]): SessionLogoutResult {
+  if (!record(value) || !resultFields(value) || value.planId !== planId || value.mode !== mode
+    || !statuses.includes(value.status as string)) throw invalid();
+  return value as unknown as SessionLogoutResult;
+}
 
 export async function previewSessionLogout(accountId: string, mode: SessionLogoutMode): Promise<SessionLogoutPreview> {
   const value = await request<unknown>(`${base(accountId)}/preview`, {
@@ -58,11 +72,24 @@ export async function confirmSessionLogout(accountId: string, planId: string, mo
   const value = await request<unknown>(`${base(accountId)}/confirm`, {
     method: 'POST', cache: 'no-store', body: JSON.stringify({ planId, acknowledgeLogoutRisk: true }),
   }, { retryAfterRefresh: false });
-  if (!record(value) || value.planId !== planId || value.mode !== mode
-    || !['ACCEPTED', 'PARTIAL', 'FAILED', 'UNKNOWN'].includes(value.status as string)
-    || typeof value.requiresReauthorization !== 'boolean' || typeof value.message !== 'string'
-    || !Array.isArray(value.results) || !value.results.every((item) => record(item) && nullableString(item.sessionId)
-      && ['ACCEPTED', 'FAILED', 'UNKNOWN', 'NOT_ATTEMPTED'].includes(item.status as string)
-      && nullableString(item.errorCode))) throw invalid();
-  return value as unknown as SessionLogoutResult;
+  return validateResult(value, planId, mode, ['EXECUTING', 'ACCEPTED', 'PARTIAL', 'FAILED', 'UNKNOWN']);
+}
+
+export async function getSessionLogoutCurrent(accountId: string): Promise<{ operation: SessionLogoutOperation | null }> {
+  const value = await request<unknown>(`${base(accountId)}/current`, { cache: 'no-store' }, { retryAfterRefresh: false });
+  if (!record(value)) throw invalid();
+  if (value.operation === null) return { operation: null };
+  const operation = value.operation;
+  if (!record(operation) || !resultFields(operation)
+    || !['EXECUTING', 'ACCEPTED', 'PARTIAL', 'FAILED', 'UNKNOWN', 'RESOLVED_UNKNOWN'].includes(operation.status as string)
+    || typeof operation.canAcknowledge !== 'boolean' || !(operation.canAcknowledgeAt === null
+      || typeof operation.canAcknowledgeAt === 'string' && Number.isFinite(Date.parse(operation.canAcknowledgeAt)))) throw invalid();
+  return { operation: operation as unknown as SessionLogoutOperation };
+}
+
+export async function acknowledgeSessionLogoutUnknown(accountId: string, planId: string, mode: SessionLogoutMode): Promise<SessionLogoutResult> {
+  const value = await request<unknown>(`${base(accountId)}/${encodeURIComponent(planId)}/acknowledge-unknown`, {
+    method: 'POST', cache: 'no-store', body: JSON.stringify({ acknowledgeUncertainOutcome: true }),
+  }, { retryAfterRefresh: false });
+  return validateResult(value, planId, mode, ['RESOLVED_UNKNOWN']);
 }

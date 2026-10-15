@@ -61,7 +61,7 @@ describe('官方会话登出 API', () => {
   });
 
   it('acknowledges an uncertain outcome only with the explicit manual-verification body', async () => {
-    call.mockResolvedValue({ ...result, status: 'RESOLVED_UNKNOWN' });
+    call.mockResolvedValue({ ...result, planId: 'plan/id', status: 'RESOLVED_UNKNOWN' });
     expect(await acknowledgeSessionLogoutUnknown('account/id', 'plan/id', 'UNBOUND')).toMatchObject({ status: 'RESOLVED_UNKNOWN' });
     expect(call).toHaveBeenCalledWith('/api/v1/admin/official-accounts/account%2Fid/session-logout/plan%2Fid/acknowledge-unknown',
       { method: 'POST', cache: 'no-store', body: JSON.stringify({ acknowledgeUncertainOutcome: true }) },
@@ -69,7 +69,7 @@ describe('官方会话登出 API', () => {
   });
 
   it.each([
-    { operation: { ...result, status: 'ACCEPTED', canAcknowledge: true, canAcknowledgeAt: null } },
+    { operation: { ...result, status: 'INVALID', canAcknowledge: true, canAcknowledgeAt: null } },
     { operation: { ...result, status: 'UNKNOWN', canAcknowledge: 'true', canAcknowledgeAt: null } },
     { operation: { ...result, status: 'EXECUTING', canAcknowledge: false, canAcknowledgeAt: 'invalid' } },
   ])('rejects invalid durable lock metadata', async (value) => {
