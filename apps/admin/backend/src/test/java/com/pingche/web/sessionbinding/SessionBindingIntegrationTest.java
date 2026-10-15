@@ -405,6 +405,19 @@ class SessionBindingIntegrationTest {
         assertThat(service.accountState(accountId).quarantined()).isTrue();
     }
 
+    @Test void creatingAfterAnAccountChangeCannotResurrectAnOldLoginPermission() {
+        var attempt = create();
+        service.prepare(user.getId(), attempt.id());
+        UUID otherAccount = accounts.saveAndFlush(new OfficialAccount("Other account " + UUID.randomUUID(), 1000, null, NOW)).getId();
+        jdbc.update("insert into official_account_connections (official_account_id,requested_account_id,authorization_cipher,status,revision,imported_at,version) values (?,?,?,?,?,?,0)",
+                otherAccount, "account-" + otherAccount, "synthetic-no-secret", "UNVERIFIED", UUID.randomUUID(), NOW);
+        Team other = new Team("Other team " + UUID.randomUUID(), "", Team.Status.ACTIVE, 100, 100, NOW);
+        other.updateTokenLimits(null, null, null, otherAccount, NOW);
+        other = teams.saveAndFlush(other);
+        jdbc.update("update users set team_id=? where id=?", other.getId(), user.getId());
+        assertThatThrownBy(this::create).isInstanceOf(DomainException.class);
+    }
+
     private SessionBindingAttemptResponse create() { return service.create(user.getId(), deviceId, enrollmentId, null); }
     private SessionBindingAttemptResponse createSecondDevice() {
         UUID id = UUID.randomUUID();
