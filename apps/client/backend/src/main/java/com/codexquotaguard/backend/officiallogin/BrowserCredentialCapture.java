@@ -64,10 +64,11 @@ final class BrowserCredentialCapture {
         for (JsonNode cookie : response.path("cookies")) {
             String name = cookie.path("name").asString("");
             String domain = cookie.path("domain").asString("");
-            String value = cookie.path("value").asString("");
             if (!name.matches("__Secure-next-auth\\.session-token(?:\\.[0-9]+)?")
                     || !("chatgpt.com".equals(domain) || ".chatgpt.com".equals(domain))
-                    || !cookie.path("secure").asBoolean() || !safeValue(value, 32768)
+                    || !cookie.path("secure").asBoolean()) continue;
+            String value = cookie.path("value").asString("");
+            if (!safeValue(value, 32768)
                     || value.indexOf(';') >= 0 || value.indexOf(',') >= 0) continue;
             if (accepted.containsKey(name) || accepted.size() >= 64) return "";
             total += name.length() + value.length() + 3;

@@ -147,6 +147,17 @@ class OfficialLoginServiceTest {
         verify(gateway,never()).cancel(anyString(),any());
     }
 
+    @Test void websiteCancellationStopsTheOwnedBrowserBeforeCredentialsCanSubmit() {
+        service.start(jobId,OfficialLoginBrowser.Browser.EDGE);tasks.remove().run();
+        when(gateway.get(anyString(),eq(jobId))).thenReturn(job("CANCELLED",now.plusSeconds(600)));
+        service.poll();while(!tasks.isEmpty()) tasks.remove().run();
+        assertThat(service.status().state()).isEqualTo("CANCELLED");
+        authorization.complete(new OfficialLoginBrowser.Authorization("Bearer synthetic-token",null,"synthetic-account"));
+        while(!tasks.isEmpty()) tasks.remove().run();
+        verify(browserSession).close();
+        verify(gateway,never()).complete(anyString(),any(),any());
+    }
+
     private OfficialLoginGateway.Job job(String state, Instant expires) { return new OfficialLoginGateway.Job(jobId,account,"Synthetic account",state,expires,null,null); }
     private SystemUser user(UUID id,String role) { return new SystemUser(id,"synthetic@example.test","Synthetic member",role,"ACTIVE",null,null,null,null,null,null,null); }
 }
