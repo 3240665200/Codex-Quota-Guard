@@ -1,6 +1,7 @@
 import { Alert, Button, Checkbox, Modal, Space, Typography } from 'antd';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { managedErrorMessage } from '../../components/managedErrors';
+import { isSecureManagementContext } from '../../services/api';
 import { confirmUserLogoutAll, getUserLogoutAllCurrent, getUserLogoutAllResult, previewUserLogoutAll } from '../../services/userLogoutApi';
 import type { UserLogoutPreview, UserLogoutResult } from '../../services/userLogoutApi';
 
@@ -20,6 +21,7 @@ const outcomeTitle: Record<UserLogoutResult['status'], string> = {
 export default function UserLogoutDialog({ user, onClose }: {
   user: { id: string; email: string }; onClose: () => void;
 }) {
+  const secure = isSecureManagementContext();
   const [plan, setPlan] = useState<UserLogoutPreview | null>(null);
   const [result, setResult] = useState<UserLogoutResult | null>(null);
   const [submittedId, setSubmittedId] = useState<string | null>(null);
@@ -46,11 +48,16 @@ export default function UserLogoutDialog({ user, onClose }: {
     const lifetime = { active: true, busy: true, userId: user.id }; lifetimeRef.current = lifetime;
     setPlan(null); setResult(null); setSubmittedId(null); setPhase('current'); setError(''); setAcknowledged(false);
     operationStarted.current = Date.now();
+    if (!secure) {
+      lifetime.busy = false; setPhase(null);
+      setError('仅允许 HTTPS 或本机 HTTP 调试访问官方会话管理，请先使用安全地址。');
+      return () => { lifetime.active = false; };
+    }
     void loadCurrent(lifetime).catch(() => {
       if (active(lifetime)) setError('无法核对后台操作状态或生成安全预览，请刷新状态；本次不会执行下线。');
     }).finally(() => { if (active(lifetime)) { lifetime.busy = false; setPhase(null); } });
     return () => { lifetime.active = false; };
-  }, [user.id]);
+  }, [user.id, secure]);
 
   useEffect(() => {
     if (!plan) { setExpired(false); return; }
@@ -63,7 +70,7 @@ export default function UserLogoutDialog({ user, onClose }: {
 
   const refresh = useCallback(async () => {
     const lifetime = lifetimeRef.current;
-    if (!lifetime?.active || lifetime.busy) return;
+    if (!secure || !lifetime?.active || lifetime.busy) return;
     lifetime.busy = true; setPhase('read'); setError('');
     try {
       if (submittedId) {
@@ -73,7 +80,7 @@ export default function UserLogoutDialog({ user, onClose }: {
     } catch {
       if (active(lifetime)) setError(submittedId ? '无法读取本次下线结果，请稍后刷新；不会重新提交下线请求。' : '无法核对后台操作状态，请稍后刷新。');
     } finally { if (active(lifetime)) { lifetime.busy = false; setPhase(null); } }
-  }, [submittedId]);
+  }, [submittedId, secure]);
 
   useEffect(() => {
     if (result?.status !== 'EXECUTING' || phase !== null || error || Date.now() - operationStarted.current > 300_000) return;
@@ -83,7 +90,7 @@ export default function UserLogoutDialog({ user, onClose }: {
 
   const confirm = async () => {
     const lifetime = lifetimeRef.current;
-    if (!lifetime?.active || lifetime.busy || !plan || submittedId || !acknowledged || expired) return;
+    if (!secure || !lifetime?.active || lifetime.busy || !plan || submittedId || !acknowledged || expired) return;
     if (Date.parse(plan.expiresAt) <= Date.now()) { setExpired(true); setAcknowledged(false); return; }
     const planId = plan.planId;
     lifetime.busy = true; setPhase('confirm'); setSubmittedId(planId); setPlan(null); setAcknowledged(false); setError('');
@@ -102,7 +109,7 @@ export default function UserLogoutDialog({ user, onClose }: {
 
   const newPreview = async () => {
     const lifetime = lifetimeRef.current;
-    if (!lifetime?.active || lifetime.busy || unresolved(result) || submittedId && !result) return;
+    if (!secure || !lifetime?.active || lifetime.busy || unresolved(result) || submittedId && !result) return;
     lifetime.busy = true; setPhase('preview'); setError(''); setPlan(null); setAcknowledged(false);
     try { await loadPreview(lifetime); }
     catch (failure) { if (active(lifetime)) setError(managedErrorMessage(failure, '无法生成安全预览，请核对官方授权和会话状态。')); }
@@ -117,7 +124,7 @@ export default function UserLogoutDialog({ user, onClose }: {
   return <Modal open title={`强制下线所有账户 · ${user.email}`} width={760} mask={{ closable: false }}
     closable={false} keyboard={phase !== 'confirm'} onCancel={() => { if (phase !== 'confirm') onClose(); }}
     footer={<Space wrap>
-      <Button disabled={busy} onClick={() => void refresh()}>刷新操作状态</Button>
+      <Button disabled={busy || !secure} onClick={() => void refresh()}>刷新操作状态</Button>
       <Button disabled={phase === 'confirm'} onClick={onClose}>关闭</Button>
       {visiblePlan ? <Button danger type="primary" loading={phase === 'confirm'} disabled={busy || expired || !acknowledged || !!submittedId}
         onClick={() => void confirm()}>确认下线所有账户</Button> : null}

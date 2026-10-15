@@ -64,7 +64,7 @@ function validatePreview(value: unknown, userId: string): UserLogoutPreview {
     || !Array.isArray(value.warnings) || !value.warnings.every((item) => typeof item === 'string')
     || !Array.isArray(value.accounts) || !value.accounts.every((account) => {
       if (!accountBase(account) || !['READY', 'NOT_ATTEMPTED'].includes(account.status as string)
-        || !Array.isArray(account.sessionIds) || !account.sessionIds.length || account.sessionIds.length > 100
+        || !Array.isArray(account.sessionIds) || !account.sessionIds.length || account.status === 'READY' && account.sessionIds.length > 100
         || !account.sessionIds.every(id) || !unique(account.sessionIds)
         || !Array.isArray(account.targets) || !account.targets.every(device)
         || !Array.isArray(account.excluded) || !account.excluded.every((item) => record(item)
