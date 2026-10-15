@@ -225,6 +225,58 @@ describe("本设备官方会话绑定", () => {
       )?.[1],
     ).toEqual({ attemptId: id });
   });
+  it("取消后未受保护的终态提供显式重新申请入口", async () => {
+    const original = native.getMockImplementation()!;
+    native.mockImplementation(async (name, args) =>
+      name === "session_binding_current"
+        ? { attempt: attempt("CANCELLED"), binding: null }
+        : original(name, args),
+    );
+    render(<SessionBinding userId="user-a" />);
+    expect(await screen.findByText(/可以重新申请绑定/)).toBeVisible();
+    expect(native.mock.calls.some(([name]) => name === "session_binding_start")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "重新申请绑定" }));
+    await screen.findByRole("button", { name: "已完成登录，识别本设备" });
+    expect(native.mock.calls.filter(([name]) => name === "session_binding_start")).toHaveLength(1);
+  });
+  it("取消后的队列保护由管理员恢复，重新检查不会自动重建或绕过旧任务", async () => {
+    let quarantined = true;
+    native.mockImplementation(async (name) =>
+      name === "session_binding_current"
+        ? { attempt: attempt("CANCELLED", { quarantined }), binding: null }
+        : attempt(),
+    );
+    render(<SessionBinding userId="user-a" />);
+    await screen.findByText("等待管理员恢复绑定队列");
+    expect(screen.queryByRole("button", { name: /重新申请绑定|开始绑定本设备/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "检查队列是否已恢复" }));
+    await screen.findByText("等待管理员恢复绑定队列");
+    expect(native.mock.calls.some(([name]) => name === "session_binding_start")).toBe(false);
+    quarantined = false;
+    fireEvent.click(screen.getByRole("button", { name: "检查队列是否已恢复" }));
+    await screen.findByRole("button", { name: "重新申请绑定" });
+    expect(screen.queryByText("等待管理员恢复绑定队列")).toBeNull();
+    expect(native.mock.calls.some(([name]) => name === "session_binding_start")).toBe(false);
+  });
+  it("申请失败后保留显式重试入口，只有新后台响应才能推进状态", async () => {
+    let starts = 0;
+    native.mockImplementation(async (name) => {
+      if (name === "session_binding_current") return { attempt: null, binding: null };
+      if (name === "session_binding_start" && starts++ === 0) throw new Error("synthetic unavailable");
+      return attempt();
+    });
+    render(<SessionBinding userId="user-a" />);
+    fireEvent.click(await screen.findByRole("button", { name: "开始绑定本设备" }));
+    fireEvent.click(await screen.findByRole("button", { name: "重试申请绑定" }));
+    await screen.findByRole("button", { name: "已完成登录，识别本设备" });
+    expect(starts).toBe(2);
+  });
+  it("设备登记不可用时指出先配对统计程序再重新读取状态", async () => {
+    native.mockRejectedValue("本设备绑定信息不可用，请检查统计程序设备登记或联系管理员。");
+    render(<SessionBinding userId="user-a" />);
+    await screen.findByText(/先.*配对统计程序.*重新读取绑定状态/);
+    expect(screen.getByRole("button", { name: "重新读取绑定状态" })).toBeEnabled();
+  });
   it("换用户后忽略旧用户尚未返回的响应", async () => {
     let finish!: (value: unknown) => void;
     native.mockImplementationOnce(
@@ -275,5 +327,6 @@ describe("本设备官方会话绑定", () => {
       ).toBeNull(),
     );
     expect(screen.getByText(/本次绑定已超时/)).toBeVisible();
+    expect(screen.queryByRole("button", { name: /重新申请绑定|开始绑定本设备/ })).toBeNull();
   });
 });
