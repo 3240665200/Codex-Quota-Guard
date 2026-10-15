@@ -23,7 +23,7 @@ const stateLabels: Record<OfficialLoginHelperStatus["state"], string> = {
   IDLE: "选择一个待授权任务开始。",
   STARTING: "正在打开独立浏览器窗口…",
   WAITING_FOR_LOGIN:
-    "请在浏览器中完成登录与验证码，助手会等待官方账户登录完成。",
+    "请在浏览器中完成登录与验证码；如登录后仍等待，请在官方页面进入设置 → 活动会话。",
   SAVING: "正在将授权结果交给后台验证…",
   COMPLETED: "官方账户连接已保存。",
   FAILED: "官方登录未完成。",
