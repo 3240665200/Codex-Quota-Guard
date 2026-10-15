@@ -134,7 +134,7 @@ class OfficialSessionLogoutBoundaryTest {
         verify(accounts, never()).delete(any());
     }
 
-    @ParameterizedTest @ValueSource(strings = {"COMPLETED", "RESOLVED_UNKNOWN", "PREVIEWED"})
+    @ParameterizedTest @ValueSource(strings = {"ACCEPTED", "RESOLVED_UNKNOWN", "PREVIEW"})
     void inactivePlansAllowBrowserLogin(String state) {
         block(state);
         assertThat(browser.create(ownerId, accountId, new BrowserLoginService.StartRequest(0L, null)).state())
