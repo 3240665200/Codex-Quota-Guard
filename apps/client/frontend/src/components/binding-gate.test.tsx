@@ -176,7 +176,9 @@ describe("device binding access gate", () => {
     show();
     await screen.findByText("This login");
     currentCandidate = { ...candidate, status: "BOUND", binding };
-    act(() => window.dispatchEvent(new Event("quota-guard:assistance-refresh")));
+    act(() =>
+      window.dispatchEvent(new Event("quota-guard:assistance-refresh")),
+    );
     await waitFor(() =>
       expect(
         mock.mock.calls.filter(([name]) => name === "system_access").length,
