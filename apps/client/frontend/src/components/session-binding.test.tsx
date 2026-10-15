@@ -109,7 +109,7 @@ describe("本设备官方会话绑定", () => {
     await screen.findByText(/后台会自动检测并完成绑定/);
     saved = true;
     await changed();
-    await screen.findByText("本设备官方会话已绑定。");
+    await screen.findByText("本设备官方会话绑定记录已保存。");
     expect(
       native.mock.calls.some(
         ([name]) =>
@@ -119,7 +119,7 @@ describe("本设备官方会话绑定", () => {
     ).toBe(false);
     first.unmount();
     render(<SessionBinding userId="user-a" />);
-    await screen.findByText("本设备官方会话已绑定。");
+    await screen.findByText("本设备官方会话绑定记录已保存。");
     expect(screen.queryByRole("button", { name: "开始绑定本设备" })).toBeNull();
   });
   it("推送后读取后台准备结果，不会替用户发起官方登录或识别", async () => {

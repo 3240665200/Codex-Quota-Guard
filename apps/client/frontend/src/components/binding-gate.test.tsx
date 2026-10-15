@@ -1,19 +1,31 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,
+  cleanup,
   fireEvent,
   render,
   screen,
   waitFor,
 } from "@testing-library/react";
 import { I18nextProvider } from "react-i18next";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { Dashboard } from "@/components/dashboard";
 import i18n from "@/lib/i18n";
 import { api, bindingRequiredMessage } from "@/lib/api";
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+const channels = vi.hoisted(
+  () => [] as { onmessage: (event: unknown) => void }[],
+);
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(),
+  Channel: class {
+    onmessage = (_event: unknown) => {};
+    constructor() {
+      channels.push(this);
+    }
+  },
+}));
 const mock = vi.mocked(invoke);
 const session = {
   authenticated: true,
@@ -41,6 +53,24 @@ const binding = {
   createdAt: "2026-10-15T10:00:00Z",
   endedAt: null,
 };
+const boundAttempt = () => ({
+  id: bindingId,
+  deviceId: bindingId,
+  enrollmentId: bindingId,
+  officialAccountId: bindingId,
+  status: "BOUND",
+  queuePosition: 0,
+  loginAllowed: false,
+  candidateSessionId: "session",
+  candidateDisplayName: "Alice",
+  candidatePlatform: "Windows",
+  expiresAt: new Date(Date.now() + 60_000).toISOString(),
+  errorCode: null,
+  quarantined: false,
+  queueState: "IDLE",
+  retryAt: null,
+  binding,
+});
 let access: unknown;
 let failAccess = false;
 function show(role = "USER") {
@@ -60,7 +90,13 @@ function show(role = "USER") {
   return { ...result, client };
 }
 describe("device binding access gate", () => {
+  afterEach(async () => {
+    cleanup();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
   beforeEach(() => {
+    channels.length = 0;
     access = {
       allowed: false,
       bindingId: null,
@@ -69,6 +105,11 @@ describe("device binding access gate", () => {
     failAccess = false;
     mock.mockReset();
     mock.mockImplementation(async (command) => {
+      if (
+        command === "login_assistance_events_start" ||
+        command === "login_assistance_events_stop"
+      )
+        return;
       if (command === "system_access") {
         if (failAccess) throw new Error("offline");
         return access;
@@ -96,6 +137,123 @@ describe("device binding access gate", () => {
       throw new Error("unsupported");
     });
   });
+  it("does not reset an already verified gate when opening its saved binding record", async () => {
+    access = { allowed: true, bindingId, reason: null };
+    const original = mock.getMockImplementation()!;
+    mock.mockImplementation(async (command, args) =>
+      command === "session_binding_current"
+        ? { attempt: boundAttempt(), binding }
+        : original(command, args),
+    );
+    show();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "设置" })).toBeEnabled(),
+    );
+    const accessReads = mock.mock.calls.filter(
+      ([name]) => name === "system_access",
+    ).length;
+    fireEvent.click(screen.getByRole("button", { name: "登录辅助" }));
+    await screen.findByText(/绑定账户：Alice/);
+    expect(
+      mock.mock.calls.filter(([name]) => name === "system_access"),
+    ).toHaveLength(accessReads);
+    expect(screen.getByRole("button", { name: "设置" })).toBeEnabled();
+    await act(async () => channels[0].onmessage({ type: "state_changed" }));
+    await waitFor(() =>
+      expect(
+        mock.mock.calls.filter(([name]) => name === "session_binding_current")
+          .length,
+      ).toBeGreaterThan(1),
+    );
+    expect(
+      mock.mock.calls.filter(([name]) => name === "system_access"),
+    ).toHaveLength(accessReads);
+  });
+  it("keeps one native assistance stream across workspace navigation and stops it on logout unmount", async () => {
+    access = { allowed: true, bindingId, reason: null };
+    const view = show();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "设置" })).toBeEnabled(),
+    );
+    expect(
+      mock.mock.calls.filter(
+        ([name]) => name === "login_assistance_events_start",
+      ),
+    ).toHaveLength(1);
+    for (let visit = 0; visit < 3; visit += 1) {
+      fireEvent.click(screen.getByRole("button", { name: "登录辅助" }));
+      await screen.findByRole("heading", { name: "监听登录邮件" });
+      fireEvent.click(screen.getByRole("button", { name: "设置" }));
+      await screen.findByRole("heading", { name: "启动设置" });
+    }
+    expect(
+      mock.mock.calls.filter(
+        ([name]) => name === "login_assistance_events_start",
+      ),
+    ).toHaveLength(1);
+    expect(
+      mock.mock.calls.filter(
+        ([name]) => name === "login_assistance_events_stop",
+      ),
+    ).toHaveLength(0);
+    view.unmount();
+    await waitFor(() =>
+      expect(
+        mock.mock.calls.filter(
+          ([name]) => name === "login_assistance_events_stop",
+        ),
+      ).toHaveLength(1),
+    );
+    expect(
+      mock.mock.calls.some(
+        ([name]) =>
+          name === "login_assistance_cancel" ||
+          name === "session_binding_cancel",
+      ),
+    ).toBe(false);
+  });
+  it.each(["transport", "schema"])(
+    "explains a %s gate failure without denying the saved record or leaking raw errors",
+    async (failure) => {
+      access = { allowed: true, bindingId, reason: null };
+      let failed = false;
+      const original = mock.getMockImplementation()!;
+      mock.mockImplementation(async (command, args) => {
+        if (command === "session_binding_current")
+          return { attempt: boundAttempt(), binding };
+        if (command === "system_access" && failed) {
+          if (failure === "schema")
+            return { private: "private-upstream-detail" };
+          throw new Error("private-upstream-detail");
+        }
+        return original(command, args);
+      });
+      const { client } = show();
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "设置" })).toBeEnabled(),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "登录辅助" }));
+      await screen.findByText("本设备官方会话绑定记录已保存。");
+      failed = true;
+      await act(async () => {
+        await client.invalidateQueries({ queryKey: ["client-access"] });
+      });
+      await screen.findByText("绑定状态核验失败");
+      expect(
+        screen.getByText(/已保存的绑定记录不代表当前访问权限已核验通过/),
+      ).toBeVisible();
+      expect(
+        screen.getByText(
+          failure === "schema"
+            ? "本地接口返回的数据格式不完整，请重启应用后重试。"
+            : "暂时无法连接本地服务，请确认应用仍在运行。",
+        ),
+      ).toBeVisible();
+      expect(screen.getByText("本设备官方会话绑定记录已保存。")).toBeVisible();
+      expect(screen.getByRole("button", { name: "设置" })).toBeDisabled();
+      expect(screen.queryByText(/private-upstream-detail/)).toBeNull();
+    },
+  );
   it("starts closed and renders only assistance while protected menus and requests stay blocked", async () => {
     show();
     expect(screen.getByRole("button", { name: "额度总览" })).toBeDisabled();
@@ -346,6 +504,3 @@ describe("device binding access gate", () => {
     }
   });
 });
-vi.mock("@/lib/assistance-events", () => ({
-  subscribeToAssistanceEvents: () => () => {},
-}));

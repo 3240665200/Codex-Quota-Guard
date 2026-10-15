@@ -39,6 +39,20 @@ function subscribe(owner: string, callback = vi.fn()) {
   return { stop, callback };
 }
 describe("shared native assistance SSE subscription", () => {
+  it("reuses the same user's stream across a StrictMode cleanup and immediate remount", async () => {
+    const first = subscribe("alice");
+    first.stop();
+    const next = subscribe("alice");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(starts()).toHaveLength(1);
+    expect(stops()).toHaveLength(0);
+    channels[0].onmessage({ type: "state_changed" });
+    expect(first.callback).not.toHaveBeenCalled();
+    expect(next.callback).toHaveBeenCalledOnce();
+    next.stop();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(stops()).toHaveLength(1);
+  });
   it("shares one authenticated native channel and never forwards OTP-shaped payloads", async () => {
     const first = subscribe("alice");
     const second = subscribe("alice");
