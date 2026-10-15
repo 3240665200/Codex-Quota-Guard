@@ -145,15 +145,29 @@ public class AdminUserLogoutService {
 
     public CurrentResponse current(UUID owner, UUID user) {
         // No provider requests, writes, or retries. Keep unresolved operations ahead of history.
-        List<UUID> ids = jdbc.query("select id from admin_user_logout_plans where owner_id=? and user_id=? and status<>'PREVIEW' order by started_at desc,id desc",
+        List<UUID> latestIds = jdbc.query("select id from admin_user_logout_plans where owner_id=? and user_id=? and status<>'PREVIEW' order by started_at desc,id desc limit 1",
                 (rs, n) -> rs.getObject(1, UUID.class), owner, user);
+        if (latestIds.isEmpty()) return new CurrentResponse(null);
+        // Filter using durable evidence first; completed history never triggers account locks.
+        List<UUID> candidates = jdbc.query("""
+                select distinct p.id,p.started_at from admin_user_logout_plans p
+                join admin_user_logout_accounts a on a.plan_id=p.id
+                left join official_session_logout_plans o on o.id=a.official_plan_id
+                where p.owner_id=? and p.user_id=? and p.status<>'PREVIEW' and (
+                    o.status in ('EXECUTING','UNKNOWN')
+                    or (a.official_plan_id is not null and o.id is null
+                        and (a.dispatch_status<>'NOT_ATTEMPTED' or a.error_code='OFFICIAL_LOGOUT_PLAN_CONSUMED'))
+                    or (p.status='DISPATCHING' and a.dispatch_status in ('PENDING','DISPATCHING')
+                        and o.status='PREVIEW' and o.expires_at>?))
+                order by p.started_at desc,p.id desc
+                """, (rs, n) -> rs.getObject(1, UUID.class), owner, user, at(clock.instant()));
         Result latest = null;
-        for (UUID id : ids) {
+        for (UUID id : candidates) {
             Result observed = result(owner, user, id);
-            if (latest == null) latest = observed;
+            if (id.equals(latestIds.get(0))) latest = observed;
             if (Set.of("EXECUTING", "UNKNOWN").contains(observed.status())) return new CurrentResponse(observed);
         }
-        return new CurrentResponse(latest);
+        return new CurrentResponse(latest == null ? result(owner, user, latestIds.get(0)) : latest);
     }
 
     private Observation accountResult(UUID owner, Plan plan, AccountPreview account) {
