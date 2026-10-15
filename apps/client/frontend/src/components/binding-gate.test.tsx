@@ -84,6 +84,8 @@ describe("device binding access gate", () => {
           recipientEmail: null,
         };
       if (command === "official_login_helper_jobs") return [];
+      if (command === "autostart_status")
+        return { supported: true, enabled: false };
       if (command === "official_login_helper_status")
         return {
           jobId: null,
@@ -211,24 +213,90 @@ describe("device binding access gate", () => {
       false,
     );
   });
-  it("rechecks from a closed state on re-entry and discards the previous page", async () => {
-    access = { allowed: true, bindingId, reason: null };
-    show();
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "设置" })).toBeEnabled(),
-    );
-    fireEvent.click(screen.getByRole("button", { name: "设置" }));
-    await screen.findByRole("heading", { name: "启动设置" });
-    const original = mock.getMockImplementation()!;
-    mock.mockImplementation(async (command, args) =>
-      command === "system_access"
-        ? new Promise(() => {})
-        : original(command, args),
-    );
-    act(() => window.dispatchEvent(new Event("focus")));
-    expect(screen.getByRole("button", { name: "设置" })).toBeDisabled();
-    expect(screen.queryByRole("heading", { name: "启动设置" })).toBeNull();
-  });
+  it.each(["focus", "visibilitychange"])(
+    "keeps the authorized page mounted but inert while %s rechecks access",
+    async (eventName) => {
+      access = { allowed: true, bindingId, reason: null };
+      show();
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "设置" })).toBeEnabled(),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "设置" }));
+      const heading = await screen.findByRole("heading", { name: "启动设置" });
+      const toggle = await screen.findByRole("switch", { name: "开机自启动" });
+      await waitFor(() => expect(toggle).toBeEnabled());
+      let resolveAccess!: (value: unknown) => void;
+      const pendingAccess = new Promise((resolve) => {
+        resolveAccess = resolve;
+      });
+      const original = mock.getMockImplementation()!;
+      mock.mockImplementation(async (command, args) =>
+        command === "system_access" ? pendingAccess : original(command, args),
+      );
+      const target = eventName === "focus" ? window : document;
+      act(() => {
+        target.dispatchEvent(new Event(eventName));
+        target.dispatchEvent(new Event(eventName));
+      });
+      expect(screen.getByRole("heading", { name: "启动设置" })).toBe(heading);
+      expect(screen.getByRole("button", { name: "设置" })).toBeDisabled();
+      expect(screen.getByRole("region", { name: "设置内容" })).toHaveAttribute(
+        "aria-busy",
+        "true",
+      );
+      expect(toggle.closest("[inert]")).not.toBeNull();
+      fireEvent.click(toggle);
+      fireEvent.click(screen.getByRole("button", { name: "登录辅助" }));
+      expect(mock.mock.calls.some(([name]) => name === "autostart_set")).toBe(
+        false,
+      );
+      expect(screen.getByRole("heading", { name: "启动设置" })).toBe(heading);
+
+      await act(async () => resolveAccess(access));
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "设置" })).toBeEnabled(),
+      );
+      expect(screen.getByRole("heading", { name: "启动设置" })).toBe(heading);
+      expect(toggle.closest("[inert]")).toBeNull();
+    },
+  );
+  it.each(["denied", "failed"])(
+    "discards the preserved page when the return check is %s",
+    async (outcome) => {
+      access = { allowed: true, bindingId, reason: null };
+      show();
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "设置" })).toBeEnabled(),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "设置" }));
+      const heading = await screen.findByRole("heading", { name: "启动设置" });
+      let complete!: () => void;
+      const pendingAccess = new Promise((resolve, reject) => {
+        complete = () =>
+          outcome === "denied"
+            ? resolve({
+                allowed: false,
+                bindingId: null,
+                reason: "CLIENT_BINDING_INVALID",
+              })
+            : reject(new Error("offline"));
+      });
+      const original = mock.getMockImplementation()!;
+      mock.mockImplementation(async (command, args) =>
+        command === "system_access" ? pendingAccess : original(command, args),
+      );
+      act(() => window.dispatchEvent(new Event("focus")));
+      expect(screen.getByRole("heading", { name: "启动设置" })).toBe(heading);
+      await act(async () => complete());
+      await waitFor(() =>
+        expect(screen.queryByRole("heading", { name: "启动设置" })).toBeNull(),
+      );
+      expect(screen.getByRole("button", { name: "设置" })).toBeDisabled();
+      expect(mock.mock.calls.some(([name]) => name === "system_logout")).toBe(
+        false,
+      );
+    },
+  );
   it("expires a previously valid permission when the periodic check hangs", async () => {
     access = { allowed: true, bindingId, reason: null };
     show();
