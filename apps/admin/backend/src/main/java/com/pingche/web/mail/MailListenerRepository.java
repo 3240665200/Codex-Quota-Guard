@@ -18,6 +18,8 @@ public interface MailListenerRepository extends JpaRepository<MailListener, UUID
     List<MailListener> findByOfficialAccountId(UUID accountId);
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     List<MailListener> findByOwnerUserIdAndStateInOrderByStartedAtDescIdDesc(UUID userId, List<MailListener.State> states);
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    List<MailListener> findByOwnerUserIdAndOfficialAccountIdAndStateIn(UUID userId, UUID accountId, List<MailListener.State> states);
     long countByOwnerUserIdAndStartedAtAfter(UUID userId, Instant since);
     List<MailListener> findByStateInAndExpiresAtLessThan(List<MailListener.State> states, Instant now);
     List<MailListener> findByResultExpiresAtLessThan(Instant now);

@@ -1,6 +1,7 @@
 package com.pingche.web.sessionbinding;
 
 import com.pingche.web.auth.DomainException;
+import com.pingche.web.mail.MailAssistanceService;
 import com.pingche.web.officialsession.OfficialConnectionRefreshResponse;
 import com.pingche.web.officialsession.OfficialConnectionService;
 import com.pingche.web.officialsession.OfficialSessionInfo;
@@ -18,6 +19,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.function.Supplier;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -35,15 +37,24 @@ public class SessionBindingService {
     private final ObjectMapper json;
     private final TransactionTemplate tx;
     private final OfficialSessionLogoutFence logoutFence;
+    private final MailAssistanceService mail;
 
+    // Compatibility for isolated SQL tests without a mail subsystem.
     public SessionBindingService(JdbcTemplate jdbc, OfficialConnectionService official, Clock clock,
             ObjectMapper json, PlatformTransactionManager transactionManager) {
+        this(jdbc, official, clock, json, transactionManager, null);
+    }
+
+    @Autowired
+    public SessionBindingService(JdbcTemplate jdbc, OfficialConnectionService official, Clock clock,
+            ObjectMapper json, PlatformTransactionManager transactionManager, MailAssistanceService mail) {
         this.jdbc = jdbc;
         this.official = official;
         this.clock = clock;
         this.json = json;
         this.tx = new TransactionTemplate(transactionManager);
         this.logoutFence = new OfficialSessionLogoutFence(jdbc);
+        this.mail = mail;
     }
 
     public SessionBindingAttemptResponse create(UUID userId, UUID deviceId, UUID enrollmentId, UUID requestedAccount) {
@@ -489,6 +500,8 @@ public class SessionBindingService {
     }
 
     private void terminate(Attempt attempt, String status, String code) {
+        if (mail != null && Set.of("PREPARING", "READY_FOR_LOGIN", "DETECTING", "AWAITING_CONFIRMATION").contains(attempt.status)
+                && owns(attempt)) mail.endBindingClaim(attempt.userId, attempt.accountId);
         boolean risky = Set.of("READY_FOR_LOGIN", "DETECTING", "AWAITING_CONFIRMATION").contains(attempt.status);
         jdbc.update("update session_binding_attempts set status=?,error_code=?,operation_id=null,operation_started_at=null where id=?", status, code, attempt.id);
         if (risky) settle(attempt.accountId, code);

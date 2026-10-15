@@ -34,6 +34,10 @@ import org.springframework.context.event.EventListener;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -263,6 +267,26 @@ public class MailAssistanceService implements DisposableBean {
             return null;
         });
         closeInvalidConnections();
+    }
+
+    /** Called only while the binding transaction owns and locks the official account claim. */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void endBindingClaim(UUID userId, UUID accountId) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()
+                || !TransactionSynchronizationManager.isSynchronizationActive())
+            throw new IllegalStateException("MAIL_BINDING_TRANSACTION_REQUIRED");
+        List<UUID> stopped = listeners.findByOwnerUserIdAndOfficialAccountIdAndStateIn(userId, accountId,
+                List.of(MailListener.State.CONNECTING, MailListener.State.LISTENING, MailListener.State.RECEIVED))
+                .stream().filter(listener -> listener.active() || (listener.resultExpiresAt != null
+                        && listener.resultExpiresAt.isAfter(clock.instant())))
+                .map(listener -> {
+                    listener.stop(MailListener.State.CANCELLED, "MAIL_BINDING_ENDED");
+                    return listener.id;
+                }).toList();
+        listeners.flush();
+        if (!stopped.isEmpty()) TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override public void afterCommit() { stopped.forEach(MailAssistanceService.this::closeConnection); }
+        });
     }
 
     private List<MailListener> resumableListeners(UUID userId) {
