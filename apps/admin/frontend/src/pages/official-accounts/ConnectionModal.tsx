@@ -287,7 +287,7 @@ export default function ConnectionModal({ account, onClose }: {
             <Space orientation="vertical" size={16} style={{ width: '100%' }}>
               <BrowserLoginPanel accountId={account.id} version={config?.version ?? 0} proxyNodeId={selectedNode || null}
                 disabled={loading || busy !== null || !secure || !config?.encryptionReady || Boolean(nodeUnavailable)}
-                onActiveChange={setBrowserLoginActive} onCompleted={reloadAfterBrowserLogin} />
+                onActiveChange={setBrowserLoginActive} onResultChanged={reloadAfterBrowserLogin} />
               <Collapse style={{ width: '100%' }} onChange={(keys) => { if (!keys.includes('manual')) clearSecrets(); }} items={[{
                 key: 'manual', label: '高级：手动导入授权', children: <Space orientation="vertical" size={16} style={{ width: '100%' }}>
                   <Alert type="info" showIcon title="手动导入你自己的官方网页登录授权"

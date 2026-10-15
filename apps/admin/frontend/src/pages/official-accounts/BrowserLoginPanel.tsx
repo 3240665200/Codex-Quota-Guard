@@ -10,9 +10,9 @@ const labels: Record<OfficialBrowserLoginState, string> = {
 };
 const pending = (state: OfficialBrowserLoginState) => ['WAITING_FOR_HELPER', 'WAITING_FOR_LOGIN', 'SAVING'].includes(state);
 
-export default function BrowserLoginPanel({ accountId, version, proxyNodeId, disabled, onCompleted, onActiveChange }: {
+export default function BrowserLoginPanel({ accountId, version, proxyNodeId, disabled, onResultChanged, onActiveChange }: {
   accountId: string; version: number; proxyNodeId: string | null; disabled: boolean;
-  onCompleted: () => Promise<void>; onActiveChange?: (active: boolean) => void;
+  onResultChanged: () => Promise<void>; onActiveChange?: (active: boolean) => void;
 }) {
   const [job, setJob] = useState<OfficialBrowserLoginJob | null>(null);
   const [working, setWorking] = useState<'start' | 'cancel' | null>(null);
@@ -21,10 +21,10 @@ export default function BrowserLoginPanel({ accountId, version, proxyNodeId, dis
   const [pollRevision, setPollRevision] = useState(0);
   const mounted = useRef(true);
   const requestRevision = useRef(0);
-  const completedId = useRef<string | null>(null);
-  const onCompletedRef = useRef(onCompleted);
+  const processedId = useRef<string | null>(null);
+  const onResultChangedRef = useRef(onResultChanged);
   const onActiveChangeRef = useRef(onActiveChange);
-  onCompletedRef.current = onCompleted;
+  onResultChangedRef.current = onResultChanged;
   onActiveChangeRef.current = onActiveChange;
 
   useEffect(() => {
@@ -39,10 +39,11 @@ export default function BrowserLoginPanel({ accountId, version, proxyNodeId, dis
   const accept = async (result: OfficialBrowserLoginJob) => {
     if (!mounted.current) return;
     setJob(result);
-    if (result.state === 'COMPLETED' && completedId.current !== result.id) {
-      completedId.current = result.id;
-      try { await onCompletedRef.current(); }
-      catch { if (mounted.current) setError('授权已保存，账户与会话结果暂时未能重新读取，请手动刷新。'); }
+    // A failed official verification may still have replaced the encrypted authorization.
+    if ((result.state === 'COMPLETED' || result.state === 'FAILED') && processedId.current !== result.id) {
+      processedId.current = result.id;
+      try { await onResultChangedRef.current(); }
+      catch { if (mounted.current) setError('登录任务已结束，账户与会话结果暂时未能重新读取，请手动刷新。'); }
     }
   };
 

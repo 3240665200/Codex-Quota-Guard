@@ -14,7 +14,7 @@ const job: OfficialBrowserLoginJob = { id: 'job-1', officialAccountId: 'account-
 function show(disabled = false) {
   const onCompleted = vi.fn().mockResolvedValue(undefined);
   const view = render(<BrowserLoginPanel accountId="account-1" version={4} proxyNodeId="proxy-1"
-    disabled={disabled} onCompleted={onCompleted} />);
+    disabled={disabled} onResultChanged={onCompleted} />);
   return { onCompleted, ...view };
 }
 
