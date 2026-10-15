@@ -29,7 +29,7 @@ Codex Quota Guard 由桌面客户端、中央 Java 服务和 Web 管理后台组
 
 本次源码版本为 **0.3.18**。桌面端修复重复 BOUND 通知导致的访问核验重置，并共享登录辅助 SSE 订阅以减少切页时的连接重建；前端 230 项模拟测试通过。首次真实访问请求失败的底层原因仍待复测，不能据此认定网络或服务问题全部修复。详见[0.3.18 桌面测试说明](./docs/releases/v0.3.18.md)。
 
-本次服务器发布目标为 `0.3.18`，包含自动绑定交接、取得名额后 30 分钟登录期限、至少间隔 10 秒的官方会话监测、官方账户/会话管理及独立的系统用户退出流程。**本次同步源码与服务器镜像，未新增 Windows 安装包 Release**；本地 0.3.18 测试包不等于已公开发布，页面顶部下载链接仍指向既有公开安装包。新服务器的桌面端须支持设备标识（0.3.14+，建议 0.3.18），升级前应先准备配套客户端。
+当前服务器版本为 `0.3.18`，包含自动绑定交接、取得名额后 30 分钟登录期限、至少间隔 10 秒的官方会话监测、官方账户/会话管理及独立的系统用户退出流程。**本次已同步源码与服务器镜像，未新增 Windows 安装包 Release**；本地 0.3.18 测试包不等于已公开发布，页面顶部下载链接仍指向既有公开安装包。新服务器的桌面端须支持设备标识（0.3.14+，建议 0.3.18），升级前应先准备配套客户端。
 
 客户端保留「登录辅助」：管理员可为团队关联的官方账户配置自有邮箱和最多两个精确发件地址，用户点击监听后领取一封新到登录邮件中的验证码。邮箱授权只在中央服务加密保存，官方登录仍由用户完成；详见[邮箱配置与使用说明](./docs/architecture/login-assistance.md)。
 
@@ -71,9 +71,9 @@ Codex Quota Guard 由桌面客户端、中央 Java 服务和 Web 管理后台组
 - [后端 · minjm/codex-quota-guard-backend](https://hub.docker.com/r/minjm/codex-quota-guard-backend)
 - [管理网页 · minjm/codex-quota-guard-web](https://hub.docker.com/r/minjm/codex-quota-guard-web)
 
-本次发布目标为后端和网页 `0.3.18`，可选浏览器后端为 `0.3.18-browser`；保留既有 `0.3.11` 标签。支持 **Linux amd64 / x86_64**，部署配置固定版本，数据库使用官方 `postgres:17-alpine`。普通后端不含 Chromium；服务器网页登录需专用镜像、HTTPS 和沙箱配置，详见[可选部署说明](./deploy/docker/registry/README.md#https-与服务器网页登录可选)。Windows 桌面客户端和 Rust 统计服务仍安装在用户电脑，不放进服务器容器。
+后端和网页 `0.3.18` 已发布，两个仓库的 `latest` 指向同一版本；可选浏览器后端为 `0.3.18-browser`，Docker Hub 保留既有 `0.3.11` 标签。支持 **Linux amd64 / x86_64**，部署配置固定版本，数据库使用官方 `postgres:17-alpine`。普通后端不含 Chromium；服务器网页登录需专用镜像、HTTPS 和沙箱配置，详见[可选部署说明](./deploy/docker/registry/README.md#https-与服务器网页登录可选)。Windows 桌面客户端和 Rust 统计服务仍安装在用户电脑，不放进服务器容器。镜像摘要和实际验证范围见[服务器发布记录](./docs/releases/server-v0.3.18.md)。
 
-服务器准备好 **Docker Engine、Docker Compose v2.24.4+、Bash、curl 和 OpenSSL** 后，在 `server-v0.3.18` 源码标签及对应镜像发布完成后，替换下面的服务器 IP 和管理员邮箱执行首次部署：
+服务器准备好 **Docker Engine、Docker Compose v2.24.4+、Bash、curl 和 OpenSSL** 后，替换下面的服务器 IP 和管理员邮箱执行首次部署；配置固定从 `server-v0.3.18` 源码标签下载：
 
 ```bash
 (
