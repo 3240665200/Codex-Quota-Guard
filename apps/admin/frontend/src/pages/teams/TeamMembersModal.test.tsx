@@ -269,7 +269,10 @@ describe('团队成员管理', () => {
     vi.mocked(listUsers).mockResolvedValueOnce(page([candidate], 0, 21))
       .mockReturnValueOnce(stale.promise).mockResolvedValue(page([transfer]));
     const view = render(modal());
-    fireEvent.click(await screen.findByRole('checkbox', { name: '选择 新成员' }));
+    // Wait for the initial modal and data to settle before exercising the team switch.
+    const candidateCheckbox = await screen.findByRole('checkbox', { name: '选择 新成员' }, { timeout: 10_000 });
+    await waitFor(() => expect(candidateCheckbox).toBeEnabled(), { timeout: 10_000 });
+    fireEvent.click(candidateCheckbox);
     fireEvent.click(screen.getByTitle('2'));
     view.rerender(modal(otherTeam));
     expect(await screen.findByRole('checkbox', { name: '选择 转入成员' })).toBeChecked();

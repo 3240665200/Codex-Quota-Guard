@@ -255,7 +255,9 @@ describe('用户额度策略配置', () => {
     fireEvent.click(await screen.findByRole('menuitem', { name: /编辑/ }));
     const dialog = await screen.findByRole('dialog');
     fireEvent.click(within(dialog).getByRole('button', { name: '生成随机密码' }));
-    fireEvent.click(within(dialog).getByRole('button', { name: '复制密码' }));
+    const copyButton = within(dialog).getByRole('button', { name: '复制密码' });
+    await waitFor(() => expect(copyButton).toBeEnabled());
+    fireEvent.click(copyButton);
     expect(await screen.findByText('复制失败，请显示密码后手动复制')).toBeInTheDocument();
     expect(within(dialog).getByLabelText('密码')).toHaveValue(password);
     expect(within(dialog).getByLabelText('密码')).toHaveAttribute('type', 'text');
