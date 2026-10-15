@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { confirmSessionLogout, previewSessionLogout } from './sessionLogoutApi';
+import { acknowledgeSessionLogoutUnknown, confirmSessionLogout, getSessionLogoutCurrent,
+  previewSessionLogout } from './sessionLogoutApi';
 import { request } from './api';
 
 vi.mock('./api', () => ({ request: vi.fn() }));
@@ -49,5 +50,30 @@ describe('官方会话登出 API', () => {
     call.mockResolvedValue(value);
     await expect(confirmSessionLogout('account/id', 'plan-1', 'UNBOUND')).rejects.toThrow();
     expect(call).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads the durable current operation without invoking an official request', async () => {
+    const operation = { ...result, status: 'UNKNOWN', canAcknowledge: true, canAcknowledgeAt: null };
+    call.mockResolvedValue({ operation });
+    expect(await getSessionLogoutCurrent('account/id')).toEqual({ operation });
+    expect(call).toHaveBeenCalledWith('/api/v1/admin/official-accounts/account%2Fid/session-logout/current',
+      { cache: 'no-store' }, { retryAfterRefresh: false });
+  });
+
+  it('acknowledges an uncertain outcome only with the explicit manual-verification body', async () => {
+    call.mockResolvedValue({ ...result, status: 'RESOLVED_UNKNOWN' });
+    expect(await acknowledgeSessionLogoutUnknown('account/id', 'plan/id', 'UNBOUND')).toMatchObject({ status: 'RESOLVED_UNKNOWN' });
+    expect(call).toHaveBeenCalledWith('/api/v1/admin/official-accounts/account%2Fid/session-logout/plan%2Fid/acknowledge-unknown',
+      { method: 'POST', cache: 'no-store', body: JSON.stringify({ acknowledgeUncertainOutcome: true }) },
+      { retryAfterRefresh: false });
+  });
+
+  it.each([
+    { operation: { ...result, status: 'ACCEPTED', canAcknowledge: true, canAcknowledgeAt: null } },
+    { operation: { ...result, status: 'UNKNOWN', canAcknowledge: 'true', canAcknowledgeAt: null } },
+    { operation: { ...result, status: 'EXECUTING', canAcknowledge: false, canAcknowledgeAt: 'invalid' } },
+  ])('rejects invalid durable lock metadata', async (value) => {
+    call.mockResolvedValue(value);
+    await expect(getSessionLogoutCurrent('account/id')).rejects.toThrow();
   });
 });

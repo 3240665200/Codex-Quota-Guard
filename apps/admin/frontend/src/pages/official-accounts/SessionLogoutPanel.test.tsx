@@ -2,7 +2,8 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import SessionLogoutPanel from './SessionLogoutPanel';
 
-const mocks = vi.hoisted(() => ({ previewSessionLogout: vi.fn(), confirmSessionLogout: vi.fn() }));
+const mocks = vi.hoisted(() => ({ previewSessionLogout: vi.fn(), confirmSessionLogout: vi.fn(),
+  getSessionLogoutCurrent: vi.fn(), acknowledgeSessionLogoutUnknown: vi.fn() }));
 vi.mock('../../services/sessionLogoutApi', () => mocks);
 const device = { rowId: 'row-1', sessionId: 'session-1', displayName: '待登出电脑', platform: 'web',
   trustedDevice: false, current: false };
@@ -15,7 +16,9 @@ const result = (status = 'ACCEPTED') => ({ planId: 'plan-UNBOUND', mode: 'UNBOUN
 const deferred = <T,>() => { let resolve!: (value: T) => void; let reject!: (value: unknown) => void;
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 async function preview(mode = 'UNBOUND') {
-  fireEvent.click(screen.getByRole('button', { name: mode === 'ALL' ? '登出所有会话' : '登出所有未绑定会话' }));
+  const button = screen.getByRole('button', { name: mode === 'ALL' ? '登出所有会话' : '登出所有未绑定会话' });
+  await waitFor(() => expect(button).toBeEnabled());
+  fireEvent.click(button);
   return screen.findByRole('region', { name: '登出预览' });
 }
 async function confirm() {
@@ -28,6 +31,8 @@ describe('官方会话登出面板', () => {
     vi.clearAllMocks();
     mocks.previewSessionLogout.mockImplementation(async (_account: string, mode: string) => plan(mode));
     mocks.confirmSessionLogout.mockResolvedValue(result());
+    mocks.getSessionLogoutCurrent.mockResolvedValue({ operation: null });
+    mocks.acknowledgeSessionLogoutUnknown.mockResolvedValue({ ...result(), status: 'RESOLVED_UNKNOWN' });
   });
 
   it('waits for an explicit preview and shows the fresh target list and exclusion reasons', async () => {
@@ -121,6 +126,7 @@ describe('官方会话登出面板', () => {
   it('ignores a late preview after switching accounts and clears all old confirmation state', async () => {
     const pending = deferred<ReturnType<typeof plan>>(); mocks.previewSessionLogout.mockReturnValueOnce(pending.promise);
     const view = render(<SessionLogoutPanel accountId="account-1" />);
+    await waitFor(() => expect(screen.getByRole('button', { name: '登出所有未绑定会话' })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: '登出所有未绑定会话' }));
     view.rerender(<SessionLogoutPanel accountId="account-2" />);
     await act(async () => pending.resolve(plan()));
@@ -165,5 +171,55 @@ describe('官方会话登出面板', () => {
     expect(screen.getByRole('button', { name: '确认登出所有未绑定会话' })).toBeDisabled();
     view.rerender(<SessionLogoutPanel accountId="account-1" disabled />);
     expect(screen.getByRole('button', { name: '登出所有会话' })).toBeDisabled();
+  });
+
+  it('restores an unresolved server operation after reopening and requires manual verification before acknowledgement', async () => {
+    const operation = { ...result('UNKNOWN'), canAcknowledge: true, canAcknowledgeAt: null };
+    mocks.getSessionLogoutCurrent.mockResolvedValueOnce({ operation });
+    const onSettled = vi.fn();
+    render(<SessionLogoutPanel accountId="account-1" onSettled={onSettled} />);
+    const button = await screen.findByRole('button', { name: '已在官网核对结果，解除本地操作锁' });
+    expect(button).toBeDisabled();
+    expect(screen.getByRole('button', { name: '登出所有会话' })).toBeDisabled();
+    expect(screen.getByText(/解除锁不会撤销已发送的官方请求，也不会重试下线/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('checkbox', { name: /我已在官网人工核对结果/ }));
+    fireEvent.click(button);
+    await waitFor(() => expect(mocks.acknowledgeSessionLogoutUnknown).toHaveBeenCalledWith('account-1', 'plan-UNBOUND', 'UNBOUND'));
+    expect(onSettled).toHaveBeenCalledWith('account-1');
+    expect(await screen.findByText(/本地操作锁已解除，未知结果仍需以官网核对为准/)).toBeInTheDocument();
+    expect(mocks.confirmSessionLogout).not.toHaveBeenCalled();
+    expect(mocks.previewSessionLogout).not.toHaveBeenCalled();
+  });
+
+  it('keeps UNKNOWN locked after execution until an explicit acknowledgement', async () => {
+    const operation = { ...result('UNKNOWN'), canAcknowledge: true, canAcknowledgeAt: null };
+    mocks.confirmSessionLogout.mockResolvedValue(result('UNKNOWN'));
+    mocks.getSessionLogoutCurrent.mockResolvedValueOnce({ operation: null }).mockResolvedValue({ operation });
+    render(<SessionLogoutPanel accountId="account-1" />);
+    await preview(); await confirm();
+    await screen.findByRole('button', { name: '已在官网核对结果，解除本地操作锁' });
+    expect(screen.getByRole('button', { name: '登出所有未绑定会话' })).toBeDisabled();
+    expect(mocks.acknowledgeSessionLogoutUnknown).not.toHaveBeenCalled();
+  });
+
+  it('never releases an executing lock merely because time passed and allows only a safe manual metadata reload', async () => {
+    const operation = { ...result('UNKNOWN'), status: 'EXECUTING', canAcknowledge: false, canAcknowledgeAt: null };
+    mocks.getSessionLogoutCurrent.mockResolvedValue({ operation });
+    render(<SessionLogoutPanel accountId="account-1" />);
+    await screen.findByText(/后台仍保留此操作锁/);
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '登出所有会话' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: '刷新登出操作状态' }));
+    await waitFor(() => expect(mocks.getSessionLogoutCurrent).toHaveBeenCalledTimes(2));
+    expect(mocks.confirmSessionLogout).not.toHaveBeenCalled();
+  });
+
+  it('blocks destructive actions when current lock state cannot be verified', async () => {
+    mocks.getSessionLogoutCurrent.mockRejectedValue(new Error('fixture-private-lock-state'));
+    render(<SessionLogoutPanel accountId="account-1" />);
+    expect(await screen.findByText(/无法核对后台登出操作锁，请手动刷新状态/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '登出所有会话' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '刷新登出操作状态' })).toBeEnabled();
+    expect(mocks.previewSessionLogout).not.toHaveBeenCalled();
   });
 });
