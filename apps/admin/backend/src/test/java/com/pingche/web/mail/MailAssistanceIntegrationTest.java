@@ -76,6 +76,9 @@ class MailAssistanceIntegrationTest {
     @Autowired JwtService jwt;
     @Autowired MockMvc mvc;
     @Autowired MailSecretCipher cipher;
+    @Autowired LoginAssistanceEvents events;
+    @Autowired LoginAssistanceState eventState;
+    @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
     @MockitoBean MailTransport transport;
     @MockitoBean MailOAuthClient oauth;
     @MockitoBean Clock clock;
@@ -358,6 +361,64 @@ class MailAssistanceIntegrationTest {
         assertThat(service.current(owner.getId()).listener()).isNull();
         assertThat(listeners.findById(started.id()).orElseThrow().state).isEqualTo(MailListener.State.CANCELLED);
         assertThat(listeners.findById(started.id()).orElseThrow().activeAccountId).isNull();
+        when(transport.open(any())).thenReturn(codeConnection(100, 10));
+        MailListenerResponse received = service.start(owner.getId());
+        awaitState(received.id(), MailListener.State.RECEIVED);
+        service.systemLogout(new SystemLogoutEvent(owner.getId()));
+        assertThat(listeners.findById(received.id()).orElseThrow().codeCipher).isNull();
+        assertThat(service.current(owner.getId()).listener()).isNull();
+    }
+
+    @Test
+    void eventEndpointRequiresBearerAndStreamsOnlyOwnerScopedInvalidationsWithNoStore() throws Exception {
+        mvc.perform(get("/api/v1/client/login-assistance/events")).andExpect(status().isUnauthorized());
+        configure();
+        var stream = mvc.perform(get("/api/v1/client/login-assistance/events")
+                        .header(HttpHeaders.AUTHORIZATION, token(owner)))
+                .andExpect(status().isOk()).andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
+                .andExpect(header().string("X-Accel-Buffering", "no"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.request().asyncStarted())
+                .andReturn();
+        try {
+            assertThat(stream.getResponse().getContentAsString()).contains("event:connected", "data:{}");
+            MailListenerResponse started = service.start(owner.getId());
+            awaitState(started.id(), MailListener.State.LISTENING);
+            events.tick();
+            assertThat(stream.getResponse().getContentAsString()).contains("event:state_changed")
+                    .doesNotContain("123456", "owner@example", "synthetic-password", started.id().toString());
+        } finally {
+            events.systemLogout(new SystemLogoutEvent(owner.getId()));
+            mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch(stream)).andExpect(status().isOk());
+        }
+    }
+
+    @Test
+    void stateFingerprintTracksOwnedQueuePositionAndGuardWithoutPollingAnExternalService() {
+        UUID earlier = UUID.randomUUID(), current = UUID.randomUUID();
+        var created = java.time.OffsetDateTime.ofInstant(NOW, java.time.ZoneOffset.UTC);
+        for (var entry : List.of(java.util.Map.entry(earlier, other.getId()), java.util.Map.entry(current, owner.getId()))) {
+            UUID device = UUID.randomUUID();
+            jdbc.update("""
+                    insert into session_binding_attempts
+                    (id,user_id,device_id,enrollment_id,team_id,team_version,official_account_id,connection_revision,status,created_at,expires_at)
+                    values (?,?,?,?,?,?,?,?,?,?,?)
+                    """, entry.getKey(), entry.getValue(), device, device, team.getId(), 0L,
+                    account.getId(), UUID.randomUUID(), "QUEUED", created, created.plusSeconds(600));
+        }
+        jdbc.update("insert into session_binding_accounts (official_account_id,updated_at) values (?,?)", account.getId(), created);
+        try {
+            String waiting = eventState.fingerprint(owner.getId());
+            jdbc.update("update session_binding_attempts set status='CANCELLED' where id=?", earlier);
+            String promoted = eventState.fingerprint(owner.getId());
+            assertThat(promoted).isNotEqualTo(waiting);
+            jdbc.update("update session_binding_accounts set generation=generation+1,settle_until=? where official_account_id=?",
+                    created.plusSeconds(15), account.getId());
+            assertThat(eventState.fingerprint(owner.getId())).isNotEqualTo(promoted).matches("[0-9a-f]{64}");
+            org.mockito.Mockito.verifyNoInteractions(transport, oauth);
+        } finally {
+            jdbc.update("delete from session_binding_attempts where id in (?,?)", earlier, current);
+            jdbc.update("delete from session_binding_accounts where official_account_id=?", account.getId());
+        }
     }
 
     @Test

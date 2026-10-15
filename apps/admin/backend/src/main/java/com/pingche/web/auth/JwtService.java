@@ -72,12 +72,14 @@ public class JwtService {
         if (sessionVersion == null || sessionVersion.longValue() < 0) {
             throw new IllegalArgumentException("Access token session version is invalid");
         }
+        if (claims.getExpiration() == null) throw new IllegalArgumentException("Access token expiration is required");
         return new JwtIdentity(
                 UUID.fromString(claims.getSubject()),
-                sessionVersion.longValue()
+                sessionVersion.longValue(),
+                claims.getExpiration().toInstant()
         );
     }
 
-    public record JwtIdentity(UUID userId, long sessionVersion) {
+    public record JwtIdentity(UUID userId, long sessionVersion, Instant expiresAt) {
     }
 }

@@ -35,7 +35,7 @@ public class MailListener {
     MailListener(UUID userId, UUID teamId, UUID accountId, UUID revision, Instant now) {
         id = UUID.randomUUID(); ownerUserId = userId; this.teamId = teamId;
         officialAccountId = accountId; activeAccountId = accountId; configRevision = revision;
-        state = State.CONNECTING; startedAt = now; expiresAt = now.plusSeconds(180);
+        state = State.CONNECTING; startedAt = now; expiresAt = now.plusSeconds(600);
     }
     boolean active() { return state == State.CONNECTING || state == State.LISTENING; }
     void stop(State next, String error) {

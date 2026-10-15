@@ -1,6 +1,7 @@
 package com.pingche.web.mail;
 
 import com.pingche.web.auth.DomainException;
+import com.pingche.web.auth.SystemLogoutEvent;
 import com.pingche.web.quota.OfficialAccount;
 import com.pingche.web.quota.OfficialAccountRepository;
 import com.pingche.web.team.Team;
@@ -29,6 +30,7 @@ import java.util.concurrent.Semaphore;
 import java.util.function.Supplier;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.context.event.EventListener;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -238,6 +240,34 @@ public class MailAssistanceService implements DisposableBean {
         });
         if (result.state() != MailListener.State.CONNECTING && result.state() != MailListener.State.LISTENING) closeConnection(id);
         return result;
+    }
+
+    public MailListenerCurrentResponse current(UUID userId) {
+        MailListenerCurrentResponse result = inTransaction(() -> {
+            List<MailListener> candidates = resumableListeners(userId);
+            // An active listener takes precedence over a previous, still readable result.
+            MailListener selected = candidates.stream().filter(MailListener::active).findFirst()
+                    .orElse(candidates.isEmpty() ? null : candidates.get(0));
+            if (selected == null || !validateListener(selected)) return new MailListenerCurrentResponse(null);
+            return new MailListenerCurrentResponse(response(selected));
+        });
+        closeInvalidConnections();
+        return result;
+    }
+
+    @EventListener
+    public void systemLogout(SystemLogoutEvent event) {
+        inTransaction(() -> {
+            for (MailListener listener : resumableListeners(event.userId()))
+                listener.stop(MailListener.State.CANCELLED, "MAIL_LISTENER_STOPPED");
+            return null;
+        });
+        closeInvalidConnections();
+    }
+
+    private List<MailListener> resumableListeners(UUID userId) {
+        return listeners.findByOwnerUserIdAndStateInOrderByStartedAtDescIdDesc(userId,
+                List.of(MailListener.State.CONNECTING, MailListener.State.LISTENING, MailListener.State.RECEIVED));
     }
 
     public MailListenerResponse cancel(UUID userId, UUID id) {

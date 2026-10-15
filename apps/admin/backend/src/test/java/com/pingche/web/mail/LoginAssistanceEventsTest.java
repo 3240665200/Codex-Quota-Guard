@@ -17,7 +17,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -61,14 +60,14 @@ class LoginAssistanceEventsTest {
         assertThat(frames.get(0)).singleElement().asString().contains("event:connected", "{}");
         service.tick();
         assertThat(frames.get(0)).hasSize(1);
-        when(state.fingerprint(owner.getId())).thenReturn("changed");
+        when(state.fingerprint(owner.getId())).thenReturn("private-fingerprint-next");
         service.tick(); service.tick();
         assertThat(frames.get(0)).hasSize(2);
         assertThat(frames.get(0).get(1)).contains("event:state_changed", "{}");
         when(clock.instant()).thenReturn(now.plusSeconds(15));
         service.tick();
         assertThat(frames.get(0).get(2)).contains("event:heartbeat", "{}");
-        assertThat(String.join("", frames.get(0))).doesNotContain("owner@", "synthetic-token", "initial", "changed", "code", "password");
+        assertThat(String.join("", frames.get(0))).doesNotContain("owner@", "synthetic-token", "initial", "private-fingerprint-next", "code", "password");
     }
 
     @Test void readsDatabaseStateOncePerOwnerPerTickAndIsolatesUsers() {
@@ -143,5 +142,32 @@ class LoginAssistanceEventsTest {
         service.tick();
         assertThat(service.subscriptionCount()).isZero();
         assertThat(frames).allSatisfy(sent -> assertThat(String.join("", sent)).doesNotContain("secret-provider", "secret-db"));
+    }
+
+    @Test void globalCapacityIsBoundedAndShutdownCompletesEveryStream() {
+        for (int index = 0; index < 64; index++) {
+            User user = new User("synthetic" + index + "@example.test", "unused", "Synthetic");
+            String token = "synthetic-" + index;
+            when(users.findById(user.getId())).thenReturn(Optional.of(user));
+            when(jwt.parseIdentity(token)).thenReturn(new JwtService.JwtIdentity(user.getId(), 0, now.plusSeconds(120)));
+            service.subscribe(user.getId(), token); service.subscribe(user.getId(), token);
+        }
+        assertThat(service.subscriptionCount()).isEqualTo(128);
+        assertThatThrownBy(() -> service.subscribe(owner.getId(), "synthetic-token"))
+                .isInstanceOfSatisfying(DomainException.class, error -> assertThat(error.getStatus()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS));
+        service.destroy();
+        assertThat(service.subscriptionCount()).isZero();
+        for (SseEmitter emitter : emitters) verify(emitter).complete();
+        assertThatThrownBy(() -> service.subscribe(owner.getId(), "synthetic-token"))
+                .isInstanceOfSatisfying(DomainException.class, error -> assertThat(error.getStatus()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE));
+    }
+
+    @Test void invalidInitialAuthenticationNeverAllocatesAStreamOrEchoesTokenFailure() {
+        when(jwt.parseIdentity("invalid")).thenThrow(new IllegalArgumentException("private-token-error"));
+        assertThatThrownBy(() -> service.subscribe(owner.getId(), "invalid"))
+                .isInstanceOf(DomainException.class).hasMessage("Access token is invalid or expired");
+        when(users.findById(owner.getId())).thenReturn(Optional.empty());
+        assertThatThrownBy(() -> service.subscribe(owner.getId(), "synthetic-token")).isInstanceOf(DomainException.class);
+        assertThat(service.subscriptionCount()).isZero();
     }
 }
