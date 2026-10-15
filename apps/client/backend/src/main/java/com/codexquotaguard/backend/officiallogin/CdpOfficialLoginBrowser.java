@@ -8,6 +8,8 @@ import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
+import java.util.function.BooleanSupplier;
+import java.util.function.LongSupplier;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
@@ -26,20 +28,27 @@ final class CdpOfficialLoginBrowser implements OfficialLoginBrowser {
             process=new ProcessBuilder(command(executable,profile.path())).redirectOutput(ProcessBuilder.Redirect.DISCARD)
                     .redirectError(ProcessBuilder.Redirect.DISCARD).start();
             session=new OwnedSession(profile,process,mapper);
-            long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(20);
-            while(!Files.isRegularFile(profile.path().resolve("DevToolsActivePort"),LinkOption.NOFOLLOW_LINKS)) {
-                if(!process.isAlive() || System.nanoTime()>=deadline) throw failure();
-                Thread.sleep(50);
-            }
-            session.connect();return session;
-        } catch(InterruptedException interrupted) { Thread.currentThread().interrupt();throw failure(); }
-        catch(IOException|RuntimeException failure) { throw failure(); }
+            URI debugger=awaitDebugger(profile,process::isAlive,System::nanoTime,() -> {
+                try { Thread.sleep(50); }
+                catch(InterruptedException interrupted) { Thread.currentThread().interrupt();throw failure(); }
+            });
+            session.connect(debugger);return session;
+        } catch(IOException|RuntimeException failure) { throw failure(); }
         finally {
             if(session==null || !session.ready.get()) {
                 if(session!=null) session.close();
                 else { if(process!=null) process.destroy();profile.close(); }
             }
         }
+    }
+
+    static URI awaitDebugger(PrivateBrowserProfile profile,BooleanSupplier alive,LongSupplier nanos,Runnable pause) {
+        long start=nanos.getAsLong();
+        while(alive.getAsBoolean() && nanos.getAsLong()-start<TimeUnit.SECONDS.toNanos(20)) {
+            try { return profile.debuggerUri(); }
+            catch(OfficialLoginException notReady) { pause.run(); }
+        }
+        throw failure();
     }
 
     static List<String> command(Path executable,Path profile) {
@@ -84,8 +93,8 @@ final class CdpOfficialLoginBrowser implements OfficialLoginBrowser {
             process.onExit().thenRun(() -> { if(!closed.get()) result.completeExceptionally(failure()); });
         }
 
-        void connect() {
-            cdp.connect(profile.debuggerUri());
+        void connect(URI debugger) {
+            cdp.connect(debugger);
             JsonNode targets=call("Target.getTargets",Map.of(),null);
             String target=null;
             for(JsonNode info:targets.path("targetInfos")) {
