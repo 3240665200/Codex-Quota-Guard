@@ -11,6 +11,7 @@ import type { OfficialAccountConnection, OfficialAccountResponse, OfficialAccoun
   OfficialConnectionInput, OfficialConnectionStatus, OfficialSessionDevice, ProxyNode } from '../../services/api';
 import { LOCAL_PREVIEW_PARAMETER_MAX_BYTES, parseLocalPreviewParameters } from './localPreviewParameters';
 import BrowserLoginPanel from './BrowserLoginPanel';
+import SessionBindingQueue from './SessionBindingQueue';
 import { SessionBindingResult, SessionBindingsTable } from './SessionBindings';
 import { listSessionBindings } from '../../services/sessionBindingsApi';
 import type { SessionBinding } from '../../services/sessionBindingsApi';
@@ -324,6 +325,7 @@ export default function ConnectionModal({ account, onClose }: {
             </Space>
           </Form>
           <Divider style={{ margin: '4px 0' }}>官方账户与设备会话</Divider>
+          {secure ? <SessionBindingQueue accountId={account.id} disabled={locked} /> : null}
           {snapshot ? <SessionSnapshot snapshot={snapshot} officialAccountId={account.id} bindings={bindings} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
             description={snapshotNotice || '尚无官方会话快照，请手动刷新官方账户与会话。'} />}
           {bindingNotice ? <Alert type="warning" showIcon title={bindingNotice} /> : null}
