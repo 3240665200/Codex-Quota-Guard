@@ -112,4 +112,16 @@ describe('服务器官方网页登录', () => {
     expect(mocks.sendOfficialWebLoginInput).toHaveBeenCalledOnce(); expect(screen.queryByText('fixture-secret')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '重新检查任务' })).toBeInTheDocument();
   });
+  it('keeps a changed session visible for explicit recapture and never offers to save it', async () => {
+    mocks.getOfficialWebLoginFrame.mockResolvedValue({ ...frame, readyToSave: true, errorCode: 'BROWSER_LOGIN_SESSION_CHANGED' });
+    show(); await start(); expect(screen.getByLabelText('官方登录浏览器画面')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '完成登录并保存' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: '打开官方会话页' }));
+    await waitFor(() => expect(mocks.sendOfficialWebLoginInput).toHaveBeenCalledWith('job-1', { type: 'OPEN_SESSIONS' }));
+  });
+  it('clears pixels and cancels on page close, without retaining the pending task', async () => {
+    show(); await start(); fireEvent(window, new Event('pagehide'));
+    expect(screen.queryByLabelText('官方登录浏览器画面')).not.toBeInTheDocument();
+    expect(mocks.cancelOfficialWebLogin).toHaveBeenCalledWith('job-1');
+  });
 });
