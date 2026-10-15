@@ -65,6 +65,18 @@ export default function BrowserLoginPanel({ accountId, version, proxyNodeId, dis
     };
   }, [accountId]);
   useEffect(() => { callbacks.current.onActiveChange?.(active || working !== null); }, [active, working]);
+  useEffect(() => {
+    const closePage = () => {
+      const scope = current.current;
+      if (!pending(scope.job)) return;
+      scope.epoch += 1; scope.paused = true; scope.queue.length = 0;
+      abandon(scope.job);
+      scope.job = { ...scope.job!, state: 'CANCELLED', pageOrigin: null, readyToSave: false };
+      setJob(scope.job); setWorking(null); setPaused(true); clearFrame();
+    };
+    window.addEventListener('pagehide', closePage);
+    return () => window.removeEventListener('pagehide', closePage);
+  }, []);
 
   useEffect(() => {
     if (!visibleJob || !pending(visibleJob) || paused || working === 'cancel' || working === 'complete') return;
@@ -78,9 +90,14 @@ export default function BrowserLoginPanel({ accountId, version, proxyNodeId, dis
         if (stopped || !isCurrent(scope, epoch) || !pending(result)) return;
         if (result.state === 'WAITING_FOR_LOGIN') {
           const image = await getOfficialWebLoginFrame(result.id);
-          if (stopped || !isCurrent(scope, epoch)) return;
-          setFrame(image);
-          if (image.errorCode) { pause(scope, { code: image.errorCode }, '此登录页面暂不可用，请检查任务或取消后重新开始。'); return; }
+          if (stopped || !isCurrent(scope, epoch) || scope.paused) return;
+          if (image.errorCode === 'BROWSER_LOGIN_SESSION_CHANGED') {
+            setFrame({ ...image, readyToSave: false });
+            setError(managedErrorMessage({ code: image.errorCode }));
+          } else {
+            setFrame(image);
+            if (image.errorCode) { pause(scope, { code: image.errorCode }, '此登录页面暂不可用，请检查任务或取消后重新开始。'); return; }
+          }
         } else clearFrame();
         if (!stopped && isCurrent(scope, epoch)) timer = setTimeout(() => void check(), 1000);
       } catch (reason) {

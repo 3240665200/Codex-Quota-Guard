@@ -63,5 +63,5 @@ export async function completeOfficialWebLogin(id: string): Promise<OfficialWebL
   return job(await request(`${base(id)}/complete`, { method: 'POST', cache: 'no-store' }, options), id);
 }
 export async function cancelOfficialWebLogin(id: string): Promise<OfficialWebLoginJob> {
-  return job(await request(`${base(id)}/cancel`, { method: 'POST', cache: 'no-store' }, options), id);
+  return job(await request(`${base(id)}/cancel`, { method: 'POST', cache: 'no-store', keepalive: true }, options), id);
 }
