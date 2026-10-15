@@ -208,7 +208,8 @@ it("server advances queue without renderer prepare polling and the countdown fol
     binding: null,
   });
   await signal();
-  await screen.findByRole("button", { name: "已完成登录，识别本设备" });
+  await screen.findByText(/后台会自动检测并完成绑定/);
+  expect(screen.queryByRole("button", { name: /已完成登录|确认绑定/ })).toBeNull();
   expect(screen.getByLabelText("绑定剩余时间")).toHaveTextContent("30:00");
 });
 it("does not fabricate server EXPIRED or enable retry when the local countdown ends", async () => {
@@ -223,14 +224,13 @@ it("does not fabricate server EXPIRED or enable retry when the local countdown e
     .mockResolvedValueOnce({ attempt: ready, binding: null })
     .mockRejectedValue(new Error("offline"));
   render(<SessionBinding userId="alice" />);
-  await screen.findByRole("button", { name: "已完成登录，识别本设备" });
+  await screen.findByText(/后台会自动检测并完成绑定/);
   await act(async () => {
     await vi.advanceTimersByTimeAsync(1_100);
   });
   await screen.findByText(/正在核对服务器到期状态/);
-  expect(
-    screen.getByRole("button", { name: "已完成登录，识别本设备" }),
-  ).toBeDisabled();
+  expect(screen.queryByRole("button", { name: /已完成登录|确认绑定/ })).toBeNull();
+  expect(api.sessionBindingAction).not.toHaveBeenCalled();
   expect(screen.queryByRole("button", { name: "重新申请绑定" })).toBeNull();
   expect(screen.queryByText(/本次绑定已超时/)).toBeNull();
   expect(api.sessionBindingCurrent).toHaveBeenCalledTimes(2);
