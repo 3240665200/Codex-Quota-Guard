@@ -1,0 +1,17 @@
+# Registry deployment opt-in; combine with compose.https.yaml for non-loopback use.
+# Place chromium-seccomp.json beside the base compose.yaml. No source build is needed.
+services:
+  backend:
+    image: minjm/codex-quota-guard-backend:0.3.18-browser
+    environment:
+      WEB_LOGIN_BROWSER_ENABLED: "true"
+      WEB_LOGIN_BROWSER_EXECUTABLE: /usr/lib/chromium/chrome
+      WEB_LOGIN_BROWSER_HEADLESS: "true"
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=40 -Duser.timezone=UTC
+    mem_limit: 2g
+    shm_size: 256mb
+    tmpfs: !override
+      - /tmp:rw,noexec,nosuid,size=512m
+    security_opt: !override
+      - no-new-privileges:true
+      - seccomp=./chromium-seccomp.json
