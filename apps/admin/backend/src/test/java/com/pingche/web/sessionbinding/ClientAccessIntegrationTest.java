@@ -107,6 +107,24 @@ class ClientAccessIntegrationTest {
                 .andExpect(jsonPath("$.reason").value("SESSION_BINDING_REQUIRED"));
     }
 
+    @Test void bootstrapWhiteListCannotBeExpandedByChangingTheMethodOrPathPrefix() throws Exception {
+        mvc.perform(get("/api/v1/client/meter/enroll").header(HttpHeaders.AUTHORIZATION, authorization))
+                .andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value("SESSION_BINDING_REQUIRED"));
+        mvc.perform(put("/api/v1/client/usage/events").header(HttpHeaders.AUTHORIZATION, authorization))
+                .andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value("SESSION_BINDING_REQUIRED"));
+        mvc.perform(post("/api/v1/client/access").header(HttpHeaders.AUTHORIZATION, authorization))
+                .andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value("SESSION_BINDING_REQUIRED"));
+        mvc.perform(get("/api/v1/client/login-assistance/business").header(HttpHeaders.AUTHORIZATION, authorization))
+                .andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value("SESSION_BINDING_REQUIRED"));
+        mvc.perform(get("/api/v1/client/session-bindings/attempts/new-business").header(HttpHeaders.AUTHORIZATION, authorization))
+                .andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value("SESSION_BINDING_REQUIRED"));
+        mvc.perform(post("/api/v1/client/session-bindings/attempts/any/new-business").header(HttpHeaders.AUTHORIZATION, authorization))
+                .andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value("SESSION_BINDING_REQUIRED"));
+        mvc.perform(get("/control/api/v1/client/quota/overview").contextPath("/control")
+                        .header(HttpHeaders.AUTHORIZATION, authorization))
+                .andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value("SESSION_BINDING_REQUIRED"));
+    }
+
     @Test void currentOwnedBindingGrantsOnlyItsDeviceAndNeverCachesAnAllow() throws Exception {
         UUID bindingId = bind();
         mvc.perform(get("/api/v1/client/access").header(HttpHeaders.AUTHORIZATION, authorization).header(DEVICE_HEADER, deviceId))
@@ -127,8 +145,19 @@ class ClientAccessIntegrationTest {
                 .andExpect(status().isForbidden());
     }
 
+    @Test void unboundLogoutSnapshotInvalidationKeepsAnAlreadyVerifiedBindingUsable() throws Exception {
+        UUID bindingId = bind();
+        // UNBOUND logout clears the snapshot but retains verified identity and revision.
+        jdbc.update("update official_account_connections set status='UNVERIFIED',snapshot_cipher=null,last_success_at=null where official_account_id=?", accountId);
+        mvc.perform(get("/api/v1/client/access").header(HttpHeaders.AUTHORIZATION, authorization).header(DEVICE_HEADER, deviceId))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.allowed").value(true))
+                .andExpect(jsonPath("$.bindingId").value(bindingId.toString()));
+        mvc.perform(get("/api/v1/client/quota/overview").header(HttpHeaders.AUTHORIZATION, authorization).header(DEVICE_HEADER, deviceId))
+                .andExpect(status().isOk());
+    }
+
     @ParameterizedTest
-    @ValueSource(strings = {"revoked", "expired", "other-owner", "enrollment-mismatch", "team-version", "team-disabled", "user-team", "account", "revision", "connection-status", "connection-deleted", "quarantined", "executing", "unknown", "duplicate-official"})
+    @ValueSource(strings = {"revoked", "expired", "other-owner", "enrollment-mismatch", "team-version", "team-disabled", "user-team", "account", "revision", "connection-status", "connection-deleted", "quarantined", "executing", "unknown", "duplicate-official", "unverified-account-missing", "unverified-user-missing", "unverified-account-mismatch", "unverified-new-revision", "invalid-response"})
     void changingAnyPersistedBindingContextImmediatelyClosesTheGate(String change) throws Exception {
         bind();
         switch (change) {
@@ -142,6 +171,11 @@ class ClientAccessIntegrationTest {
             case "account" -> jdbc.update("update teams set official_account_id=null where id=?", team.getId());
             case "revision" -> jdbc.update("update official_account_connections set revision=? where official_account_id=?", UUID.randomUUID(), accountId);
             case "connection-status" -> jdbc.update("update official_account_connections set status='AUTH_REQUIRED' where official_account_id=?", accountId);
+            case "invalid-response" -> jdbc.update("update official_account_connections set status='INVALID_RESPONSE' where official_account_id=?", accountId);
+            case "unverified-account-missing" -> jdbc.update("update official_account_connections set status='UNVERIFIED',bound_account_id=null where official_account_id=?", accountId);
+            case "unverified-user-missing" -> jdbc.update("update official_account_connections set status='UNVERIFIED',bound_user_id=null where official_account_id=?", accountId);
+            case "unverified-account-mismatch" -> jdbc.update("update official_account_connections set status='UNVERIFIED',bound_account_id='other' where official_account_id=?", accountId);
+            case "unverified-new-revision" -> jdbc.update("update official_account_connections set status='UNVERIFIED',revision=? where official_account_id=?", UUID.randomUUID(), accountId);
             case "connection-deleted" -> jdbc.update("delete from official_account_connections where official_account_id=?", accountId);
             case "quarantined" -> jdbc.update("insert into session_binding_accounts (official_account_id,quarantined,updated_at) values (?,true,?)", accountId, NOW);
             case "executing", "unknown" -> logoutFence(change.toUpperCase());
@@ -178,7 +212,25 @@ class ClientAccessIntegrationTest {
         User admin = users.saveAndFlush(User.bootstrapAdministrator(UUID.randomUUID()+"@example.com", "unused", "Admin"));
         mvc.perform(get("/api/v1/admin/dashboard").header(HttpHeaders.AUTHORIZATION, token(admin))).andExpect(status().isOk());
         mvc.perform(get("/api/v1/admin/browser-logins").secure(true).header(HttpHeaders.AUTHORIZATION, token(admin))).andExpect(status().isOk());
+        mvc.perform(get("/api/v1/client/quota/overview").header(HttpHeaders.AUTHORIZATION, token(admin))).andExpect(status().isForbidden());
         mvc.perform(get("/api/v1/admin/dashboard").header(HttpHeaders.AUTHORIZATION, authorization)).andExpect(status().isForbidden());
+    }
+
+    @Test void identityLoginRefreshAndLogoutDoNotRequireADeviceBinding() throws Exception {
+        String email = UUID.randomUUID() + "@example.com";
+        String credentials = "{\"email\":\"%s\",\"password\":\"synthetic-test-password-long-enough\"}".formatted(email);
+        mvc.perform(post("/api/v1/auth/register").contentType(MediaType.APPLICATION_JSON)
+                        .content(credentials.substring(0, credentials.length()-1) + ",\"displayName\":\"Bootstrap user\"}"))
+                .andExpect(status().isCreated());
+        String login = mvc.perform(post("/api/v1/auth/login").contentType(MediaType.APPLICATION_JSON).content(credentials))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        String refreshed = mvc.perform(post("/api/v1/auth/refresh").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"refreshToken\":\"%s\"}".formatted(json.readTree(login).path("refreshToken").asString())))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        mvc.perform(post("/api/v1/auth/logout").header(HttpHeaders.AUTHORIZATION, "Bearer " + json.readTree(refreshed).path("accessToken").asString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"refreshToken\":\"%s\"}".formatted(json.readTree(refreshed).path("refreshToken").asString())))
+                .andExpect(status().isNoContent());
     }
 
     @Test void collectionContinuesWithoutBindingAndItsResponseDoesNotExposeQuota() throws Exception {
@@ -202,7 +254,8 @@ class ClientAccessIntegrationTest {
         mvc.perform(options("/api/v1/client/access").header(HttpHeaders.ORIGIN, "http://localhost:1420")
                         .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "GET")
                         .header(HttpHeaders.ACCESS_CONTROL_REQUEST_HEADERS, "authorization,x-quota-guard-device-id"))
-                .andExpect(status().isOk()).andExpect(header().exists(HttpHeaders.ACCESS_CONTROL_ALLOW_HEADERS));
+                .andExpect(status().isOk()).andExpect(header().string(HttpHeaders.ACCESS_CONTROL_ALLOW_HEADERS,
+                        org.hamcrest.Matchers.containsString("x-quota-guard-device-id")));
     }
 
     private UUID bind() {
