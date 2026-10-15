@@ -11,6 +11,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.filter.OncePerRequestFilter;
+import org.springframework.web.util.UrlPathHelper;
 
 /** Default-deny binding gate for client business APIs; meter and administrator roles keep their own boundaries. */
 public class ClientAccessFilter extends OncePerRequestFilter {
@@ -26,7 +27,7 @@ public class ClientAccessFilter extends OncePerRequestFilter {
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
-        String path = request.getRequestURI().substring(request.getContextPath().length());
+        String path = UrlPathHelper.defaultInstance.getPathWithinApplication(request);
         if (!path.equals(ROOT) && !path.startsWith(ROOT + "/")) return true;
         String route = path.substring(ROOT.length());
         return switch (request.getMethod()) {
