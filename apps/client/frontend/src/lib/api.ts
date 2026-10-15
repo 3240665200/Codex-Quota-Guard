@@ -82,6 +82,88 @@ const systemSessionSchema = z.object({
   user: systemUserSchema.nullable(),
 });
 
+const sessionBindingSchema = z.strictObject({
+  id: z.string().uuid(),
+  userId: z.string().uuid(),
+  userDisplayName: z.string().max(200),
+  userEmail: z.string().email(),
+  deviceId: z.string().uuid(),
+  enrollmentId: z.string().uuid(),
+  officialAccountId: z.string().uuid(),
+  sessionId: z.string().min(1).max(2048),
+  status: z.string().min(1).max(40),
+  matchMethod: z.string().min(1).max(80),
+  verificationLevel: z.string().min(1).max(80),
+  createdAt: z.iso.datetime({ offset: true }),
+  endedAt: z.iso.datetime({ offset: true }).nullable(),
+});
+const sessionBindingAttemptSchema = z.strictObject({
+  id: z.string().uuid(),
+  deviceId: z.string().uuid(),
+  enrollmentId: z.string().uuid(),
+  officialAccountId: z.string().uuid(),
+  status: z.enum([
+    "QUEUED",
+    "PREPARING",
+    "READY_FOR_LOGIN",
+    "DETECTING",
+    "AWAITING_CONFIRMATION",
+    "BOUND",
+    "CANCELLED",
+    "EXPIRED",
+    "REJECTED",
+  ]),
+  queuePosition: z.number().int().nonnegative(),
+  loginAllowed: z.boolean(),
+  candidateSessionId: z.string().min(1).max(2048).nullable(),
+  candidateDisplayName: z.string().max(300).nullable(),
+  candidatePlatform: z.string().max(200).nullable(),
+  expiresAt: z.iso.datetime({ offset: true }),
+  errorCode: z
+    .string()
+    .regex(/^[A-Z0-9_]{1,100}$/)
+    .nullable(),
+  quarantined: z.boolean(),
+  binding: sessionBindingSchema.nullable(),
+});
+const sessionBindingCurrentSchema = z.strictObject({
+  attempt: sessionBindingAttemptSchema.nullable(),
+  binding: sessionBindingSchema.nullable(),
+});
+const officialLoginHelperStatusSchema = z.strictObject({
+  jobId: z.string().uuid().nullable(),
+  state: z.enum([
+    "IDLE",
+    "STARTING",
+    "WAITING_FOR_LOGIN",
+    "SAVING",
+    "COMPLETED",
+    "FAILED",
+    "CANCELLED",
+  ]),
+  errorCode: z
+    .string()
+    .regex(/^[A-Z0-9_]{1,100}$/)
+    .nullable(),
+  accountName: z.string().max(200).nullable(),
+});
+const officialLoginHelperJobsSchema = z
+  .array(
+    z.strictObject({
+      id: z.string().uuid(),
+      officialAccountId: z.string().uuid(),
+      accountName: z.string().max(200),
+      state: z.string().min(1).max(40),
+      expiresAt: z.iso.datetime({ offset: true }),
+      errorCode: z
+        .string()
+        .regex(/^[A-Z0-9_]{1,100}$/)
+        .nullable(),
+      proxyNodeId: z.string().uuid().nullable(),
+    }),
+  )
+  .max(100);
+
 const loginAssistanceReason = z
   .string()
   .regex(/^[A-Z][A-Z0-9_]{0,63}$/)
@@ -461,6 +543,15 @@ export type MeterVersion = z.infer<typeof meterVersionSchema>;
 export type ServerConfig = z.infer<typeof serverConfigSchema>;
 export type SystemUser = z.infer<typeof systemUserSchema>;
 export type SystemSession = z.infer<typeof systemSessionSchema>;
+export type SessionBinding = z.infer<typeof sessionBindingSchema>;
+export type SessionBindingAttempt = z.infer<typeof sessionBindingAttemptSchema>;
+export type SessionBindingCurrent = z.infer<typeof sessionBindingCurrentSchema>;
+export type OfficialLoginHelperStatus = z.infer<
+  typeof officialLoginHelperStatusSchema
+>;
+export type OfficialLoginHelperJob = z.infer<
+  typeof officialLoginHelperJobsSchema
+>[number];
 export type LoginAssistanceInfo = z.infer<typeof loginAssistanceInfoSchema>;
 export type LoginAssistanceListener = z.infer<
   typeof loginAssistanceListenerSchema
@@ -527,6 +618,49 @@ export const api = {
   systemLogout: async () => {
     await invoke("system_logout");
   },
+  sessionBindingCurrent: () =>
+    invokeValidated("session_binding_current", sessionBindingCurrentSchema),
+  sessionBindingStart: () =>
+    invokeValidated("session_binding_start", sessionBindingAttemptSchema),
+  sessionBindingAction: async (
+    attemptId: string,
+    action: "status" | "prepare" | "detect" | "confirm" | "cancel",
+  ) => {
+    z.string().uuid().parse(attemptId);
+    z.enum(["status", "prepare", "detect", "confirm", "cancel"]).parse(action);
+    return invokeValidated(
+      `session_binding_${action}`,
+      sessionBindingAttemptSchema.refine((result) => result.id === attemptId),
+      { attemptId },
+    );
+  },
+  officialLoginHelperJobs: () =>
+    invokeValidated(
+      "official_login_helper_jobs",
+      officialLoginHelperJobsSchema,
+    ),
+  officialLoginHelperStatus: () =>
+    invokeValidated(
+      "official_login_helper_status",
+      officialLoginHelperStatusSchema,
+    ),
+  officialLoginHelperStart: async (
+    jobId: string,
+    browser: "EDGE" | "CHROME",
+  ) => {
+    z.string().uuid().parse(jobId);
+    z.enum(["EDGE", "CHROME"]).parse(browser);
+    return invokeValidated(
+      "official_login_helper_start",
+      officialLoginHelperStatusSchema,
+      { jobId, browser },
+    );
+  },
+  officialLoginHelperCancel: () =>
+    invokeValidated(
+      "official_login_helper_cancel",
+      officialLoginHelperStatusSchema,
+    ),
   loginAssistanceInfo: () =>
     invokeValidated("login_assistance_info", loginAssistanceInfoSchema),
   loginAssistanceStart: () =>
@@ -571,6 +705,10 @@ export const api = {
 };
 
 const safeBackendMessages = new Set([
+  "本设备绑定信息不可用，请检查统计程序设备登记或联系管理员。",
+  "绑定任务无效或已失效，请重新读取状态。",
+  "本设备绑定请求被拒绝，请联系管理员检查设备归属、官方账户与队列状态。",
+  "官方登录助手暂不可用，请检查当前管理员身份、浏览器安装和后台任务。",
   "本机登录存储不可用，请关闭其他客户端并检查用户目录权限后重试。",
   "本地服务启动失败，安装包可能不完整，请重新安装。",
   "本地服务暂时不可用，请稍后重试。",

@@ -14,7 +14,7 @@ mod tray;
 mod window_layout;
 mod window_state;
 
-use backend::{ApiRoute, BackendState};
+use backend::{ApiRoute, BackendState, BindingAction};
 use reqwest::Method;
 use serde_json::Value;
 use server_config::ServerConfig;
@@ -269,6 +269,106 @@ async fn system_current(state: State<'_, BackendState>) -> CommandResult<Value> 
 }
 
 #[tauri::command]
+async fn session_binding_current(state: State<'_, BackendState>) -> CommandResult<Value> {
+    state
+        .json(Method::GET, ApiRoute::SessionBindingCurrent)
+        .await
+        .map_err(command_error)
+}
+#[tauri::command]
+async fn session_binding_start(state: State<'_, BackendState>) -> CommandResult<Value> {
+    state
+        .json(Method::POST, ApiRoute::SessionBindingStart)
+        .await
+        .map_err(command_error)
+}
+async fn binding_action(
+    state: State<'_, BackendState>,
+    id: String,
+    action: BindingAction,
+) -> CommandResult<Value> {
+    let route = backend::session_binding_route(&id, action).map_err(command_error)?;
+    state
+        .json(
+            if action == BindingAction::Status {
+                Method::GET
+            } else {
+                Method::POST
+            },
+            route,
+        )
+        .await
+        .map_err(command_error)
+}
+#[tauri::command]
+async fn session_binding_status(
+    attempt_id: String,
+    state: State<'_, BackendState>,
+) -> CommandResult<Value> {
+    binding_action(state, attempt_id, BindingAction::Status).await
+}
+#[tauri::command]
+async fn session_binding_prepare(
+    attempt_id: String,
+    state: State<'_, BackendState>,
+) -> CommandResult<Value> {
+    binding_action(state, attempt_id, BindingAction::Prepare).await
+}
+#[tauri::command]
+async fn session_binding_detect(
+    attempt_id: String,
+    state: State<'_, BackendState>,
+) -> CommandResult<Value> {
+    binding_action(state, attempt_id, BindingAction::Detect).await
+}
+#[tauri::command]
+async fn session_binding_confirm(
+    attempt_id: String,
+    state: State<'_, BackendState>,
+) -> CommandResult<Value> {
+    binding_action(state, attempt_id, BindingAction::Confirm).await
+}
+#[tauri::command]
+async fn session_binding_cancel(
+    attempt_id: String,
+    state: State<'_, BackendState>,
+) -> CommandResult<Value> {
+    binding_action(state, attempt_id, BindingAction::Cancel).await
+}
+#[tauri::command]
+async fn official_login_helper_jobs(state: State<'_, BackendState>) -> CommandResult<Value> {
+    state
+        .json(Method::GET, ApiRoute::OfficialLoginHelperJobs)
+        .await
+        .map_err(command_error)
+}
+#[tauri::command]
+async fn official_login_helper_status(state: State<'_, BackendState>) -> CommandResult<Value> {
+    state
+        .json(Method::GET, ApiRoute::OfficialLoginHelperStatus)
+        .await
+        .map_err(command_error)
+}
+#[tauri::command]
+async fn official_login_helper_start(
+    job_id: String,
+    browser: String,
+    state: State<'_, BackendState>,
+) -> CommandResult<Value> {
+    state
+        .official_login_helper_start(&job_id, &browser)
+        .await
+        .map_err(command_error)
+}
+#[tauri::command]
+async fn official_login_helper_cancel(state: State<'_, BackendState>) -> CommandResult<Value> {
+    state
+        .json(Method::POST, ApiRoute::OfficialLoginHelperCancel)
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
 async fn system_logout(state: State<'_, BackendState>) -> CommandResult<()> {
     state
         .empty(Method::POST, ApiRoute::SystemLogout)
@@ -364,6 +464,17 @@ fn main() {
             login_assistance_start,
             login_assistance_status,
             login_assistance_cancel,
+            session_binding_current,
+            session_binding_start,
+            session_binding_status,
+            session_binding_prepare,
+            session_binding_detect,
+            session_binding_confirm,
+            session_binding_cancel,
+            official_login_helper_jobs,
+            official_login_helper_status,
+            official_login_helper_start,
+            official_login_helper_cancel,
             server_config_get,
             server_config_save
         ]);

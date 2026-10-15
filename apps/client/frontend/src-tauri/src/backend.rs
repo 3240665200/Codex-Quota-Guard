@@ -41,6 +41,13 @@ pub(crate) enum ApiRoute {
     LoginAssistanceInfo,
     LoginAssistanceStart,
     LoginAssistanceListener { id: Uuid },
+    SessionBindingCurrent,
+    SessionBindingStart,
+    SessionBindingAttempt { id: Uuid, action: BindingAction },
+    OfficialLoginHelperJobs,
+    OfficialLoginHelperStatus,
+    OfficialLoginHelperStart { id: Uuid },
+    OfficialLoginHelperCancel,
     MeterRuntimeLogs,
     CodexRateLimits,
     SystemLogin,
@@ -63,12 +70,42 @@ impl ApiRoute {
             Self::LoginAssistanceStart | Self::LoginAssistanceListener { .. } => {
                 "/api/v1/login-assistance/listeners"
             }
+            Self::SessionBindingCurrent => "/api/v1/session-bindings",
+            Self::SessionBindingStart | Self::SessionBindingAttempt { .. } => {
+                "/api/v1/session-bindings/attempts"
+            }
+            Self::OfficialLoginHelperJobs | Self::OfficialLoginHelperStart { .. } => {
+                "/api/v1/official-login-helper/jobs"
+            }
+            Self::OfficialLoginHelperStatus => "/api/v1/official-login-helper/status",
+            Self::OfficialLoginHelperCancel => "/api/v1/official-login-helper/cancel",
             Self::MeterRuntimeLogs => "/api/v1/usage/logs",
             Self::CodexRateLimits => "/api/v1/codex/rate-limits",
             Self::SystemLogin => "/api/v1/session/login",
             Self::SystemCurrent => "/api/v1/session/current",
             Self::SystemLogout => "/api/v1/session/logout",
             Self::Shutdown => "/api/v1/system/shutdown",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BindingAction {
+    Status,
+    Prepare,
+    Detect,
+    Confirm,
+    Cancel,
+}
+
+impl BindingAction {
+    fn suffix(self) -> &'static str {
+        match self {
+            Self::Status => "",
+            Self::Prepare => "/prepare",
+            Self::Detect => "/detect",
+            Self::Confirm => "/confirm",
+            Self::Cancel => "/cancel",
         }
     }
 }
@@ -95,6 +132,12 @@ pub(crate) enum BackendError {
     MailRejected,
     #[error("监听任务编号无效，请重新开始监听。")]
     InvalidListenerId,
+    #[error("绑定任务无效或已失效，请重新读取状态。")]
+    InvalidBindingTask,
+    #[error("本设备绑定请求被拒绝，请联系管理员检查设备归属、官方账户与队列状态。")]
+    BindingRejected,
+    #[error("官方登录助手暂不可用，请检查当前管理员身份、浏览器安装和后台任务。")]
+    OfficialLoginHelperRejected,
     #[error("邮箱或密码不正确，请检查后重试。")]
     InvalidCredentials,
     #[error(
@@ -271,6 +314,23 @@ impl BackendState {
         .await
     }
 
+    pub(crate) async fn official_login_helper_start(
+        &self,
+        job_id: &str,
+        browser: &str,
+    ) -> Result<Value, BackendError> {
+        let route = official_login_helper_route(job_id)?;
+        if !matches!(browser, "EDGE" | "CHROME") {
+            return Err(BackendError::OfficialLoginHelperRejected);
+        }
+        self.json_request(
+            Method::POST,
+            route,
+            Some(serde_json::json!({ "browser": browser })),
+        )
+        .await
+    }
+
     async fn json_request(
         &self,
         method: Method,
@@ -361,6 +421,32 @@ fn classify_response(route: ApiRoute, status: StatusCode) -> BackendError {
     }
     if matches!(
         route,
+        ApiRoute::SessionBindingCurrent
+            | ApiRoute::SessionBindingStart
+            | ApiRoute::SessionBindingAttempt { .. }
+            | ApiRoute::OfficialLoginHelperJobs
+            | ApiRoute::OfficialLoginHelperStatus
+            | ApiRoute::OfficialLoginHelperStart { .. }
+            | ApiRoute::OfficialLoginHelperCancel
+    ) {
+        return match status {
+            StatusCode::UNAUTHORIZED => BackendError::SystemLoginRequired,
+            StatusCode::SERVICE_UNAVAILABLE => BackendError::ControlPlaneUnavailable,
+            _ if matches!(
+                route,
+                ApiRoute::OfficialLoginHelperJobs
+                    | ApiRoute::OfficialLoginHelperStatus
+                    | ApiRoute::OfficialLoginHelperStart { .. }
+                    | ApiRoute::OfficialLoginHelperCancel
+            ) =>
+            {
+                BackendError::OfficialLoginHelperRejected
+            }
+            _ => BackendError::BindingRejected,
+        };
+    }
+    if matches!(
+        route,
         ApiRoute::LoginAssistanceInfo
             | ApiRoute::LoginAssistanceStart
             | ApiRoute::LoginAssistanceListener { .. }
@@ -406,6 +492,19 @@ fn classify_response(route: ApiRoute, status: StatusCode) -> BackendError {
 pub(crate) fn login_assistance_route(listener_id: &str) -> Result<ApiRoute, BackendError> {
     let id = Uuid::parse_str(listener_id).map_err(|_| BackendError::InvalidListenerId)?;
     Ok(ApiRoute::LoginAssistanceListener { id })
+}
+
+pub(crate) fn session_binding_route(
+    attempt_id: &str,
+    action: BindingAction,
+) -> Result<ApiRoute, BackendError> {
+    let id = Uuid::parse_str(attempt_id).map_err(|_| BackendError::InvalidBindingTask)?;
+    Ok(ApiRoute::SessionBindingAttempt { id, action })
+}
+
+pub(crate) fn official_login_helper_route(job_id: &str) -> Result<ApiRoute, BackendError> {
+    let id = Uuid::parse_str(job_id).map_err(|_| BackendError::InvalidBindingTask)?;
+    Ok(ApiRoute::OfficialLoginHelperStart { id })
 }
 
 fn request_graceful_shutdown(process: &mut RunningBackend) -> bool {
@@ -548,6 +647,8 @@ fn fixed_url(port: u16, route: ApiRoute) -> String {
         ApiRoute::UsageEvents { page, size } => format!("{base}?page={page}&size={size}"),
         ApiRoute::UsageAnalytics { days } => format!("{base}?days={days}"),
         ApiRoute::LoginAssistanceListener { id } => format!("{base}/{id}"),
+        ApiRoute::SessionBindingAttempt { id, action } => format!("{base}/{id}{}", action.suffix()),
+        ApiRoute::OfficialLoginHelperStart { id } => format!("{base}/{id}/start"),
         _ => base,
     }
 }
@@ -574,9 +675,18 @@ mod tests {
     fn session_binding_and_helper_routes_are_fixed_and_identifiers_are_validated() {
         let id = "11111111-1111-4111-8111-111111111111";
         let route = super::session_binding_route(id, super::BindingAction::Detect).unwrap();
-        assert_eq!(super::fixed_url(43117, route), format!("http://127.0.0.1:43117/api/v1/session-bindings/attempts/{id}/detect"));
-        assert!(super::session_binding_route("https://example.com", super::BindingAction::Confirm).is_err());
-        assert_eq!(super::fixed_url(43117, super::ApiRoute::OfficialLoginHelperJobs), "http://127.0.0.1:43117/api/v1/official-login-helper/jobs");
+        assert_eq!(
+            super::fixed_url(43117, route),
+            format!("http://127.0.0.1:43117/api/v1/session-bindings/attempts/{id}/detect")
+        );
+        assert!(
+            super::session_binding_route("https://example.com", super::BindingAction::Confirm)
+                .is_err()
+        );
+        assert_eq!(
+            super::fixed_url(43117, super::ApiRoute::OfficialLoginHelperJobs),
+            "http://127.0.0.1:43117/api/v1/official-login-helper/jobs"
+        );
         assert!(super::official_login_helper_route("../secret").is_err());
     }
     use super::*;

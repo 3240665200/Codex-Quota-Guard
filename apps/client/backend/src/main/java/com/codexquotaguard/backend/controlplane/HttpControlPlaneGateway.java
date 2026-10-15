@@ -183,6 +183,49 @@ final class HttpControlPlaneGateway implements ControlPlaneGateway {
     }
 
     @Override
+    public SessionBindingCurrent sessionBindingCurrent(String token, UUID deviceId, UUID enrollmentId) {
+        if (deviceId == null || enrollmentId == null) throw ControlPlaneException.invalidRequest();
+        return sendBindingJson(get("/api/v1/client/session-bindings/current?deviceId=" + deviceId
+                + "&enrollmentId=" + enrollmentId, token), SessionBindingCurrent.class);
+    }
+
+    @Override
+    public SessionBindingAttempt startSessionBinding(String token, UUID deviceId, UUID enrollmentId) {
+        if (deviceId == null || enrollmentId == null) throw ControlPlaneException.invalidRequest();
+        return sendBindingJson(postJson("/api/v1/client/session-bindings/attempts",
+                new BindingDeviceBody(deviceId, enrollmentId), token), SessionBindingAttempt.class);
+    }
+
+    @Override
+    public SessionBindingAttempt sessionBindingAttempt(String token, UUID attemptId) {
+        return sendBindingJson(get(bindingAttemptPath(attemptId), token), SessionBindingAttempt.class);
+    }
+
+    @Override
+    public SessionBindingAttempt sessionBindingAction(String token, UUID attemptId, String action, String candidateSessionId) {
+        if (!List.of("prepare", "detect", "confirm", "cancel").contains(action)
+                || ("confirm".equals(action) && (candidateSessionId == null || candidateSessionId.isBlank()))) {
+            throw ControlPlaneException.invalidRequest();
+        }
+        return sendBindingJson(postJson(bindingAttemptPath(attemptId) + "/" + action,
+                "confirm".equals(action) ? new BindingConfirmBody(candidateSessionId) : java.util.Map.of(), token),
+                SessionBindingAttempt.class);
+    }
+
+    private static String bindingAttemptPath(UUID id) {
+        if (id == null) throw ControlPlaneException.invalidRequest();
+        return "/api/v1/client/session-bindings/attempts/" + id;
+    }
+
+    private <T> T sendBindingJson(HttpRequest request, Class<T> type) {
+        // Bound these metadata responses as strictly as OTP responses. No remote error body is retained.
+        HttpResponse<byte[]> response = sendMail(request);
+        ensureSuccess(response.statusCode());
+        try { return mapper.readValue(response.body(), type); }
+        catch (RuntimeException invalid) { throw ControlPlaneException.unavailable(); }
+    }
+
+    @Override
     public PersonalQuotaOverview reportUsage(String accessToken, List<CodexUsageEvent> events) {
         if (events == null || events.isEmpty() || events.size() > MAX_USAGE_EVENTS_PER_REQUEST) {
             throw ControlPlaneException.invalidRequest();
@@ -319,6 +362,9 @@ final class HttpControlPlaneGateway implements ControlPlaneGateway {
 
     private record MeterDeviceBody(UUID deviceId) {
     }
+
+    private record BindingDeviceBody(UUID deviceId, UUID enrollmentId) { }
+    private record BindingConfirmBody(String sessionId) { }
 
     private record UsageEventBody(String eventId, String occurredAt, long totalTokens, String source,
             String model, String reasoningEffort, Long inputTokens, Long cachedInputTokens,

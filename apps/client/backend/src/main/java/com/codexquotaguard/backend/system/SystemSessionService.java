@@ -6,6 +6,8 @@ import com.codexquotaguard.backend.controlplane.ControlPlaneGateway;
 import com.codexquotaguard.backend.controlplane.LoginAssistanceInfo;
 import com.codexquotaguard.backend.controlplane.LoginAssistanceListener;
 import com.codexquotaguard.backend.controlplane.MeterEnrollment;
+import com.codexquotaguard.backend.controlplane.SessionBindingAttempt;
+import com.codexquotaguard.backend.controlplane.SessionBindingCurrent;
 import com.codexquotaguard.backend.controlplane.OfficialCodexRateLimits;
 import com.codexquotaguard.backend.controlplane.PersonalQuotaOverview;
 import com.codexquotaguard.backend.controlplane.PersonalUsageAnalytics;
@@ -97,6 +99,22 @@ public final class SystemSessionService {
     public UserUsageEventPage usageEvents(int page, int size) { return invoke(token -> controlPlane.usageEvents(token, page, size), null).value(); }
     public PersonalUsageAnalytics usageAnalytics(int days) { return invoke(token -> controlPlane.usageAnalytics(token, days), null).value(); }
     public MeterEnrollment enrollMeter(UUID deviceId) { return invoke(token -> controlPlane.enrollMeter(token, deviceId), null).value(); }
+    /** Runs backend-only work with the same refresh, user and generation checks as other product APIs. */
+    public <T> T withAuthenticatedToken(java.util.function.Function<String, T> operation) {
+        return invoke(operation::apply, null).value();
+    }
+    public SessionBindingCurrent sessionBindingCurrent(UUID deviceId, UUID enrollmentId) {
+        return invoke(token -> controlPlane.sessionBindingCurrent(token, deviceId, enrollmentId), null).value();
+    }
+    public SessionBindingAttempt startSessionBinding(UUID deviceId, UUID enrollmentId) {
+        return invoke(token -> controlPlane.startSessionBinding(token, deviceId, enrollmentId), null).value();
+    }
+    public SessionBindingAttempt sessionBindingAttempt(UUID attemptId) {
+        return invoke(token -> controlPlane.sessionBindingAttempt(token, attemptId), null).value();
+    }
+    public SessionBindingAttempt sessionBindingAction(UUID attemptId, String action, String candidateSessionId) {
+        return invoke(token -> controlPlane.sessionBindingAction(token, attemptId, action, candidateSessionId), null).value();
+    }
     MeterEnrollment enrollMeter(UUID deviceId, Probe expected) {
         requireCurrent(expected);
         MeterEnrollment result = invoke(token -> controlPlane.enrollMeter(token, deviceId), expected.overview().user().id()).value();

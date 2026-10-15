@@ -10,6 +10,12 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 @RestControllerAdvice
 public final class LocalSessionExceptionHandler {
 
+    @ExceptionHandler(SessionBindingException.class)
+    public ResponseEntity<ErrorBody> sessionBindingUnavailable() {
+        return response(HttpStatus.CONFLICT, "SESSION_BINDING_UNAVAILABLE",
+                "本设备绑定信息不可用，请检查统计程序设备登记或联系管理员。");
+    }
+
     @ExceptionHandler(SessionStorageException.class)
     public ResponseEntity<ErrorBody> sessionStorageUnavailable() {
         return response(HttpStatus.LOCKED, "SESSION_STORAGE_UNAVAILABLE",

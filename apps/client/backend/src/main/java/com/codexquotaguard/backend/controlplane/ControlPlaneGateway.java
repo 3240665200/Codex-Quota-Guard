@@ -50,6 +50,19 @@ public interface ControlPlaneGateway {
         throw ControlPlaneException.unavailable();
     }
 
+    default SessionBindingCurrent sessionBindingCurrent(String token, UUID deviceId, UUID enrollmentId) {
+        throw ControlPlaneException.unavailable();
+    }
+    default SessionBindingAttempt startSessionBinding(String token, UUID deviceId, UUID enrollmentId) {
+        throw ControlPlaneException.unavailable();
+    }
+    default SessionBindingAttempt sessionBindingAttempt(String token, UUID attemptId) {
+        throw ControlPlaneException.unavailable();
+    }
+    default SessionBindingAttempt sessionBindingAction(String token, UUID attemptId, String action, String candidateSessionId) {
+        throw ControlPlaneException.unavailable();
+    }
+
     /** Reports idempotent local token events for the current product user. */
     default PersonalQuotaOverview reportUsage(String accessToken, List<CodexUsageEvent> events) {
         throw ControlPlaneException.unavailable();
