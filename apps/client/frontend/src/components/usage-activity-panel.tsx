@@ -281,12 +281,34 @@ function explainError(code: string | null | undefined) {
       return "后台不可达或返回异常，请检查服务器地址、网络和后台运行状态。";
     case "SYSTEM_SESSION_REQUIRED":
     case "METER_UNAUTHORIZED":
-    case "METER_PAIRING_EXPIRED":
     case "METER_PAIRING_INVALID":
       return "登录或设备授权已失效，请重新登录并配对。";
+    case "METER_PAIRING_EXPIRED":
+      return "设备授权已失效，可能已过期、被撤销或账户已停用。待传用量已保留，请联系管理员确认状态，允许后再重新登录配对。";
     case "QUOTA_REPORT_REJECTED":
-    case "METER_REPORT_REJECTED":
       return "后台拒绝用量上报，请联系管理员检查用户、团队与设备绑定。";
+    case "METER_REPORT_REJECTED":
+      return "后台拒绝的用量已隔离保留，后续有效用量仍会继续上报。请联系管理员核对被拒记录。";
+    case "METER_OUTBOX_READ_FAILED":
+      return "待传用量无法读取，请检查统计数据目录的权限并联系管理员；不要删除待传队列。";
+    case "METER_OUTBOX_WRITE_FAILED":
+      return "待传用量无法保存，请检查统计数据目录权限和磁盘空间；不要删除现有数据，必要时联系管理员。";
+    case "METER_OUTBOX_INVALID":
+      return "待传队列格式异常，请联系管理员核对并恢复；请保留现有统计数据，不要清空队列。";
+    case "METER_OUTBOX_TOO_LARGE":
+      return "待传队列已达容量上限，请联系管理员核对未上传和隔离记录；请保留现有统计数据，不要清空队列。";
+    case "METER_OUTBOX_IDENTITY_MISMATCH":
+      return "待传队列与当前设备、服务器或本地目录不一致，已暂停上传。请检查服务器地址并联系管理员核对，不要删除队列或修改记录归属。";
+    case "METER_OUTBOX_OWNER_MISMATCH":
+      return "设备配对账户发生变化，旧账户用量已隔离保留，后续有效用量仍会继续上报。请联系管理员核对旧记录归属。";
+    case "METER_OUTBOX_OWNER_UNKNOWN":
+      return "部分用量无法确认归属，已隔离保留，后续有效用量仍会继续上报。请联系管理员核对，不能直接计入新账户。";
+    case "METER_PAIRING_OWNER_MISMATCH":
+      return "设备授权账户与待传用量归属不一致，已暂停上传并保留记录。请联系管理员核对账户后重新配对。";
+    case "METER_RENEWAL_INVALID":
+      return "设备续期结果未通过校验，待传用量已保留。请确认后台与统计程序版本匹配，联系管理员核对后重新配对。";
+    case "METER_EVENT_OUTSIDE_REPORT_WINDOW":
+      return "部分用量超过后台接收时间范围或时间超前，记录已保留，后续有效用量仍会继续上报。请检查系统时间并联系管理员核对历史记录，不要修改记录时间。";
     case "CONTROL_PLANE_REQUEST_REJECTED":
       return "后台拒绝了用量请求，请检查请求数据；这通常不是网络连接故障。";
     case "STATE_STORAGE_FAILED":
