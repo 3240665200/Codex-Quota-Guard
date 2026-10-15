@@ -19,6 +19,7 @@ import {
   updateUserTokenLimits,
 } from '../../services/api';
 import type { TeamResponse, UserResponse } from '../../services/api';
+import { getUserLogoutAllCurrent, previewUserLogoutAll } from '../../services/userLogoutApi';
 
 vi.mock('@umijs/max', () => ({ history: { push: vi.fn() } }));
 
@@ -26,6 +27,7 @@ vi.mock('../../services/api', () => ({
   createUser: vi.fn(),
   deleteUser: vi.fn(),
   forceLogoutUser: vi.fn(),
+  isSecureManagementContext: vi.fn(() => true),
   getSession: vi.fn(),
   getUserOfficialQuota: vi.fn(),
   getUserMeterDevices: vi.fn(),
@@ -36,6 +38,10 @@ vi.mock('../../services/api', () => ({
   updateUser: vi.fn(),
   updateUserQuotaPolicy: vi.fn(),
   updateUserTokenLimits: vi.fn(),
+}));
+vi.mock('../../services/userLogoutApi', () => ({
+  getUserLogoutAllCurrent: vi.fn(), previewUserLogoutAll: vi.fn(),
+  confirmUserLogoutAll: vi.fn(), getUserLogoutAllResult: vi.fn(),
 }));
 vi.mock('./generatePassword', () => ({ generateRandomPassword: vi.fn() }));
 
@@ -217,6 +223,25 @@ describe('用户额度策略配置', () => {
     expect(forceLogoutUser).not.toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole('button', { name: '确认下线系统账户' }));
     await waitFor(() => expect(forceLogoutUser).toHaveBeenCalledExactlyOnceWith(user.id));
+  });
+
+  it('opens all-account preview for only the selected user without revoking the product session', async () => {
+    vi.mocked(getSession).mockReturnValue({ accessToken: 'admin-token', user: { ...user, id: 'admin-1', role: 'ADMIN' } });
+    vi.mocked(getUserLogoutAllCurrent).mockResolvedValue({ operation: null });
+    vi.mocked(previewUserLogoutAll).mockResolvedValue({ planId: 'plan-1', userId: user.id, scope: 'ALL_ACCOUNTS',
+      expiresAt: '2099-01-01T00:00:00Z', accounts: [], warnings: [] });
+    renderPage(); await screen.findByText('张三');
+    fireEvent.click(screen.getByRole('button', { name: '管理 zhangsan@example.com' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: /强制下线所有账户/ }));
+    // rc-component uses the same "test-id" for every modal title in tests;
+    // the page's force-rendered hidden modals therefore obscure the accessible name.
+    const title = await screen.findByText(`强制下线所有账户 · ${user.email}`);
+    const dialog = title.closest('[role="dialog"]')!;
+    await waitFor(() => expect(title).toBeVisible());
+    expect(dialog).toBeVisible();
+    expect(within(dialog).getByRole('button', { name: '确认下线所有账户' })).toBeDisabled();
+    await waitFor(() => expect(previewUserLogoutAll).toHaveBeenCalledExactlyOnceWith(user.id));
+    expect(forceLogoutUser).not.toHaveBeenCalled();
   });
 
   it('generates, copies, and saves a new password only from the edit dialog', async () => {

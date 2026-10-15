@@ -126,4 +126,18 @@ describe('user-scoped all-account logout confirmation', () => {
     expect(previewUserLogoutAll).not.toHaveBeenCalled();
     expect(confirmUserLogoutAll).not.toHaveBeenCalled();
   });
+
+  it('lists exclusions and can explicitly preview again after a terminal result', async () => {
+    vi.mocked(getUserLogoutAllCurrent).mockResolvedValue({ operation: result('PARTIAL') });
+    const value = preview();
+    value.accounts[0].status = 'NOT_ATTEMPTED';
+    value.accounts[0].excluded = [{ session: { ...value.accounts[0].targets[0], current: true }, reason: 'CURRENT_SESSION' }];
+    value.accounts[0].targets = [];
+    vi.mocked(previewUserLogoutAll).mockResolvedValue(value);
+    show(); await screen.findByText('部分官方会话未完成');
+    fireEvent.click(screen.getByRole('button', { name: '重新预览' }));
+    expect(await screen.findByText(/当前官方管理会话，保留/)).toBeInTheDocument();
+    expect(screen.getByRole('checkbox')).not.toBeChecked();
+    expect(confirmUserLogoutAll).not.toHaveBeenCalled();
+  });
 });
