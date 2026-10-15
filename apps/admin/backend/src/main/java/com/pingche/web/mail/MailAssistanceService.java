@@ -451,8 +451,12 @@ public class MailAssistanceService implements DisposableBean {
         inTransaction(() -> { listeners.findByIdForUpdate(id).ifPresent(l -> { if (l.active()) l.stop(state, code); }); return null; });
     }
     private String safeFailureCode(String code) {
-        return List.of("MAIL_CURSOR_CHANGED", "MAIL_CURSOR_UNAVAILABLE", "MAIL_OAUTH_FAILED", "MAIL_CREDENTIALS_UNAVAILABLE",
-                "MAIL_ENCRYPTION_UNAVAILABLE").contains(code) ? code : "MAIL_CONNECTION_FAILED";
+        return switch (code == null ? "" : code) {
+            case "MAIL_DNS_FAILED", "MAIL_HOST_BLOCKED", "MAIL_AUTH_FAILED", "MAIL_TLS_FAILED",
+                    "MAIL_CONNECTION_TIMEOUT", "MAIL_FOLDER_FAILED", "MAIL_CURSOR_CHANGED", "MAIL_CURSOR_UNAVAILABLE",
+                    "MAIL_OAUTH_FAILED", "MAIL_CREDENTIALS_UNAVAILABLE", "MAIL_ENCRYPTION_UNAVAILABLE" -> code;
+            default -> "MAIL_CONNECTION_FAILED";
+        };
     }
     private <T> T inTransaction(Supplier<T> work) { return transaction.execute(status -> work.get()); }
     private DomainException notFound() { return error("MAIL_LISTENER_NOT_FOUND", "Mailbox listener not found", HttpStatus.NOT_FOUND); }
