@@ -147,7 +147,7 @@ describe("device binding access gate", () => {
     expect(screen.getByRole("button", { name: "额度总览" })).toBeDisabled();
     expect(screen.queryByRole("heading", { name: "官方登录助手" })).toBeNull();
   });
-  it("rechecks central access after confirmation and keeps menus locked while it is still denied", async () => {
+  it("rechecks central access after the server completes binding and keeps menus locked while it is still denied", async () => {
     const original = mock.getMockImplementation()!;
     const candidate = {
       id: bindingId,
@@ -167,17 +167,16 @@ describe("device binding access gate", () => {
       retryAt: null,
       binding: null,
     };
+    let currentCandidate: unknown = candidate;
     mock.mockImplementation(async (command, args) => {
       if (command === "session_binding_current")
-        return { attempt: candidate, binding: null };
-      if (command === "session_binding_confirm")
-        return { ...candidate, status: "BOUND", binding };
+        return { attempt: currentCandidate, binding: null };
       return original(command, args);
     });
     show();
-    fireEvent.click(
-      await screen.findByRole("button", { name: "确认绑定此会话" }),
-    );
+    await screen.findByText("This login");
+    currentCandidate = { ...candidate, status: "BOUND", binding };
+    act(() => window.dispatchEvent(new Event("quota-guard:assistance-refresh")));
     await waitFor(() =>
       expect(
         mock.mock.calls.filter(([name]) => name === "system_access").length,
@@ -245,6 +244,9 @@ describe("device binding access gate", () => {
         "true",
       );
       expect(toggle.closest("[inert]")).not.toBeNull();
+      // The settings read also refreshes on focus. Let it finish so the access
+      // boundary, rather than that independent request, must block the action.
+      await waitFor(() => expect(toggle).toBeEnabled());
       fireEvent.click(toggle);
       fireEvent.click(screen.getByRole("button", { name: "登录辅助" }));
       expect(mock.mock.calls.some(([name]) => name === "autostart_set")).toBe(
