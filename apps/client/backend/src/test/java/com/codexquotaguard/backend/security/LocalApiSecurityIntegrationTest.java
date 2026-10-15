@@ -34,7 +34,7 @@ class LocalApiSecurityIntegrationTest {
         }
         mockMvc.perform(get("/api/v1/usage/events?page=-1")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + TOKEN))
-                .andExpect(status().isBadRequest());
+                .andExpect(status().isUnauthorized());
     }
 
     @Test
@@ -83,18 +83,15 @@ class LocalApiSecurityIntegrationTest {
     }
 
     @Test
-    void exposesSafeMeterAndFallbackStatusOnlyBehindTheDesktopBearer() throws Exception {
+    void refusesMeterStatusAndManualScanningBeforeTheProductSessionAndBindingGate() throws Exception {
         mockMvc.perform(get("/api/v1/usage/status"))
                 .andExpect(status().isUnauthorized());
         mockMvc.perform(get("/api/v1/usage/status")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + TOKEN))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.fallback.state").value("SIGNED_OUT"))
-                .andExpect(jsonPath("$.service.state").isString())
-                .andExpect(jsonPath("$.deviceToken").doesNotExist());
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("SYSTEM_SESSION_REQUIRED"));
         mockMvc.perform(post("/api/v1/usage/scan")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + TOKEN))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.fallback.state").value("SIGNED_OUT"));
+                .andExpect(status().isUnauthorized());
     }
 }

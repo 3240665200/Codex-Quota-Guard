@@ -82,6 +82,21 @@ const systemSessionSchema = z.object({
   user: systemUserSchema.nullable(),
 });
 
+const clientAccessSchema = z
+  .strictObject({
+    allowed: z.boolean(),
+    bindingId: z.string().uuid().nullable(),
+    reason: z.string().min(1).max(100).nullable(),
+  })
+  .refine((value) =>
+    value.allowed
+      ? value.bindingId !== null && value.reason === null
+      : value.bindingId === null && value.reason !== null,
+  );
+
+export const bindingRequiredMessage = "请先完成本设备官方会话绑定。";
+export const bindingGateEvent = "quota-guard-binding-required";
+
 const sessionBindingSchema = z.strictObject({
   id: z.string().uuid(),
   userId: z.string().uuid(),
@@ -577,9 +592,19 @@ async function invokeValidated<T>(
   schema: z.ZodType<T>,
   args?: Record<string, unknown>,
 ): Promise<T> {
-  const payload: unknown =
-    args === undefined ? await invoke(command) : await invoke(command, args);
-  return schema.parse(payload);
+  try {
+    const payload: unknown =
+      args === undefined ? await invoke(command) : await invoke(command, args);
+    return schema.parse(payload);
+  } catch (error) {
+    if (
+      error === bindingRequiredMessage ||
+      (error instanceof Error && error.message === bindingRequiredMessage)
+    ) {
+      window.dispatchEvent(new Event(bindingGateEvent));
+    }
+    throw error;
+  }
 }
 
 export const api = {
@@ -613,6 +638,7 @@ export const api = {
   saveServerConfig: (config: ServerConfig) =>
     invokeValidated("server_config_save", serverConfigSchema, { config }),
   systemSession: () => invokeValidated("system_current", systemSessionSchema),
+  clientAccess: () => invokeValidated("system_access", clientAccessSchema),
   systemLogin: (email: string, password: string) =>
     invokeValidated("system_login", systemSessionSchema, { email, password }),
   systemLogout: async () => {
@@ -705,6 +731,7 @@ export const api = {
 };
 
 const safeBackendMessages = new Set([
+  bindingRequiredMessage,
   "本设备绑定信息不可用，请检查统计程序设备登记或联系管理员。",
   "绑定任务无效或已失效，请重新读取状态。",
   "本设备绑定请求被拒绝，请联系管理员检查设备归属、官方账户与队列状态。",

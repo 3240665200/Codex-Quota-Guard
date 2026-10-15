@@ -52,6 +52,7 @@ pub(crate) enum ApiRoute {
     CodexRateLimits,
     SystemLogin,
     SystemCurrent,
+    SystemAccess,
     SystemLogout,
     Shutdown,
 }
@@ -83,6 +84,7 @@ impl ApiRoute {
             Self::CodexRateLimits => "/api/v1/codex/rate-limits",
             Self::SystemLogin => "/api/v1/session/login",
             Self::SystemCurrent => "/api/v1/session/current",
+            Self::SystemAccess => "/api/v1/session/access",
             Self::SystemLogout => "/api/v1/session/logout",
             Self::Shutdown => "/api/v1/system/shutdown",
         }
@@ -148,6 +150,8 @@ pub(crate) enum BackendError {
     SystemLoginRequired,
     #[error("本机登录存储不可用，请关闭其他客户端并检查用户目录权限后重试。")]
     SessionStorageUnavailable,
+    #[error("请先完成本设备官方会话绑定。")]
+    SessionBindingRequired,
 }
 
 /// The token deliberately has no Debug implementation, and is never exposed
@@ -378,6 +382,11 @@ impl BackendState {
         }
     }
 
+    pub(crate) async fn require_binding(&self) -> Result<(), BackendError> {
+        let decision = self.json(Method::GET, ApiRoute::SystemAccess).await?;
+        validate_binding_access(&decision)
+    }
+
     pub(crate) fn stop(&self) {
         let Some(mut process) = self
             .process
@@ -416,6 +425,20 @@ impl BackendState {
 }
 
 fn classify_response(route: ApiRoute, status: StatusCode) -> BackendError {
+    if status == StatusCode::FORBIDDEN
+        && matches!(
+            route,
+            ApiRoute::QuotaOverview
+                | ApiRoute::UsageStatus
+                | ApiRoute::UsageScan
+                | ApiRoute::UsageEvents { .. }
+                | ApiRoute::UsageAnalytics { .. }
+                | ApiRoute::MeterRuntimeLogs
+                | ApiRoute::CodexRateLimits
+        )
+    {
+        return BackendError::SessionBindingRequired;
+    }
     if status == StatusCode::LOCKED {
         return BackendError::SessionStorageUnavailable;
     }
@@ -471,6 +494,7 @@ fn classify_response(route: ApiRoute, status: StatusCode) -> BackendError {
         (
             ApiRoute::SystemLogin
             | ApiRoute::SystemCurrent
+            | ApiRoute::SystemAccess
             | ApiRoute::QuotaOverview
             | ApiRoute::UsageEvents { .. }
             | ApiRoute::UsageAnalytics { .. },
@@ -478,6 +502,7 @@ fn classify_response(route: ApiRoute, status: StatusCode) -> BackendError {
         ) => BackendError::ControlPlaneUnavailable,
         (
             ApiRoute::SystemCurrent
+            | ApiRoute::SystemAccess
             | ApiRoute::QuotaOverview
             | ApiRoute::CodexRateLimits
             | ApiRoute::UsageEvents { .. }
@@ -486,6 +511,20 @@ fn classify_response(route: ApiRoute, status: StatusCode) -> BackendError {
             StatusCode::UNAUTHORIZED,
         ) => BackendError::SystemLoginRequired,
         _ => BackendError::Unavailable,
+    }
+}
+
+fn validate_binding_access(decision: &Value) -> Result<(), BackendError> {
+    if decision.get("allowed").and_then(Value::as_bool) == Some(true)
+        && decision
+            .get("bindingId")
+            .and_then(Value::as_str)
+            .is_some_and(|id| Uuid::parse_str(id).is_ok())
+        && decision.get("reason") == Some(&Value::Null)
+    {
+        Ok(())
+    } else {
+        Err(BackendError::SessionBindingRequired)
     }
 }
 
@@ -832,6 +871,7 @@ mod tests {
             ApiRoute::CodexRateLimits,
             ApiRoute::SystemLogin,
             ApiRoute::SystemCurrent,
+            ApiRoute::SystemAccess,
             ApiRoute::SystemLogout,
             ApiRoute::Shutdown,
         ] {
@@ -839,6 +879,29 @@ mod tests {
             assert!(url.starts_with("http://127.0.0.1:8080/api/v1/"));
             assert!(!url.contains('?'));
         }
+    }
+
+    #[test]
+    fn binding_access_is_fixed_fail_closed_and_distinct_from_product_logout() {
+        assert_eq!(
+            fixed_url(43117, ApiRoute::SystemAccess),
+            "http://127.0.0.1:43117/api/v1/session/access"
+        );
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!({"allowed":true,"bindingId":null,"reason":null}),
+            serde_json::json!({"allowed":false,"bindingId":null,"reason":"SESSION_BINDING_REQUIRED"}),
+        ] {
+            assert!(matches!(
+                super::validate_binding_access(&value),
+                Err(BackendError::SessionBindingRequired)
+            ));
+        }
+        assert!(super::validate_binding_access(&serde_json::json!({"allowed":true,"bindingId":"11111111-1111-4111-8111-111111111111","reason":null})).is_ok());
+        assert!(matches!(
+            classify_response(ApiRoute::QuotaOverview, StatusCode::FORBIDDEN),
+            BackendError::SessionBindingRequired
+        ));
     }
 
     #[test]

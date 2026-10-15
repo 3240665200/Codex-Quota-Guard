@@ -24,11 +24,8 @@ public final class CodexRateLimitsController {
     public OfficialCodexRateLimits rateLimits() {
         systemSessionService.requireLocalUserId();
         OfficialCodexRateLimits snapshot = localLimits.read();
-        try {
-            systemSessionService.reportOfficialQuota(snapshot);
-        } catch (RuntimeException ignored) {
-            // Local official metadata remains useful if the central server is offline.
-        }
+        // Revocation and network failures must reach the workspace gate immediately.
+        systemSessionService.reportOfficialQuota(snapshot);
         return snapshot;
     }
 }

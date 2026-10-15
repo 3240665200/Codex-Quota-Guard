@@ -258,6 +258,10 @@ export function ClientApp() {
   );
 
   const handleAuthenticated = (session: SystemSession) => {
+    queryClient.removeQueries({
+      predicate: (query) =>
+        !["startup-gate", "system-session"].includes(String(query.queryKey[0])),
+    });
     setLogoutError(null);
     setLocalSignedOut(false);
     queryClient.setQueryData(["system-session"], session);
@@ -268,6 +272,12 @@ export function ClientApp() {
       await api.systemLogout();
       setLogoutError(null);
       setLocalSignedOut(true);
+      queryClient.removeQueries({
+        predicate: (query) =>
+          !["startup-gate", "system-session"].includes(
+            String(query.queryKey[0]),
+          ),
+      });
       queryClient.setQueryData(["system-session"], signedOutSession);
       await queryClient.invalidateQueries({ queryKey: ["system-session"] });
       toast.success("已退出系统");
@@ -305,7 +315,7 @@ export function ClientApp() {
     </details>
   );
 
-  if (sessionQuery.error && !sessionQuery.data) {
+  if (sessionQuery.error) {
     return (
       <div className="cqg-entry-page">
         <div className="border-b bg-muted/50 px-6 py-2">{guardNotice}</div>
@@ -332,6 +342,7 @@ export function ClientApp() {
 
   return (
     <Dashboard
+      key={session.user.id}
       session={session}
       onLogout={() => void handleLogout()}
       guardNotice={guardNotice}

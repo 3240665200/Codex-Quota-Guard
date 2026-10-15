@@ -1,5 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { flushSync } from "react-dom";
 import {
   Activity,
@@ -27,6 +33,7 @@ import { SessionBinding } from "@/components/session-binding";
 import { OfficialLoginHelper } from "@/components/official-login-helper";
 import {
   api,
+  bindingGateEvent,
   getApiErrorMessage,
   type OfficialCodexRateLimits,
   type QuotaOverview,
@@ -548,11 +555,58 @@ type WorkspaceId = (typeof workspaces)[number]["id"];
 export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const [accessEpoch, setAccessEpoch] = useState(0);
+  const [now, setNow] = useState(Date.now);
+  const accessQuery = useQuery({
+    queryKey: ["client-access", session.user!.id, accessEpoch],
+    queryFn: api.clientAccess,
+    retry: false,
+    gcTime: 0,
+    staleTime: 0,
+    refetchInterval: 5_000,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: "always",
+    refetchOnReconnect: "always",
+  });
+  const recheckAccess = useCallback(
+    () => setAccessEpoch((value) => value + 1),
+    [],
+  );
+  const bindingAllowed =
+    accessQuery.isSuccess &&
+    !accessQuery.isError &&
+    accessQuery.data.allowed &&
+    now - accessQuery.dataUpdatedAt < 10_000;
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") recheckAccess();
+    };
+    window.addEventListener(bindingGateEvent, recheckAccess);
+    window.addEventListener("online", recheckAccess);
+    window.addEventListener("offline", recheckAccess);
+    window.addEventListener("focus", recheckAccess);
+    document.addEventListener("visibilitychange", onVisible);
+    const timer = window.setInterval(() => setNow(Date.now()), 500);
+    return () => {
+      window.removeEventListener(bindingGateEvent, recheckAccess);
+      window.removeEventListener("online", recheckAccess);
+      window.removeEventListener("offline", recheckAccess);
+      window.removeEventListener("focus", recheckAccess);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.clearInterval(timer);
+    };
+  }, [recheckAccess]);
   const [workspace, setWorkspace] = useState<WorkspaceId>("quota");
+  const [assistanceGeneration, setAssistanceGeneration] = useState(0);
   const [collapsed, setCollapsed] = useState(false);
   const scrollArea = useRef<HTMLDivElement>(null);
-  const currentPage = workspaces.find((page) => page.id === workspace)!;
+  const visibleWorkspace = bindingAllowed ? workspace : "login-assistance";
+  const showAssistance =
+    visibleWorkspace === "login-assistance" &&
+    (workspace === "login-assistance" || !accessQuery.isPending);
+  const currentPage = workspaces.find((page) => page.id === visibleWorkspace)!;
   const navigate = (next: WorkspaceId) => {
+    if (!bindingAllowed && next !== "login-assistance") return;
     setWorkspace(next);
     if (scrollArea.current) scrollArea.current.scrollTop = 0;
   };
@@ -567,12 +621,14 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
     queryFn: api.quotaOverview,
     retry: false,
     refetchInterval: 10_000,
+    enabled: bindingAllowed,
   });
   const usageStatusQuery = useQuery({
     queryKey: ["usage-status"],
     queryFn: api.usageStatus,
     retry: false,
     refetchInterval: 5_000,
+    enabled: bindingAllowed,
   });
   // Keep version detection active even when the diagnostics page is closed.
   const meterVersionQuery = useQuery({
@@ -580,6 +636,7 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
     queryFn: api.meterServiceVersion,
     retry: false,
     refetchInterval: 30_000,
+    enabled: bindingAllowed,
   });
   const scanMutation = useMutation({
     mutationFn: api.scanUsage,
@@ -666,6 +723,7 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
     queryFn: api.codexRateLimits,
     retry: false,
     refetchInterval: 60_000,
+    enabled: bindingAllowed,
   });
   const isRefreshing =
     statusQuery.isFetching ||
@@ -673,6 +731,10 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
     usageStatusQuery.isFetching ||
     rateLimitsQuery.isFetching;
   const refresh = async () => {
+    if (!bindingAllowed) {
+      recheckAccess();
+      return;
+    }
     try {
       const results = await Promise.all([
         statusQuery.refetch(),
@@ -765,13 +827,17 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
             <button
               key={id}
               type="button"
+              disabled={!bindingAllowed && id !== "login-assistance"}
               onClick={() => navigate(id)}
               aria-label={label}
               title={label}
-              aria-current={workspace === id ? "page" : undefined}
+              aria-current={visibleWorkspace === id ? "page" : undefined}
               className={cn(
                 "cqg-nav-item",
-                workspace === id && "cqg-nav-item-active",
+                visibleWorkspace === id && "cqg-nav-item-active",
+                !bindingAllowed &&
+                  id !== "login-assistance" &&
+                  "cursor-not-allowed opacity-40",
               )}
             >
               <Icon className="size-[18px] shrink-0" aria-hidden="true" />
@@ -783,6 +849,7 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
           <button
             type="button"
             className="cqg-meter-link"
+            disabled={!bindingAllowed}
             onClick={() => navigate("diagnostics")}
             title={meterLabel}
             aria-label={`查看统计程序：${meterLabel}`}
@@ -827,8 +894,11 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
               onClick={() => {
                 // Dispose the local code and request cancellation before the
                 // surrounding app clears the signed-in bridge session.
-                if (workspace === "login-assistance") {
-                  flushSync(() => setWorkspace("quota"));
+                if (visibleWorkspace === "login-assistance") {
+                  flushSync(() => {
+                    setWorkspace("quota");
+                    setAssistanceGeneration((value) => value + 1);
+                  });
                 }
                 onLogout();
               }}
@@ -912,11 +982,45 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
           aria-label={`${currentPage.label}内容`}
         >
           <div className="cqg-workspace-content mx-auto flex w-full max-w-[1240px] flex-col gap-4 p-4">
-            <SessionBinding
-              key={`binding:${session.user!.id}`}
-              userId={session.user!.id}
-            />
-            {requestError ? (
+            {!bindingAllowed ? (
+              <Alert>
+                <AlertTitle>
+                  {accessQuery.isFetching
+                    ? "正在核对本设备绑定"
+                    : "请先绑定本设备"}
+                </AlertTitle>
+                <AlertDescription>
+                  {accessQuery.isError
+                    ? "无法确认有效绑定，其他菜单暂不可用。请检查后台连接后重新核对。"
+                    : "完成本设备官方会话绑定后，中央后台确认有效才会开放其他菜单。"}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="ml-3"
+                    onClick={recheckAccess}
+                  >
+                    重新核对绑定
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="ml-3"
+                    disabled={pairMutation.isPending}
+                    onClick={() => pairMutation.mutate()}
+                  >
+                    配对统计程序
+                  </Button>
+                </AlertDescription>
+              </Alert>
+            ) : null}
+            {showAssistance ? (
+              <SessionBinding
+                key={`binding:${session.user!.id}`}
+                userId={session.user!.id}
+                onBound={recheckAccess}
+              />
+            ) : null}
+            {bindingAllowed && requestError ? (
               <Alert variant="destructive">
                 <CircleAlert aria-hidden="true" />
                 <AlertTitle>{t("serviceUnavailable")}</AlertTitle>
@@ -929,7 +1033,7 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
               </Alert>
             ) : null}
 
-            {workspace === "quota" ? (
+            {bindingAllowed && visibleWorkspace === "quota" ? (
               quotaQuery.isPending ? (
                 <div className="grid gap-4 lg:grid-cols-2">
                   <LoadingCard />
@@ -955,12 +1059,22 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
                   description="请刷新重试；如问题持续，请联系管理员。"
                 />
               )
-            ) : workspace === "login-assistance" ? (
-              <LoginAssistance
-                key={session.user!.id}
-                userId={session.user!.id}
-              />
-            ) : workspace === "settings" ? (
+            ) : visibleWorkspace === "login-assistance" ? (
+              showAssistance ? (
+                <>
+                  <LoginAssistance
+                    key={`assistance:${session.user!.id}:${assistanceGeneration}`}
+                    userId={session.user!.id}
+                  />
+                  {session.user?.role === "ADMIN" ? (
+                    <OfficialLoginHelper
+                      key={`official:${session.user.id}`}
+                      userId={session.user.id}
+                    />
+                  ) : null}
+                </>
+              ) : null
+            ) : bindingAllowed && visibleWorkspace === "settings" ? (
               <>
                 <ClientSettings />
                 {session.user?.role === "ADMIN" ? (
@@ -970,10 +1084,16 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
                   />
                 ) : null}
               </>
-            ) : (
+            ) : bindingAllowed ? (
               <UsageActivityPanel
                 key={session.user!.id}
-                view={workspace === "analytics" ? "overview" : workspace}
+                view={
+                  visibleWorkspace === "analytics"
+                    ? "overview"
+                    : visibleWorkspace === "ledger"
+                      ? "ledger"
+                      : "diagnostics"
+                }
                 userId={session.user!.id}
                 measuredAt={overview?.usage.measuredAt ?? null}
                 status={usageStatusQuery.data}
@@ -985,7 +1105,7 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
                 onPair={() => pairMutation.mutate()}
                 onStart={() => startMeterMutation.mutate()}
               />
-            )}
+            ) : null}
           </div>
         </div>
       </main>

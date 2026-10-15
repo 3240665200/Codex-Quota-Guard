@@ -61,7 +61,13 @@ interface Lifetime {
 }
 
 /** Central state restores across app restarts; sensitive task state never enters persistent renderer storage. */
-export function SessionBinding({ userId }: { userId: string }) {
+export function SessionBinding({
+  userId,
+  onBound,
+}: {
+  userId: string;
+  onBound?: () => void;
+}) {
   const [attempt, setAttempt] = useState<SessionBindingAttempt | null>(null);
   const [binding, setBinding] = useState<Binding | null>(null);
   const [loading, setLoading] = useState(true);
@@ -69,6 +75,8 @@ export function SessionBinding({ userId }: { userId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
   const lifetimeRef = useRef<Lifetime | null>(null);
+  const onBoundRef = useRef(onBound);
+  onBoundRef.current = onBound;
 
   useEffect(() => {
     const lifetime: Lifetime = {
@@ -131,6 +139,7 @@ export function SessionBinding({ userId }: { userId: string }) {
         lifetime.attempt = result;
         setAttempt(result);
         if (result.binding) setBinding(result.binding);
+        if (result.status === "BOUND") onBoundRef.current?.();
         setError(null);
         if (!active(result)) return;
       } catch (failure) {
@@ -210,6 +219,7 @@ export function SessionBinding({ userId }: { userId: string }) {
         setAttempt(result);
       }
       if (result.binding) setBinding(result.binding);
+      if (result.status === "BOUND") onBoundRef.current?.();
     } catch (failure) {
       if (current()) {
         const text = getApiErrorMessage(failure);

@@ -42,6 +42,12 @@ final class HttpControlPlaneGateway implements ControlPlaneGateway {
     private final HttpClient client;
     private final ObjectMapper mapper;
     private final Duration requestTimeout;
+    private ClientDeviceIdentity deviceIdentity;
+
+    HttpControlPlaneGateway(String baseUrl, ObjectMapper mapper, ClientDeviceIdentity deviceIdentity) {
+        this(baseUrl, mapper);
+        this.deviceIdentity = deviceIdentity;
+    }
 
     HttpControlPlaneGateway(String baseUrl, ObjectMapper mapper) {
         this(baseUrl, mapper, HttpClient.newBuilder()
@@ -88,6 +94,14 @@ final class HttpControlPlaneGateway implements ControlPlaneGateway {
     @Override
     public PersonalQuotaOverview quotaOverview(String accessToken) {
         return sendJson(get("/api/v1/client/quota/overview", accessToken), PersonalQuotaOverview.class);
+    }
+
+    @Override public ClientAccess clientAccess(String accessToken) {
+        // Missing or malformed installation identity always closes access locally.
+        if (deviceIdentity == null || deviceIdentity.current() == null) {
+            return new ClientAccess(false, null, "CLIENT_DEVICE_REQUIRED");
+        }
+        return sendJson(get("/api/v1/client/access", accessToken), ClientAccess.class);
     }
 
     @Override
@@ -229,7 +243,7 @@ final class HttpControlPlaneGateway implements ControlPlaneGateway {
     }
 
     @Override
-    public PersonalQuotaOverview reportUsage(String accessToken, List<CodexUsageEvent> events) {
+    public int reportUsage(String accessToken, List<CodexUsageEvent> events) {
         if (events == null || events.isEmpty() || events.size() > MAX_USAGE_EVENTS_PER_REQUEST) {
             throw ControlPlaneException.invalidRequest();
         }
@@ -246,7 +260,9 @@ final class HttpControlPlaneGateway implements ControlPlaneGateway {
         }
         ensureSuccess(response.statusCode());
         try {
-            return mapper.readValue(response.body(), PersonalQuotaOverview.class);
+            UsageAccepted accepted = mapper.readValue(response.body(), UsageAccepted.class);
+            if (accepted.acceptedEvents() < 0 || accepted.acceptedEvents() > events.size()) throw ControlPlaneException.unavailable();
+            return accepted.acceptedEvents();
         } catch (RuntimeException exception) {
             throw ControlPlaneException.unavailable();
         }
@@ -254,7 +270,7 @@ final class HttpControlPlaneGateway implements ControlPlaneGateway {
 
     @Override
     public void reportOfficialQuota(String accessToken, OfficialCodexRateLimits snapshot) {
-        HttpRequest request = HttpRequest.newBuilder(endpoint("/api/v1/client/official-quota"))
+        HttpRequest request = withDevice(HttpRequest.newBuilder(endpoint("/api/v1/client/official-quota")))
                 .timeout(requestTimeout)
                 .header("Accept", "application/json")
                 .header("Content-Type", "application/json")
@@ -270,7 +286,7 @@ final class HttpControlPlaneGateway implements ControlPlaneGateway {
     }
 
     private HttpRequest get(String path, String accessToken) {
-        HttpRequest.Builder builder = HttpRequest.newBuilder(endpoint(path))
+        HttpRequest.Builder builder = withDevice(HttpRequest.newBuilder(endpoint(path)))
                 .timeout(requestTimeout)
                 .header("Accept", "application/json")
                 .GET();
@@ -296,7 +312,7 @@ final class HttpControlPlaneGateway implements ControlPlaneGateway {
             throw ControlPlaneException.invalidRequest();
         }
 
-        HttpRequest.Builder builder = HttpRequest.newBuilder(endpoint(path))
+        HttpRequest.Builder builder = withDevice(HttpRequest.newBuilder(endpoint(path)))
                 .timeout(requestTimeout)
                 .header("Accept", "application/json")
                 .header("Content-Type", "application/json")
@@ -309,7 +325,7 @@ final class HttpControlPlaneGateway implements ControlPlaneGateway {
 
     private <T> T sendJson(HttpRequest request, Class<T> responseType) {
         HttpResponse<String> response = send(request);
-        ensureSuccess(response.statusCode());
+        ensureSuccess(response);
         try {
             return mapper.readValue(response.body(), responseType);
         } catch (RuntimeException exception) {
@@ -319,6 +335,22 @@ final class HttpControlPlaneGateway implements ControlPlaneGateway {
 
     private void sendEmpty(HttpRequest request) {
         HttpResponse<String> response = send(request);
+        ensureSuccess(response);
+    }
+
+    private HttpRequest.Builder withDevice(HttpRequest.Builder builder) {
+        UUID device = deviceIdentity == null ? null : deviceIdentity.current();
+        if (device != null) builder.header("X-Quota-Guard-Device-ID", device.toString());
+        return builder;
+    }
+
+    private void ensureSuccess(HttpResponse<String> response) {
+        if (response.statusCode() == 403 && response.body() != null && response.body().length() <= 8192) {
+            boolean bindingRequired = false;
+            try { bindingRequired = "SESSION_BINDING_REQUIRED".equals(mapper.readTree(response.body()).path("code").asText()); }
+            catch (RuntimeException ignored) { }
+            if (bindingRequired) throw ControlPlaneException.bindingRequired();
+        }
         ensureSuccess(response.statusCode());
     }
 
@@ -361,6 +393,10 @@ final class HttpControlPlaneGateway implements ControlPlaneGateway {
     }
 
     private record LocalUsageEventsBody(List<UsageEventBody> events) {
+    }
+
+    private record UsageAccepted(Integer acceptedEvents) {
+        UsageAccepted { if (acceptedEvents == null) throw new IllegalArgumentException("Missing acknowledgement"); }
     }
 
     private record MeterDeviceBody(UUID deviceId) {

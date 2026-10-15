@@ -70,12 +70,18 @@ let cancelResponse = listener("CANCELLED");
 function calls(command: string) {
   return invokeMock.mock.calls.filter(([name]) => name === command);
 }
-function renderDashboard() {
+async function renderDashboard(bound = true) {
   const currentImplementation = invokeMock.getMockImplementation()!;
   invokeMock.mockImplementation(async (command, args) =>
-    command === "session_binding_current"
-      ? { attempt: null, binding: null }
-      : currentImplementation(command, args),
+    command === "system_access"
+      ? {
+          allowed: bound,
+          bindingId: bound ? listenerId : null,
+          reason: bound ? null : "SESSION_BINDING_REQUIRED",
+        }
+      : command === "session_binding_current"
+        ? { attempt: null, binding: null }
+        : currentImplementation(command, args),
   );
   const client = new QueryClient({
     defaultOptions: {
@@ -92,6 +98,11 @@ function renderDashboard() {
     </I18nextProvider>
   );
   const view = render(tree(session));
+  if (bound)
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "额度总览" })).toBeEnabled(),
+    );
+  else await screen.findByText("team@example.com");
   return {
     ...view,
     client,
@@ -202,7 +213,7 @@ describe("one-message login assistance", () => {
   });
 
   it("only fetches eligibility after selection and does not ask for mailbox credentials", async () => {
-    renderDashboard();
+    await renderDashboard();
     expect(calls("login_assistance_info")).toHaveLength(0);
     await openPage();
     expect(calls("login_assistance_info")).toHaveLength(1);
@@ -215,7 +226,7 @@ describe("one-message login assistance", () => {
 
   it("does not say ready while connecting and only polls active listener states", async () => {
     startResponse = listener("CONNECTING");
-    renderDashboard();
+    await renderDashboard();
     await openPage();
     fireEvent.click(screen.getByRole("button", { name: "监听邮件" }));
     expect(await screen.findByText("正在连接邮箱")).toBeVisible();
@@ -227,7 +238,7 @@ describe("one-message login assistance", () => {
   });
 
   it("receives one code, stops polling, and stores it outside the global query cache", async () => {
-    const { client } = renderDashboard();
+    const { client } = await renderDashboard();
     await openPage();
     await start();
     statusResponse = listener("RECEIVED");
@@ -249,7 +260,7 @@ describe("one-message login assistance", () => {
   });
 
   it("clears the old code immediately and can listen for a new single message", async () => {
-    renderDashboard();
+    await renderDashboard();
     await openPage();
     await start();
     statusResponse = listener("RECEIVED");
@@ -271,7 +282,7 @@ describe("one-message login assistance", () => {
   });
 
   it("cancels an active listener and stops polling only after confirmed cancellation", async () => {
-    renderDashboard();
+    await renderDashboard();
     await openPage();
     await start();
     fireEvent.click(screen.getByRole("button", { name: "取消监听" }));
@@ -290,7 +301,7 @@ describe("one-message login assistance", () => {
         throw new Error("synthetic transport failure");
       return original(command, args);
     });
-    renderDashboard();
+    await renderDashboard();
     await openPage();
     await start();
     fireEvent.click(screen.getByRole("button", { name: "取消监听" }));
@@ -302,7 +313,7 @@ describe("one-message login assistance", () => {
   });
 
   it("shows timeout without an old code and permits another attempt", async () => {
-    renderDashboard();
+    await renderDashboard();
     await openPage();
     await start();
     statusResponse = listener("TIMED_OUT");
@@ -318,7 +329,7 @@ describe("one-message login assistance", () => {
   });
 
   it("clears a received code when the response expiry passes without polling again", async () => {
-    renderDashboard();
+    await renderDashboard();
     await openPage();
     await start();
     statusResponse = listener("RECEIVED");
@@ -341,7 +352,7 @@ describe("one-message login assistance", () => {
         throw new Error("synthetic unavailable");
       return original(command, args);
     });
-    renderDashboard();
+    await renderDashboard();
     await openPage();
     await start();
     await tick(120_000);
@@ -358,7 +369,7 @@ describe("one-message login assistance", () => {
   });
 
   it("uses a safe fixed message for an OAuth failure without displaying its raw error code", async () => {
-    renderDashboard();
+    await renderDashboard();
     await openPage();
     await start();
     statusResponse = { ...listener("FAILED"), errorCode: "MAIL_OAUTH_FAILED" };
@@ -378,7 +389,7 @@ describe("one-message login assistance", () => {
         ? pending.promise
         : original(command, args),
     );
-    renderDashboard();
+    await renderDashboard();
     await openPage();
     await start();
     await tick();
@@ -400,7 +411,7 @@ describe("one-message login assistance", () => {
         ? pending.promise
         : original(command, args),
     );
-    const { unmount } = renderDashboard();
+    const { unmount } = await renderDashboard();
     await openPage();
     fireEvent.click(screen.getByRole("button", { name: "监听邮件" }));
     unmount();
@@ -410,7 +421,7 @@ describe("one-message login assistance", () => {
   });
 
   it("clears a received code when the signed-in product user changes", async () => {
-    const { switchUser } = renderDashboard();
+    const { switchUser } = await renderDashboard();
     await openPage();
     await start();
     statusResponse = listener("RECEIVED");
@@ -429,7 +440,7 @@ describe("one-message login assistance", () => {
         ? pending.promise
         : original(command, args),
     );
-    const { switchUser } = renderDashboard();
+    const { switchUser } = await renderDashboard();
     await openPage();
     await start();
     await tick();
@@ -440,7 +451,7 @@ describe("one-message login assistance", () => {
   });
 
   it("clears and cancels before handing logout to the surrounding app", async () => {
-    const { onLogout } = renderDashboard();
+    const { onLogout } = await renderDashboard();
     await openPage();
     await start();
     fireEvent.click(screen.getByRole("button", { name: "退出系统" }));
@@ -453,13 +464,27 @@ describe("one-message login assistance", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("also cancels the fallback assistance listener before logging out an unbound user", async () => {
+    const { onLogout } = await renderDashboard(false);
+    await start();
+    fireEvent.click(screen.getByRole("button", { name: "退出系统" }));
+    await waitFor(() =>
+      expect(calls("login_assistance_cancel")).toHaveLength(1),
+    );
+    expect(onLogout).toHaveBeenCalledOnce();
+    expect(
+      screen.queryByRole("button", { name: "取消监听" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "额度总览" })).toBeDisabled();
+  });
+
   it("copies a code only on explicit click", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText },
     });
-    renderDashboard();
+    await renderDashboard();
     await openPage();
     await start();
     statusResponse = listener("RECEIVED");
@@ -473,7 +498,7 @@ describe("one-message login assistance", () => {
     "guides users when unavailable: %s",
     async (reasonCode) => {
       infoResponse = { ...available, available: false, reasonCode };
-      renderDashboard();
+      await renderDashboard();
       fireEvent.click(screen.getByRole("button", { name: "登录辅助" }));
       expect(await screen.findByText(/联系管理员/)).toBeVisible();
       expect(

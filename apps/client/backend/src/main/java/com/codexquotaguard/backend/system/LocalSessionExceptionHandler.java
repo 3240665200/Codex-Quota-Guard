@@ -10,6 +10,11 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 @RestControllerAdvice
 public final class LocalSessionExceptionHandler {
 
+    @ExceptionHandler(SessionBindingRequiredException.class)
+    public ResponseEntity<ErrorBody> bindingRequired() {
+        return response(HttpStatus.FORBIDDEN, "SESSION_BINDING_REQUIRED", "请先完成本设备官方会话绑定。");
+    }
+
     @ExceptionHandler(SessionBindingException.class)
     public ResponseEntity<ErrorBody> sessionBindingUnavailable() {
         return response(HttpStatus.CONFLICT, "SESSION_BINDING_UNAVAILABLE",

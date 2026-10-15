@@ -91,6 +91,9 @@ public final class SystemSessionService {
     }
 
     public SystemUser current() { restoreIfNeeded(); return invoke(controlPlane::current, null).value(); }
+    public com.codexquotaguard.backend.controlplane.ClientAccess clientAccess() {
+        return invoke(controlPlane::clientAccess, null).value();
+    }
     public PersonalQuotaOverview quotaOverview() { return invoke(controlPlane::quotaOverview, null).value(); }
     public LoginAssistanceInfo loginAssistanceInfo() { return invoke(controlPlane::loginAssistanceInfo, null).value(); }
     public LoginAssistanceListener startLoginAssistance() { return invoke(controlPlane::startLoginAssistance, null).value(); }
@@ -121,7 +124,7 @@ public final class SystemSessionService {
         requireCurrent(expected);
         return result;
     }
-    public PersonalQuotaOverview reportUsage(UUID expectedUserId, List<CodexUsageEvent> events) {
+    public int reportUsage(UUID expectedUserId, List<CodexUsageEvent> events) {
         return invoke(token -> controlPlane.reportUsage(token, events), expectedUserId).value();
     }
     public void reportOfficialQuota(OfficialCodexRateLimits snapshot) {
@@ -155,6 +158,14 @@ public final class SystemSessionService {
         }
     }
     void requireCurrent(Probe probe) { if (!matches(probe)) throw new SystemSessionRequiredException(); }
+
+    /** Holds the identity epoch lock across the short, local publication step. */
+    void withCurrentIdentity(Probe probe, Runnable publish) {
+        synchronized (lock) {
+            requireCurrent(probe);
+            publish.run();
+        }
+    }
 
     public void logout() { logout(null); }
     void logoutIfGeneration(long generation) { logout(generation); }
@@ -401,6 +412,7 @@ public final class SystemSessionService {
         return switch (failure.reason()) {
             case UNAUTHORIZED -> new SystemSessionRequiredException();
             case ACCESS_DENIED -> new CodexAccessDeniedException();
+            case BINDING_REQUIRED -> new SessionBindingRequiredException();
             case INVALID_REQUEST -> new ControlPlaneRequestRejectedException();
             case UNAVAILABLE -> new ControlPlaneUnavailableException();
             case MAIL_BUSY, MAIL_RATE_LIMITED, MAIL_REJECTED -> new LoginAssistanceException(failure.reason());

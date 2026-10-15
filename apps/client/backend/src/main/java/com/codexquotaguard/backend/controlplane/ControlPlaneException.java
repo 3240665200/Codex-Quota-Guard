@@ -6,6 +6,7 @@ public final class ControlPlaneException extends RuntimeException {
     public enum Reason {
         UNAUTHORIZED,
         ACCESS_DENIED,
+        BINDING_REQUIRED,
         INVALID_REQUEST,
         UNAVAILABLE,
         MAIL_BUSY,
@@ -39,6 +40,8 @@ public final class ControlPlaneException extends RuntimeException {
     public static ControlPlaneException unavailable() {
         return new ControlPlaneException(Reason.UNAVAILABLE);
     }
+
+    public static ControlPlaneException bindingRequired() { return new ControlPlaneException(Reason.BINDING_REQUIRED); }
 
     public static ControlPlaneException mailBusy() { return new ControlPlaneException(Reason.MAIL_BUSY); }
     public static ControlPlaneException mailRateLimited() { return new ControlPlaneException(Reason.MAIL_RATE_LIMITED); }

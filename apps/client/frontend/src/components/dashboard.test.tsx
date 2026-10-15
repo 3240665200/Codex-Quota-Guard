@@ -73,20 +73,26 @@ const quota: QuotaOverview = {
 };
 let quotaResponse = quota;
 
-function renderDashboard(
+async function renderDashboard(
   guardNotice?: string,
   currentSession: SystemSession = session,
 ) {
   const currentImplementation = invokeMock.getMockImplementation()!;
   invokeMock.mockImplementation(async (command, args) =>
-    command === "session_binding_current"
-      ? { attempt: null, binding: null }
-      : currentImplementation(command, args),
+    command === "system_access"
+      ? {
+          allowed: true,
+          bindingId: "11111111-1111-4111-8111-111111111111",
+          reason: null,
+        }
+      : command === "session_binding_current"
+        ? { attempt: null, binding: null }
+        : currentImplementation(command, args),
   );
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
-  return render(
+  const result = render(
     <I18nextProvider i18n={i18n}>
       <QueryClientProvider client={queryClient}>
         <Dashboard
@@ -97,11 +103,15 @@ function renderDashboard(
       </QueryClientProvider>
     </I18nextProvider>,
   );
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "设置" })).toBeEnabled(),
+  );
+  return result;
 }
 
 describe("Dashboard", () => {
   it("does not show the administrator login helper to a regular system user", async () => {
-    renderDashboard();
+    await renderDashboard();
     fireEvent.click(screen.getByRole("button", { name: "设置" }));
     await screen.findByRole("heading", { name: "启动设置" });
     expect(screen.queryByRole("heading", { name: "官方登录助手" })).toBeNull();
@@ -124,7 +134,7 @@ describe("Dashboard", () => {
         };
       return original(name, args);
     });
-    renderDashboard(undefined, {
+    await renderDashboard(undefined, {
       ...session,
       user: { ...session.user!, role: "ADMIN" },
     });
@@ -139,7 +149,7 @@ describe("Dashboard", () => {
   it("keeps binding and login assistance identities separate when changing pages", async () => {
     const warnings = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      renderDashboard();
+      await renderDashboard();
       await screen.findByRole("heading", { name: "个人 Token" });
       fireEvent.click(screen.getByRole("button", { name: "登录辅助" }));
       await screen.findByRole("heading", { name: "监听登录邮件" });
@@ -235,7 +245,7 @@ describe("Dashboard", () => {
   });
 
   it("renders personal token limits separately from official account reference windows", async () => {
-    renderDashboard();
+    await renderDashboard();
 
     expect(
       await screen.findByRole("heading", { name: "额度仪表盘" }),
@@ -279,7 +289,7 @@ describe("Dashboard", () => {
     ).toHaveAttribute("aria-valuenow", "75");
     expect(new Set(invokeMock.mock.calls.map(([command]) => command))).toEqual(
       new Set([
-        "session_binding_current",
+        "system_access",
         "status",
         "quota_overview",
         "codex_rate_limits",
@@ -290,18 +300,13 @@ describe("Dashboard", () => {
   });
 
   it("keeps personal windows first and places official quota before shared team quota", async () => {
-    renderDashboard();
+    await renderDashboard();
     await screen.findByRole("heading", { name: "个人 Token" });
     expect(
       screen
         .getAllByRole("heading", { level: 2 })
         .map((heading) => heading.textContent),
-    ).toEqual([
-      "本设备官方会话绑定",
-      "个人 Token",
-      "官方 Codex 额度",
-      "团队共享额度",
-    ]);
+    ).toEqual(["个人 Token", "官方 Codex 额度", "团队共享额度"]);
     const official = screen.getByRole("region", { name: "官方 Codex 额度" });
     const team = screen.getByRole("region", { name: "团队共享额度" });
     expect(official.nextElementSibling).toBe(team);
@@ -323,7 +328,7 @@ describe("Dashboard", () => {
       blockReason: null,
     };
 
-    renderDashboard();
+    await renderDashboard();
 
     await screen.findByRole("heading", { name: "个人 Token" });
     const fiveHour = screen
@@ -406,7 +411,7 @@ describe("Dashboard", () => {
         allowed: remaining > 0,
         blockReason: remaining > 0 ? null : "FIVE_HOUR_TOKEN_QUOTA_EXCEEDED",
       };
-      renderDashboard();
+      await renderDashboard();
       const personal = await screen.findByRole("progressbar", {
         name: "5 小时个人额度剩余额度",
       });
@@ -448,7 +453,7 @@ describe("Dashboard", () => {
           };
         return original(command, args);
       });
-      renderDashboard();
+      await renderDashboard();
       expect(
         await screen.findByRole("progressbar", {
           name: "7 天窗口官方剩余额度",
@@ -459,7 +464,7 @@ describe("Dashboard", () => {
   );
 
   it("does not offer credential download or managed Codex login", async () => {
-    renderDashboard();
+    await renderDashboard();
     await screen.findByRole("heading", { name: "官方 Codex 额度" });
     expect(
       screen.queryByRole("button", { name: "登录 Codex" }),
@@ -506,7 +511,7 @@ describe("Dashboard", () => {
       throw new Error(`Unexpected command: ${command}`);
     });
 
-    renderDashboard();
+    await renderDashboard();
 
     expect(
       await screen.findByRole("progressbar", { name: "7 天窗口官方剩余额度" }),
@@ -541,7 +546,7 @@ describe("Dashboard", () => {
         };
       throw new Error(`Unexpected command: ${command}`);
     });
-    renderDashboard();
+    await renderDashboard();
 
     await user.click(screen.getByRole("button", { name: "统计程序" }));
     await user.click(await screen.findByRole("button", { name: "重新配对" }));
@@ -584,7 +589,7 @@ describe("Dashboard", () => {
         };
       throw new Error(`Unexpected command: ${command}`);
     });
-    renderDashboard();
+    await renderDashboard();
 
     await user.click(screen.getByRole("button", { name: "统计程序" }));
     await user.click(
@@ -621,7 +626,7 @@ describe("Dashboard", () => {
         };
       throw new Error(`Unexpected command: ${command}`);
     });
-    renderDashboard();
+    await renderDashboard();
 
     await user.click(screen.getByRole("button", { name: "统计程序" }));
     await user.click(
@@ -650,7 +655,7 @@ describe("Dashboard", () => {
       throw new Error(`Unexpected command: ${command}`);
     });
 
-    renderDashboard();
+    await renderDashboard();
 
     expect(await screen.findByText("Token 额度已用尽")).toBeVisible();
     expect(
@@ -702,7 +707,7 @@ describe("Dashboard", () => {
         };
       throw new Error(`Unexpected command: ${command}`);
     });
-    renderDashboard();
+    await renderDashboard();
     expect(
       await screen.findByText(/所属团队的 5 小时共享 Token 额度已用尽/),
     ).toBeVisible();
@@ -739,7 +744,7 @@ describe("Dashboard", () => {
       throw new Error(`Unexpected command: ${command}`);
     });
 
-    renderDashboard();
+    await renderDashboard();
 
     expect(await screen.findByText("额度可用")).toBeVisible();
     expect(screen.queryByText("Token 额度已用尽")).not.toBeInTheDocument();
@@ -751,7 +756,7 @@ describe("Dashboard", () => {
 
   it("opens independent workspaces without fetching inactive usage pages", async () => {
     const user = (await import("@testing-library/user-event")).default.setup();
-    renderDashboard();
+    await renderDashboard();
     await screen.findByRole("heading", { name: "个人 Token" });
     expect(invokeMock).not.toHaveBeenCalledWith(
       "usage_analytics",
@@ -793,7 +798,7 @@ describe("Dashboard", () => {
   it("keeps diagnostics reachable when the quota request fails", async () => {
     const user = (await import("@testing-library/user-event")).default.setup();
     invokeMock.mockRejectedValue(new Error("service unavailable"));
-    renderDashboard();
+    await renderDashboard();
     await user.click(screen.getByRole("button", { name: "统计程序" }));
     expect(
       await screen.findByRole("heading", { name: "统计程序", level: 1 }),
@@ -815,7 +820,7 @@ describe("Dashboard", () => {
       }
       return original(command, args);
     });
-    renderDashboard();
+    await renderDashboard();
     await screen.findByRole("heading", { name: "个人 Token" });
     expect(invokeMock).not.toHaveBeenCalledWith("autostart_status");
     await user.click(screen.getByRole("button", { name: "设置" }));
@@ -852,7 +857,7 @@ describe("Dashboard", () => {
         throw new Error("无法读取客户端安装路径，请检查安装文件。");
       return original(command, args);
     });
-    renderDashboard();
+    await renderDashboard();
     await user.click(screen.getByRole("button", { name: "设置" }));
     const toggle = await screen.findByRole("switch", { name: "开机自启动" });
     await waitFor(() => expect(toggle).toBeEnabled());
@@ -875,7 +880,7 @@ describe("Dashboard", () => {
       }
       return original(command, args);
     });
-    renderDashboard();
+    await renderDashboard();
     await user.click(screen.getByRole("button", { name: "设置" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "无法读取自启动状态",
@@ -901,7 +906,7 @@ describe("Dashboard", () => {
       }
       return original(command, args);
     });
-    renderDashboard();
+    await renderDashboard();
     await user.click(screen.getByRole("button", { name: "设置" }));
     const toggle = await screen.findByRole("switch", { name: "开机自启动" });
     await waitFor(() => expect(toggle).toBeEnabled());
@@ -918,7 +923,7 @@ describe("Dashboard", () => {
         return { supported: false, enabled: false };
       return original(command, args);
     });
-    renderDashboard();
+    await renderDashboard();
     await user.click(screen.getByRole("button", { name: "设置" }));
     expect(
       await screen.findByText("当前系统暂不支持开机自启动设置"),
@@ -957,7 +962,7 @@ describe("Dashboard", () => {
         };
       return original(command, args);
     });
-    renderDashboard();
+    await renderDashboard();
     expect(
       await screen.findByRole("button", { name: "查看统计程序：回退上报异常" }),
     ).toBeVisible();
@@ -968,7 +973,7 @@ describe("Dashboard", () => {
 
   it("keeps the conflict notice outside the scrolling workspace on every page", async () => {
     const user = (await import("@testing-library/user-event")).default.setup();
-    renderDashboard("运行期间会强制结束 CC Switch，未保存更改可能丢失。");
+    await renderDashboard("运行期间会强制结束 CC Switch，未保存更改可能丢失。");
     const notice = screen.getByRole("complementary", { name: "运行注意事项" });
     expect(notice).toBeVisible();
     expect(notice.closest(".cqg-workspace-scroll")).toBeNull();
@@ -980,7 +985,7 @@ describe("Dashboard", () => {
   it("shows a useful error state when the local service is unavailable", async () => {
     invokeMock.mockRejectedValue(new Error("service unavailable"));
 
-    renderDashboard();
+    await renderDashboard();
 
     await waitFor(() => {
       const serviceAlert = screen

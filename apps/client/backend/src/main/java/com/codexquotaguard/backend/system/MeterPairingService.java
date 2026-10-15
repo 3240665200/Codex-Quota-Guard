@@ -53,16 +53,20 @@ public final class MeterPairingService {
             UUID userId = probe.overview().user().id();
             if (deviceId.equals(pairedDevice) && userId.equals(pairedUser) && probe.generation() == pairedGeneration) return true;
             MeterEnrollment enrollment = session.enrollMeter(deviceId, probe);
-            if (!deviceId.equals(enrollment.deviceId())) throw new IllegalStateException();
-            payload = mapper.writeValueAsBytes(new PairingInbox(deviceId, enrollment.deviceToken()));
+            if (!deviceId.equals(enrollment.deviceId()) || !userId.equals(enrollment.userId())) throw new IllegalStateException();
+            payload = mapper.writeValueAsBytes(new PairingInbox(deviceId, enrollment.deviceToken(), enrollment.userId()));
             Path parent = pairingInbox.getParent();
             if (parent == null) throw new IOException();
             Files.createDirectories(parent);
             temporary = Files.createTempFile(parent, ".meter-pairing-", ".tmp");
             Files.write(temporary, payload);
-            Files.move(temporary, pairingInbox, StandardCopyOption.ATOMIC_MOVE,
-                    StandardCopyOption.REPLACE_EXISTING);
-            session.requireCurrent(probe);
+            Path ready = temporary;
+            session.withCurrentIdentity(probe, () -> {
+                try {
+                    Files.move(ready, pairingInbox, StandardCopyOption.ATOMIC_MOVE,
+                            StandardCopyOption.REPLACE_EXISTING);
+                } catch (IOException failure) { throw new java.io.UncheckedIOException(failure); }
+            });
             pairedDevice = deviceId;
             pairedUser = userId;
             pairedGeneration = probe.generation();
@@ -84,7 +88,7 @@ public final class MeterPairingService {
 
     public String state() { return state; }
 
-    private record PairingInbox(UUID deviceId, String deviceToken) {
+    private record PairingInbox(UUID deviceId, String deviceToken, UUID userId) {
         @Override public String toString() { return "PairingInbox[deviceToken=REDACTED]"; }
     }
 }

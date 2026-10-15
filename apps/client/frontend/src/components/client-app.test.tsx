@@ -107,6 +107,12 @@ describe("ClientApp system session gate", () => {
     vi.mocked(toast.success).mockClear();
     invokeMock.mockImplementation(async (command) => {
       switch (command) {
+        case "system_access":
+          return {
+            allowed: true,
+            bindingId: "11111111-1111-4111-8111-111111111111",
+            reason: null,
+          };
         case "startup_gate_check":
         case "startup_guard_status":
           return { state: "READY", ccSwitchTerminated: false };

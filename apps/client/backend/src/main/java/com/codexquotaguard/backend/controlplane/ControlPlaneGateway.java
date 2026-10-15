@@ -19,6 +19,8 @@ public interface ControlPlaneGateway {
 
     SystemUser current(String accessToken);
 
+    default ClientAccess clientAccess(String accessToken) { throw ControlPlaneException.unavailable(); }
+
     PersonalQuotaOverview quotaOverview(String accessToken);
 
     default LoginAssistanceInfo loginAssistanceInfo(String accessToken) {
@@ -64,7 +66,7 @@ public interface ControlPlaneGateway {
     }
 
     /** Reports idempotent local token events for the current product user. */
-    default PersonalQuotaOverview reportUsage(String accessToken, List<CodexUsageEvent> events) {
+    default int reportUsage(String accessToken, List<CodexUsageEvent> events) {
         throw ControlPlaneException.unavailable();
     }
 

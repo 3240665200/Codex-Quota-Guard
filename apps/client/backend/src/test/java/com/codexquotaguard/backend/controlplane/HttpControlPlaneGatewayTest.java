@@ -116,6 +116,7 @@ class HttpControlPlaneGatewayTest {
     @Test
     void enrollsADeviceWithoutReturningMeterTokenToTheRenderer() throws Exception {
         UUID deviceId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/api/v1/client/meter/enroll", exchange -> {
             assertThat(exchange.getRequestMethod()).isEqualTo("POST");
@@ -123,13 +124,14 @@ class HttpControlPlaneGatewayTest {
             String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
             assertThat(body).contains(deviceId.toString()).doesNotContain("deviceToken");
             writeJson(exchange, """
-                    {"deviceId":"%s","deviceToken":"%s","expiresAt":"2026-11-06T00:00:00Z"}
-                    """.formatted(deviceId, "A".repeat(43)));
+                    {"deviceId":"%s","deviceToken":"%s","expiresAt":"2026-11-06T00:00:00Z","userId":"%s"}
+                    """.formatted(deviceId, "A".repeat(43), userId));
         });
         server.start();
         try {
             var enrollment = gateway(server).enrollMeter("session-access", deviceId);
             assertThat(enrollment.deviceToken()).hasSize(43);
+            assertThat(enrollment.userId()).isEqualTo(userId);
             assertThat(enrollment.toString()).doesNotContain(enrollment.deviceToken());
         } finally {
             server.stop(0);

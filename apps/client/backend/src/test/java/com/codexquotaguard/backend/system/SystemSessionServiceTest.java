@@ -327,13 +327,13 @@ class SystemSessionServiceTest {
         }
 
         @Override
-        public PersonalQuotaOverview reportUsage(String accessToken, List<CodexUsageEvent> events) {
+        public int reportUsage(String accessToken, List<CodexUsageEvent> events) {
             reportCalls++;
             lastAccessToken = accessToken;
             if (reportFailure != null) {
                 throw reportFailure;
             }
-            return overview(loginSession.user());
+            return events.size();
         }
 
         @Override

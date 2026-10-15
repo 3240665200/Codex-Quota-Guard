@@ -56,6 +56,11 @@ public final class SystemSessionController {
         return paired(sessionService.currentProbe());
     }
 
+    @GetMapping("/access")
+    public org.springframework.http.ResponseEntity<com.codexquotaguard.backend.controlplane.ClientAccess> access() {
+        return org.springframework.http.ResponseEntity.ok().header("Cache-Control", "no-store").body(sessionService.clientAccess());
+    }
+
     @PostMapping("/logout")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void logout() {

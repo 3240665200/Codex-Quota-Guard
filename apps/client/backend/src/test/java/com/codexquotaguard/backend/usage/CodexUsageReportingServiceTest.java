@@ -310,12 +310,12 @@ class CodexUsageReportingServiceTest {
         @Override public ControlPlaneAuthSession refresh(String refreshToken) { return login("", ""); }
         @Override public SystemUser current(String accessToken) { return user; }
         @Override public PersonalQuotaOverview quotaOverview(String accessToken) { return overview; }
-        @Override public PersonalQuotaOverview reportUsage(String accessToken, List<CodexUsageEvent> events) {
+        @Override public int reportUsage(String accessToken, List<CodexUsageEvent> events) {
             assertThat(events).hasSize(1);
             reportedEventIds.add(events.get(0).eventId());
             if (reportFailure != null) throw reportFailure;
             if (rejectReports) throw ControlPlaneException.unavailable();
-            return overview;
+            return events.size();
         }
         @Override public void logout(String accessToken, String refreshToken) { }
     }

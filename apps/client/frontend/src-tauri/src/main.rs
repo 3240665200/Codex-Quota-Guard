@@ -23,7 +23,10 @@ use tauri::{Manager, RunEvent, State};
 type CommandResult<T> = Result<T, String>;
 
 #[tauri::command]
-async fn autostart_status() -> CommandResult<autostart::AutostartStatus> {
+async fn autostart_status(
+    state: State<'_, BackendState>,
+) -> CommandResult<autostart::AutostartStatus> {
+    state.require_binding().await.map_err(command_error)?;
     tauri::async_runtime::spawn_blocking(autostart::status)
         .await
         .map_err(|_| "无法读取开机自启动状态，请稍后重试。".to_owned())?
@@ -31,7 +34,11 @@ async fn autostart_status() -> CommandResult<autostart::AutostartStatus> {
 }
 
 #[tauri::command]
-async fn autostart_set(enabled: bool) -> CommandResult<autostart::AutostartStatus> {
+async fn autostart_set(
+    enabled: bool,
+    state: State<'_, BackendState>,
+) -> CommandResult<autostart::AutostartStatus> {
+    state.require_binding().await.map_err(command_error)?;
     tauri::async_runtime::spawn_blocking(move || autostart::set(enabled))
         .await
         .map_err(|_| "无法设置开机自启动，请稍后重试。".to_owned())?
@@ -64,7 +71,9 @@ fn meter_setup_error(app: tauri::AppHandle) -> Option<String> {
 #[tauri::command]
 async fn meter_service_version(
     app: tauri::AppHandle,
+    state: State<'_, BackendState>,
 ) -> Result<meter_service::MeterVersionStatus, String> {
+    state.require_binding().await.map_err(command_error)?;
     tauri::async_runtime::spawn_blocking(move || meter_service::version_status(&app))
         .await
         .map_err(|_| "统计程序版本查询失败".to_string())
@@ -78,10 +87,16 @@ async fn meter_service_ensure(app: tauri::AppHandle) -> meter_service::MeterStar
 }
 
 #[tauri::command]
-async fn meter_service_retry(app: tauri::AppHandle) -> meter_service::MeterStartOutcome {
-    tauri::async_runtime::spawn_blocking(move || tray::ensure_meter_serialized(&app))
-        .await
-        .unwrap_or(meter_service::MeterStartOutcome::Failed)
+async fn meter_service_retry(
+    app: tauri::AppHandle,
+    state: State<'_, BackendState>,
+) -> CommandResult<meter_service::MeterStartOutcome> {
+    state.require_binding().await.map_err(command_error)?;
+    Ok(
+        tauri::async_runtime::spawn_blocking(move || tray::ensure_meter_serialized(&app))
+            .await
+            .unwrap_or(meter_service::MeterStartOutcome::Failed),
+    )
 }
 
 fn command_error(error: backend::BackendError) -> String {
@@ -145,6 +160,14 @@ fn server_config_save(app: tauri::AppHandle, config: ServerConfig) -> CommandRes
 async fn status(state: State<'_, BackendState>) -> CommandResult<Value> {
     state
         .json(Method::GET, ApiRoute::Status)
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
+async fn system_access(state: State<'_, BackendState>) -> CommandResult<Value> {
+    state
+        .json(Method::GET, ApiRoute::SystemAccess)
         .await
         .map_err(command_error)
 }
@@ -450,6 +473,7 @@ fn main() {
             meter_service_version,
             status,
             quota_overview,
+            system_access,
             usage_status,
             usage_events,
             usage_analytics,
