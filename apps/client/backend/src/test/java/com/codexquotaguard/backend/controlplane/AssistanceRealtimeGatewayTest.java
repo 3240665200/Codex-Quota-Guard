@@ -10,6 +10,25 @@ import org.junit.jupiter.api.Test;
 import tools.jackson.databind.ObjectMapper;
 
 class AssistanceRealtimeGatewayTest {
+    @Test void closesAnInputStreamThatCompletesAtTheHeadersTimeoutBoundary() {
+        AtomicBoolean closed=new AtomicBoolean();
+        var body=new ByteArrayInputStream(new byte[0]) {@Override public void close(){closed.set(true);}};
+        var response=org.mockito.Mockito.<java.net.http.HttpResponse<java.io.InputStream>>mock(java.net.http.HttpResponse.class);
+        org.mockito.Mockito.when(response.body()).thenReturn(body);
+        var pending=new java.util.concurrent.CompletableFuture<java.net.http.HttpResponse<java.io.InputStream>>() {
+            @Override public java.net.http.HttpResponse<java.io.InputStream> get(long timeout,java.util.concurrent.TimeUnit unit)
+                    throws java.util.concurrent.TimeoutException {
+                complete(response);throw new java.util.concurrent.TimeoutException("private-upstream-diagnostic");
+            }
+        };
+        var client=org.mockito.Mockito.mock(java.net.http.HttpClient.class);
+        org.mockito.Mockito.when(client.sendAsync(org.mockito.ArgumentMatchers.any(java.net.http.HttpRequest.class),
+                org.mockito.ArgumentMatchers.<java.net.http.HttpResponse.BodyHandler<java.io.InputStream>>any())).thenReturn(pending);
+        var gateway=new HttpControlPlaneGateway("http://127.0.0.1:43117",new ObjectMapper(),client,java.time.Duration.ofMillis(20));
+        assertThatThrownBy(()->gateway.loginAssistanceEvents("synthetic-token")).isInstanceOf(ControlPlaneException.class)
+                .hasMessage("UNAVAILABLE").hasNoCause();
+        assertThat(closed).isTrue();
+    }
     @Test void currentListenerRestoresOnlyThroughAFixedAuthenticatedRead() throws Exception {
         HttpServer server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
         server.createContext("/api/v1/client/login-assistance/listeners/current", exchange -> {

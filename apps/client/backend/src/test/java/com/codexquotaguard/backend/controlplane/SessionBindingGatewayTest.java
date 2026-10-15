@@ -39,6 +39,7 @@ class SessionBindingGatewayTest {
         var authorization = new AtomicReference<String>();
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/api/v1/client/session-bindings", exchange -> {
+            assertThat(exchange.getRequestHeaders().getFirst("X-CQG-Queue-Version")).isEqualTo("2");
             requestPath.set(exchange.getRequestURI().toString());
             requestBody.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
             authorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
