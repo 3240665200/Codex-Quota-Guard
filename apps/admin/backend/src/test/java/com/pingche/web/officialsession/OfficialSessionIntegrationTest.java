@@ -190,6 +190,18 @@ class OfficialSessionIntegrationTest {
     }
 
     @Test
+    void challengeIsDistinguishedFromInvalidCredentialsAndPreservedForThePage() throws Exception {
+        save("Bearer synthetic-access", "official-account-one", 0);
+        when(client.fetch(any(OfficialSessionCredentials.class), isNull())).thenThrow(
+                new DomainException("OFFICIAL_CHALLENGE_REQUIRED", "Verification required", HttpStatus.BAD_GATEWAY));
+        mvc.perform(post(connectionUrl() + "/refresh").secure(true).header(HttpHeaders.AUTHORIZATION, token(admin)))
+                .andExpect(status().isBadGateway()).andExpect(jsonPath("$.code").value("OFFICIAL_CHALLENGE_REQUIRED"));
+        mvc.perform(get(connectionUrl()).secure(true).header(HttpHeaders.AUTHORIZATION, token(admin)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("ACCESS_BLOCKED"))
+                .andExpect(jsonPath("$.lastErrorCode").value("OFFICIAL_CHALLENGE_REQUIRED"));
+    }
+
+    @Test
     void providerFailurePersistsOnlySafeStatusAndNeverServesStaleSnapshotAsFresh() throws Exception {
         save("Bearer synthetic-access", "official-account-one", 0);
         refresh();

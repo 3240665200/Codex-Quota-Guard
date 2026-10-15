@@ -10,6 +10,7 @@ import static org.mockito.Mockito.when;
 
 import com.pingche.web.auth.DomainException;
 import com.pingche.web.proxy.ManagedProxyGateway;
+import com.pingche.web.proxy.ProxyLease;
 import java.net.Proxy;
 import java.net.ProxySelector;
 import java.net.URI;
@@ -72,7 +73,7 @@ class OfficialSessionClientTest {
         for (HttpRequest request : requests) {
             assertThat(request.method()).isEqualTo("GET");
             assertThat(request.headers().firstValue("Authorization")).contains("Bearer synthetic-access");
-            assertThat(request.headers().firstValue("Cookie")).contains("synthetic_session=private-cookie");
+            assertThat(request.headers().firstValue("Cookie")).contains("__Secure-next-auth.session-token.0=private-cookie");
             assertThat(request.headers().firstValue("ChatGPT-Account-ID")).contains("official-account-one");
         }
         assertThat(selected.get().select(URI.create("https://chatgpt.com"))).containsExactly(Proxy.NO_PROXY);
@@ -95,7 +96,7 @@ class OfficialSessionClientTest {
         HttpClient http = mock(HttpClient.class);
         success(http);
         ManagedProxyGateway gateway = mock(ManagedProxyGateway.class);
-        ManagedProxyGateway.ProxyLease lease = mock(ManagedProxyGateway.ProxyLease.class);
+        ProxyLease lease = mock(ProxyLease.class);
         ProxySelector selector = mock(ProxySelector.class);
         UUID nodeId = UUID.randomUUID();
         when(gateway.open(nodeId)).thenReturn(lease);
@@ -109,6 +110,20 @@ class OfficialSessionClientTest {
     }
 
     @Test
+    void recognizesChallengeResponseWithoutRetryingOrLeakingHtml() {
+        for (int status : new int[] {200, 403}) {
+            HttpClient http = mock(HttpClient.class);
+            HttpResponse<byte[]> upstream = response(status, "<html>private-token challenge</html>");
+            when(upstream.headers()).thenReturn(HttpHeaders.of(Map.of(
+                    "Content-Type", List.of("text/html"), "cf-mitigated", List.of("challenge")), (key, value) -> true));
+            when(http.sendAsync(any(HttpRequest.class), any(HttpResponse.BodyHandler.class)))
+                    .thenReturn(CompletableFuture.completedFuture(upstream));
+            assertFailure(http, "OFFICIAL_CHALLENGE_REQUIRED");
+            verify(http).sendAsync(any(HttpRequest.class), any(HttpResponse.BodyHandler.class));
+        }
+    }
+
+    @Test
     void upstreamFailuresAreFixedAndNeverExposeHeadersBodyOrChallengeHtml() {
         for (int status : new int[] {301, 401, 403, 429, 500}) {
             String expected = switch (status) {
@@ -118,14 +133,16 @@ class OfficialSessionClientTest {
                 default -> "OFFICIAL_UNAVAILABLE";
             };
             HttpClient http = mock(HttpClient.class);
+            HttpResponse<byte[]> upstream = response(status, "private-token <html>challenge</html>");
             when(http.sendAsync(any(HttpRequest.class), any(HttpResponse.BodyHandler.class)))
-                    .thenReturn(CompletableFuture.completedFuture(response(status, "private-token <html>challenge</html>")));
+                    .thenReturn(CompletableFuture.completedFuture(upstream));
             assertFailure(http, expected);
         }
         for (String malformed : new String[] {"<html>private-token challenge</html>", "{}", "{\"id\":123}", "x".repeat(1_048_577)}) {
             HttpClient http = mock(HttpClient.class);
+            HttpResponse<byte[]> upstream = response(200, malformed);
             when(http.sendAsync(any(HttpRequest.class), any(HttpResponse.BodyHandler.class)))
-                    .thenReturn(CompletableFuture.completedFuture(response(200, malformed)));
+                    .thenReturn(CompletableFuture.completedFuture(upstream));
             assertFailure(http, "OFFICIAL_RESPONSE_INVALID");
         }
     }
@@ -144,6 +161,8 @@ class OfficialSessionClientTest {
         HttpClient http = mock(HttpClient.class);
         OfficialSessionClient client = client(http);
         assertThatThrownBy(() -> client.fetch(new OfficialSessionCredentials("Bearer x\r\nHost: evil", null, "account"), null))
+                .isInstanceOf(DomainException.class);
+        assertThatThrownBy(() -> client.fetch(new OfficialSessionCredentials("Bearer synthetic-access", "cf_clearance=private-cookie", "account"), null))
                 .isInstanceOf(DomainException.class);
         verifyNoInteractions(http);
     }
@@ -177,7 +196,7 @@ class OfficialSessionClientTest {
     }
 
     private OfficialSessionCredentials credentials() {
-        return new OfficialSessionCredentials("Bearer synthetic-access", "synthetic_session=private-cookie", "official-account-one");
+        return new OfficialSessionCredentials("Bearer synthetic-access", "__Secure-next-auth.session-token.0=private-cookie", "official-account-one");
     }
 
     private List<HttpRequest> success(HttpClient http) { return success(http, ACCOUNTS, SESSIONS); }
