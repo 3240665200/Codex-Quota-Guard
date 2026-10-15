@@ -56,10 +56,15 @@ export function OfficialLoginHelper({ userId }: { userId: string }) {
           api.officialLoginHelperJobs(),
           api.officialLoginHelperStatus(),
         ]);
-        if (!lifetime.active || generation !== lifetime.generation) return;
-        setJobs(nextJobs);
-        setStatus(nextStatus);
-        setError(null);
+        if (
+          lifetime.active &&
+          generation === lifetime.generation &&
+          !lifetime.busy
+        ) {
+          setJobs(nextJobs);
+          setStatus(nextStatus);
+          setError(null);
+        }
       } catch (failure) {
         if (lifetime.active && generation === lifetime.generation) {
           setError(getApiErrorMessage(failure));
