@@ -307,6 +307,11 @@ public class SessionBindingService {
     }
 
     private void sweep(UUID accountId) {
+        UUID active = accountStateUnlocked(accountId).activeAttemptId();
+        if (active != null && jdbc.queryForObject("select count(*) from session_binding_attempts where id=? and official_account_id=? and status in ('PREPARING','READY_FOR_LOGIN','DETECTING','AWAITING_CONFIRMATION')", Integer.class, active, accountId) == 0) {
+            // Cascading deletion of a user must not erase the late-login fence.
+            jdbc.update("update session_binding_accounts set quarantined=true,reason='SESSION_BINDING_ORPHANED_ATTEMPT',active_attempt_id=null,updated_at=? where official_account_id=?", clock.instant(), accountId);
+        }
         List<Attempt> pending = jdbc.query("select * from session_binding_attempts where official_account_id=? and status in " + PENDING + " order by sequence_id", this::attempt, accountId);
         for (Attempt attempt : pending) {
             if (!attempt.expiresAt.isAfter(clock.instant())) terminate(attempt, "EXPIRED", "SESSION_BINDING_EXPIRED");
