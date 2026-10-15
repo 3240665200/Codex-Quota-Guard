@@ -35,7 +35,7 @@ final class RestrictedCdpConnection implements WebSocket.Listener, BrowserCdp {
         this.json = json; this.http = http; this.events = events;
     }
     @Override public CompletableFuture<Void> termination() { return termination; }
-    void connect(URI uri) {
+    @Override public void connect(URI uri) {
         if (!"ws".equals(uri.getScheme()) || !"127.0.0.1".equals(uri.getHost()) || uri.getPort() < 1 || uri.getPort() > 65535
                 || uri.getRawUserInfo() != null || uri.getRawQuery() != null || uri.getRawFragment() != null
                 || !uri.getRawPath().matches("/devtools/browser/[A-Za-z0-9-]{1,100}")) throw unavailable();
@@ -95,6 +95,7 @@ final class RestrictedCdpConnection implements WebSocket.Listener, BrowserCdp {
 }
 
 interface BrowserCdp extends AutoCloseable {
+    default void connect(URI uri) { throw new IllegalStateException("WEB_LOGIN_BROWSER_UNAVAILABLE"); }
     CompletableFuture<JsonNode> send(String method, Map<String, ?> params, String sessionId);
     CompletableFuture<Void> termination();
     @Override void close();

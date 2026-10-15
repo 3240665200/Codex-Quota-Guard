@@ -19,10 +19,12 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import java.util.function.Consumer;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
@@ -36,16 +38,24 @@ public final class ChromiumManagedLoginBrowser implements ManagedLoginBrowser {
     private final boolean enabled;
     private final String executable;
     private final boolean headless;
+    private final ProcessStarter starter;
+    private final CdpFactory connections;
     private final Set<OwnedSession> sessions = ConcurrentHashMap.newKeySet();
     private final ScheduledExecutorService expiry = Executors.newSingleThreadScheduledExecutor(r -> {
         Thread thread = new Thread(r, "managed-login-expiry"); thread.setDaemon(true); return thread;
     });
 
+    @Autowired
     public ChromiumManagedLoginBrowser(ObjectMapper json, ManagedProxyGateway proxies,
             @Value("${WEB_LOGIN_BROWSER_ENABLED:false}") boolean enabled,
             @Value("${WEB_LOGIN_BROWSER_EXECUTABLE:}") String executable,
             @Value("${WEB_LOGIN_BROWSER_HEADLESS:true}") boolean headless) {
+        this(json, proxies, enabled, executable, headless, ProcessBuilder::start, RestrictedCdpConnection::new);
+    }
+    ChromiumManagedLoginBrowser(ObjectMapper json, ManagedProxyGateway proxies, boolean enabled, String executable,
+            boolean headless, ProcessStarter starter, CdpFactory connections) {
         this.json = json; this.proxies = proxies; this.enabled = enabled; this.executable = executable; this.headless = headless;
+        this.starter = starter; this.connections = connections;
     }
     @Override public boolean available() {
         if (!enabled) return false;
@@ -53,7 +63,7 @@ public final class ChromiumManagedLoginBrowser implements ManagedLoginBrowser {
     }
     @Override public Session open(UUID jobId, UUID proxyNodeId) {
         if (!enabled) throw unavailable("WEB_LOGIN_BROWSER_DISABLED");
-        if (jobId == null || proxyNodeId == null) throw unavailable("PROXY_NODE_UNAVAILABLE");
+        if (jobId == null) throw unavailable("WEB_LOGIN_BROWSER_UNAVAILABLE");
         Path browser = installedBrowser();
         ProxyLease proxy = proxies.open(proxyNodeId, ManagedProxyGateway.Purpose.BROWSER_LOGIN);
         if (proxy == null) throw unavailable("PROXY_NODE_UNAVAILABLE");
@@ -64,7 +74,7 @@ public final class ChromiumManagedLoginBrowser implements ManagedLoginBrowser {
             ProcessBuilder builder = new ProcessBuilder(command(browser, profile.path(), port, headless));
             Map<String, String> childEnv = browserEnvironment(builder.environment(), profile.path(), headless);
             builder.environment().clear(); builder.environment().putAll(childEnv);
-            process = builder.redirectOutput(ProcessBuilder.Redirect.DISCARD).redirectError(ProcessBuilder.Redirect.DISCARD).start();
+            process = starter.start(builder.redirectOutput(ProcessBuilder.Redirect.DISCARD).redirectError(ProcessBuilder.Redirect.DISCARD));
             PrivateBrowserProfile ownedProfile = profile; Process ownedProcess = process;
             AtomicReference<OwnedSession> active = new AtomicReference<>();
             HttpClient loopback = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).followRedirects(HttpClient.Redirect.NEVER)
@@ -72,7 +82,7 @@ public final class ChromiumManagedLoginBrowser implements ManagedLoginBrowser {
                         @Override public List<Proxy> select(URI uri) { return List.of(Proxy.NO_PROXY); }
                         @Override public void connectFailed(URI uri, SocketAddress address, IOException failure) { }
                     }).build();
-            RestrictedCdpConnection cdp = new RestrictedCdpConnection(json, loopback, event -> {
+            BrowserCdp cdp = connections.create(json, loopback, event -> {
                 OwnedSession current = active.get(); if (current != null) current.enqueue(event);
             });
             session = new OwnedSession(cdp, json, () -> {
@@ -174,6 +184,8 @@ public final class ChromiumManagedLoginBrowser implements ManagedLoginBrowser {
     private static DomainException unavailable(String code) {
         return new DomainException(code, "服务器登录浏览器不可用，请检查浏览器与所选代理配置。", HttpStatus.SERVICE_UNAVAILABLE);
     }
+    @FunctionalInterface interface ProcessStarter { Process start(ProcessBuilder builder) throws IOException; }
+    @FunctionalInterface interface CdpFactory { BrowserCdp create(ObjectMapper json, HttpClient http, Consumer<String> events); }
 
     static final class OwnedSession implements Session {
         private final BrowserCdp cdp;

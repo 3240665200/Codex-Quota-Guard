@@ -29,6 +29,7 @@ public class SingBoxManagedProxyGateway implements ManagedProxyGateway {
 
     @Override public ProxyLease open(UUID nodeId, Purpose purpose) {
         if (purpose == null) throw unavailable();
+        if (nodeId == null && purpose == Purpose.BROWSER_LOGIN) return runner.open(configuration::buildDirectBrowser, purpose);
         if (nodeId == null) throw unavailable();
         ProxyNode node = nodes.findById(nodeId).orElseThrow(this::unavailable);
         if (!node.isEnabled()) throw unavailable();

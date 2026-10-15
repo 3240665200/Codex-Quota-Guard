@@ -16,6 +16,18 @@ public class SingBoxConfiguration {
     private final ObjectMapper json;
     public SingBoxConfiguration(ObjectMapper json) { this.json = json; }
 
+    JsonNode buildDirectBrowser(int port) {
+        return json.valueToTree(Map.of(
+                "log", Map.of("disabled", true),
+                "inbounds", List.of(Map.of("type", "http", "tag", "local", "listen", "127.0.0.1",
+                        "listen_port", port, "set_system_proxy", false)),
+                "outbounds", List.of(Map.of("type", "direct", "tag", "upstream")),
+                "route", Map.of("rules", List.of(
+                        Map.of("domain", OfficialDomainPolicy.HOSTS, "port", List.of(443), "network", List.of("tcp"),
+                                "action", "route", "outbound", "upstream"),
+                        Map.of("action", "reject")))));
+    }
+
     JsonNode build(ProxyNodeDefinition node, InetAddress pinned, int port) {
         return build(node, pinned, port, ManagedProxyGateway.Purpose.OFFICIAL_SESSION);
     }
