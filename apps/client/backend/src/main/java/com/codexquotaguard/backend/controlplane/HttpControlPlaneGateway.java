@@ -118,28 +118,46 @@ final class HttpControlPlaneGateway implements ControlPlaneGateway {
                 .header("Accept","text/event-stream").header("Cache-Control","no-store")
                 .header("Authorization","Bearer "+token).GET().build();
         CompletableFuture<HttpResponse<java.io.InputStream>> pending=null;
-        java.io.InputStream body=null;
-        boolean transferred=false;
+        StreamOwnership ownership=new StreamOwnership();
         try {
             // Bound response headers here; the stream owner enforces idle and total lifetime limits.
             pending=client.sendAsync(request,HttpResponse.BodyHandlers.ofInputStream());
+            pending.whenComplete((response,error)->{if(response!=null)ownership.receive(response.body());});
             HttpResponse<java.io.InputStream> response=pending.get(requestTimeout.toMillis(),TimeUnit.MILLISECONDS);
-            body=response.body();
+            ownership.receive(response.body());
             if(response.statusCode()==401)throw ControlPlaneException.unauthorized();
-            if(response.statusCode()!=200 || body==null
+            if(response.statusCode()!=200 || response.body()==null
                     || !response.headers().firstValue("Content-Type").orElse("").split(";",2)[0].trim().equalsIgnoreCase("text/event-stream")
                     || !response.headers().firstValue("Content-Encoding").orElse("identity").equalsIgnoreCase("identity"))
                 throw ControlPlaneException.unavailable();
-            AssistanceEventStream stream=new AssistanceEventStream(body);
-            transferred=true;
-            return stream;
+            return ownership.claim();
         } catch(InterruptedException ignored) {
             Thread.currentThread().interrupt();throw ControlPlaneException.unavailable();
         } catch(ExecutionException|TimeoutException ignored) {throw ControlPlaneException.unavailable();}
         finally {
+            ownership.abandon();
             if(pending!=null && !pending.isDone())pending.cancel(true);
-            if(!transferred && body!=null)try{body.close();}catch(IOException ignored){ }
         }
+    }
+
+    /** Completion can race the header deadline; an abandoned response still owns a stream to close. */
+    private static final class StreamOwnership {
+        private java.io.InputStream body;
+        private boolean seen,claimed,abandoned;
+        synchronized void receive(java.io.InputStream incoming) {
+            if(seen)return;
+            seen=true;
+            if(abandoned){close(incoming);return;}
+            body=incoming;
+        }
+        synchronized AssistanceEventStream claim() {
+            if(abandoned || body==null)throw ControlPlaneException.unavailable();
+            var result=new AssistanceEventStream(body);claimed=true;body=null;return result;
+        }
+        synchronized void abandon() {
+            abandoned=true;if(!claimed)close(body);body=null;
+        }
+        private void close(java.io.InputStream value){if(value!=null)try{value.close();}catch(IOException ignored){ }}
     }
 
     @Override
@@ -265,6 +283,8 @@ final class HttpControlPlaneGateway implements ControlPlaneGateway {
     }
 
     private <T> T sendBindingJson(HttpRequest request, Class<T> type) {
+        request=HttpRequest.newBuilder(request,(key,value)->!key.equalsIgnoreCase("X-CQG-Queue-Version"))
+                .header("X-CQG-Queue-Version","2").build();
         // Bound these metadata responses as strictly as OTP responses. No remote error body is retained.
         HttpResponse<byte[]> response = sendMail(request);
         // A binding-specific 403 can mean no eligible team/enrollment, while the
