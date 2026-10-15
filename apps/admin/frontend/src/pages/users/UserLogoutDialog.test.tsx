@@ -140,4 +140,17 @@ describe('user-scoped all-account logout confirmation', () => {
     expect(screen.getByRole('checkbox')).not.toBeChecked();
     expect(confirmUserLogoutAll).not.toHaveBeenCalled();
   });
+
+  it('explains an acknowledged unknown outcome without claiming success or blocking a new preview', async () => {
+    const value = result('PARTIAL');
+    value.accounts[0].status = 'RESOLVED_UNKNOWN';
+    value.accounts[0].results[0] = { sessionId: 'session-1', status: 'UNKNOWN', errorCode: 'OFFICIAL_LOGOUT_OUTCOME_UNKNOWN' };
+    vi.mocked(getUserLogoutAllCurrent).mockResolvedValue({ operation: value });
+    show();
+    expect(await screen.findByText(/结果仍未知，已人工解除操作锁/)).toBeInTheDocument();
+    expect(screen.getByText('部分官方会话未完成')).toBeInTheDocument();
+    expect(screen.getByText(/已接受 0.*失败 0.*结果未知 1.*未尝试 0/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '重新预览' })).toBeEnabled();
+    expect(confirmUserLogoutAll).not.toHaveBeenCalled();
+  });
 });
