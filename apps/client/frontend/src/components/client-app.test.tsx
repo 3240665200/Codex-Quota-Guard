@@ -60,8 +60,11 @@ const quotaOverview = {
 
 function renderClientApp() {
   const currentImplementation = invokeMock.getMockImplementation()!;
-  invokeMock.mockImplementation(async (command, args) => command === "session_binding_current"
-    ? { attempt: null, binding: null } : currentImplementation(command, args));
+  invokeMock.mockImplementation(async (command, args) =>
+    command === "session_binding_current"
+      ? { attempt: null, binding: null }
+      : currentImplementation(command, args),
+  );
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });

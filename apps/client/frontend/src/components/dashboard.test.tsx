@@ -1,5 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { I18nextProvider } from "react-i18next";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -69,8 +75,11 @@ let quotaResponse = quota;
 
 function renderDashboard(guardNotice?: string) {
   const currentImplementation = invokeMock.getMockImplementation()!;
-  invokeMock.mockImplementation(async (command, args) => command === "session_binding_current"
-    ? { attempt: null, binding: null } : currentImplementation(command, args));
+  invokeMock.mockImplementation(async (command, args) =>
+    command === "session_binding_current"
+      ? { attempt: null, binding: null }
+      : currentImplementation(command, args),
+  );
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -96,9 +105,12 @@ describe("Dashboard", () => {
       fireEvent.click(screen.getByRole("button", { name: "登录辅助" }));
       await screen.findByRole("heading", { name: "监听登录邮件" });
       expect(warnings.mock.calls.flat().join(" ")).not.toContain("same key");
-    } finally { warnings.mockRestore(); }
+    } finally {
+      warnings.mockRestore();
+    }
   });
   beforeEach(() => {
+    invokeMock.mockClear();
     quotaResponse = quota;
     invokeMock.mockImplementation(async (command) => {
       switch (command) {
@@ -228,6 +240,7 @@ describe("Dashboard", () => {
     ).toHaveAttribute("aria-valuenow", "75");
     expect(new Set(invokeMock.mock.calls.map(([command]) => command))).toEqual(
       new Set([
+        "session_binding_current",
         "status",
         "quota_overview",
         "codex_rate_limits",
@@ -244,7 +257,12 @@ describe("Dashboard", () => {
       screen
         .getAllByRole("heading", { level: 2 })
         .map((heading) => heading.textContent),
-    ).toEqual(["个人 Token", "官方 Codex 额度", "团队共享额度"]);
+    ).toEqual([
+      "本设备官方会话绑定",
+      "个人 Token",
+      "官方 Codex 额度",
+      "团队共享额度",
+    ]);
     const official = screen.getByRole("region", { name: "官方 Codex 额度" });
     const team = screen.getByRole("region", { name: "团队共享额度" });
     expect(official.nextElementSibling).toBe(team);

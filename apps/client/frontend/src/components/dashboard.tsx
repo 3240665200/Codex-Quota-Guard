@@ -912,7 +912,10 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
           aria-label={`${currentPage.label}内容`}
         >
           <div className="cqg-workspace-content mx-auto flex w-full max-w-[1240px] flex-col gap-4 p-4">
-            <SessionBinding key={session.user!.id} userId={session.user!.id} />
+            <SessionBinding
+              key={`binding:${session.user!.id}`}
+              userId={session.user!.id}
+            />
             {requestError ? (
               <Alert variant="destructive">
                 <CircleAlert aria-hidden="true" />
