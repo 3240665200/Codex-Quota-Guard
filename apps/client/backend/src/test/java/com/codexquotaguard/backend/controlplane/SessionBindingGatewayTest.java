@@ -10,6 +10,28 @@ import org.junit.jupiter.api.Test;
 import tools.jackson.databind.ObjectMapper;
 
 class SessionBindingGatewayTest {
+    @Test void bindingConfigurationDenialDoesNotInvalidateTheProductLogin() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        var status = new java.util.concurrent.atomic.AtomicInteger(403);
+        server.createContext("/api/v1/client/session-bindings/current", exchange -> {
+            byte[] bytes = "{\"code\":\"SESSION_BINDING_ACCESS_DENIED\",\"message\":\"private-upstream-detail\"}".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(status.get(), bytes.length);
+            exchange.getResponseBody().write(bytes); exchange.close();
+        });
+        server.start();
+        try {
+            var gateway = new HttpControlPlaneGateway("http://127.0.0.1:" + server.getAddress().getPort(), new ObjectMapper());
+            UUID device = UUID.randomUUID();
+            assertThatThrownBy(() -> gateway.sessionBindingCurrent("valid-product-token", device, device))
+                    .isInstanceOfSatisfying(ControlPlaneException.class,
+                            failure -> assertThat(failure.reason()).isEqualTo(ControlPlaneException.Reason.INVALID_REQUEST));
+            status.set(401);
+            assertThatThrownBy(() -> gateway.sessionBindingCurrent("expired-product-token", device, device))
+                    .isInstanceOfSatisfying(ControlPlaneException.class,
+                            failure -> assertThat(failure.reason()).isEqualTo(ControlPlaneException.Reason.UNAUTHORIZED));
+        } finally { server.stop(0); }
+    }
+
     @Test void usesFixedAuthenticatedRoutesAndOnlySafeMetadata() throws Exception {
         UUID device = UUID.randomUUID(); UUID id = UUID.randomUUID();
         var requestPath = new AtomicReference<String>();
