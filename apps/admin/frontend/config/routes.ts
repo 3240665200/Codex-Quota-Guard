@@ -41,10 +41,14 @@ export default [
   },
   {
     access: 'canAdmin',
-    component: './official-accounts',
     icon: 'profile',
     name: '官方账户',
     path: '/official-accounts',
+    routes: [
+      { path: '/official-accounts', redirect: '/official-accounts/accounts' },
+      { access: 'canAdmin', path: '/official-accounts/accounts', name: '账户管理', component: './official-accounts' },
+      { access: 'canAdmin', path: '/official-accounts/sessions', name: '会话管理', component: './official-accounts/sessions' },
+    ],
   },
   {
     access: 'canAdmin',

@@ -1,5 +1,11 @@
 const messages: Record<string, string> = {
-  BROWSER_LOGIN_BUSY: '此账户已有进行中的官方网页登录任务，请先在桌面助手完成或取消该任务。',
+  BROWSER_LOGIN_BUSY: '此账户已有进行中的官方网页登录任务，请先完成或取消该任务。',
+  BROWSER_LOGIN_RUNTIME_UNAVAILABLE: '服务器登录浏览器尚未就绪，请检查浏览器服务后重试。',
+  BROWSER_LOGIN_FRAME_UNAVAILABLE: '暂时无法读取服务器浏览器画面，请重新检查任务或取消。',
+  BROWSER_LOGIN_NOT_READY: '尚未发现可保存的登录授权，请先亲自完成官方登录。',
+  BROWSER_LOGIN_SSO_UNSUPPORTED: '当前登录跳转到了暂不支持的外部身份站点，请选择其他官方登录方式或取消任务。',
+  WEB_LOGIN_EXTERNAL_PROVIDER_UNSUPPORTED: '当前登录跳转到了暂不支持的外部身份站点，请选择官方支持的其他登录方式或取消任务。',
+  WEB_LOGIN_DESTINATION_BLOCKED: '当前登录跳转地址不在允许范围内，浏览器已停止继续访问。',
   BROWSER_LOGIN_NOT_FOUND: '登录任务已不存在，请重新开始官方网页登录。',
   BROWSER_LOGIN_NOT_ACTIVE: '此登录任务已结束，请重新检查任务状态或开始新任务。',
   BROWSER_LOGIN_SAVING: '授权正在加密保存，请等待结果后再操作。',

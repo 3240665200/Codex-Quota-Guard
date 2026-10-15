@@ -119,7 +119,7 @@ export default function OfficialAccountsPage() {
             ? <Tag color="warning">旧快照</Tag> : null}
         </Space> : '暂无' },
     { title: '操作', width: 310, render: (_, account) => <Space size={0}>
-      <Button aria-label={`授权与会话 ${account.label}`} type="link" onClick={() => setConnectionAccount(account)}>授权与会话</Button>
+      <Button aria-label={`授权登录 ${account.label}`} type="link" onClick={() => setConnectionAccount(account)}>授权登录</Button>
       <Button aria-label={`邮箱配置 ${account.label}`} type="link" onClick={() => setMailboxAccount(account)}>邮箱配置</Button>
       <Button aria-label={`编辑 ${account.label}`} icon={<EditOutlined />} type="text" onClick={() => edit(account)} />
       <Popconfirm title={`删除「${account.label}」？`} description="已关联团队的账户不可删除。"
@@ -129,8 +129,8 @@ export default function OfficialAccountsPage() {
     </Space> },
   ];
 
-  return <PageContainer title="官方账户"
-    content="查看客户端上报的官方额度；可加密保存官方网页登录授权，并通过指定代理手动读取官方账户与会话。自有邮箱配置用于代收登录码。"
+  return <PageContainer title="账户管理"
+    content="管理官方账户登记、邮箱与授权登录。设备快照、绑定与登出操作请前往“官方账户 → 会话管理”。"
     extra={<Space>
       <Button icon={<ReloadOutlined />} loading={loading} onClick={() => void load()}>刷新</Button>
       <Button icon={<PlusOutlined />} type="primary" onClick={() => edit(null)}>添加官方账户</Button>
@@ -142,7 +142,7 @@ export default function OfficialAccountsPage() {
       locale={{ emptyText: '暂无官方账户登记' }} />
     {mailboxAccount ? <MailboxConfigModal key={mailboxAccount.id} account={mailboxAccount}
       onClose={() => setMailboxAccount(null)} /> : null}
-    {connectionAccount ? <ConnectionModal key={connectionAccount.id} account={connectionAccount}
+    {connectionAccount ? <ConnectionModal key={connectionAccount.id} account={connectionAccount} view="authorization"
       onClose={() => setConnectionAccount(null)} /> : null}
     <Modal open={open} title={editing ? '编辑官方账户' : '添加官方账户'}
       onCancel={() => setOpen(false)} onOk={() => void save()} okButtonProps={{ loading: saving }}

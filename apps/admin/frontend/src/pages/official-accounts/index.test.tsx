@@ -32,7 +32,7 @@ describe('官方账户登记与授权入口', () => {
     expect(await screen.findByText('研发账户')).toBeInTheDocument();
     expect(screen.getByText('7 天剩余 60%')).toBeInTheDocument();
     expect(screen.queryByText('5 小时剩余')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '授权与会话 研发账户' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '授权登录 研发账户' })).toBeInTheDocument();
   });
 
   it('registers an account estimate and reporting user, not a credential', async () => {

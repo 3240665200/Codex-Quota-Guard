@@ -2,7 +2,7 @@ import { Alert, App as AntApp, Button, Card, Checkbox, Collapse, Descriptions, D
   Modal, Popconfirm, Select, Space, Spin, Table, Tag, Typography } from 'antd';
 import type { TableColumnsType } from 'antd';
 import { useEffect, useRef, useState } from 'react';
-import type { ChangeEvent } from 'react';
+import type { ChangeEvent, ReactNode } from 'react';
 import { managedErrorCode, managedErrorMessage } from '../../components/managedErrors';
 import { deleteOfficialAccountConnection, getOfficialAccountConnection, getOfficialAccountSessions,
   isSecureManagementContext, listProxyNodes, refreshOfficialAccountConnection,
@@ -94,8 +94,16 @@ function SessionSnapshot({ snapshot, officialAccountId, bindings, selectedSessio
   </Space>;
 }
 
-export default function ConnectionModal({ account, onClose }: {
-  account: OfficialAccountResponse; onClose: () => void;
+function WorkspaceShell({ inline, title, footer, children, onCancel }: {
+  inline: boolean; title: string; footer: ReactNode; children: ReactNode; onCancel: () => void;
+}) {
+  return inline ? <Card title={title} extra={footer}>{children}</Card>
+    : <Modal open title={title} width={1100} onCancel={onCancel} destroyOnHidden
+      styles={{ body: { maxHeight: '74vh', overflowY: 'auto' } }} footer={footer}>{children}</Modal>;
+}
+
+export default function ConnectionModal({ account, onClose, view = 'all', inline = false }: {
+  account: OfficialAccountResponse; onClose: () => void; view?: 'all' | 'authorization' | 'sessions'; inline?: boolean;
 }) {
   const { message } = AntApp.useApp();
   const [form] = Form.useForm<OfficialConnectionInput>();
@@ -367,16 +375,15 @@ export default function ConnectionModal({ account, onClose }: {
 
   const missingNode = config?.proxyNodeId && !nodes.some((node) => node.id === config.proxyNodeId);
   const nodeUnavailable = selectedNode && !nodes.some((node) => node.id === selectedNode && node.enabled);
-  return <><Modal open title={`授权与会话 · ${account.label}`} width={960} onCancel={close} destroyOnHidden
-    styles={{ body: { maxHeight: '74vh', overflowY: 'auto' } }}
+  return <><WorkspaceShell inline={inline} title={`${view === 'sessions' ? '会话管理' : view === 'authorization' ? '授权登录' : '授权与会话'} · ${account.label}`} onCancel={close}
     footer={<Space wrap>
-      {config?.configured ? <Popconfirm title="删除保存的官方授权？"
+      {config?.configured && view !== 'sessions' ? <Popconfirm title="删除保存的官方授权？"
         description="同时清除后台保存的官方会话快照，不会使官方设备下线，也不影响账户登记和邮箱配置。"
         okText="确认删除" cancelText="取消" onConfirm={() => void remove()}>
         <Button danger disabled={locked || !secure} loading={busy === 'delete'}>删除保存的授权</Button>
       </Popconfirm> : null}
       <Button disabled={locked || !secure || !config?.configured} loading={busy === 'refresh'} onClick={() => void refresh()}>刷新官方账户与会话</Button>
-      <Button onClick={close}>关闭</Button>
+      {!inline ? <Button onClick={close}>关闭</Button> : null}
     </Space>}>
     <Space orientation="vertical" size={16} style={{ width: '100%' }}>
       {!secure ? <Alert type="warning" showIcon title="请通过 HTTPS 打开管理后台后管理官方授权与会话；HTTP 仅允许本机调试。" /> : null}
@@ -394,8 +401,8 @@ export default function ConnectionModal({ account, onClose }: {
             { key: 'success', label: '最近成功', children: dateText(config.lastSuccessAt) },
           ]} /> : null}
           {config?.lastErrorCode ? <Alert type="warning" showIcon title={managedErrorMessage({ code: config.lastErrorCode }, '最近一次官方读取未成功，请检查授权和代理配置。')} /> : null}
-          <Form form={form} layout="vertical" preserve={false} disabled={locked || !secure || !config?.encryptionReady}>
-            <Form.Item name="proxyNodeId" label="访问代理节点" extra="后台读取官方账户时使用此节点或直连；不会失败回退或自动切换出口。本机登录浏览器使用管理员电脑当前网络。">
+          {view !== 'sessions' ? <Form form={form} layout="vertical" preserve={false} disabled={locked || !secure || !config?.encryptionReady}>
+            <Form.Item name="proxyNodeId" label="访问代理节点" extra="服务器登录浏览器与后台读取官方账户均使用此节点或直连；不会失败回退或自动切换出口。">
               <Select virtual={false} allowClear placeholder="直连（不使用代理）" options={[
                 ...nodes.map((node) => ({ value: node.id, label: `${node.label} · ${node.protocol}${node.enabled ? '' : '（已停用）'}`, disabled: !node.enabled })),
                 ...(missingNode ? [{ value: config.proxyNodeId!, label: '已保存的节点（当前不可用）', disabled: true }] : []),
@@ -440,7 +447,8 @@ export default function ConnectionModal({ account, onClose }: {
                 </Space>,
               }]} />
             </Space>
-          </Form>
+          </Form> : null}
+          {view !== 'authorization' ? <>
           <Divider style={{ margin: '4px 0' }}>官方账户与设备会话</Divider>
           {secure ? <SessionLogoutPanel key={account.id} accountId={account.id}
             contextVersion={JSON.stringify([config?.version ?? null, bindingRevision, snapshotRevision, selectedSessionIds])}
@@ -455,10 +463,11 @@ export default function ConnectionModal({ account, onClose }: {
             description={logoutBusy ? '会话操作状态核对中，暂不显示旧快照。' : snapshotNotice || '尚无官方会话快照，请手动刷新官方账户与会话。'} />}
           {bindingNotice ? <Alert type="warning" showIcon title={bindingNotice} /> : null}
           {bindings && !logoutBusy ? <SessionBindingsTable bindings={bindings} disabled={locked || !secure} onRelease={selectRelease} /> : null}
+          </> : null}
         </Space>
       </Spin>
     </Space>
-  </Modal>
+  </WorkspaceShell>
     <Modal open={Boolean(releaseTarget && releaseTarget.officialAccountId === account.id)} title="解绑会话确认"
       okText="确认解绑" cancelText="取消" destroyOnHidden
       onCancel={() => { if (!releaseBusy) setReleaseTarget(null); }} onOk={() => void release()}
