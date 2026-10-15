@@ -1,6 +1,6 @@
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, configure, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { App as AntApp } from 'antd';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import ConnectionModal from './ConnectionModal';
 import type { OfficialAccountResponse } from '../../services/api';
 
@@ -45,8 +45,11 @@ async function show() {
 }
 
 async function unbindConfirmation(dialog: HTMLElement) {
-  fireEvent.click(await within(dialog).findByRole('button', { name: '解绑会话' }));
-  return screen.findByRole('dialog', { name: '解绑会话确认' });
+  const button = await within(dialog).findByRole('button', { name: '解绑会话' });
+  await waitFor(() => expect(button).toBeEnabled());
+  fireEvent.click(button);
+  const title = await screen.findByText('解绑会话确认');
+  return title.closest('[role="dialog"]') as HTMLElement;
 }
 
 function confirmUnbind(dialog: HTMLElement) {
@@ -55,6 +58,9 @@ function confirmUnbind(dialog: HTMLElement) {
 }
 
 describe('官方网页登录与设备绑定入口', () => {
+  // These tests assert action locks and mounted content; skip jsdom's costly visibility walk.
+  beforeAll(() => configure({ defaultHidden: true }));
+  afterAll(() => configure({ defaultHidden: false }));
   beforeEach(() => {
     vi.clearAllMocks(); mocks.isSecureManagementContext.mockReturnValue(true);
     mocks.getOfficialAccountConnection.mockResolvedValue(connection);
@@ -197,8 +203,8 @@ describe('官方网页登录与设备绑定入口', () => {
     expect(within(confirmation).getByText(/只能使用登录辅助.*不会删除历史记录.*不会停止统计/)).toBeInTheDocument();
     expect(within(confirmation).getByRole('button', { name: '确认解绑' })).toBeDisabled();
     expect(mocks.releaseSessionBinding).not.toHaveBeenCalled();
-    fireEvent.click(within(confirmation).getByRole('button', { name: '取消' }));
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: '解绑会话确认' })).not.toBeInTheDocument());
+    fireEvent.click(within(confirmation).getByRole('button', { name: /^取\s*消$/ }));
+    await waitFor(() => expect(screen.queryByText('解绑会话确认')).not.toBeInTheDocument());
     expect(mocks.releaseSessionBinding).not.toHaveBeenCalled();
   });
 
@@ -207,8 +213,9 @@ describe('官方网页登录与设备绑定入口', () => {
     mocks.releaseSessionBinding.mockReturnValue(new Promise<void>((resolve) => { finish = resolve; }));
     const dialog = await show();
     const confirmation = await unbindConfirmation(dialog);
+    const submit = within(confirmation).getByRole('button', { name: '确认解绑' });
     confirmUnbind(confirmation);
-    fireEvent.click(within(confirmation).getByRole('button', { name: '确认解绑' }));
+    fireEvent.click(submit);
     expect(mocks.releaseSessionBinding).toHaveBeenCalledExactlyOnceWith('binding-1', 'account-1');
     expect(within(dialog).getByRole('button', { name: '刷新官方账户与会话' })).toBeDisabled();
     expect(within(dialog).getByRole('button', { name: '开始官方网页登录' })).toBeDisabled();
@@ -237,6 +244,17 @@ describe('官方网页登录与设备绑定入口', () => {
     fireEvent.click(within(confirmation).getByRole('button', { name: '确认解绑' }));
     await within(dialog).findByText('已结束');
     expect(mocks.releaseSessionBinding).toHaveBeenCalledTimes(2);
+  });
+
+  it('explains a backend logout fence without automatically retrying the unbind', async () => {
+    mocks.releaseSessionBinding.mockRejectedValueOnce({ status: 409, code: 'OFFICIAL_SESSION_LOGOUT_BUSY' });
+    const dialog = await show();
+    const confirmation = await unbindConfirmation(dialog);
+    confirmUnbind(confirmation);
+    expect(await within(confirmation).findByText('此账户有执行中或待核对的官方登出操作，请先核对后再解绑。')).toBeInTheDocument();
+    expect(mocks.releaseSessionBinding).toHaveBeenCalledOnce();
+    expect(mocks.listSessionBindings).toHaveBeenCalledOnce();
+    expect(mocks.confirmSessionLogout).not.toHaveBeenCalled();
   });
 
   it('clears stale active ownership if the post-unbind safe read fails and reports the successful write accurately', async () => {

@@ -46,12 +46,12 @@ function failureText(failure: unknown) {
 }
 
 export default function SessionLogoutPanel({ accountId, contextVersion, disabled = false, allowPreview = true, onBusyChange, onSettled }: {
-  accountId: string; contextVersion?: number; disabled?: boolean; allowPreview?: boolean;
+  accountId: string; contextVersion?: number | string; disabled?: boolean; allowPreview?: boolean;
   onBusyChange?: (busy: boolean) => void;
   onSettled?: (accountId: string) => void | Promise<void>;
 }) {
   const scope = accountId;
-  const [previewState, setPreviewState] = useState<{ scope: string; version?: number; value: SessionLogoutPreview } | null>(null);
+  const [previewState, setPreviewState] = useState<{ scope: string; version?: number | string; value: SessionLogoutPreview } | null>(null);
   const [resultState, setResultState] = useState<{ scope: string; value: SessionLogoutResult } | null>(null);
   const [acknowledged, setAcknowledged] = useState(false);
   const [pending, setPending] = useState<SessionLogoutMode | 'confirm' | 'current' | 'acknowledge' | 'reload' | null>('current');

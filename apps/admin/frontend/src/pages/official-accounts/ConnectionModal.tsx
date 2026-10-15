@@ -1,4 +1,4 @@
-import { Alert, App as AntApp, Button, Card, Collapse, Descriptions, Divider, Empty, Form, Input,
+import { Alert, App as AntApp, Button, Card, Checkbox, Collapse, Descriptions, Divider, Empty, Form, Input,
   Modal, Popconfirm, Select, Space, Spin, Table, Tag, Typography } from 'antd';
 import type { TableColumnsType } from 'antd';
 import { useEffect, useRef, useState } from 'react';
@@ -14,7 +14,7 @@ import BrowserLoginPanel from './BrowserLoginPanel';
 import SessionBindingQueue from './SessionBindingQueue';
 import SessionLogoutPanel from './SessionLogoutPanel';
 import { SessionBindingResult, SessionBindingsTable } from './SessionBindings';
-import { listSessionBindings } from '../../services/sessionBindingsApi';
+import { listSessionBindings, releaseSessionBinding } from '../../services/sessionBindingsApi';
 import type { SessionBinding } from '../../services/sessionBindingsApi';
 
 const statusLabels: Record<OfficialConnectionStatus, string> = {
@@ -92,6 +92,11 @@ export default function ConnectionModal({ account, onClose }: {
   const [snapshot, setSnapshot] = useState<OfficialAccountSnapshot | null>(null);
   const [bindings, setBindings] = useState<SessionBinding[] | null>(null);
   const [bindingNotice, setBindingNotice] = useState('');
+  const [bindingRevision, setBindingRevision] = useState(0);
+  const [releaseTarget, setReleaseTarget] = useState<SessionBinding | null>(null);
+  const [releaseAcknowledged, setReleaseAcknowledged] = useState(false);
+  const [releaseBusy, setReleaseBusy] = useState(false);
+  const [releaseError, setReleaseError] = useState('');
   const [browserLoginActive, setBrowserLoginActive] = useState(false);
   const [logoutBusy, setLogoutBusy] = useState(false);
   const [queueRevision, setQueueRevision] = useState(0);
@@ -101,13 +106,14 @@ export default function ConnectionModal({ account, onClose }: {
   const [snapshotNotice, setSnapshotNotice] = useState('');
   const active = useRef(true);
   const currentAccountId = useRef(account.id); currentAccountId.current = account.id;
+  const releaseLifetime = useRef({ accountId: account.id, active: true, busy: false });
   const parameterFileInput = useRef<HTMLInputElement>(null);
   const parameterFileReader = useRef<FileReader | null>(null);
   const secure = isSecureManagementContext();
   const localPreview = typeof window !== 'undefined' && window.location.protocol === 'http:'
     && ['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname);
   const selectedNode = Form.useWatch('proxyNodeId', form);
-  const externallyLocked = loading || busy !== null || browserLoginActive;
+  const externallyLocked = loading || busy !== null || browserLoginActive || releaseBusy;
   const locked = externallyLocked || logoutBusy;
 
   const clearSecrets = () => form.setFieldsValue({ authorization: '', cookie: '' });
@@ -116,7 +122,10 @@ export default function ConnectionModal({ account, onClose }: {
     parameterFileReader.current = null;
     if (reader?.readyState === FileReader.LOADING) reader.abort();
   };
-  const close = () => { active.current = false; stopParameterImport(); clearSecrets(); form.resetFields(); onClose(); };
+  const close = () => {
+    active.current = false; releaseLifetime.current.active = false;
+    setReleaseTarget(null); stopParameterImport(); clearSecrets(); form.resetFields(); onClose();
+  };
 
   const importParameters = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.currentTarget.files?.[0];
@@ -155,8 +164,10 @@ export default function ConnectionModal({ account, onClose }: {
 
   useEffect(() => {
     active.current = true;
+    const lifetime = { accountId: account.id, active: true, busy: false }; releaseLifetime.current = lifetime;
     setLoading(true); setConfig(null); setSnapshot(null); setBindings(null);
     setError(''); setSnapshotNotice(''); setBindingNotice(''); setLogoutBusy(false);
+    setReleaseTarget(null); setReleaseAcknowledged(false); setReleaseBusy(false); setReleaseError(''); setBindingRevision(0);
     let cancelled = false;
     void Promise.allSettled([getOfficialAccountConnection(account.id), listProxyNodes(), getOfficialAccountSessions(account.id), listSessionBindings(account.id)])
       .then(([connectionResult, nodesResult, snapshotResult, bindingsResult]) => {
@@ -177,7 +188,7 @@ export default function ConnectionModal({ account, onClose }: {
         else setBindingNotice(managedErrorMessage(bindingsResult.reason, '绑定结果暂时无法读取，请关闭窗口后重试。'));
         setLoading(false);
       });
-    return () => { cancelled = true; active.current = false; stopParameterImport(); };
+    return () => { cancelled = true; lifetime.active = false; active.current = false; stopParameterImport(); };
   }, [account.id, form]);
 
   const reloadAfterBrowserLogin = async () => {
@@ -219,6 +230,43 @@ export default function ConnectionModal({ account, onClose }: {
     if (bindingsResult.status === 'fulfilled') { setBindings(bindingsResult.value); setBindingNotice(''); }
     else setBindingNotice(managedErrorMessage(bindingsResult.reason, '登出操作后绑定记录读取失败，请关闭窗口后重新打开。'));
     setQueueRevision((value) => value + 1);
+  };
+
+  const releaseEligible = releaseTarget?.officialAccountId === account.id && releaseTarget.status === 'ACTIVE'
+    && bindings?.some((binding) => binding.id === releaseTarget.id && binding.status === 'ACTIVE'
+      && binding.officialAccountId === account.id && binding.sessionId === releaseTarget.sessionId);
+  const selectRelease = (binding: SessionBinding) => {
+    if (locked || !secure || !active.current || binding.status !== 'ACTIVE' || binding.officialAccountId !== account.id) return;
+    setReleaseTarget(binding); setReleaseAcknowledged(false); setReleaseError('');
+  };
+  const release = async () => {
+    const lifetime = releaseLifetime.current;
+    if (!lifetime.active || lifetime.accountId !== account.id || lifetime.busy || locked || !secure
+      || !releaseTarget || !releaseEligible || !releaseAcknowledged) return;
+    const submitted = releaseTarget;
+    const isCurrent = () => lifetime.active && releaseLifetime.current === lifetime && currentAccountId.current === lifetime.accountId;
+    lifetime.busy = true; setReleaseBusy(true); setReleaseError('');
+    try {
+      await releaseSessionBinding(submitted.id, lifetime.accountId);
+      if (!isCurrent()) return;
+      // Clear first: the write succeeded even if the safe read cannot confirm current ownership.
+      setBindings(null); setBindingNotice(''); setReleaseTarget(null); setReleaseAcknowledged(false);
+      setBindingRevision((value) => value + 1);
+      message.success('本系统会话绑定已解除');
+      try {
+        const current = await listSessionBindings(lifetime.accountId);
+        if (isCurrent()) { setBindings(current); setBindingNotice(''); }
+      } catch {
+        if (isCurrent()) setBindingNotice('解绑已成功，但绑定记录暂时无法读取，请关闭窗口后重新打开核对。');
+      }
+    } catch (reason) {
+      if (isCurrent()) setReleaseError(managedErrorCode(reason) === 'OFFICIAL_SESSION_LOGOUT_BUSY'
+        ? '此账户有执行中或待核对的官方登出操作，请先核对后再解绑。'
+        : managedErrorMessage(reason, '未能确认解绑结果，请核对绑定状态后重试。'));
+    } finally {
+      lifetime.busy = false;
+      if (isCurrent()) setReleaseBusy(false);
+    }
   };
 
   const save = async () => {
@@ -278,7 +326,7 @@ export default function ConnectionModal({ account, onClose }: {
 
   const missingNode = config?.proxyNodeId && !nodes.some((node) => node.id === config.proxyNodeId);
   const nodeUnavailable = selectedNode && !nodes.some((node) => node.id === selectedNode && node.enabled);
-  return <Modal open title={`授权与会话 · ${account.label}`} width={960} onCancel={close} destroyOnHidden
+  return <><Modal open title={`授权与会话 · ${account.label}`} width={960} onCancel={close} destroyOnHidden
     styles={{ body: { maxHeight: '74vh', overflowY: 'auto' } }}
     footer={<Space wrap>
       {config?.configured ? <Popconfirm title="删除保存的官方授权？"
@@ -315,7 +363,7 @@ export default function ConnectionModal({ account, onClose }: {
             {nodeUnavailable ? <Alert type="warning" showIcon title="当前代理节点不可用，请明确选择其他节点或清空为直连，再重新保存授权。" /> : null}
             <Space orientation="vertical" size={16} style={{ width: '100%' }}>
               <BrowserLoginPanel accountId={account.id} version={config?.version ?? 0} proxyNodeId={selectedNode || null}
-                disabled={loading || busy !== null || logoutBusy || !secure || !config?.encryptionReady || Boolean(nodeUnavailable)}
+                disabled={loading || busy !== null || logoutBusy || releaseBusy || !secure || !config?.encryptionReady || Boolean(nodeUnavailable)}
                 onActiveChange={setBrowserLoginActive} onResultChanged={reloadAfterBrowserLogin} />
               <Collapse style={{ width: '100%' }} onChange={(keys) => { if (!keys.includes('manual')) clearSecrets(); }} items={[{
                 key: 'manual', label: '高级：手动导入授权', children: <Space orientation="vertical" size={16} style={{ width: '100%' }}>
@@ -353,7 +401,7 @@ export default function ConnectionModal({ account, onClose }: {
             </Space>
           </Form>
           <Divider style={{ margin: '4px 0' }}>官方账户与设备会话</Divider>
-          {secure ? <SessionLogoutPanel key={account.id} accountId={account.id} contextVersion={config?.version}
+          {secure ? <SessionLogoutPanel key={account.id} accountId={account.id} contextVersion={`${config?.version ?? 'unavailable'}:${bindingRevision}`}
             disabled={externallyLocked} allowPreview={Boolean(config?.configured)} onBusyChange={(value) => {
               if (active.current && currentAccountId.current === account.id) setLogoutBusy(value);
             }} onSettled={reloadAfterLogout} /> : null}
@@ -361,9 +409,31 @@ export default function ConnectionModal({ account, onClose }: {
           {snapshot && !logoutBusy ? <SessionSnapshot snapshot={snapshot} officialAccountId={account.id} bindings={bindings} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
             description={logoutBusy ? '会话操作状态核对中，暂不显示旧快照。' : snapshotNotice || '尚无官方会话快照，请手动刷新官方账户与会话。'} />}
           {bindingNotice ? <Alert type="warning" showIcon title={bindingNotice} /> : null}
-          {bindings && !logoutBusy ? <SessionBindingsTable bindings={bindings} /> : null}
+          {bindings && !logoutBusy ? <SessionBindingsTable bindings={bindings} disabled={locked || !secure} onRelease={selectRelease} /> : null}
         </Space>
       </Spin>
     </Space>
-  </Modal>;
+  </Modal>
+    <Modal open={Boolean(releaseTarget && releaseTarget.officialAccountId === account.id)} title="解绑会话确认"
+      okText="确认解绑" cancelText="取消" destroyOnHidden
+      onCancel={() => { if (!releaseBusy) setReleaseTarget(null); }} onOk={() => void release()}
+      confirmLoading={releaseBusy} okButtonProps={{ danger: true, disabled: locked || !secure || !releaseEligible || !releaseAcknowledged }}
+      cancelButtonProps={{ disabled: releaseBusy }} closable={!releaseBusy} mask={{ closable: !releaseBusy }}>
+      {releaseTarget ? <Space orientation="vertical" size={12} style={{ width: '100%' }}>
+        <Descriptions size="small" column={1} items={[
+          { key: 'account', label: '官方账户', children: account.label },
+          { key: 'user', label: '本系统用户', children: releaseTarget.userDisplayName || releaseTarget.userEmail || releaseTarget.userId },
+          ...(releaseTarget.userEmail ? [{ key: 'email', label: '用户邮箱', children: releaseTarget.userEmail }] : []),
+          { key: 'userId', label: '用户 ID', children: releaseTarget.userId },
+          { key: 'device', label: '客户端设备', children: releaseTarget.deviceId },
+          { key: 'session', label: '官方 Session ID', children: releaseTarget.sessionId },
+        ]} />
+        <Alert type="warning" showIcon title="仅解除本系统的设备会话绑定，不会登出官方会话。"
+          description="解绑后，该客户端只能使用登录辅助；不会删除历史记录，也不会停止统计。" />
+        {releaseError ? <Alert type="error" showIcon title={releaseError} /> : null}
+        <Checkbox checked={releaseAcknowledged} disabled={releaseBusy || locked || !secure || !releaseEligible}
+          onChange={(event) => setReleaseAcknowledged(event.target.checked)}>我已了解解绑影响，确认解除此会话绑定</Checkbox>
+      </Space> : null}
+    </Modal>
+  </>;
 }

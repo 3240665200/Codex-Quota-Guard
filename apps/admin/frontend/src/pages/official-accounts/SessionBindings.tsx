@@ -1,4 +1,4 @@
-import { Card, Space, Table, Tag, Typography } from 'antd';
+import { Button, Card, Space, Table, Tag, Typography } from 'antd';
 import type { TableColumnsType } from 'antd';
 import type { SessionBinding } from '../../services/sessionBindingsApi';
 
@@ -28,7 +28,9 @@ export function SessionBindingResult({ officialAccountId, sessionId, bindings }:
   </Space>;
 }
 
-export function SessionBindingsTable({ bindings }: { bindings: SessionBinding[] }) {
+export function SessionBindingsTable({ bindings, disabled = false, onRelease }: {
+  bindings: SessionBinding[]; disabled?: boolean; onRelease?: (binding: SessionBinding) => void;
+}) {
   const columns: TableColumnsType<SessionBinding> = [
     { title: '本系统用户', render: (_, binding) => <Space orientation="vertical" size={2}>
       <Typography.Text>{binding.userDisplayName || binding.userEmail || binding.userId}</Typography.Text>
@@ -40,6 +42,8 @@ export function SessionBindingsTable({ bindings }: { bindings: SessionBinding[] 
       {statusLabels[binding.status] ?? '未知'}</Tag> },
     { title: '绑定时间', render: (_, binding) => dateText(binding.createdAt) },
     { title: '结束时间', render: (_, binding) => dateText(binding.endedAt) },
+    ...(onRelease ? [{ title: '操作', key: 'release', render: (_: unknown, binding: SessionBinding) => binding.status === 'ACTIVE'
+      ? <Button danger size="small" disabled={disabled} onClick={() => onRelease(binding)}>解绑会话</Button> : null }] : []),
   ];
   return <Card size="small" title="设备会话绑定记录">
     <Space orientation="vertical" size={12} style={{ width: '100%' }}>

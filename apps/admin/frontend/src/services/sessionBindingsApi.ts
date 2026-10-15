@@ -20,3 +20,9 @@ export function listSessionBindings(officialAccountId: string): Promise<SessionB
   const params = new URLSearchParams({ officialAccountId });
   return request(`/api/v1/admin/session-bindings?${params.toString()}`);
 }
+
+export function releaseSessionBinding(bindingId: string, officialAccountId: string): Promise<void> {
+  return request(`/api/v1/admin/session-bindings/${encodeURIComponent(bindingId)}/release`, {
+    method: 'POST', cache: 'no-store', body: JSON.stringify({ officialAccountId, acknowledgeUnbind: true }),
+  }, { retryAfterRefresh: false });
+}
