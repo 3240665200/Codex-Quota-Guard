@@ -5,7 +5,7 @@ const mocks = vi.hoisted(() => ({ request: vi.fn() }));
 vi.mock('./api', () => mocks);
 beforeEach(() => {
   mocks.request.mockReset(); mocks.request.mockResolvedValue({ officialAccountId: 'account/id', quarantined: false,
-    activeAttemptId: null, reason: null });
+    activeAttemptId: null, reason: null, queueState: 'IDLE', retryAt: null });
 });
 it('uses only the selected account route and an explicit acknowledgement body', async () => {
   await getSessionBindingQueue('account/id');
@@ -20,4 +20,14 @@ it('rejects malformed state and a response for a different official account', as
   await expect(getSessionBindingQueue('account/id')).rejects.toThrow();
   mocks.request.mockResolvedValue({ officialAccountId: 'account/id', quarantined: 'false', reason: null, activeAttemptId: null });
   await expect(getSessionBindingQueue('account/id')).rejects.toThrow();
+});
+it('accepts only known automatic queue states and safe retry timestamps', async () => {
+  const valid = { officialAccountId: 'account/id', quarantined: true, reason: null, activeAttemptId: null,
+    queueState: 'SETTLING', retryAt: '2026-10-15T00:00:30Z' };
+  mocks.request.mockResolvedValue(valid);
+  expect(await getSessionBindingQueue('account/id')).toEqual(valid);
+  for (const invalid of [{ ...valid, queueState: 'arbitrary-provider-text' }, { ...valid, retryAt: 'not-a-date' }]) {
+    mocks.request.mockResolvedValue(invalid);
+    await expect(getSessionBindingQueue('account/id')).rejects.toThrow();
+  }
 });

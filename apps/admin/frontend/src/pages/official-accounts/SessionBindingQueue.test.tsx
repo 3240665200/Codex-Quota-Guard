@@ -4,13 +4,29 @@ import SessionBindingQueue from './SessionBindingQueue';
 
 const mocks = vi.hoisted(() => ({ getSessionBindingQueue: vi.fn(), recoverSessionBindingQueue: vi.fn() }));
 vi.mock('../../services/sessionBindingQueueApi', () => mocks);
-const normal = { officialAccountId: 'account-1', quarantined: false, reason: null, activeAttemptId: null };
-const quarantined = { ...normal, quarantined: true, reason: 'fixture-sensitive-reason' };
+const normal = { officialAccountId: 'account-1', quarantined: false, reason: null, activeAttemptId: null, queueState: 'IDLE', retryAt: null };
+const quarantined = { ...normal, quarantined: true, reason: 'fixture-sensitive-reason', queueState: 'SETTLING', retryAt: '2026-10-15T00:00:30Z' };
 beforeEach(() => {
   vi.clearAllMocks(); mocks.getSessionBindingQueue.mockResolvedValue(quarantined);
   mocks.recoverSessionBindingQueue.mockResolvedValue(normal);
 });
 describe('官方会话绑定队列恢复', () => {
+  it('describes automatic settling without requiring administrator recovery', async () => {
+    render(<SessionBindingQueue accountId="account-1" />);
+    await screen.findByText('自动整理中');
+    expect(screen.getByText(/无需人工恢复/)).toBeInTheDocument();
+    expect(screen.queryByText('需管理员处理')).not.toBeInTheDocument();
+    expect(screen.getByText(/不能完全保证.*迟到登录/)).toBeInTheDocument();
+    expect(mocks.recoverSessionBindingQueue).not.toHaveBeenCalled();
+  });
+  it('shows bounded automatic retry instead of declaring manual recovery necessary', async () => {
+    mocks.getSessionBindingQueue.mockResolvedValue({ ...quarantined, queueState: 'RETRYING' });
+    render(<SessionBindingQueue accountId="account-1" />);
+    await screen.findByText('自动重试中');
+    expect(screen.getByText(/等待新鲜官方会话快照/)).toBeInTheDocument();
+    expect(screen.queryByText('需管理员处理')).not.toBeInTheDocument();
+    expect(mocks.recoverSessionBindingQueue).not.toHaveBeenCalled();
+  });
   it('loads safe state once and requires explicit acknowledgement before recovering', async () => {
     render(<SessionBindingQueue accountId="account-1" />);
     await screen.findByText('需管理员处理');
