@@ -55,7 +55,10 @@ public class SessionBindingService {
             if (jdbc.queryForObject("select count(*) from session_bindings where active_device_id=?", Integer.class, deviceId) > 0)
                 throw error("SESSION_BINDING_DEVICE_CONFLICT");
             List<Attempt> existing = jdbc.query("select * from session_binding_attempts where user_id=? and device_id=? and status in " + PENDING + " order by sequence_id desc", this::attempt, userId, deviceId);
-            if (!existing.isEmpty()) return response(existing.get(0));
+            if (!existing.isEmpty()) {
+                if (!existing.get(0).accountId.equals(accountId)) throw error("SESSION_BINDING_CONTEXT_CHANGED");
+                return response(existing.get(0));
+            }
             UUID id = UUID.randomUUID();
             jdbc.update("insert into session_binding_attempts (id,user_id,device_id,enrollment_id,team_id,team_version,official_account_id,connection_revision,status,created_at,expires_at) values (?,?,?,?,?,?,?,?,?,?,?)",
                     id, userId, deviceId, enrollmentId, current.teamId, current.teamVersion, accountId, current.revision, "QUEUED", clock.instant(), clock.instant().plusSeconds(1800));
