@@ -31,6 +31,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
@@ -169,7 +171,7 @@ class SessionBindingIntegrationTest {
         assertThat(jdbc.queryForObject("select before_session_ids from session_binding_attempts where id=?", String.class, first.id())).isNull();
     }
 
-    @Test void cancelledReadyAttemptRequiresAdminRecoveryAndRetryBaselineExcludesLateOldSession() {
+    @Test void cancelledReadyAttemptSupportsManualOverrideAndRetryBaselineExcludesLateOldSession() {
         var first = create();
         service.prepare(user.getId(), first.id());
         assertThat(service.cancel(user.getId(), first.id()).quarantined()).isTrue();
@@ -225,11 +227,12 @@ class SessionBindingIntegrationTest {
         assertThat(service.confirm(user.getId(), first.id(), "late-candidate").binding()).isNull();
     }
 
-    @Test void failedBeforeNeverGrantsLoginAndDoesNotNeedRiskRecovery() {
+    @Test void failedBeforeNeverGrantsLoginAndAutomaticallyRetriesWithoutRiskRecovery() {
         var attempt = create();
         when(official.refresh(accountId)).thenThrow(new DomainException("OFFICIAL_UNAVAILABLE", "unavailable", HttpStatus.BAD_GATEWAY));
         attempt = service.prepare(user.getId(), attempt.id());
-        assertThat(attempt.status()).isEqualTo("REJECTED");
+        assertThat(attempt.status()).isEqualTo("QUEUED");
+        assertThat(attempt.queueState()).isEqualTo("RETRYING");
         assertThat(attempt.loginAllowed()).isFalse();
         assertThat(service.accountState(accountId).quarantined()).isFalse();
     }
@@ -274,7 +277,7 @@ class SessionBindingIntegrationTest {
         assertThat(service.detect(user.getId(), attempt.id()).errorCode()).isEqualTo("SESSION_BINDING_NO_NEW_SESSION");
     }
 
-    @Test void cancelAfterLoginPermissionFencesLateArrivalAndRequiresExplicitRecovery() {
+    @Test void cancelAfterLoginPermissionFencesLateArrivalAndRetainsOptionalAcknowledgedRecovery() {
         var first = create();
         service.prepare(user.getId(), first.id());
         var second = createSecondDevice();
@@ -289,7 +292,7 @@ class SessionBindingIntegrationTest {
         var first = create();
         service.prepare(user.getId(), first.id());
         var second = createSecondDevice();
-        now.set(NOW.plusSeconds(601));
+        now.set(NOW.plusSeconds(1801));
         assertThat(service.get(user.getId(), first.id()).status()).isEqualTo("EXPIRED");
         assertThat(service.prepare(user.getId(), second.id()).quarantined()).isTrue();
     }
@@ -398,6 +401,43 @@ class SessionBindingIntegrationTest {
         var queued = create();
         mvc.perform(post(prefix + "/attempts/{id}/cancel", queued.id()).secure(true).header(HttpHeaders.AUTHORIZATION, token))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("CANCELLED"));
+    }
+
+    @ParameterizedTest @ValueSource(strings={"", "2", "3"})
+    void queueMetadataIsExplicitlyNegotiatedWithoutBreakingLegacyStrictClients(String version) throws Exception {
+        String prefix="/api/v1/client/session-bindings";
+        String token="Bearer "+jwt.create(user.getId(),user.getRole().name(),user.getSessionVersion());
+        var request=post(prefix+"/attempts").secure(true).header(HttpHeaders.AUTHORIZATION,token)
+                .contentType(MediaType.APPLICATION_JSON).content("{\"deviceId\":\"%s\",\"enrollmentId\":\"%s\"}".formatted(deviceId,enrollmentId));
+        if(!version.isEmpty())request.header("X-CQG-Queue-Version",version);
+        String body=mvc.perform(request).andExpect(status().isOk()).andExpect(header().string("Cache-Control","no-store"))
+                .andReturn().getResponse().getContentAsString();
+        var attempt=json.readTree(body);
+        assertThat(attempt.size()).isEqualTo(version.equals("2")?16:14);
+        assertThat(attempt.has("queueState")).isEqualTo(version.equals("2"));
+        assertThat(attempt.has("retryAt")).isEqualTo(version.equals("2"));
+        UUID id=UUID.fromString(attempt.get("id").asString());
+        var currentRequest=get(prefix+"/current").secure(true).header(HttpHeaders.AUTHORIZATION,token)
+                .param("deviceId",deviceId.toString()).param("enrollmentId",enrollmentId.toString());
+        if(!version.isEmpty())currentRequest.header("X-CQG-Queue-Version",version);
+        var current=json.readTree(mvc.perform(currentRequest).andExpect(status().isOk()).andExpect(header().string("Cache-Control","no-store"))
+                .andReturn().getResponse().getContentAsString());
+        assertThat(current.size()).isEqualTo(2);
+        assertThat(current.get("attempt").size()).isEqualTo(version.equals("2")?16:14);
+        var getRequest=get(prefix+"/attempts/{id}",id).secure(true).header(HttpHeaders.AUTHORIZATION,token);
+        if(!version.isEmpty())getRequest.header("X-CQG-Queue-Version",version);
+        assertThat(json.readTree(mvc.perform(getRequest).andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).size())
+                .isEqualTo(version.equals("2")?16:14);
+        for(String action:List.of("prepare","detect","confirm","cancel")) {
+            if(action.equals("detect"))when(official.refresh(accountId)).thenAnswer(call -> snapshot(List.of("existing","negotiated-candidate"),true,"official-user"));
+            var actionRequest=post(prefix+"/attempts/{id}/"+action,id).secure(true).header(HttpHeaders.AUTHORIZATION,token);
+            if(!version.isEmpty())actionRequest.header("X-CQG-Queue-Version",version);
+            if(action.equals("confirm"))actionRequest.contentType(MediaType.APPLICATION_JSON).content("{\"sessionId\":\"negotiated-candidate\"}");
+            var result=json.readTree(mvc.perform(actionRequest).andExpect(status().isOk()).andExpect(header().string("Cache-Control","no-store"))
+                    .andReturn().getResponse().getContentAsString());
+            assertThat(result.size()).isEqualTo(version.equals("2")?16:14);
+            assertThat(result.has("queueState")).isEqualTo(version.equals("2"));
+        }
     }
 
     @Test void administratorHistoryAndExplicitRecoveryEndpointsAreAvailable() throws Exception {
