@@ -19,8 +19,7 @@ class OwnedBrowserCleanupTest {
         when(child.onExit()).thenAnswer(ignored -> {
             observedExit.set(true); alive.set(false); return CompletableFuture.completedFuture(child);
         });
-        var method = ChromiumManagedLoginBrowser.class.getDeclaredMethod("terminate", Process.class);
-        method.setAccessible(true); method.invoke(null, process);
+        ChromiumManagedLoginBrowser.terminate(process);
         assertThat(observedExit.get()).isTrue();
         assertThat(alive.get()).isFalse();
     }

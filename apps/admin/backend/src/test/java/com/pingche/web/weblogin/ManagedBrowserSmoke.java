@@ -79,11 +79,7 @@ public final class ManagedBrowserSmoke {
             System.out.println("PASS: owned loopback CDP, 1024x768 in-memory JPEG, synthetic page/input; no official navigation, no image file");
         } finally {
             if (cdp != null) cdp.close();
-            if (process != null) {
-                var children = process.descendants().toList(); children.forEach(ProcessHandle::destroy);
-                process.destroy(); if (!process.waitFor(2, TimeUnit.SECONDS)) process.destroyForcibly().waitFor(2, TimeUnit.SECONDS);
-                children.stream().filter(ProcessHandle::isAlive).forEach(ProcessHandle::destroyForcibly);
-            }
+            if (process != null) ChromiumManagedLoginBrowser.terminate(process);
             profile.close();
             if (Files.exists(profile.path(), LinkOption.NOFOLLOW_LINKS)) throw new IllegalStateException("Owned temporary profile cleanup failed");
         }

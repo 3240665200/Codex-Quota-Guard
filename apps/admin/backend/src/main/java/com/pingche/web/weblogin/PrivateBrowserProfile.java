@@ -6,15 +6,19 @@ import java.nio.file.*;
 import java.nio.file.attribute.*;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** One owner-private newly created directory. Never opens or cleans a normal browser profile. */
 final class PrivateBrowserProfile implements AutoCloseable {
+    private static final Logger LOG = LoggerFactory.getLogger(PrivateBrowserProfile.class);
     private static final String PREFIX = "pingche-web-login-";
     private final Path root;
     private final Path parent;
     private final UserPrincipal owner;
     private final Object fileKey;
-    private final AtomicBoolean closed = new AtomicBoolean();
+    private final AtomicBoolean closing = new AtomicBoolean();
+    private final AtomicBoolean deleted = new AtomicBoolean();
     private PrivateBrowserProfile(Path root, Path parent, UserPrincipal owner) throws IOException {
         this.root = root; this.parent = parent; this.owner = owner;
         this.fileKey = Files.readAttributes(root, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS).fileKey(); verify();
@@ -66,8 +70,27 @@ final class PrivateBrowserProfile implements AutoCloseable {
                 .anyMatch(value -> value.name().startsWith("GROUP_") || value.name().startsWith("OTHERS_"))) throw new IOException();
     }
     @Override public void close() {
-        if (!closed.compareAndSet(false, true)) return;
+        if (deleted.get() || !closing.compareAndSet(false, true)) return;
+        boolean interrupted = Thread.interrupted();
         try {
+            for (int attempt = 0; attempt < 20; attempt++) {
+                try {
+                    // A retry never trusts metadata from an earlier attempt or expands the cleanup scope.
+                    removeOwnedTree(); deleted.set(true); return;
+                } catch (IOException | RuntimeException ignored) {
+                    if (attempt < 19) {
+                        try { Thread.sleep(100); }
+                        catch (InterruptedException signal) { interrupted = true; }
+                    }
+                }
+            }
+            LOG.warn("Managed login temporary profile cleanup incomplete profileId={}", root.getFileName());
+        } finally {
+            closing.set(false);
+            if (interrupted) Thread.currentThread().interrupt();
+        }
+    }
+    private void removeOwnedTree() throws IOException {
             verify();
             Files.walkFileTree(root, new SimpleFileVisitor<>() {
                 @Override public FileVisitResult preVisitDirectory(Path directory, BasicFileAttributes attrs) throws IOException {
@@ -83,6 +106,5 @@ final class PrivateBrowserProfile implements AutoCloseable {
                     Files.delete(directory); return FileVisitResult.CONTINUE;
                 }
             });
-        } catch (IOException | RuntimeException ignored) { /* Never expand cleanup beyond a verified owned profile. */ }
     }
 }

@@ -170,7 +170,7 @@ public final class ChromiumManagedLoginBrowser implements ManagedLoginBrowser {
         }
         throw unavailable("WEB_LOGIN_BROWSER_UNAVAILABLE");
     }
-    private static void terminate(Process process) {
+    static void terminate(Process process) {
         boolean wasInterrupted = Thread.interrupted();
         try {
             List<ProcessHandle> descendants = process.descendants().toList();
@@ -179,6 +179,13 @@ public final class ChromiumManagedLoginBrowser implements ManagedLoginBrowser {
             try { if (!process.waitFor(2, TimeUnit.SECONDS)) process.destroyForcibly().waitFor(2, TimeUnit.SECONDS); }
             catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); process.destroyForcibly(); }
             descendants.stream().filter(ProcessHandle::isAlive).forEach(ProcessHandle::destroyForcibly);
+            try {
+                CompletableFuture<?>[] exits = descendants.stream().map(ProcessHandle::onExit).toArray(CompletableFuture[]::new);
+                CompletableFuture.allOf(exits).get(2, TimeUnit.SECONDS);
+            } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+            catch (ExecutionException | TimeoutException ignored) { /* Report any remaining owned process without exception bodies. */ }
+            long remaining = descendants.stream().filter(ProcessHandle::isAlive).count();
+            if (process.isAlive() || remaining > 0) LOG.warn("Managed login owned process cleanup incomplete browserAlive={} childCount={}", process.isAlive(), remaining);
         } finally { if (wasInterrupted) Thread.currentThread().interrupt(); }
     }
     private static DomainException unavailable(String code) {
