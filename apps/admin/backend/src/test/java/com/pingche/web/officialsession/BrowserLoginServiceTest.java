@@ -34,7 +34,8 @@ class BrowserLoginServiceTest {
         jdbc.execute("create table official_session_logout_plans(official_account_id uuid,status varchar(32))");
         jdbc.update("insert into users values (?)", owner);
         jdbc.update("insert into official_accounts values (?,?)", account, "Synthetic account");
-        new ResourceDatabasePopulator(new ClassPathResource("db/migration/V25__add_official_browser_login_jobs.sql")).execute(source);
+        new ResourceDatabasePopulator(new ClassPathResource("db/migration/V25__add_official_browser_login_jobs.sql"),
+                new ClassPathResource("db/migration/V28__add_server_web_login_jobs.sql")).execute(source);
         connections = mock(OfficialConnectionService.class);
         when(connections.read(account)).thenReturn(new OfficialConnectionResponse(false, true, "NOT_CONFIGURED", null, null,
                 false, false, null, null, null, null, 0));

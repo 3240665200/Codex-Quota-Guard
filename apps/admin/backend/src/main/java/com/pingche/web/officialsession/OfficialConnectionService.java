@@ -88,6 +88,34 @@ public class OfficialConnectionService {
         });
     }
 
+    /** Publish a browser candidate only after its identity and sessions have been verified. */
+    OfficialConnectionResponse saveVerified(UUID accountId, OfficialConnectionRequest request, OfficialSessionSnapshot snapshot) {
+        new OfficialSessionCredentials(request.authorization(), request.cookie(), request.requestedAccountId()).validate();
+        if (snapshot == null || snapshot.account() == null || snapshot.sessions() == null
+                || !request.requestedAccountId().equals(snapshot.account().accountId())
+                || snapshot.account().userId() == null || snapshot.account().userId().isBlank())
+            throw error("OFFICIAL_ACCOUNT_MISMATCH", "Official account identity could not be verified", HttpStatus.BAD_GATEWAY);
+        return inTransaction(() -> {
+            requireAccount(accountId, true);
+            OfficialAccountConnection current = connections.findByIdForUpdate(accountId).orElse(null);
+            if (current != null && ((current.boundAccountId != null && !current.boundAccountId.equals(snapshot.account().accountId()))
+                    || (current.boundUserId != null && !current.boundUserId.equals(snapshot.account().userId()))))
+                throw error("OFFICIAL_ACCOUNT_MISMATCH", "Official account identity could not be verified", HttpStatus.BAD_GATEWAY);
+            // The normal save retains optimistic version checks and rotates the binding revision.
+            // Both writes join this transaction, so no unverified candidate is visible on failure.
+            save(accountId, request);
+            OfficialAccountConnection saved = connections.findByIdForUpdate(accountId).orElseThrow(this::changed);
+            saved.snapshotCipher = cipher.encrypt(mapper.writeValueAsString(snapshot), saved.aad("snapshot"));
+            saved.boundAccountId = snapshot.account().accountId();
+            saved.boundUserId = snapshot.account().userId();
+            saved.status = "CONNECTED";
+            saved.lastAttemptAt = clock.instant();
+            saved.lastSuccessAt = clock.instant();
+            saved.lastErrorCode = null;
+            return response(connections.saveAndFlush(saved));
+        });
+    }
+
     public OfficialConnectionRefreshResponse sessions(UUID accountId) {
         return inTransaction(() -> {
             requireAccount(accountId, false);

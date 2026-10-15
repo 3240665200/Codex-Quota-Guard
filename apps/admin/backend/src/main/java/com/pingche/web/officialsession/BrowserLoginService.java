@@ -66,7 +66,7 @@ public class BrowserLoginService {
 
     public List<Job> list(UUID owner) {
         expire();
-        return jdbc.query("select * from official_browser_login_jobs where owner_id=? and state in ('WAITING_FOR_HELPER','WAITING_FOR_LOGIN','SAVING') order by created_at desc limit 30",
+        return jdbc.query("select * from official_browser_login_jobs where owner_id=? and login_method='DESKTOP' and state in ('WAITING_FOR_HELPER','WAITING_FOR_LOGIN','SAVING') order by created_at desc limit 30",
                 (rs,n) -> map(rs).job(), owner);
     }
     public Job get(UUID owner, UUID id) { expire(); return row(owner,id,false).job(); }
@@ -128,7 +128,7 @@ public class BrowserLoginService {
     }
 
     private Row row(UUID owner, UUID id, boolean lock) {
-        List<Row> rows = jdbc.query("select * from official_browser_login_jobs where id=? and owner_id=?" + (lock?" for update":""),
+        List<Row> rows = jdbc.query("select * from official_browser_login_jobs where id=? and owner_id=? and login_method='DESKTOP'" + (lock?" for update":""),
                 (rs,n) -> map(rs),id,owner);
         if (rows.isEmpty()) throw fail("BROWSER_LOGIN_NOT_FOUND",HttpStatus.NOT_FOUND);
         return rows.get(0);

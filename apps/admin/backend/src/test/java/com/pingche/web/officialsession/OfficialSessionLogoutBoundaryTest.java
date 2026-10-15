@@ -54,7 +54,8 @@ class OfficialSessionLogoutBoundaryTest {
         jdbc.update("insert into official_accounts values (?,?)", accountId, "Synthetic account");
         jdbc.update("insert into official_account_connections values (?,?)", accountId, UUID.randomUUID());
         new ResourceDatabasePopulator(new ClassPathResource("db/migration/V24__add_session_binding_queue.sql"),
-                new ClassPathResource("db/migration/V25__add_official_browser_login_jobs.sql")).execute(source);
+                new ClassPathResource("db/migration/V25__add_official_browser_login_jobs.sql"),
+                new ClassPathResource("db/migration/V28__add_server_web_login_jobs.sql")).execute(source);
         var manager = new DataSourceTransactionManager(source);
         Clock clock = Clock.fixed(now, ZoneOffset.UTC);
         ObjectMapper mapper = new ObjectMapper();
