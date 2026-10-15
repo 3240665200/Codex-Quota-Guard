@@ -4,6 +4,8 @@
 
 桌面程序、本地 Java 和 Rust 统计服务仍安装在用户电脑，**不在服务器容器内运行**。
 
+本次源码版本为 `0.3.18`，服务器发布目标为 Linux amd64 的后端/网页 `0.3.18` 和可选后端 `0.3.18-browser`；源码标签为 `server-v0.3.18`。只想拉取镜像时使用[registry 部署说明](./registry/README.md)，本页的 `--build` 命令用于源码部署。配套桌面端需 0.3.14+（建议 0.3.18）；本次未新增 Windows 安装包 Release。
+
 ## 服务器网页登录（可选）
 
 新管理页支持在网页中操作服务器独立浏览器，完成官方登录并由后台获取限定 Cookie。仅在可信服务器上启用；正式环境须 HTTPS。默认普通后台镜像不安装浏览器，不改变原有部署方式。
@@ -16,17 +18,17 @@ docker compose --env-file .env -f compose.yaml -f compose.web-login.yaml -f comp
 docker compose --env-file .env -f compose.yaml -f compose.web-login.yaml -f compose.https.yaml up -d --build --wait
 ```
 
-先按下文配置 `TLS_CERT_DIRECTORY`、可信证书和 HTTPS `PUBLIC_ORIGIN`，保留所有现有数据库及加密密钥。可选目标增加 Chromium 和中文字体，后台内存上限 2 GiB、共享内存 256 MiB、临时目录 512 MiB，最多两个临时浏览器；建议整机至少 4 GiB 可用内存。
+先按下文配置 `TLS_CERT_DIRECTORY`、可信证书和 HTTPS `PUBLIC_ORIGIN`，保留所有现有数据库及加密密钥。可选目标增加 Chromium 和中文字体，后台内存上限 2 GiB、共享内存 256 MiB、临时目录 512 MiB，最多两个临时浏览器；建议整机至少 4 GiB 可用内存。后续启动或升级必须继续传入这三个配置；`deploy.sh up` 只读取基础 Compose，不会保留可选 overlay 的启用状态。
 
 `chromium-seccomp.json` 来自 Playwright v1.64.0，出处及 Apache-2.0 许可位于 `licenses/`。它保留默认拒绝策略，仅为命名空间沙箱放行相应调用，搭配非 root、capabilities 全部移除及 no-new-privileges。不要关闭浏览器沙箱、使用 privileged/SYS_ADMIN 或公开调试端口。宿主机需允许非特权用户命名空间；Docker/内核兼容仍需在目标服务器验证。
 
 Cookie 登录目前支持邮箱方式；外部 SSO 会明确提示不支持。官方验证码、人机验证仍由管理员本人完成，不能保证官方接受所有服务器网络。无论页面还是测试都不代替用户登录。新子菜单为“官方账户 → 账户管理 / 会话管理”。V28 扩展任务来源和管理员版本信息，不清除旧授权；部署重启会使未完成的服务器浏览器任务失效。
 
-当前已发布的 `0.3.11` 镜像不包含此可选构建目标；本次仅提供源码部署支持，未构建或发布新版镜像。不要只给旧镜像增加环境变量就以为浏览器已安装。
+普通 `runtime` 镜像不含 Chromium，既有 `0.3.11` 镜像也不能仅通过增加环境变量获得浏览器。拉取部署使用本次目标 `0.3.18-browser` 及 [registry 专用 overlay](./registry/compose.web-login.yaml)，其中不包含 `build` 配置。除已有明确的回环调试策略外，服务器网页登录与官方会话敏感操作要求 HTTPS；普通 IP + HTTP 的基础管理仍可使用。
 
 ## 1. 准备服务器
 
-- Linux，已安装 Docker Engine、Docker Compose **v2.24+**、Bash、OpenSSL；当前用户有权访问 Docker。
+- Linux amd64，已安装 Docker Engine、Docker Compose **v2.24.4+**、Bash、OpenSSL；当前用户有权访问 Docker。
 - 建议至少 2 核、4 GB 内存及 10 GB 可用磁盘，首次源码编译会占用额外内存和空间。
 - 允许拉取 Docker 镜像、Maven 和 npm 依赖；邮箱辅助还需要服务器可访问邮箱 IMAPS（通常 993）、DNS 和 HTTPS（OAuth/备用 DNS）。脚本不修改代理或系统 DNS。
 - 将**完整项目源码**上传服务器，保留 `apps/`、根目录的包清单/锁文件及 `deploy/docker/`；不要只上传这一个脚本。也不需要上传 `node_modules`、`target`、本机私密配置或 Windows 安装包。
@@ -46,7 +48,7 @@ bash deploy/docker/deploy.sh up
 第一条命令会让你输入两次管理员密码（不回显），并生成 `deploy/docker/.env`：
 
 - 数据库管理员、应用数据库账户和 JWT 分别使用独立随机密钥。
-- 邮箱加密密钥为独立随机 32 字节，Base64 保存。
+- 邮箱、官方会话与代理各自使用独立随机 32 字节加密密钥，Base64 保存。
 - `.env` 权限为仅当前用户可读写；已有文件不会被覆盖。
 - 初始管理员邮箱只是本系统的登录名，**不是邮箱监听的连接配置**。邮箱授权仍在后台「官方账户 → 邮箱配置」里设置。
 
@@ -86,7 +88,7 @@ bash deploy/docker/deploy.sh up
 
 容器配置 `unless-stopped`：Docker 服务开机运行时会恢复容器；手动 `stop` 后不会自行恢复，需再次 `up`。数据库持久卷默认名 `codex-quota-guard_pgdata`。日志每个容器最多保留 3 份、每份 10 MB；长期审计请另做日志归档。
 
-`backup` 生成 `deploy/docker/backups/<时间>-<随机后缀>/`，内含 `database.dump` 和 `deployment.env`。目录仅当前用户可访问；备份失败只留下 `.incomplete.*`，不会被标记为成功备份。**备份含邮箱密文及其解密密钥，必须加密离线保存，不能发到聊天或上传 GitHub。** 脚本不自动清理旧备份，请监控磁盘空间。
+`backup` 生成 `deploy/docker/backups/<时间>-<随机后缀>/`，内含 `database.dump` 和 `deployment.env`。目录仅当前用户可访问；备份失败只留下 `.incomplete.*`，不会被标记为成功备份。**备份含邮箱、官方会话、代理密文及其解密密钥，必须加密离线保存，不能发到聊天或上传 GitHub。** 脚本不自动清理旧备份，请监控磁盘空间；overlay、证书与自定义配置需另行备份。
 
 ## 4. 修改端口、访问地址
 
@@ -102,17 +104,36 @@ PUBLIC_ORIGIN=http://192.0.2.10:8080
 
 Compose 默认读取指定 `.env`，但 Docker 官方规则允许同名 shell 环境变量覆盖它。**不要从其他项目导出同名密码/密钥后执行本脚本**，也不要运行会打印完整密钥的 `docker compose config` 或将 `docker inspect` 输出发到公共渠道。
 
-以后接域名 HTTPS：由同一宿主机的宝塔/1Panel/Nginx 终止 TLS，转发到 `127.0.0.1:8080`；将 `HTTP_BIND` 改为 `127.0.0.1`、`PUBLIC_ORIGIN` 改为实际 `https://域名`，再 `up`。外部入口负责 HTTP→HTTPS，**不要单独打开后端端口**。本配置的内部链路仍是 HTTP，保持 `APP_REQUIRE_HTTPS=false`；不能仅切换该值而不同时设计可信转发链，否则会产生重定向问题。多容器反代不能把容器自己的 `127.0.0.1` 当成宿主机，需另行配置私有网络。
+本仓库提供 `compose.https.yaml` 与 `nginx.https.conf`：由网页容器终止 TLS、覆盖可信转发头，并将后端 `APP_REQUIRE_HTTPS` 设为 `true`。准备域名与可信证书，在原 `.env` 中配置：
+
+```dotenv
+PUBLIC_ORIGIN=https://quota.example.com
+TLS_CERT_DIRECTORY=/etc/codex-quota-guard/tls
+HTTPS_BIND=0.0.0.0
+```
+
+证书目录必须为服务器上实际存在的绝对路径，包含 `fullchain.pem`、`privkey.pem`，且可由容器内非 root 网页进程读取；不要把证书私钥提交 Git。放行 443 后，在 `deploy/docker` 中执行：
+
+```bash
+docker compose --env-file .env -f compose.yaml -f compose.https.yaml config --quiet
+docker compose --env-file .env -f compose.yaml -f compose.https.yaml up -d --build --wait
+```
+
+启用服务器网页登录时使用本页开头的三个配置组合。后续操作必须携带相同 overlay；`deploy.sh up` 不自动加载 HTTPS 配置。HTTP 业务入口将重定向到 HTTPS；数据库、后端与浏览器调试端口不对外发布。若使用宝塔/1Panel/其他外部反代，需自行建立可信转发链，不能只把 `PUBLIC_ORIGIN` 改成 HTTPS 或只切换 `APP_REQUIRE_HTTPS`，否则敏感接口仍会拒绝请求或产生重定向问题。
 
 ## 5. 升级与迁移现有数据
 
 **现有电脑的数据不会自动出现在服务器。** 新卷会创建空库；如需保留原用户、团队、流水和邮箱配置，必须迁移旧数据库，不能只复制 JAR 或 Windows 的 `.clixml` 文件。
 
-升级前运行 `backup`，另外保存当前 Git 提交/版本和镜像信息，再更新源码并执行 `up`。不要重新 `init`，不要更换 `JWT_SECRET`、`JWT_ISSUER` 或 `MAIL_ASSISTANCE_ENCRYPTION_KEY`。只修改 `.env` 中数据库密码并不能同步修改持久卷内已有的 PostgreSQL 角色密码。
+从 `0.3.11` 升级到本次 `0.3.18` 会执行 **V22–V30**。**V29 迁移前必须停止所有旧后端、队列 worker、定时任务及其他写入副本，禁止新旧 writer 混跑。** 先保存当前 Git 提交/版本、镜像及配置，在维护窗口停止应用、保留 PostgreSQL 运行，然后运行 `backup` 保存原数据库和 `.env`；确认备份成功后再更新源码、合并配置并执行所选组合的 `up`。
 
-从旧服务器迁入需要管理员先备份完整 PostgreSQL 数据库（含 `flyway_schema_history`），安全迁移原 JWT 和邮箱加密密钥，停止应用写入，再由数据库管理员恢复到目标库。使用本方案时应用角色为非超级用户 `quota_guard`，需确认还原后的表/序列所有权适配它。Windows DPAPI 的私密 `.clixml` 不能在 Linux 直接解密使用；不要将它打入镜像。
+例如在 `deploy/docker` 中先执行 `docker compose --env-file .env -f compose.yaml stop web backend`（如已有 overlay，同样带上全部 `-f` 参数），再执行 `bash deploy.sh backup`。其他机器或非 Compose 方式启动的旧写入进程也要停止。不要先使用会停止全部容器的 `deploy.sh stop`，否则备份时数据库不可用。
 
-Flyway 默认开启迁移和校验，历史 V9 包含旧托管凭证表删除，**不要跳过备份、关闭校验或自动 repair**。发生有数据结构变化的升级后，回退不一定只换旧镜像就够，可能必须恢复升级前数据库及对应 `.env`。脚本故意不提供一键清库或自动恢复，避免误覆盖。
+不要重新 `init`，不要更换 `JWT_SECRET`、`JWT_ISSUER`、`MAIL_ASSISTANCE_ENCRYPTION_KEY`、`OFFICIAL_SESSION_ENCRYPTION_KEY` 或 `MANAGED_PROXY_ENCRYPTION_KEY`。已有 `.env` 不会自动补新密钥；官方会话密钥用于建立官方连接及新绑定，代理密钥用于保存代理节点。只有从未配置且数据库中没有相应密文的缺失项才可分别生成新密钥（`openssl rand -base64 32`），原值丢失时必须找回匹配备份。缺密钥时健康检查可能通过，但相应业务不可用。只修改 `.env` 中数据库密码并不能同步修改持久卷内已有的 PostgreSQL 角色密码。
+
+从旧服务器迁入需要管理员停止应用写入后备份完整 PostgreSQL 数据库（含 `flyway_schema_history`），安全迁移原 JWT 和所有加密密钥，再由数据库管理员恢复到目标库。使用本方案时应用角色为非超级用户 `quota_guard`，需确认还原后的表/序列所有权适配它。Windows DPAPI 的私密 `.clixml` 不能在 Linux 直接解密使用；不要将它打入镜像。
+
+Flyway 默认开启迁移和校验，历史 V9 包含旧托管凭证表删除，**不要跳过备份、关闭校验或自动 repair**。本次 V22–V30 改变结构和绑定/退出策略，不能假定只换回 `0.3.11` 镜像即可安全回退。优先前向修复；必须回退时，在停写状态下恢复升级前数据库及匹配 `.env`、配置和旧镜像，并接受备份之后数据的损失。脚本不提供一键清库或自动恢复。升级完成需确认 Flyway 到 V30，并验收管理员登录、客户端设备配对与访问核验。
 
 **禁止使用 `docker compose down -v` 删除生产持久卷；Docker 卷不是备份。** 同一宿主机默认只能用本脚本部署这一套实例，项目名固定，避免工作目录变化误建第二个数据库。
 
