@@ -83,7 +83,7 @@ class OfficialSessionLogoutBoundaryTest {
         bindings = new SessionBindingService(jdbc, browserConnections, clock, mapper, manager);
         accountService = new OfficialAccountService(accounts, mock(OfficialQuotaSnapshotService.class),
                 mock(TeamRepository.class), mock(UserRepository.class), mock(RefreshSessionRepository.class), clock,
-                new OfficialSessionLogoutFence(jdbc));
+                new OfficialSessionLogoutFence(jdbc), jdbc);
     }
 
     @AfterEach void close() { source.destroy(); }

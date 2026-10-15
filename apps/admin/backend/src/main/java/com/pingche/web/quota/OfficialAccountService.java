@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -25,10 +26,11 @@ public class OfficialAccountService {
     private final RefreshSessionRepository sessions;
     private final Clock clock;
     private final OfficialSessionLogoutFence logoutFence;
+    private final JdbcTemplate jdbc;
 
     public OfficialAccountService(OfficialAccountRepository accounts, OfficialQuotaSnapshotService snapshots,
             TeamRepository teams, UserRepository users, RefreshSessionRepository sessions, Clock clock,
-            OfficialSessionLogoutFence logoutFence) {
+            OfficialSessionLogoutFence logoutFence, JdbcTemplate jdbc) {
         this.accounts = accounts;
         this.snapshots = snapshots;
         this.teams = teams;
@@ -36,6 +38,7 @@ public class OfficialAccountService {
         this.sessions = sessions;
         this.clock = clock;
         this.logoutFence = logoutFence;
+        this.jdbc = jdbc;
     }
 
     @Transactional(readOnly = true)
@@ -91,6 +94,10 @@ public class OfficialAccountService {
     public void delete(UUID id) {
         OfficialAccount account = accounts.findByIdForUpdate(id).orElseThrow(this::notFound);
         logoutFence.assertAvailable(id);
+        // Do not cascade into a job held by a helper that will next acquire this account lock.
+        if (jdbc.queryForObject("select count(*) from official_browser_login_jobs where official_account_id=? "
+                + "and state in ('WAITING_FOR_HELPER','WAITING_FOR_LOGIN','SAVING')", Integer.class, id) > 0)
+            throw conflict("BROWSER_LOGIN_BUSY", "官方网页登录正在进行，请先完成或取消登录。");
         if (teams.existsByOfficialAccountId(id)) {
             throw conflict("OFFICIAL_ACCOUNT_IN_USE", "请先解除团队与该账户的关联。");
         }
