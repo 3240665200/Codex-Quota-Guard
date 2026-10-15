@@ -29,10 +29,13 @@ import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.http.HttpStatus;
@@ -51,6 +54,7 @@ import tools.jackson.databind.ObjectMapper;
         "MANAGEMENT_ALLOW_LOOPBACK_HTTP=true", "server.address=127.0.0.1"})
 @ActiveProfiles("test")
 @DirtiesContext(classMode=DirtiesContext.ClassMode.AFTER_CLASS)
+@ExtendWith(OutputCaptureExtension.class)
 class OfficialSessionLogoutLivenessTest {
     @LocalServerPort int port;
     @Autowired ConfigurableApplicationContext context;
@@ -86,7 +90,7 @@ class OfficialSessionLogoutLivenessTest {
 
     @AfterEach void waitForOwnWorkers() {awaitWorkersIdle();}
 
-    @Test void fiveAcceptedUnboundRevocationsLeaveTheSameManagementSessionAndHttpServerAlive() throws Exception {
+    @Test void fiveAcceptedUnboundRevocationsLeaveTheSameManagementSessionAndHttpServerAlive(CapturedOutput output) throws Exception {
         when(official.revokeSession(any(),isNull(),anyString())).thenReturn(new OfficialSessionWriteResult("ACCEPTED",null));
         UUID plan=preview();
         JsonNode result=confirmAndAwait(plan,"ACCEPTED");
@@ -100,6 +104,9 @@ class OfficialSessionLogoutLivenessTest {
         assertAdministrationStillAvailable();
         assertThat(request("POST",url("confirm"),Map.of("planId",plan,"acknowledgeLogoutRisk",true)).statusCode()).isEqualTo(409);
         assertAdministrationStillAvailable();
+        assertThat(output.getAll()).contains("Official logout audit event=STARTED planId="+plan+" mode=UNBOUND")
+                .contains("Official logout audit event=FINISHED planId="+plan+" mode=UNBOUND outcome=ACCEPTED accepted=5 failed=0 unknown=0 notAttempted=0");
+        assertAuditHasNoSensitiveData(output);
     }
 
     @ParameterizedTest
@@ -118,13 +125,15 @@ class OfficialSessionLogoutLivenessTest {
 
     @ParameterizedTest
     @ValueSource(strings={"OFFICIAL_AUTH_REQUIRED","OFFICIAL_ACCESS_BLOCKED"})
-    void officialAuthenticationReadFailuresLeaveTheHttpServiceAvailable(String code) throws Exception {
+    void officialAuthenticationReadFailuresLeaveTheHttpServiceAvailable(String code,CapturedOutput output) throws Exception {
         UUID plan=preview();
         when(official.fetch(any(),isNull())).thenThrow(new DomainException(code,"private-upstream-provider-body",HttpStatus.BAD_GATEWAY));
         JsonNode result=confirmAndAwait(plan,"FAILED");
         assertThat(result.path("results").get(0).path("status").asString()).isEqualTo("NOT_ATTEMPTED");
         verify(official,never()).revokeSession(any(),any(),any());
         assertAdministrationStillAvailable();
+        assertThat(output.getAll()).contains("Official logout audit event=FINISHED planId="+plan+" mode=UNBOUND outcome=FAILED accepted=0 failed=0 unknown=0 notAttempted=1");
+        assertAuditHasNoSensitiveData(output);
     }
 
     @Test void executingAndUnknownRemainFencedWhileManagementRequestsContinueToSucceed() throws Exception {
@@ -149,7 +158,7 @@ class OfficialSessionLogoutLivenessTest {
         verify(official,times(1)).revokeSession(any(),isNull(),anyString());
     }
 
-    @Test void unexpectedWorkerFailureRetainsTheFenceWithoutClosingTheHttpServer() throws Exception {
+    @Test void unexpectedWorkerFailureRetainsTheFenceWithoutClosingTheHttpServer(CapturedOutput output) throws Exception {
         UUID plan=preview();
         jdbc.update("update official_session_logout_plans set preview_json=? where id=?","{private-upstream-provider-body=synthetic-session-secret}",plan);
         assertThat(request("POST",url("confirm"),Map.of("planId",plan,"acknowledgeLogoutRisk",true)).statusCode()).isEqualTo(200);
@@ -158,6 +167,8 @@ class OfficialSessionLogoutLivenessTest {
         assertFenced();
         assertAdministrationStillAvailable();
         verify(official,never()).revokeSession(any(),any(),any());
+        assertThat(output.getAll()).contains("Official logout audit event=WORKER_FAILED planId="+plan+" mode=UNBOUND outcome=UNKNOWN failureType=OTHER_RUNTIME");
+        assertAuditHasNoSensitiveData(output);
     }
 
     private UUID preview() throws Exception {
@@ -198,6 +209,10 @@ class OfficialSessionLogoutLivenessTest {
     private void awaitWorkersIdle() {
         ThreadPoolExecutor executor=(ThreadPoolExecutor)ReflectionTestUtils.getField(logout,"workers");
         await().atMost(Duration.ofSeconds(5)).until(() -> executor.getActiveCount()==0 && executor.getQueue().isEmpty());
+    }
+    private void assertAuditHasNoSensitiveData(CapturedOutput output) {
+        assertThat(output.getAll()).doesNotContain("synthetic-provider-token","synthetic-provider-cookie","synthetic-unbound-",
+                "synthetic-current-manager","synthetic-session-secret","private-upstream-provider-body",admin.getEmail(),managementAuthorization);
     }
     private HttpResponse<String> request(String method,String path,Object body) throws Exception {
         HttpRequest.Builder request=HttpRequest.newBuilder(URI.create("http://127.0.0.1:"+port+path))
