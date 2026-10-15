@@ -135,6 +135,13 @@ public final class SystemSessionService {
             return session == null ? Optional.empty() : Optional.of(session.user().id());
         }
     }
+    /** Passive local identity check for long-running helpers; never restores or exposes credentials. */
+    public Optional<SystemUser> localUser() {
+        synchronized (lock) {
+            expireSession();
+            return session == null ? Optional.empty() : Optional.of(session.user());
+        }
+    }
     public UUID requireLocalUserId() { synchronized (lock) { return requireSession().user().id(); } }
     long generation() { synchronized (lock) { return loginGeneration; } }
     Probe pairingProbe() {

@@ -96,7 +96,7 @@ class BrowserLoginServiceTest {
         var job = delayedService.create(owner,account,new BrowserLoginService.StartRequest(0L,null));
         delayedService.claim(owner,job.id(),helper);
         Instant now = time.get();
-        when(delayed.instant()).thenReturn(now,now,now.plusSeconds(121),now.plusSeconds(121));
+        when(delayed.instant()).thenReturn(now,now,now,now.plusSeconds(121),now.plusSeconds(121));
         delayedService.complete(owner,job.id(),new BrowserLoginService.CompleteRequest(helper,"Bearer synthetic-token",null,"synthetic-account"));
         verify(connections,never()).save(any(),any());
         verify(connections,never()).refresh(any());

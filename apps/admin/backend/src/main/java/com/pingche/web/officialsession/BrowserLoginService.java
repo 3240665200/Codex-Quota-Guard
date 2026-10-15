@@ -72,6 +72,7 @@ public class BrowserLoginService {
         expire();
         return tx(() -> {
             Row row = row(owner,id,true);
+            if (!row.job().expiresAt().isAfter(clock.instant())) throw fail("BROWSER_LOGIN_EXPIRED",HttpStatus.CONFLICT);
             if ("WAITING_FOR_LOGIN".equals(row.job().state()) && helper.equals(row.helper())) return row.job();
             if (!"WAITING_FOR_HELPER".equals(row.job().state())) throw fail("BROWSER_LOGIN_NOT_ACTIVE", HttpStatus.CONFLICT);
             jdbc.update("update official_browser_login_jobs set state='WAITING_FOR_LOGIN',helper_id=? where id=?", helper,id);
@@ -95,6 +96,7 @@ public class BrowserLoginService {
         expire();
         Row work = tx(() -> {
             Row row = row(owner,id,true);
+            if (!row.job().expiresAt().isAfter(clock.instant())) throw fail("BROWSER_LOGIN_EXPIRED",HttpStatus.CONFLICT);
             if (!"WAITING_FOR_LOGIN".equals(row.job().state()) || !request.helperId().equals(row.helper()))
                 throw fail("BROWSER_LOGIN_NOT_ACTIVE", HttpStatus.CONFLICT);
             jdbc.update("update official_browser_login_jobs set state='SAVING',expires_at=? where id=?", at(clock.instant().plusSeconds(120)),id);
