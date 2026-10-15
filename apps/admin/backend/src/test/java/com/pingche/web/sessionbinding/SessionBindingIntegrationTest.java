@@ -80,7 +80,7 @@ class SessionBindingIntegrationTest {
         user.updateQuotaPolicy(team.getId(), null, null, NOW);
         user = users.saveAndFlush(user);
         enrollmentId = UUID.randomUUID();
-        deviceId = UUID.randomUUID();
+        deviceId = enrollmentId;
         devices.saveAndFlush(new MeterDevice(enrollmentId, user.getId(), UUID.randomUUID().toString().replace("-", "").repeat(2), NOW, NOW.plusSeconds(3600)));
         jdbc.update("insert into official_account_connections (official_account_id,requested_account_id,authorization_cipher,bound_account_id,bound_user_id,status,revision,imported_at,version) values (?,?,?,?,?,?,?,?,0)",
                 accountId, accountKey, "synthetic-no-secret", accountKey, "official-user", "CONNECTED", UUID.randomUUID(), NOW);
@@ -108,7 +108,7 @@ class SessionBindingIntegrationTest {
 
     @Test void queueIsDurableAndOnlyFirstAccountAttemptMayPrepare() {
         var first = create();
-        var second = service.create(user.getId(), UUID.randomUUID(), enrollmentId, null);
+        var second = createSecondDevice();
         assertThat(second.queuePosition()).isEqualTo(2);
         assertThat(service.prepare(user.getId(), second.id()).status()).isEqualTo("QUEUED");
         assertThat(service.prepare(user.getId(), first.id()).loginAllowed()).isTrue();
@@ -172,7 +172,7 @@ class SessionBindingIntegrationTest {
     @Test void cancelAfterLoginPermissionFencesLateArrivalAndRequiresExplicitRecovery() {
         var first = create();
         service.prepare(user.getId(), first.id());
-        var second = service.create(user.getId(), UUID.randomUUID(), enrollmentId, null);
+        var second = createSecondDevice();
         assertThat(service.cancel(user.getId(), first.id()).quarantined()).isTrue();
         assertThat(service.prepare(user.getId(), second.id()).loginAllowed()).isFalse();
         assertThatThrownBy(() -> service.recover(accountId, false)).isInstanceOf(DomainException.class);
@@ -183,7 +183,7 @@ class SessionBindingIntegrationTest {
     @Test void expiredReadyAttemptCannotBecomeBaselineForNextUser() {
         var first = create();
         service.prepare(user.getId(), first.id());
-        var second = service.create(user.getId(), UUID.randomUUID(), enrollmentId, null);
+        var second = createSecondDevice();
         now.set(NOW.plusSeconds(601));
         assertThat(service.get(user.getId(), first.id()).status()).isEqualTo("EXPIRED");
         assertThat(service.prepare(user.getId(), second.id()).quarantined()).isTrue();
@@ -369,7 +369,7 @@ class SessionBindingIntegrationTest {
         next = users.saveAndFlush(next);
         UUID enrollment = UUID.randomUUID();
         devices.saveAndFlush(new MeterDevice(enrollment, next.getId(), UUID.randomUUID().toString().replace("-", "").repeat(2), NOW, NOW.plusSeconds(3600)));
-        var queued = service.create(next.getId(), UUID.randomUUID(), enrollment, null);
+        var queued = service.create(next.getId(), enrollment, enrollment, null);
         users.deleteById(user.getId());
         users.flush();
         var prepared = service.prepare(next.getId(), queued.id());
@@ -377,7 +377,40 @@ class SessionBindingIntegrationTest {
         assertThat(prepared.quarantined()).isTrue();
     }
 
+    @Test void pureTrustedDeviceRowsWithoutSessionIdDoNotBlockACodexSessionDifference() {
+        var attempt = create();
+        OfficialSessionInfo trusted = new OfficialSessionInfo("trusted-row", null, "windows", "Trusted machine", null, null, null, false, true, NOW, NOW, null, null, null, List.of());
+        when(official.refresh(accountId)).thenAnswer(call -> new OfficialConnectionRefreshResponse(null, identity("official-user"),
+                new OfficialSessions(List.of(session("existing", "Codex"), trusted), true), now.get()));
+        assertThat(service.prepare(user.getId(), attempt.id()).status()).isEqualTo("READY_FOR_LOGIN");
+        when(official.refresh(accountId)).thenAnswer(call -> new OfficialConnectionRefreshResponse(null, identity("official-user"),
+                new OfficialSessions(List.of(session("existing", "Codex"), trusted, session("candidate", "Codex")), true), now.get()));
+        assertThat(service.detect(user.getId(), attempt.id()).candidateSessionId()).isEqualTo("candidate");
+        assertThat(service.confirm(user.getId(), attempt.id(), "candidate").binding().sessionId()).isEqualTo("candidate");
+    }
+
+    @Test void ownEnrollmentCannotBeUsedToClaimAnotherInstallationUuid() {
+        UUID forged = UUID.randomUUID();
+        assertThatThrownBy(() -> service.create(user.getId(), forged, enrollmentId, null)).isInstanceOf(DomainException.class);
+        assertThatThrownBy(() -> service.current(user.getId(), forged, enrollmentId)).isInstanceOf(DomainException.class);
+    }
+
+    @Test void recoveryRequiresASnapshotFetchedAfterTheRecoveryStarted() {
+        var attempt = create();
+        service.prepare(user.getId(), attempt.id());
+        service.cancel(user.getId(), attempt.id());
+        now.set(NOW.plusSeconds(60));
+        when(official.refresh(accountId)).thenAnswer(call -> new OfficialConnectionRefreshResponse(null, identity("official-user"), new OfficialSessions(List.of(session("existing", "Codex")), true), NOW));
+        assertThatThrownBy(() -> service.recover(accountId, true)).isInstanceOf(DomainException.class);
+        assertThat(service.accountState(accountId).quarantined()).isTrue();
+    }
+
     private SessionBindingAttemptResponse create() { return service.create(user.getId(), deviceId, enrollmentId, null); }
+    private SessionBindingAttemptResponse createSecondDevice() {
+        UUID id = UUID.randomUUID();
+        devices.saveAndFlush(new MeterDevice(id, user.getId(), UUID.randomUUID().toString().replace("-", "").repeat(2), NOW, NOW.plusSeconds(3600)));
+        return service.create(user.getId(), id, id, null);
+    }
     private OfficialAccountInfo identity(String userKey) { return new OfficialAccountInfo(userKey, "synthetic@example.com", "Synthetic", accountKey, "Synthetic", "plus", "owner", false, true); }
     private OfficialConnectionRefreshResponse snapshot(List<String> ids, boolean complete, String userKey) {
         return new OfficialConnectionRefreshResponse(null, identity(userKey), new OfficialSessions(ids.stream().map(id -> session(id, "Codex")).toList(), complete), now.get());
