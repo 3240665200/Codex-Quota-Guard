@@ -16,6 +16,9 @@ import com.pingche.web.weblogin.ManagedLoginBrowser;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import javax.sql.DataSource;
 import org.junit.jupiter.api.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -37,6 +40,7 @@ class WebLoginIntegrationTest {
     @Autowired OfficialAccountRepository accounts;
     @Autowired JwtService jwt;
     @Autowired JdbcTemplate jdbc;
+    @Autowired DataSource dataSource;
     @Autowired OfficialConnectionService connections;
     @Autowired WebLoginService service;
     @MockitoBean OfficialSessionClient client;
@@ -141,6 +145,26 @@ class WebLoginIntegrationTest {
         mvc.perform(post("/api/v1/auth/logout").secure(true).header("Authorization",token(admin)).contentType(MediaType.APPLICATION_JSON)
                 .content("{\"refreshToken\":\"synthetic-unused-token\"}")).andExpect(status().isNoContent());
         assertThat(service.get(admin.getId(),job.id()).state()).isEqualTo("CANCELLED");
+        verify(session).close();
+    }
+
+    @Test void ownerLockContentionFailsClosedWithoutWaitingWhileTheJobIsLocked() throws Exception {
+        var job=service.create(admin.getId(),account.getId(),new BrowserLoginService.StartRequest(0L,null));
+        CompletableFuture<WebLoginService.Job> pending=null;
+        try(var connection=dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+            try(var lock=connection.prepareStatement("select id from users where id=? for update")) {
+                lock.setObject(1,admin.getId());
+                lock.executeQuery().close();
+            }
+            try {
+                pending=CompletableFuture.supplyAsync(() -> service.complete(admin.getId(),job.id()));
+                var result=pending.get(1,TimeUnit.SECONDS);
+                assertThat(result.state()).isEqualTo("FAILED");
+                assertThat(result.errorCode()).isEqualTo("BROWSER_LOGIN_ACCESS_REVOKED");
+            } finally {connection.rollback();if(pending!=null)pending.get(5,TimeUnit.SECONDS);}
+        }
+        assertThat(connections.read(account.getId()).configured()).isFalse();
         verify(session).close();
     }
 
