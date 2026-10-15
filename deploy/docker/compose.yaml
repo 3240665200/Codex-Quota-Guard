@@ -33,6 +33,7 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/backend.Dockerfile
+      target: runtime
     restart: unless-stopped
     init: true
     environment:

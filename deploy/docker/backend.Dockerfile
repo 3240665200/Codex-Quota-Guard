@@ -32,3 +32,11 @@ COPY --from=build --chown=10001:10001 /build/target/web-backend-0.1.0-SNAPSHOT.j
 USER 10001:10001
 EXPOSE 8080
 ENTRYPOINT ["java", "-jar", "/app/server.jar"]
+
+# Opt-in build target for the server-owned, temporary login browser. Keep
+# Chromium's sandbox enabled; the matching Compose overlay permits user namespaces.
+FROM runtime AS browser-runtime
+USER root
+RUN apk add --no-cache chromium font-noto-cjk
+ENV WEB_LOGIN_BROWSER_EXECUTABLE=/usr/lib/chromium/chrome
+USER 10001:10001

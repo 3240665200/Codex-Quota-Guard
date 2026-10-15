@@ -6,7 +6,9 @@ param(
     [string]$PreviewDirectory = 'D:\BuildCache\pingche\management-preview',
     [int]$BackendPort = 18080,
     [int]$FrontendPort = 8000,
-    [string]$ProxyKernel = 'D:\codex-tools\sing-box-1.13.14\sing-box-1.13.14-windows-amd64\sing-box.exe'
+    [string]$ProxyKernel = 'D:\codex-tools\sing-box-1.13.14\sing-box-1.13.14-windows-amd64\sing-box.exe',
+    [switch]$EnableWebLogin,
+    [string]$BrowserExecutable = ''
 )
 $ErrorActionPreference = 'Stop'
 $repository = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
@@ -16,6 +18,15 @@ foreach ($port in @($BackendPort, $FrontendPort)) {
     }
 }
 if ($BackendPort -eq $FrontendPort) { throw 'Preview ports must differ.' }
+if ($EnableWebLogin) {
+    if ([string]::IsNullOrWhiteSpace($BrowserExecutable) -or ![IO.Path]::IsPathRooted($BrowserExecutable) `
+            -or !(Test-Path -LiteralPath $BrowserExecutable -PathType Leaf)) {
+        throw 'Enabling web login requires an explicit installed Chromium browser executable.'
+    }
+    $browserFile = Get-Item -LiteralPath $BrowserExecutable
+    if ($browserFile.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Browser executable cannot be a link.' }
+    $BrowserExecutable = $browserFile.FullName
+}
 $settings = Import-Clixml -LiteralPath $ConfigPath
 if ($settings -isnot [System.Collections.IDictionary]) { throw 'Invalid protected configuration.' }
 $runtimeKeys = @('DATABASE_URL', 'DATABASE_USERNAME', 'DATABASE_PASSWORD', 'JWT_SECRET',
@@ -37,6 +48,7 @@ foreach ($identity in @([System.Security.Principal.WindowsIdentity]::GetCurrent(
 if ($previewDirectoryCreated) { Set-Acl -LiteralPath $PreviewDirectory -AclObject $acl }
 $featureFile = Join-Path $PreviewDirectory 'feature-keys.clixml'
 $featureKeys = @('OFFICIAL_SESSION_ENCRYPTION_KEY', 'MANAGED_PROXY_ENCRYPTION_KEY')
+$browserKeys = @('WEB_LOGIN_BROWSER_ENABLED', 'WEB_LOGIN_BROWSER_EXECUTABLE', 'WEB_LOGIN_BROWSER_HEADLESS')
 if (Test-Path -LiteralPath $featureFile) {
     $features = Import-Clixml -LiteralPath $featureFile
 } else {
@@ -64,7 +76,7 @@ $apiLog = Join-Path $PreviewDirectory "api-$stamp.out.log"
 $apiError = Join-Path $PreviewDirectory "api-$stamp.err.log"
 $uiLog = Join-Path $PreviewDirectory "ui-$stamp.out.log"
 $uiError = Join-Path $PreviewDirectory "ui-$stamp.err.log"
-$owned = $runtimeKeys + $featureKeys + @('SERVER_ADDRESS', 'WEB_SERVER_PORT', 'APP_REQUIRE_HTTPS',
+$owned = $runtimeKeys + $featureKeys + $browserKeys + @('SERVER_ADDRESS', 'WEB_SERVER_PORT', 'APP_REQUIRE_HTTPS',
     'SPRING_PROFILES_ACTIVE', 'SERVER_FORWARD_HEADERS_STRATEGY', 'MANAGEMENT_ALLOW_LOOPBACK_HTTP',
     'MANAGED_PROXY_SING_BOX_PATH', 'CORS_ALLOWED_ORIGINS', 'HOST', 'PORT', 'ADMIN_API_TARGET', 'NODE_OPTIONS',
     'ADMIN_BOOTSTRAP_EMAIL', 'ADMIN_BOOTSTRAP_PASSWORD', 'ADMIN_BOOTSTRAP_DISPLAY_NAME')
@@ -89,13 +101,16 @@ try {
     $env:SERVER_FORWARD_HEADERS_STRATEGY = 'none'
     $env:MANAGEMENT_ALLOW_LOOPBACK_HTTP = 'true'
     $env:MANAGED_PROXY_SING_BOX_PATH = $ProxyKernel
+    $env:WEB_LOGIN_BROWSER_ENABLED = if ($EnableWebLogin) { 'true' } else { 'false' }
+    if ($EnableWebLogin) { $env:WEB_LOGIN_BROWSER_EXECUTABLE = $BrowserExecutable }
+    $env:WEB_LOGIN_BROWSER_HEADLESS = 'true'
     $env:CORS_ALLOWED_ORIGINS = "http://localhost:$FrontendPort,http://127.0.0.1:$FrontendPort"
     $backend = Start-Process -FilePath $maven -ArgumentList '-o', '-f',
         "`"$(Join-Path $repository 'apps\admin\backend\pom.xml')`"", '-Dmaven.test.skip=true', 'spring-boot:run' `
         -WorkingDirectory $repository -WindowStyle Hidden -RedirectStandardOutput $apiLog -RedirectStandardError $apiError -PassThru
 
     # The UI development server receives no database, signing or encryption secrets.
-    foreach ($key in ($runtimeKeys + $featureKeys)) { Remove-Item -LiteralPath "Env:$key" -ErrorAction SilentlyContinue }
+    foreach ($key in ($runtimeKeys + $featureKeys + $browserKeys)) { Remove-Item -LiteralPath "Env:$key" -ErrorAction SilentlyContinue }
     $env:HOST = '127.0.0.1'
     $env:PORT = [string]$FrontendPort
     $env:ADMIN_API_TARGET = "http://127.0.0.1:$BackendPort"

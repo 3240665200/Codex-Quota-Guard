@@ -1,0 +1,19 @@
+# Source deployment opt-in; combine with compose.https.yaml for non-loopback use.
+# Never publish Chromium's internal control port. The existing admin API owns access.
+services:
+  backend:
+    build:
+      target: browser-runtime
+    environment:
+      WEB_LOGIN_BROWSER_ENABLED: "true"
+      WEB_LOGIN_BROWSER_EXECUTABLE: /usr/lib/chromium/chrome
+      WEB_LOGIN_BROWSER_HEADLESS: "true"
+      # Leave memory for up to two temporary browser processes beside the JVM.
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=40 -Duser.timezone=UTC
+    mem_limit: 2g
+    shm_size: 256mb
+    tmpfs: !override
+      - /tmp:rw,noexec,nosuid,size=512m
+    security_opt: !override
+      - no-new-privileges:true
+      - seccomp=./chromium-seccomp.json

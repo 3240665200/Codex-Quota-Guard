@@ -4,6 +4,26 @@
 
 桌面程序、本地 Java 和 Rust 统计服务仍安装在用户电脑，**不在服务器容器内运行**。
 
+## 服务器网页登录（可选）
+
+新管理页支持在网页中操作服务器独立浏览器，完成官方登录并由后台获取限定 Cookie。仅在可信服务器上启用；正式环境须 HTTPS。默认普通后台镜像不安装浏览器，不改变原有部署方式。
+
+源码构建时组合三个配置（Compose 2.24.4+）：
+
+```sh
+cd deploy/docker
+docker compose --env-file .env -f compose.yaml -f compose.web-login.yaml -f compose.https.yaml config --quiet
+docker compose --env-file .env -f compose.yaml -f compose.web-login.yaml -f compose.https.yaml up -d --build --wait
+```
+
+先按下文配置 `TLS_CERT_DIRECTORY`、可信证书和 HTTPS `PUBLIC_ORIGIN`，保留所有现有数据库及加密密钥。可选目标增加 Chromium 和中文字体，后台内存上限 2 GiB、共享内存 256 MiB、临时目录 512 MiB，最多两个临时浏览器；建议整机至少 4 GiB 可用内存。
+
+`chromium-seccomp.json` 来自 Playwright v1.64.0，出处及 Apache-2.0 许可位于 `licenses/`。它保留默认拒绝策略，仅为命名空间沙箱放行相应调用，搭配非 root、capabilities 全部移除及 no-new-privileges。不要关闭浏览器沙箱、使用 privileged/SYS_ADMIN 或公开调试端口。宿主机需允许非特权用户命名空间；Docker/内核兼容仍需在目标服务器验证。
+
+Cookie 登录目前支持邮箱方式；外部 SSO 会明确提示不支持。官方验证码、人机验证仍由管理员本人完成，不能保证官方接受所有服务器网络。无论页面还是测试都不代替用户登录。新子菜单为“官方账户 → 账户管理 / 会话管理”。V28 扩展任务来源和管理员版本信息，不清除旧授权；部署重启会使未完成的服务器浏览器任务失效。
+
+当前已发布的 `0.3.11` 镜像不包含此可选构建目标；本次仅提供源码部署支持，未构建或发布新版镜像。不要只给旧镜像增加环境变量就以为浏览器已安装。
+
 ## 1. 准备服务器
 
 - Linux，已安装 Docker Engine、Docker Compose **v2.24+**、Bash、OpenSSL；当前用户有权访问 Docker。
