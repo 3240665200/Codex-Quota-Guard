@@ -6,7 +6,7 @@ import type { OfficialAccountResponse } from '../../services/api';
 
 const mocks = vi.hoisted(() => ({
   getOfficialAccountConnection: vi.fn(), listProxyNodes: vi.fn(), getOfficialAccountSessions: vi.fn(),
-  isSecureManagementContext: vi.fn(), saveOfficialAccountConnection: vi.fn(),
+  isSecureManagementContext: vi.fn(), isSupportedManagementContext: vi.fn(), saveOfficialAccountConnection: vi.fn(),
   refreshOfficialAccountConnection: vi.fn(), deleteOfficialAccountConnection: vi.fn(),
   listSessionBindings: vi.fn(), releaseSessionBinding: vi.fn(), startOfficialBrowserLogin: vi.fn(),
   getOfficialBrowserLogin: vi.fn(), cancelOfficialBrowserLogin: vi.fn(),
@@ -64,6 +64,7 @@ describe('官方网页登录与设备绑定入口', () => {
   afterAll(() => configure({ defaultHidden: false }));
   beforeEach(() => {
     vi.clearAllMocks(); mocks.isSecureManagementContext.mockReturnValue(true);
+    mocks.isSupportedManagementContext.mockReturnValue(true);
     mocks.getOfficialAccountConnection.mockResolvedValue(connection);
     mocks.listProxyNodes.mockResolvedValue([]); mocks.getOfficialAccountSessions.mockResolvedValue(snapshot);
     mocks.listSessionBindings.mockResolvedValue([binding]);
@@ -290,10 +291,35 @@ describe('官方网页登录与设备绑定入口', () => {
     expect(mocks.confirmSessionLogout).not.toHaveBeenCalled();
   });
 
-  it('blocks unbind over an insecure management connection', async () => {
+  it('allows remote HTTP unbind with an explicit confirmation and transport warning', async () => {
     mocks.isSecureManagementContext.mockReturnValue(false);
     const dialog = await show();
-    expect(await within(dialog).findByRole('button', { name: '解绑会话' })).toBeDisabled();
+    expect(within(dialog).getByText(/HTTP.*明文/)).toBeInTheDocument();
+    const confirmation = await unbindConfirmation(dialog);
+    expect(mocks.releaseSessionBinding).not.toHaveBeenCalled();
+    confirmUnbind(confirmation);
+    await waitFor(() => expect(mocks.releaseSessionBinding).toHaveBeenCalledExactlyOnceWith('binding-1', 'account-1'));
+  });
+
+  it.each(['browser', 'logout'] as const)('allows remote HTTP %s actions without treating HTTP as secure', async (action) => {
+    mocks.isSecureManagementContext.mockReturnValue(false);
+    const dialog = await show();
+    const login = within(dialog).getByRole('button', { name: '开始官方网页登录' });
+    const logout = within(dialog).getByRole('button', { name: '登出所有未绑定会话' });
+    await waitFor(() => expect(login).toBeEnabled());
+    await waitFor(() => expect(logout).toBeEnabled());
+    fireEvent.click(action === 'browser' ? login : logout);
+    await waitFor(() => expect(action === 'browser' ? mocks.startOfficialBrowserLogin : mocks.previewSessionLogout).toHaveBeenCalledOnce());
+    expect(mocks.confirmSessionLogout).not.toHaveBeenCalled();
+  });
+
+  it('blocks browser login and unbind for unsupported page protocols', async () => {
+    mocks.isSecureManagementContext.mockReturnValue(false);
+    mocks.isSupportedManagementContext.mockReturnValue(false);
+    const dialog = await show();
+    expect(within(dialog).getByRole('button', { name: '开始官方网页登录' })).toBeDisabled();
+    expect(within(dialog).getByRole('button', { name: '解绑会话' })).toBeDisabled();
+    expect(within(dialog).queryByRole('button', { name: '登出所有会话' })).not.toBeInTheDocument();
     expect(mocks.releaseSessionBinding).not.toHaveBeenCalled();
   });
 

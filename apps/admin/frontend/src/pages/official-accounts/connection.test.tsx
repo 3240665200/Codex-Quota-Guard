@@ -9,7 +9,7 @@ const mocks = vi.hoisted(() => ({
   createOfficialAccount: vi.fn(), deleteOfficialAccount: vi.fn(), listOfficialAccounts: vi.fn(),
   updateOfficialAccount: vi.fn(), getOfficialAccountConnection: vi.fn(), saveOfficialAccountConnection: vi.fn(),
   deleteOfficialAccountConnection: vi.fn(), refreshOfficialAccountConnection: vi.fn(),
-  getOfficialAccountSessions: vi.fn(), listProxyNodes: vi.fn(), isSecureManagementContext: vi.fn(),
+  getOfficialAccountSessions: vi.fn(), listProxyNodes: vi.fn(), isSecureManagementContext: vi.fn(), isSupportedManagementContext: vi.fn(),
   getSessionLogoutCurrent: vi.fn(),
 }));
 vi.mock('../../services/api', () => mocks);
@@ -53,6 +53,7 @@ describe('官方账户授权与只读会话', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.isSecureManagementContext.mockReturnValue(true);
+    mocks.isSupportedManagementContext.mockReturnValue(true);
     mocks.getSessionLogoutCurrent.mockResolvedValue({ operation: null });
     mocks.listOfficialAccounts.mockResolvedValue([{ id: 'account-1', label: '研发账户',
       estimatedTotalTokens: 1000000, reporterEmail: null, quota: null,
@@ -151,11 +152,26 @@ describe('官方账户授权与只读会话', () => {
   });
 
   it.each(['transport', 'encryption'])('blocks authorization writes when %s is unavailable', async (reason) => {
-    if (reason === 'transport') mocks.isSecureManagementContext.mockReturnValue(false);
+    if (reason === 'transport') {
+      mocks.isSecureManagementContext.mockReturnValue(false);
+      mocks.isSupportedManagementContext.mockReturnValue(false);
+    }
     else mocks.getOfficialAccountConnection.mockResolvedValue({ ...connection, encryptionReady: false });
     const dialog = await openConnection();
-    expect(await within(dialog).findByText(reason === 'transport' ? /请通过 HTTPS/ : /服务端.*加密.*密钥/)).toBeInTheDocument();
+    expect(await within(dialog).findByText(reason === 'transport' ? /HTTP 或 HTTPS/ : /服务端.*加密.*密钥/)).toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: '保存授权' })).toBeDisabled();
+  });
+
+  it('allows saving authorization over remote HTTP while warning about plaintext transport', async () => {
+    mocks.isSecureManagementContext.mockReturnValue(false);
+    const dialog = await openConnection();
+    expect(within(dialog).getByText(/HTTP.*明文/)).toBeInTheDocument();
+    const save = within(dialog).getByRole('button', { name: '保存授权' });
+    expect(save).toBeEnabled();
+    fireEvent.change(within(dialog).getByLabelText('官方 Authorization'), { target: { value: 'Bearer synthetic-http-token' } });
+    fireEvent.click(save);
+    await waitFor(() => expect(mocks.saveOfficialAccountConnection).toHaveBeenCalledOnce());
+    expect(within(dialog).getByLabelText('官方 Authorization')).toHaveValue('');
   });
 
   it('clears secrets on close and requires confirmation to remove the saved authorization', async () => {

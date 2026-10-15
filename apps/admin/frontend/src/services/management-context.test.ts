@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { isSecureManagementContext } from './api';
+import { isSecureManagementContext, isSupportedManagementContext } from './api';
 
 describe('官方授权管理的页面传输要求', () => {
   it.each([
@@ -16,7 +16,7 @@ describe('官方授权管理的页面传输要求', () => {
     ['http:', '0.0.0.0', false],
     ['http:', '192.168.1.2', false],
     ['file:', 'localhost', false],
-  ])('%s//%s permits sensitive controls: %s', (protocol, hostname, allowed) => {
+  ])('%s//%s reports a secure context: %s', (protocol, hostname, allowed) => {
     vi.stubGlobal('window', { location: { protocol, hostname } });
     try {
       expect(isSecureManagementContext()).toBe(allowed);
@@ -25,10 +25,26 @@ describe('官方授权管理的页面传输要求', () => {
     }
   });
 
+  it.each([
+    ['https:', 'admin.example.com', true],
+    ['http:', 'admin.example.com', true],
+    ['http:', '192.168.1.2', true],
+    ['http:', 'localhost', true],
+    ['file:', '', false],
+    ['ftp:', 'admin.example.com', false],
+    ['data:', '', false],
+    ['javascript:', '', false],
+  ])('%s//%s supports management without claiming transport security: %s', (protocol, hostname, supported) => {
+    vi.stubGlobal('window', { location: { protocol, hostname } });
+    try { expect(isSupportedManagementContext()).toBe(supported); }
+    finally { vi.unstubAllGlobals(); }
+  });
+
   it('does not permit a non-browser context', () => {
     vi.stubGlobal('window', undefined);
     try {
       expect(isSecureManagementContext()).toBe(false);
+      expect(isSupportedManagementContext()).toBe(false);
     } finally {
       vi.unstubAllGlobals();
     }

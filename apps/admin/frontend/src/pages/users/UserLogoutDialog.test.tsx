@@ -4,12 +4,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import UserLogoutDialog from './UserLogoutDialog';
 import { confirmUserLogoutAll, getUserLogoutAllCurrent, getUserLogoutAllResult, previewUserLogoutAll } from '../../services/userLogoutApi';
 import type { UserLogoutPreview, UserLogoutResult } from '../../services/userLogoutApi';
-import { isSecureManagementContext } from '../../services/api';
+import { isSecureManagementContext, isSupportedManagementContext } from '../../services/api';
 
 vi.mock('../../services/userLogoutApi', () => ({
   confirmUserLogoutAll: vi.fn(), getUserLogoutAllCurrent: vi.fn(), getUserLogoutAllResult: vi.fn(), previewUserLogoutAll: vi.fn(),
 }));
-vi.mock('../../services/api', () => ({ isSecureManagementContext: vi.fn() }));
+vi.mock('../../services/api', () => ({ isSecureManagementContext: vi.fn(), isSupportedManagementContext: vi.fn() }));
 const user = { id: 'user-1', email: 'synthetic@example.test' };
 const preview = (): UserLogoutPreview => ({
   planId: 'plan-1', userId: user.id, scope: 'ALL_ACCOUNTS', expiresAt: '2099-01-01T00:00:00Z', warnings: [],
@@ -30,6 +30,7 @@ describe('user-scoped all-account logout confirmation', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     vi.mocked(isSecureManagementContext).mockReturnValue(true);
+    vi.mocked(isSupportedManagementContext).mockReturnValue(true);
     vi.mocked(getUserLogoutAllCurrent).mockResolvedValue({ operation: null });
     vi.mocked(previewUserLogoutAll).mockResolvedValue(preview());
     vi.mocked(confirmUserLogoutAll).mockResolvedValue(result());
@@ -118,10 +119,23 @@ describe('user-scoped all-account logout confirmation', () => {
     expect(confirmUserLogoutAll).not.toHaveBeenCalled();
   });
 
-  it('blocks all requests on an insecure remote management page', async () => {
+  it('allows remote HTTP logout with a plaintext warning and the existing acknowledgement', async () => {
     vi.mocked(isSecureManagementContext).mockReturnValue(false);
     show();
-    expect(await screen.findByText(/仅允许 HTTPS 或本机 HTTP 调试/)).toBeInTheDocument();
+    expect(await screen.findByText('Synthetic device')).toBeInTheDocument();
+    expect(screen.getByText(/HTTP.*明文/)).toBeInTheDocument();
+    const confirm = screen.getByRole('button', { name: '确认下线所有账户' });
+    expect(confirm).toBeDisabled();
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(confirm);
+    await waitFor(() => expect(confirmUserLogoutAll).toHaveBeenCalledExactlyOnceWith(user.id, 'plan-1'));
+  });
+
+  it('blocks all requests on unsupported management page protocols', async () => {
+    vi.mocked(isSecureManagementContext).mockReturnValue(false);
+    vi.mocked(isSupportedManagementContext).mockReturnValue(false);
+    show();
+    expect(await screen.findByText(/HTTP 或 HTTPS/)).toBeInTheDocument();
     expect(getUserLogoutAllCurrent).not.toHaveBeenCalled();
     expect(previewUserLogoutAll).not.toHaveBeenCalled();
     expect(confirmUserLogoutAll).not.toHaveBeenCalled();

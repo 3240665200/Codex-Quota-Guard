@@ -5,7 +5,8 @@ import ProxyNodesPage from './index';
 import routes from '../../../config/routes';
 
 const mocks = vi.hoisted(() => ({ listProxyNodes: vi.fn(), createProxyNode: vi.fn(),
-  updateProxyNode: vi.fn(), deleteProxyNode: vi.fn(), importProxyNodes: vi.fn(), testProxyNode: vi.fn(), isSecureManagementContext: vi.fn() }));
+  updateProxyNode: vi.fn(), deleteProxyNode: vi.fn(), importProxyNodes: vi.fn(), testProxyNode: vi.fn(),
+  isSecureManagementContext: vi.fn(), isSupportedManagementContext: vi.fn() }));
 vi.mock('../../services/api', () => mocks);
 const node = { id: 'proxy-1', label: '香港出口', protocol: 'SOCKS5', host: 'proxy.example',
   port: 1080, enabled: true, hasCredentials: true, version: 2,
@@ -15,6 +16,7 @@ describe('代理节点管理', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.isSecureManagementContext.mockReturnValue(true);
+    mocks.isSupportedManagementContext.mockReturnValue(true);
     mocks.listProxyNodes.mockResolvedValue([node]);
     mocks.createProxyNode.mockResolvedValue(node);
     mocks.updateProxyNode.mockResolvedValue(node);
@@ -79,16 +81,36 @@ describe('代理节点管理', () => {
     expect(mocks.importProxyNodes).not.toHaveBeenCalled();
   });
 
-  it('requires confirmation to delete a node and blocks writes over HTTP', async () => {
+  it('allows remote HTTP node management with a plaintext warning and deletion confirmation', async () => {
     mocks.isSecureManagementContext.mockReturnValue(false);
     render(<AntApp><ProxyNodesPage /></AntApp>);
-    expect(await screen.findByText(/请通过 HTTPS/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '添加代理节点' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: '导入节点 / 订阅' })).toBeDisabled();
+    expect(await screen.findByRole('button', { name: '添加代理节点' })).toBeEnabled();
+    expect(screen.getByText(/HTTP.*明文/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '导入节点 / 订阅' })).toBeEnabled();
+    fireEvent.click(await screen.findByRole('button', { name: '编辑 香港出口' }));
+    const dialog = await screen.findByRole('dialog', { name: '编辑代理节点' });
+    fireEvent.change(within(dialog).getByLabelText('节点名称'), { target: { value: 'HTTP 出口' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: /^保\s*存$/ }));
+    await waitFor(() => expect(mocks.updateProxyNode).toHaveBeenCalledWith('proxy-1', {
+      label: 'HTTP 出口', enabled: true, version: 2,
+    }));
     fireEvent.click(await screen.findByRole('button', { name: '删除 香港出口' }));
     expect(mocks.deleteProxyNode).not.toHaveBeenCalled();
     fireEvent.click(await screen.findByRole('button', { name: '确认删除' }));
     await waitFor(() => expect(mocks.deleteProxyNode).toHaveBeenCalledWith('proxy-1'));
+  });
+
+  it('disables management actions for unsupported page protocols', async () => {
+    mocks.isSecureManagementContext.mockReturnValue(false);
+    mocks.isSupportedManagementContext.mockReturnValue(false);
+    render(<AntApp><ProxyNodesPage /></AntApp>);
+    expect(await screen.findByText(/HTTP 或 HTTPS/)).toBeInTheDocument();
+    for (const name of ['添加代理节点', '导入节点 / 订阅', '编辑 香港出口', '删除 香港出口', '测试 香港出口']) {
+      expect(await screen.findByRole('button', { name })).toBeDisabled();
+    }
+    expect(mocks.createProxyNode).not.toHaveBeenCalled();
+    expect(mocks.deleteProxyNode).not.toHaveBeenCalled();
+    expect(mocks.testProxyNode).not.toHaveBeenCalled();
   });
 
   it('tests only the saved node against the server-fixed destination and explains an upstream 403', async () => {

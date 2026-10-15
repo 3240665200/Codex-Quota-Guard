@@ -28,6 +28,7 @@ vi.mock('../../services/api', () => ({
   deleteUser: vi.fn(),
   forceLogoutUser: vi.fn(),
   isSecureManagementContext: vi.fn(() => true),
+  isSupportedManagementContext: vi.fn(() => true),
   getSession: vi.fn(),
   getUserOfficialQuota: vi.fn(),
   getUserMeterDevices: vi.fn(),
