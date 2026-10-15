@@ -22,6 +22,7 @@ import com.pingche.web.user.User;
 import com.pingche.web.user.UserRepository;
 import java.time.Clock;
 import java.time.Instant;
+import java.net.URI;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -122,6 +123,13 @@ class ClientAccessIntegrationTest {
                 .andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value("SESSION_BINDING_REQUIRED"));
         mvc.perform(get("/control/api/v1/client/quota/overview").contextPath("/control")
                         .header(HttpHeaders.AUTHORIZATION, authorization))
+                .andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value("SESSION_BINDING_REQUIRED"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"/%61pi/v1/client/quota/overview", "/api/%761/client/quota/overview", "/api/v1/%63lient/quota/overview"})
+    void encodedPrefixesCannotBypassTheBindingGate(String path) throws Exception {
+        mvc.perform(get(URI.create(path)).header(HttpHeaders.AUTHORIZATION, authorization))
                 .andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value("SESSION_BINDING_REQUIRED"));
     }
 
