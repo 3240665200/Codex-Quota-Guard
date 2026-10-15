@@ -2,6 +2,7 @@ package com.pingche.web.common;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import static org.mockito.Mockito.verifyNoInteractions;
 
@@ -12,6 +13,7 @@ import com.pingche.web.officialsession.OfficialConnectionService;
 import com.pingche.web.officialsession.OfficialSessionLogoutService;
 import com.pingche.web.officialsession.WebLoginService;
 import com.pingche.web.proxy.ProxyNodeService;
+import com.pingche.web.sessionbinding.SessionBindingService;
 import com.pingche.web.user.User;
 import com.pingche.web.user.UserRepository;
 import java.util.List;
@@ -55,10 +57,25 @@ class ManagementHttpIntegrationTest extends ManagementTransportIntegrationSuppor
     }
 
     @Test
+    void clientBindingBootstrapAllowsAuthenticatedUsersOnBothConfiguredTransports() throws Exception {
+        for (boolean secure : new boolean[] {false, true}) {
+            for (Route route : clientRoutes()) {
+                mvc.perform(call(route, secure, null)).andExpect(status().isUnauthorized());
+                for (String token : List.of(adminToken, memberToken)) {
+                    mvc.perform(call(route, secure, token)).andExpect(status().is(route.successStatus()))
+                            .andExpect(header().string("Cache-Control", "no-store"));
+                }
+            }
+        }
+    }
+
+    @Test
     void unsupportedProtocolCannotReachAnySensitiveManagementAction() throws Exception {
-        for (Route route : routes()) {
-            mvc.perform(call(route, true, adminToken).with(http -> { http.setScheme("ftp"); return http; }))
+        for (Route route : transportRoutes()) {
+            var response = mvc.perform(call(route, true, adminToken).with(http -> { http.setScheme("ftp"); return http; }))
                     .andExpect(status().is(route.path().contains("/proxy-nodes") ? 403 : 400));
+            if (route.path().contains("/session-bindings")) response.andExpect(jsonPath("$.message")
+                    .value("Request transport is not permitted by the server configuration"));
         }
         verifyNoManagementActions();
     }
@@ -71,7 +88,7 @@ class ManagementHttpIntegrationTest extends ManagementTransportIntegrationSuppor
 class ManagementHttpsIntegrationTest extends ManagementTransportIntegrationSupport {
     @Test
     void configuredHttpsRequirementRedirectsHttpEvenWithSpoofedForwardingHeaders() throws Exception {
-        for (Route route : routes()) {
+        for (Route route : transportRoutes()) {
             mvc.perform(call(route, false, adminToken).header("Forwarded", "proto=https;for=127.0.0.1")
                             .header("X-Forwarded-Proto", "https"))
                     .andExpect(status().is3xxRedirection())
@@ -88,6 +105,13 @@ class ManagementHttpsIntegrationTest extends ManagementTransportIntegrationSuppo
             mvc.perform(call(route, true, adminToken)).andExpect(status().is(route.successStatus()))
                     .andExpect(header().string("Cache-Control", "no-store"));
         }
+        for (Route route : clientRoutes()) {
+            mvc.perform(call(route, true, null)).andExpect(status().isUnauthorized());
+            for (String token : List.of(adminToken, memberToken)) {
+                mvc.perform(call(route, true, token)).andExpect(status().is(route.successStatus()))
+                        .andExpect(header().string("Cache-Control", "no-store"));
+            }
+        }
     }
 }
 
@@ -103,6 +127,7 @@ abstract class ManagementTransportIntegrationSupport {
     @MockitoBean OfficialSessionLogoutService sessionLogouts;
     @MockitoBean AdminUserLogoutService userLogouts;
     @MockitoBean ProxyNodeService proxies;
+    @MockitoBean SessionBindingService bindings;
     String adminToken;
     String memberToken;
     private static final String ID = "7341562a-1ce2-4bc5-bc22-c3e74504c039";
@@ -112,6 +137,8 @@ abstract class ManagementTransportIntegrationSupport {
     private static final String LOGOUT = ACCOUNT + "/session-logout";
     private static final String USER = "/api/v1/admin/users/" + ID + "/force-logout-all";
     private static final String PROXY = "/api/v1/admin/proxy-nodes";
+    private static final String ADMIN_BINDINGS = "/api/v1/admin/session-bindings";
+    private static final String CLIENT_BINDINGS = "/api/v1/client/session-bindings";
 
     @BeforeEach
     void identities() {
@@ -122,11 +149,11 @@ abstract class ManagementTransportIntegrationSupport {
     }
 
     void verifyNoManagementActions() {
-        verifyNoInteractions(connections, browserLogins, webLogins, sessionLogouts, userLogouts, proxies);
+        verifyNoInteractions(connections, browserLogins, webLogins, sessionLogouts, userLogouts, proxies, bindings);
     }
 
     MockHttpServletRequestBuilder call(Route route, boolean secure, String token) {
-        var builder = request(route.method(), route.path()).secure(secure).with(http -> {
+        var builder = request(route.method(), route.path()).secure(secure).header("X-CQG-Queue-Version", "2").with(http -> {
             http.setScheme(secure ? "https" : "http");
             http.setRemoteAddr("192.0.2.10");
             http.setLocalAddr("192.0.2.20");
@@ -162,7 +189,26 @@ abstract class ManagementTransportIntegrationSupport {
                 route("GET", PROXY, null), route("POST", PROXY, proxy), route("PUT", PROXY + "/" + ID, proxy),
                 new Route(HttpMethod.DELETE, PROXY + "/" + ID, null, 204),
                 route("POST", PROXY + "/import", "{\"content\":\"http://proxy.example.test:8080\"}"),
-                route("POST", PROXY + "/" + ID + "/test", null));
+                route("POST", PROXY + "/" + ID + "/test", null),
+                route("GET", ADMIN_BINDINGS, null), route("GET", ADMIN_BINDINGS + "/accounts/" + ID, null),
+                route("POST", ADMIN_BINDINGS + "/accounts/" + ID + "/recover", "{\"acknowledgeLateLoginRisk\":true}"),
+                new Route(HttpMethod.POST, ADMIN_BINDINGS + "/" + ID + "/release", "{\"officialAccountId\":\"" + ID + "\",\"acknowledgeUnbind\":true}", 204));
+    }
+
+    List<Route> clientRoutes() {
+        String attempt = CLIENT_BINDINGS + "/attempts/" + ID;
+        return List.of(
+                route("POST", CLIENT_BINDINGS + "/attempts", "{\"deviceId\":\"" + ID + "\",\"enrollmentId\":\"" + ID + "\"}"),
+                route("GET", attempt, null),
+                route("GET", CLIENT_BINDINGS + "/current?deviceId=" + ID + "&enrollmentId=" + ID, null),
+                route("POST", attempt + "/prepare", null), route("POST", attempt + "/detect", null),
+                route("POST", attempt + "/confirm", "{\"sessionId\":\"synthetic-session\"}"),
+                route("POST", attempt + "/cancel", null),
+                new Route(HttpMethod.POST, CLIENT_BINDINGS + "/bindings/" + ID + "/release", null, 204));
+    }
+
+    List<Route> transportRoutes() {
+        return java.util.stream.Stream.concat(routes().stream(), clientRoutes().stream()).toList();
     }
 
     private Route route(String method, String path, String body) { return new Route(HttpMethod.valueOf(method), path, body, 200); }

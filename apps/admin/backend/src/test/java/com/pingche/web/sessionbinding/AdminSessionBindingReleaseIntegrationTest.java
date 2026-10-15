@@ -189,14 +189,15 @@ class AdminSessionBindingReleaseIntegrationTest {
         assertActive();
     }
 
-    @Test void onlyExplicitLoopbackHttpIsAcceptedAndForwardedHeadersCannotBypassTransportGuard() throws Exception {
-        mvc.perform(post(RELEASE, bindingId).with(request -> { request.setRemoteAddr("203.0.113.9"); return request; })
+    @Test void configuredHttpAcceptsRemoteAndLoopbackWhileUnsupportedProtocolsRemainBlocked() throws Exception {
+        mvc.perform(post(RELEASE, bindingId).with(request -> { request.setRemoteAddr("203.0.113.9"); request.setScheme("ftp"); return request; })
+                        .header("X-Forwarded-Proto", "https")
                         .header(HttpHeaders.AUTHORIZATION, token(admin)).contentType(MediaType.APPLICATION_JSON).content(body(accountId)))
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value("SESSION_BINDING_HTTPS_REQUIRED"));
-        mvc.perform(post(RELEASE, bindingId).header("X-Forwarded-Proto", "https")
-                        .header(HttpHeaders.AUTHORIZATION, token(admin)).contentType(MediaType.APPLICATION_JSON).content(body(accountId)))
-                .andExpect(status().isBadRequest());
         assertActive();
+        mvc.perform(post(RELEASE, bindingId).with(request -> { request.setRemoteAddr("203.0.113.9"); return request; })
+                        .header(HttpHeaders.AUTHORIZATION, token(admin)).contentType(MediaType.APPLICATION_JSON).content(body(accountId)))
+                .andExpect(status().isNoContent()).andExpect(header().string("Cache-Control", "no-store"));
         mvc.perform(post(RELEASE, bindingId).with(request -> { request.setRemoteAddr("127.0.0.1"); request.setLocalAddr("127.0.0.1"); request.setServerName("localhost"); return request; })
                         .header(HttpHeaders.AUTHORIZATION, token(admin)).contentType(MediaType.APPLICATION_JSON).content(body(accountId)))
                 .andExpect(status().isNoContent());

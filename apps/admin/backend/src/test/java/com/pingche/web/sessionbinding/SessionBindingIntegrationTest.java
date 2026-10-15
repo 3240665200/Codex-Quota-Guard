@@ -376,30 +376,31 @@ class SessionBindingIntegrationTest {
         mvc.perform(get("/api/v1/admin/session-bindings").secure(true).header(HttpHeaders.AUTHORIZATION, token)).andExpect(status().isForbidden());
     }
 
-    @Test void everyClientEndpointUsesHttpsNoStoreAndRoundTripsConfirmationAndRelease() throws Exception {
+    @ParameterizedTest @ValueSource(booleans = {false, true})
+    void everyClientEndpointUsesConfiguredTransportNoStoreAndRoundTripsConfirmationAndRelease(boolean secure) throws Exception {
         var attempt = create();
         String prefix = "/api/v1/client/session-bindings";
         String token = "Bearer " + jwt.create(user.getId(), user.getRole().name(), user.getSessionVersion());
-        mvc.perform(get(prefix + "/attempts/{id}", attempt.id()).header(HttpHeaders.AUTHORIZATION, token))
+        mvc.perform(get(prefix + "/attempts/{id}", attempt.id()).secure(secure).with(http -> { http.setScheme("ftp"); return http; }).header(HttpHeaders.AUTHORIZATION, token))
                 .andExpect(status().isBadRequest()).andExpect(header().string("Cache-Control", "no-store"));
-        mvc.perform(get(prefix + "/attempts/{id}", attempt.id()).secure(true).header(HttpHeaders.AUTHORIZATION, token))
+        mvc.perform(get(prefix + "/attempts/{id}", attempt.id()).secure(secure).header(HttpHeaders.AUTHORIZATION, token))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.loginAllowed").value(false));
-        mvc.perform(post(prefix + "/attempts/{id}/prepare", attempt.id()).secure(true).header(HttpHeaders.AUTHORIZATION, token))
+        mvc.perform(post(prefix + "/attempts/{id}/prepare", attempt.id()).secure(secure).header(HttpHeaders.AUTHORIZATION, token))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.loginAllowed").value(true));
         when(official.refresh(accountId)).thenAnswer(call -> snapshot(List.of("existing", "http-candidate"), true, "official-user"));
-        mvc.perform(post(prefix + "/attempts/{id}/detect", attempt.id()).secure(true).header(HttpHeaders.AUTHORIZATION, token))
+        mvc.perform(post(prefix + "/attempts/{id}/detect", attempt.id()).secure(secure).header(HttpHeaders.AUTHORIZATION, token))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("AWAITING_CONFIRMATION"));
-        mvc.perform(post(prefix + "/attempts/{id}/confirm", attempt.id()).secure(true).header(HttpHeaders.AUTHORIZATION, token)
+        mvc.perform(post(prefix + "/attempts/{id}/confirm", attempt.id()).secure(secure).header(HttpHeaders.AUTHORIZATION, token)
                 .contentType(MediaType.APPLICATION_JSON).content("{\"sessionId\":\"http-candidate\"}"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.binding.status").value("ACTIVE"));
-        mvc.perform(get(prefix + "/current").secure(true).header(HttpHeaders.AUTHORIZATION, token)
+        mvc.perform(get(prefix + "/current").secure(secure).header(HttpHeaders.AUTHORIZATION, token)
                 .param("deviceId", deviceId.toString()).param("enrollmentId", enrollmentId.toString()))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.binding.sessionId").value("http-candidate"));
         UUID bindingId = service.current(user.getId(), deviceId, enrollmentId).binding().id();
-        mvc.perform(post(prefix + "/bindings/{id}/release", bindingId).secure(true).header(HttpHeaders.AUTHORIZATION, token))
+        mvc.perform(post(prefix + "/bindings/{id}/release", bindingId).secure(secure).header(HttpHeaders.AUTHORIZATION, token))
                 .andExpect(status().isNoContent());
         var queued = create();
-        mvc.perform(post(prefix + "/attempts/{id}/cancel", queued.id()).secure(true).header(HttpHeaders.AUTHORIZATION, token))
+        mvc.perform(post(prefix + "/attempts/{id}/cancel", queued.id()).secure(secure).header(HttpHeaders.AUTHORIZATION, token))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("CANCELLED"));
     }
 
