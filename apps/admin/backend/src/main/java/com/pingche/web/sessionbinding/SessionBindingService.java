@@ -43,6 +43,7 @@ public class SessionBindingService {
 
     public SessionBindingAttemptResponse create(UUID userId, UUID deviceId, UUID enrollmentId, UUID requestedAccount) {
         if (deviceId == null || enrollmentId == null) throw error("SESSION_BINDING_DEVICE_REQUIRED");
+        if (!deviceId.equals(enrollmentId)) throw forbidden();
         Context initial = context(userId, enrollmentId, null, false);
         UUID accountId = initial.accountId;
         if (requestedAccount != null && !requestedAccount.equals(accountId)) throw forbidden();
@@ -67,6 +68,7 @@ public class SessionBindingService {
     }
 
     public SessionBindingCurrentResponse current(UUID userId, UUID deviceId, UUID enrollmentId) {
+        if (deviceId == null || !deviceId.equals(enrollmentId)) throw forbidden();
         context(userId, enrollmentId, null, false);
         List<Attempt> attempts = jdbc.query("select * from session_binding_attempts where user_id=? and device_id=? order by sequence_id desc limit 1", this::attempt, userId, deviceId);
         // The user's current team may differ from the account of an older task.
@@ -98,7 +100,7 @@ public class SessionBindingService {
         return finish(work, () -> {
             Attempt attempt = load(id);
             jdbc.update("update session_binding_attempts set status='READY_FOR_LOGIN',before_session_ids=?,official_account_key=?,official_user_key=?,operation_id=null,operation_started_at=null where id=?",
-                    json.writeValueAsString(snapshot.sessions().devices().stream().map(OfficialSessionInfo::sessionId).toList()),
+                    json.writeValueAsString(snapshot.sessions().devices().stream().map(OfficialSessionInfo::sessionId).filter(idValue -> idValue != null && !idValue.isBlank()).toList()),
                     snapshot.account().accountId(), snapshot.account().userId(), id);
             return response(load(id));
         });
@@ -202,8 +204,9 @@ public class SessionBindingService {
             return connectionRevision(accountId);
         });
         try {
+            Instant refreshStartedAt = clock.instant();
             OfficialConnectionRefreshResponse snapshot = official.refresh(accountId);
-            validateSnapshot(snapshot, clock.instant().minusSeconds(90));
+            validateSnapshot(snapshot, refreshStartedAt);
             return transaction(() -> {
                 lockAccount(accountId);
                 UUID actualRecovery = jdbc.queryForObject("select recovery_id from session_binding_accounts where official_account_id=?", UUID.class, accountId);
@@ -249,6 +252,8 @@ public class SessionBindingService {
                 || Boolean.TRUE.equals(result.account().deactivated())) throw error("SESSION_BINDING_SNAPSHOT_INCOMPLETE");
         Set<String> ids = new HashSet<>();
         for (OfficialSessionInfo session : result.sessions().devices()) {
+            if (session != null && (session.sessionId() == null || session.sessionId().isBlank())
+                    && Boolean.TRUE.equals(session.trustedDevice()) && session.applications().isEmpty()) continue;
             if (session == null || session.sessionId() == null || session.sessionId().isBlank() || session.sessionId().length() > 512 || !ids.add(session.sessionId()))
                 throw error("SESSION_BINDING_SNAPSHOT_INCOMPLETE");
         }
@@ -258,6 +263,7 @@ public class SessionBindingService {
         Set<String> before = new HashSet<>();
         for (var id : json.readTree(attempt.beforeSessionIds)) before.add(id.asString());
         List<OfficialSessionInfo> candidates = snapshot.sessions().devices().stream()
+                .filter(device -> device.sessionId() != null && !device.sessionId().isBlank())
                 .filter(device -> !before.contains(device.sessionId()))
                 .filter(device -> device.applications().stream().anyMatch(app -> app != null && "Codex".equalsIgnoreCase(app.trim()))).toList();
         if (candidates.size() != 1 || (attempt.candidateSessionId != null && !attempt.candidateSessionId.equals(candidates.get(0).sessionId()))) {
