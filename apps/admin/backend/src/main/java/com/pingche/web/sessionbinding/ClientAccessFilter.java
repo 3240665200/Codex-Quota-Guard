@@ -15,6 +15,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 /** Default-deny binding gate for client business APIs; meter and administrator roles keep their own boundaries. */
 public class ClientAccessFilter extends OncePerRequestFilter {
     private static final String ROOT = "/api/v1/client";
+    private static final String RESOURCE_ID = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
     private final ClientAccessService access;
     private final SecurityErrorWriter errors;
 
@@ -30,13 +31,13 @@ public class ClientAccessFilter extends OncePerRequestFilter {
         String route = path.substring(ROOT.length());
         return switch (request.getMethod()) {
             case "GET" -> route.equals("/access") || route.equals("/login-assistance")
-                    || route.matches("/login-assistance/listeners/[^/]+")
-                    || route.equals("/session-bindings/current") || route.matches("/session-bindings/attempts/[^/]+");
+                    || route.matches("/login-assistance/listeners/" + RESOURCE_ID)
+                    || route.equals("/session-bindings/current") || route.matches("/session-bindings/attempts/" + RESOURCE_ID);
             case "POST" -> route.equals("/meter/enroll") || route.equals("/usage/events")
                     || route.equals("/login-assistance/listeners") || route.equals("/session-bindings/attempts")
-                    || route.matches("/session-bindings/attempts/[^/]+/(prepare|detect|confirm|cancel)")
-                    || route.matches("/session-bindings/bindings/[^/]+/release");
-            case "DELETE" -> route.matches("/login-assistance/listeners/[^/]+");
+                    || route.matches("/session-bindings/attempts/" + RESOURCE_ID + "/(prepare|detect|confirm|cancel)")
+                    || route.matches("/session-bindings/bindings/" + RESOURCE_ID + "/release");
+            case "DELETE" -> route.matches("/login-assistance/listeners/" + RESOURCE_ID);
             default -> false;
         };
     }

@@ -95,6 +95,18 @@ class OfficialAccountIntegrationTest {
                                 """))
                 .andExpect(status().isConflict());
 
+        String teamLocation = mvc.perform(post("/api/v1/admin/teams")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(adminToken))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"研发团队","description":"","status":"ACTIVE",
+                                 "fiveHourQuotaPercent":100,"weeklyQuotaPercent":100}
+                                """))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getHeader(HttpHeaders.LOCATION);
+        UUID teamId = UUID.fromString(teamLocation.substring(teamLocation.lastIndexOf('/') + 1));
+        jdbc.update("update users set team_id=? where id=?", teamId, reporter.user().id());
+
         mvc.perform(put("/api/v1/client/official-quota")
                         .header("X-Quota-Guard-Device-ID", ClientBindingFixture.bind(jdbc, reporter.user().id(), accountId))
                         .header(HttpHeaders.AUTHORIZATION, bearer(reporter.accessToken()))
@@ -110,16 +122,6 @@ class OfficialAccountIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[0].quota.windows[0].usedPercent").value(40));
 
-        String teamLocation = mvc.perform(post("/api/v1/admin/teams")
-                        .header(HttpHeaders.AUTHORIZATION, bearer(adminToken))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {"name":"研发团队","description":"","status":"ACTIVE",
-                                 "fiveHourQuotaPercent":100,"weeklyQuotaPercent":100}
-                                """))
-                .andExpect(status().isCreated())
-                .andReturn().getResponse().getHeader(HttpHeaders.LOCATION);
-        UUID teamId = UUID.fromString(teamLocation.substring(teamLocation.lastIndexOf('/') + 1));
         mvc.perform(put("/api/v1/admin/teams/{id}/token-limits", teamId)
                         .header(HttpHeaders.AUTHORIZATION, bearer(adminToken))
                         .contentType(MediaType.APPLICATION_JSON)

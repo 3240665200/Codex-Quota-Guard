@@ -8,6 +8,7 @@ import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -43,6 +44,10 @@ public interface UserRepository extends JpaRepository<User, UUID>, JpaSpecificat
     List<User> findByTeamIdForUpdate(@Param("teamId") UUID teamId);
 
     long countByTeamId(UUID teamId);
+
+    @Modifying
+    @Query(value = "delete from session_bindings where user_id = :userId", nativeQuery = true)
+    int deleteSessionBindingsForUser(@Param("userId") UUID userId);
 
     long countByStatus(User.Status status);
 

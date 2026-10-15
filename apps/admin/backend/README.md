@@ -53,7 +53,9 @@
 
 客户端业务接口 `/api/v1/client/**` 要求 `Authorization` 和 `X-Quota-Guard-Device-ID`。
 每个请求都从数据库校验该安装实例属于当前用户、设备登记有效、会话绑定为 `ACTIVE`、
-团队与官方连接 revision 一致且连接为 `CONNECTED`；官方下线操作为 `EXECUTING` 或
+团队与官方连接 revision 一致且连接为 `CONNECTED`；`UNBOUND` 清理快照后暂为 `UNVERIFIED`
+的连接，只有仍保留已验证的官方用户/账号、账号匹配且绑定 revision 未改变时才保留已有绑定访问。
+重新导入授权会改变 revision，不能沿用旧绑定。官方下线操作为 `EXECUTING` 或
 `UNKNOWN`、账号隔离、设备撤销、绑定结束或上下文改变时立即拒绝。未满足条件的业务请求
 返回 `403 SESSION_BINDING_REQUIRED`。`GET /api/v1/client/access` 使用相同规则，仅只读查询并
 返回 `Cache-Control: no-store`，客户端 `allowed` / `bound` 布尔值、请求体用户 ID 均不能授予权限。

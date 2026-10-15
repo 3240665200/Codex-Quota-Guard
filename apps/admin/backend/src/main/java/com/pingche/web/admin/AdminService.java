@@ -212,6 +212,8 @@ public class AdminService {
                     HttpStatus.CONFLICT
             );
         }
+        // Release the child FK before user deletion cascades into binding attempts.
+        users.deleteSessionBindingsForUser(targetUserId);
         users.delete(target);
         users.flush();
     }

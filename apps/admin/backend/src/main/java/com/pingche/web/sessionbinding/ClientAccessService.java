@@ -45,7 +45,10 @@ public class ClientAccessService {
                 join teams t on t.id=u.team_id and t.id=b.team_id and t.version=b.team_version
                     and t.status='ACTIVE' and t.official_account_id=b.official_account_id
                 join official_account_connections c on c.official_account_id=b.official_account_id
-                    and c.revision=b.connection_revision and c.status='CONNECTED'
+                    and c.revision=b.connection_revision
+                    and (c.status='CONNECTED' or (c.status='UNVERIFIED'
+                        and c.bound_account_id=c.requested_account_id
+                        and c.bound_user_id is not null and length(trim(c.bound_user_id))>0))
                 where b.user_id=? and b.device_id=? and b.status='ACTIVE'
                     and b.active_device_id=b.device_id and b.active_session_id=b.session_id
                     and not exists (select 1 from session_binding_accounts g
