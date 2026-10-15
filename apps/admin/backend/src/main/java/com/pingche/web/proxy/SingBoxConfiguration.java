@@ -1,6 +1,7 @@
 package com.pingche.web.proxy;
 
 import com.pingche.web.auth.DomainException;
+import com.pingche.web.weblogin.OfficialDomainPolicy;
 import java.net.InetAddress;
 import java.util.List;
 import java.util.Map;
@@ -16,6 +17,10 @@ public class SingBoxConfiguration {
     public SingBoxConfiguration(ObjectMapper json) { this.json = json; }
 
     JsonNode build(ProxyNodeDefinition node, InetAddress pinned, int port) {
+        return build(node, pinned, port, ManagedProxyGateway.Purpose.OFFICIAL_SESSION);
+    }
+
+    JsonNode build(ProxyNodeDefinition node, InetAddress pinned, int port, ManagedProxyGateway.Purpose purpose) {
         ObjectNode upstream = (ObjectNode) json.readTree(node.outboundJson());
         JsonNode authenticatedHost = upstream.get("server");
         JsonNode authenticatedPort = upstream.get("server_port");
@@ -33,7 +38,7 @@ public class SingBoxConfiguration {
                         "listen_port", port, "set_system_proxy", false)),
                 "outbounds", List.of(upstream),
                 "route", Map.of("rules", List.of(
-                        Map.of("domain", List.of("chatgpt.com"), "port", List.of(443), "network", List.of("tcp"),
+                        Map.of("domain", purpose == ManagedProxyGateway.Purpose.BROWSER_LOGIN ? OfficialDomainPolicy.HOSTS : List.of("chatgpt.com"), "port", List.of(443), "network", List.of("tcp"),
                                 "action", "route", "outbound", "upstream"),
                         Map.of("action", "reject")))));
     }

@@ -24,6 +24,11 @@ public class SingBoxManagedProxyGateway implements ManagedProxyGateway {
     }
 
     @Override public ProxyLease open(UUID nodeId) {
+        return open(nodeId, Purpose.OFFICIAL_SESSION);
+    }
+
+    @Override public ProxyLease open(UUID nodeId, Purpose purpose) {
+        if (purpose == null) throw unavailable();
         if (nodeId == null) throw unavailable();
         ProxyNode node = nodes.findById(nodeId).orElseThrow(this::unavailable);
         if (!node.isEnabled()) throw unavailable();
@@ -31,7 +36,7 @@ public class SingBoxManagedProxyGateway implements ManagedProxyGateway {
         ProxyNodeDefinition definition = new ProxyNodeDefinition(node.getLabel(), node.getProtocol(), node.getHost(),
                 node.getPort(), plaintext, node.hasCredentials());
         InetAddress pinned = endpoints.resolve(node.getHost(), allowPrivate);
-        return runner.open(port -> configuration.build(definition, pinned, port));
+        return runner.open(port -> configuration.build(definition, pinned, port, purpose), purpose);
     }
 
     private DomainException unavailable() {

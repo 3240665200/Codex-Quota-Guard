@@ -1,6 +1,7 @@
 package com.pingche.web.proxy;
 
 import com.pingche.web.auth.DomainException;
+import com.pingche.web.weblogin.OfficialDomainPolicy;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -63,6 +64,11 @@ public class SingBoxProcessRunner implements DisposableBean {
     }
 
     ProxyLease open(IntFunction<JsonNode> configuration) {
+        return open(configuration, ManagedProxyGateway.Purpose.OFFICIAL_SESSION);
+    }
+
+    ProxyLease open(IntFunction<JsonNode> configuration, ManagedProxyGateway.Purpose purpose) {
+        if (purpose == null) throw connectionFailed();
         if (stopped || executable == null || executable.isBlank()) throw kernelUnavailable();
         if (!capacity.tryAcquire()) throw new DomainException("PROXY_CAPACITY_EXCEEDED", "代理连接繁忙，请稍后重试。", HttpStatus.SERVICE_UNAVAILABLE);
         Process process = null;
@@ -88,9 +94,10 @@ public class SingBoxProcessRunner implements DisposableBean {
             }
             if (!listening || !process.isAlive() || stopped || System.nanoTime() >= expires) throw connectionFailed();
             startupDeadline.cancel(false);
-            lease = new Lease(process, port);
+            lease = new Lease(process, port, purpose);
             active.add(lease);
-            lease.deadline = deadlines.schedule(lease::close, leaseMillis, TimeUnit.MILLISECONDS);
+            lease.deadline = deadlines.schedule(lease::close,
+                    purpose == ManagedProxyGateway.Purpose.BROWSER_LOGIN ? 600_000 : leaseMillis, TimeUnit.MILLISECONDS);
             if (stopped) { lease.close(); throw connectionFailed(); }
             returned = true;
             return lease;
@@ -152,13 +159,14 @@ public class SingBoxProcessRunner implements DisposableBean {
         private final AtomicBoolean closed = new AtomicBoolean();
         private final ProxySelector selector;
         private volatile ScheduledFuture<?> deadline;
-        Lease(Process process, int port) {
+        Lease(Process process, int port, ManagedProxyGateway.Purpose purpose) {
             this.process = process;
             Proxy local = new Proxy(Proxy.Type.HTTP, new InetSocketAddress("127.0.0.1", port));
             selector = new ProxySelector() {
                 @Override public List<Proxy> select(URI uri) {
                     if (closed.get() || !process.isAlive()) throw new IllegalStateException("Proxy lease is unavailable");
-                    if (uri == null || !"https".equalsIgnoreCase(uri.getScheme()) || !"chatgpt.com".equalsIgnoreCase(uri.getHost())
+                    if (uri == null || !"https".equalsIgnoreCase(uri.getScheme())
+                            || !(purpose == ManagedProxyGateway.Purpose.BROWSER_LOGIN ? OfficialDomainPolicy.allowed(uri.toString()) : "chatgpt.com".equalsIgnoreCase(uri.getHost()))
                             || (uri.getPort() != -1 && uri.getPort() != 443) || uri.getUserInfo() != null)
                         throw new IllegalArgumentException("Proxy target is not permitted");
                     return List.of(local);
@@ -167,6 +175,7 @@ public class SingBoxProcessRunner implements DisposableBean {
             };
         }
         @Override public ProxySelector proxySelector() { return selector; }
+        @Override public boolean isAlive() { return !closed.get() && process.isAlive(); }
         @Override public void close() {
             if (!closed.compareAndSet(false, true)) return;
             if (deadline != null) deadline.cancel(false);
