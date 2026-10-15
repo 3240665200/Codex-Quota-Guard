@@ -35,9 +35,13 @@ function message(attempt: SessionBindingAttempt | null) {
     case "BOUND":
       return "本设备官方会话已绑定。";
     case "CANCELLED":
-      return "本次绑定已取消。若已取得登录名额，管理员需核对官方会话后恢复排队。";
+      return attempt.quarantined
+        ? "本次绑定已取消，原任务不能继续识别或确认。"
+        : "本次绑定已取消，可以重新申请绑定。新申请不会继续上次任务。";
     case "EXPIRED":
-      return "本次绑定已超时，不能继续确认。请联系管理员核对本次官方登录后重新开始。";
+      return attempt.quarantined
+        ? "本次绑定已超时，不能继续确认。"
+        : "本次绑定已超时，可以重新申请绑定。";
     default:
       switch (attempt.errorCode) {
         case "SESSION_BINDING_NO_NEW_SESSION":
@@ -74,6 +78,8 @@ export function SessionBinding({
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
+  const [needsServerCheck, setNeedsServerCheck] = useState(false);
+  const [stateVerified, setStateVerified] = useState(false);
   const lifetimeRef = useRef<Lifetime | null>(null);
   const onBoundRef = useRef(onBound);
   onBoundRef.current = onBound;
@@ -91,6 +97,8 @@ export function SessionBinding({
     setError(null);
     setPending(false);
     setLoading(true);
+    setNeedsServerCheck(false);
+    setStateVerified(false);
     void api
       .sessionBindingCurrent()
       .then(
@@ -99,6 +107,7 @@ export function SessionBinding({
           lifetime.attempt = current.attempt;
           setAttempt(current.attempt);
           setBinding(current.binding);
+          setStateVerified(true);
         },
         (failure: unknown) => {
           if (lifetime.active) setError(getApiErrorMessage(failure));
@@ -188,6 +197,7 @@ export function SessionBinding({
         setAttempt(expired);
         setPending(false);
         setError(null);
+        setNeedsServerCheck(true);
       },
       Math.max(0, Date.parse(attempt!.expiresAt) - Date.now()),
     );
@@ -262,7 +272,11 @@ export function SessionBinding({
       ) : (
         <>
           <p role="status" className="mt-4 text-sm leading-relaxed">
-            {bound ? "本设备官方会话已绑定。" : message(attempt)}
+            {bound
+              ? "本设备官方会话已绑定。"
+              : needsServerCheck
+                ? "本次绑定已超时。请先重新读取绑定状态，确认队列是否允许重新申请。"
+                : message(attempt)}
           </p>
           {bound && binding ? (
             <p className="mt-2 break-all text-xs text-muted-foreground">
@@ -273,7 +287,23 @@ export function SessionBinding({
           {error ? (
             <Alert variant="destructive" className="mt-4">
               <AlertTitle>绑定提示</AlertTitle>
-              <AlertDescription>{error}</AlertDescription>
+              <AlertDescription>
+                {error}
+                {error ===
+                "本设备绑定信息不可用，请检查统计程序设备登记或联系管理员。" ? (
+                  <p className="mt-2">
+                    可先使用上方的“配对统计程序”，等待几秒后重新读取绑定状态；仍失败请联系管理员核对设备登记。
+                  </p>
+                ) : null}
+              </AlertDescription>
+            </Alert>
+          ) : null}
+          {!bound && attempt?.quarantined ? (
+            <Alert className="mt-4">
+              <AlertTitle>等待管理员恢复绑定队列</AlertTitle>
+              <AlertDescription>
+                本账户的绑定队列仍处于保护状态，迟到的官方登录可能影响识别。请管理员核对官方会话并恢复队列，再检查状态。重新读取不会解除保护或自动创建任务。
+              </AlertDescription>
             </Alert>
           ) : null}
           {attempt?.status === "AWAITING_CONFIRMATION" &&
@@ -301,13 +331,30 @@ export function SessionBinding({
               </div>
             </dl>
           ) : null}
+          {attempt &&
+          ["READY_FOR_LOGIN", "DETECTING", "AWAITING_CONFIRMATION"].includes(
+            attempt.status,
+          ) ? (
+            <p className="mt-4 rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-sm leading-relaxed">
+              已取得本次官方登录名额。此时取消后，需管理员核对官方会话并恢复绑定队列，才能重新申请。
+            </p>
+          ) : null}
           <div className="mt-4 flex flex-wrap gap-3">
-            {!bound && !active(attempt) && !attempt?.quarantined && !error ? (
+            {!bound &&
+            !active(attempt) &&
+            !attempt?.quarantined &&
+            !needsServerCheck &&
+            stateVerified &&
+            error !== "请先登录系统账户。" ? (
               <Button disabled={pending} onClick={() => void run("start")}>
                 {pending ? (
                   <LoaderCircle aria-hidden="true" className="animate-spin" />
                 ) : null}
-                开始绑定本设备
+                {error
+                  ? "重试申请绑定"
+                  : attempt
+                    ? "重新申请绑定"
+                    : "开始绑定本设备"}
               </Button>
             ) : null}
             {attempt?.status === "READY_FOR_LOGIN" && attempt.loginAllowed ? (
@@ -330,13 +377,17 @@ export function SessionBinding({
                 取消本次绑定
               </Button>
             ) : null}
-            {error || attempt?.quarantined || attempt?.status === "EXPIRED" ? (
+            {error ||
+            needsServerCheck ||
+            (attempt && !active(attempt) && !bound) ? (
               <Button
                 variant="outline"
                 disabled={pending}
                 onClick={() => setReload((value) => value + 1)}
               >
-                重新读取绑定状态
+                {attempt?.quarantined
+                  ? "检查队列是否已恢复"
+                  : "重新读取绑定状态"}
               </Button>
             ) : null}
           </div>

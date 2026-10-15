@@ -383,24 +383,43 @@ describe("one-message login assistance", () => {
 
   it.each([
     ["MAIL_DNS_FAILED", "无法解析邮箱服务器，请联系管理员检查邮箱主机与 DNS。"],
-    ["MAIL_HOST_BLOCKED", "邮箱服务器地址被安全策略阻止，请联系管理员核对主机配置。"],
-    ["MAIL_AUTH_FAILED", "邮箱认证失败，请联系管理员检查邮箱地址、IMAP 开关与授权码。"],
+    [
+      "MAIL_HOST_BLOCKED",
+      "邮箱服务器地址被安全策略阻止，请联系管理员核对主机配置。",
+    ],
+    [
+      "MAIL_AUTH_FAILED",
+      "邮箱认证失败，请联系管理员检查邮箱地址、IMAP 开关与授权码。",
+    ],
     ["MAIL_TLS_FAILED", "邮箱 TLS 验证失败，请联系管理员检查证书与代理设置。"],
-    ["MAIL_CONNECTION_TIMEOUT", "连接邮箱超时，请稍后重新监听；如持续失败，请联系管理员检查网络。"],
-    ["MAIL_FOLDER_FAILED", "无法打开邮箱文件夹，请联系管理员检查 INBOX 及访问权限。"],
-  ])("distinguishes safe transport failure %s without showing raw details", async (errorCode, message) => {
-    await renderDashboard();
-    await openPage();
-    await start();
-    statusResponse = { ...listener("FAILED"), errorCode };
-    await tick();
-    expect(screen.getByText(message)).toBeVisible();
-    expect(screen.queryByText(errorCode)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "再次监听" })).toBeEnabled();
-  });
+    [
+      "MAIL_CONNECTION_TIMEOUT",
+      "连接邮箱超时，请稍后重新监听；如持续失败，请联系管理员检查网络。",
+    ],
+    [
+      "MAIL_FOLDER_FAILED",
+      "无法打开邮箱文件夹，请联系管理员检查 INBOX 及访问权限。",
+    ],
+  ])(
+    "distinguishes safe transport failure %s without showing raw details",
+    async (errorCode, message) => {
+      await renderDashboard();
+      await openPage();
+      await start();
+      statusResponse = { ...listener("FAILED"), errorCode };
+      await tick();
+      expect(screen.getByText(message)).toBeVisible();
+      expect(screen.queryByText(errorCode)).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "再次监听" })).toBeEnabled();
+    },
+  );
 
   it("reloads unavailable mailbox configuration after an administrator repairs it without starting a listener", async () => {
-    infoResponse = { ...available, available: false, reasonCode: "MAILBOX_DISABLED" };
+    infoResponse = {
+      ...available,
+      available: false,
+      reasonCode: "MAILBOX_DISABLED",
+    };
     await renderDashboard();
     fireEvent.click(screen.getByRole("button", { name: "登录辅助" }));
     await screen.findByText(/团队登录邮箱已停用/);
@@ -416,7 +435,10 @@ describe("one-message login assistance", () => {
     await renderDashboard();
     await openPage();
     await start();
-    statusResponse = { ...listener("FAILED"), errorCode: "MAIL_CONFIG_CHANGED" };
+    statusResponse = {
+      ...listener("FAILED"),
+      errorCode: "MAIL_CONFIG_CHANGED",
+    };
     await tick();
     await screen.findByText(/团队或邮箱配置已变更/);
     infoResponse = { ...available, recipientEmail: "updated@example.com" };

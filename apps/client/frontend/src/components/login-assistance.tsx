@@ -36,6 +36,18 @@ function failedMessage(errorCode: string | null) {
   switch (errorCode) {
     case "MAIL_OAUTH_FAILED":
       return "邮箱认证失败，请联系管理员检查邮箱配置。";
+    case "MAIL_DNS_FAILED":
+      return "无法解析邮箱服务器，请联系管理员检查邮箱主机与 DNS。";
+    case "MAIL_HOST_BLOCKED":
+      return "邮箱服务器地址被安全策略阻止，请联系管理员核对主机配置。";
+    case "MAIL_AUTH_FAILED":
+      return "邮箱认证失败，请联系管理员检查邮箱地址、IMAP 开关与授权码。";
+    case "MAIL_TLS_FAILED":
+      return "邮箱 TLS 验证失败，请联系管理员检查证书与代理设置。";
+    case "MAIL_CONNECTION_TIMEOUT":
+      return "连接邮箱超时，请稍后重新监听；如持续失败，请联系管理员检查网络。";
+    case "MAIL_FOLDER_FAILED":
+      return "无法打开邮箱文件夹，请联系管理员检查 INBOX 及访问权限。";
     case "MAIL_CONNECTION_FAILED":
       return "暂时无法连接邮箱，请稍后重新监听。";
     case "MAIL_CREDENTIALS_UNAVAILABLE":
@@ -433,6 +445,15 @@ export function LoginAssistance({ userId }: { userId: string }) {
           </p>
         </>
       )}
+      {!infoLoading && info && !active && pending === null ? (
+        <Button
+          className="mt-5"
+          variant="outline"
+          onClick={() => setInfoAttempt((value) => value + 1)}
+        >
+          重新读取邮箱配置
+        </Button>
+      ) : null}
     </section>
   );
 }

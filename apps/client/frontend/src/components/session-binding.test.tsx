@@ -234,9 +234,15 @@ describe("本设备官方会话绑定", () => {
           : attempt("CANCELLED", { quarantined: true }),
       );
       render(<SessionBinding userId="user-a" />);
-      await screen.findByText(/此时取消后.*需管理员.*恢复绑定队列.*才能重新申请/);
-      expect(screen.getByRole("button", { name: "取消本次绑定" })).toBeEnabled();
-      expect(native.mock.calls.some(([name]) => name === "session_binding_cancel")).toBe(false);
+      await screen.findByText(
+        /此时取消后.*需管理员.*恢复绑定队列.*才能重新申请/,
+      );
+      expect(
+        screen.getByRole("button", { name: "取消本次绑定" }),
+      ).toBeEnabled();
+      expect(
+        native.mock.calls.some(([name]) => name === "session_binding_cancel"),
+      ).toBe(false);
     },
   );
   it("取消后未受保护的终态提供显式重新申请入口", async () => {
