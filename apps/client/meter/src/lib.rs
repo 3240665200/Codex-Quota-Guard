@@ -2508,6 +2508,47 @@ mod tests {
     }
 
     #[test]
+    fn changed_authenticated_owner_quarantines_old_pending_and_reports_only_new_activity() {
+        let root = TestDir::new();
+        let (url, receiver) = mock_meter_http(vec![(200, "{}".into()), (200, "{}".into())]);
+        let config = MeterConfig {
+            server_url: url, codex_home: root.path().join(".codex"),
+            pairing_inbox: root.path().join("pairing.json"), state_dir: root.path().join("state"),
+            status_file: root.path().join("status.json"), device_id: uuid::Uuid::new_v4(), owner_user_sid: None,
+        };
+        fs::create_dir_all(config.codex_home.join("sessions")).unwrap();
+        let log = config.codex_home.join("sessions/run.jsonl");
+        fs::write(&log, record("previous-owner", 41)).unwrap();
+        save_state(&config.state_dir.join("scan-state.json"), &ScanState::default()).unwrap();
+        let old = outbox::Outbox::capture(&config, &ScanState::default(), || Ok(())).unwrap();
+        assert_eq!(old.pending.len(), 1);
+        let outbox_path = config.state_dir.join("usage-outbox.json");
+        let mut journal: serde_json::Value = serde_json::from_slice(&fs::read(&outbox_path).unwrap()).unwrap();
+        journal["userId"] = uuid::Uuid::from_u128(1).to_string().into();
+        fs::write(&outbox_path, serde_json::to_vec(&journal).unwrap()).unwrap();
+        // Simulate deletion of the original system user and a later enrollment
+        // with the same installation UUID but another authenticated owner.
+        fs::write(credential_file(&config.state_dir), serde_json::json!({
+            "deviceId": config.device_id, "deviceToken": "B".repeat(43),
+            "userId": uuid::Uuid::from_u128(2), "ownerVerified": true,
+        }).to_string()).unwrap();
+        let mut runtime = MeterRuntime::new_for_test(config.clone()).unwrap();
+        let first = runtime.tick();
+        assert_eq!(first.error_code.as_deref(), Some("METER_OUTBOX_OWNER_MISMATCH"));
+        fs::write(&log, record("previous-owner", 41) + &record("new-owner", 99)).unwrap();
+        runtime.tick();
+        let requests = receiver.join().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].starts_with(b"POST /api/v1/meter/heartbeat "));
+        assert!(requests[1].starts_with(b"POST /api/v1/meter/usage/events "));
+        assert!(String::from_utf8_lossy(&requests[1]).contains("\"totalTokens\":99"));
+        assert!(!String::from_utf8_lossy(&requests[1]).contains("\"totalTokens\":41"));
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(outbox_path).unwrap()).unwrap();
+        assert_eq!(saved["quarantined"][0]["events"][0]["totalTokens"], 41);
+        assert_eq!(saved["pending"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
     fn runtime_keeps_a_local_history_of_start_baseline_and_unpaired_state() {
         let root = TestDir::new();
         let config = MeterConfig {
