@@ -143,6 +143,8 @@
 
 登录、设备登记、登录辅助及绑定本身仅开放必要的启动接口；管理员接口仍要求 ADMIN。`/meter/**` 通过独立的设备认证上报，不因桌面门禁关闭而停止。`POST /client/usage/events` 也只返回 `acceptedEvents`，不再夹带可用于绕过读门禁的额度对象；额度需通过受保护的 GET 接口读取。
 
+管理员通过 `POST /admin/session-bindings/{id}/release` 解除单条绑定，请求为 `{ "officialAccountId": "所属官方账户UUID", "acknowledgeUnbind": true }`，成功返回 204 与 `Cache-Control: no-store`。接口要求 ADMIN 及管理传输保护；未确认返回 400，记录不存在或不属于指定账户返回 404，官方登出执行中/待核对保护锁返回 409。绑定转为 ENDED 并保留历史，同时阻止旧 BOUND 尝试继续被视为有效绑定；重复请求不改变原结束时间。此接口不会调用官方登出或撤销计量设备授权。
+
 ## 官方额度安全摘要
 
 | 方法 | 路径 | 说明 |
