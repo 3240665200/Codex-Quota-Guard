@@ -226,4 +226,39 @@ describe('官方会话登出面板', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: '刷新登出操作状态' })).toBeEnabled());
     expect(mocks.previewSessionLogout).not.toHaveBeenCalled();
   });
+
+  it('reads asynchronous progress without resubmitting and reloads safe state only after a terminal result', async () => {
+    const executing = { ...result(), status: 'EXECUTING', results: [{ sessionId: 'session-1', status: 'NOT_ATTEMPTED', errorCode: null }],
+      canAcknowledge: false, canAcknowledgeAt: null };
+    mocks.confirmSessionLogout.mockResolvedValue(executing);
+    mocks.getSessionLogoutCurrent.mockResolvedValueOnce({ operation: null }).mockResolvedValueOnce({ operation: executing })
+      .mockResolvedValue({ operation: { ...result(), canAcknowledge: false, canAcknowledgeAt: null } });
+    const onSettled = vi.fn(); const view = render(<SessionLogoutPanel accountId="account-1" onSettled={onSettled} />);
+    await preview(); await confirm();
+    await screen.findByText(/请求正在后台执行/);
+    await waitFor(() => expect(screen.getByRole('button', { name: /刷新登出操作状态/ })).toBeEnabled());
+    expect(onSettled).not.toHaveBeenCalled();
+    vi.useFakeTimers();
+    try {
+      await act(async () => { await vi.advanceTimersByTimeAsync(2_001); });
+      expect(screen.getByText(/官方已接受登出请求/)).toBeInTheDocument();
+      expect(onSettled).toHaveBeenCalledWith('account-1');
+      expect(mocks.confirmSessionLogout).toHaveBeenCalledTimes(1);
+      expect(mocks.getSessionLogoutCurrent).toHaveBeenCalledTimes(3);
+      view.unmount();
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+      expect(mocks.getSessionLogoutCurrent).toHaveBeenCalledTimes(3);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('keeps the original completion callback when accounts change during an issued request', async () => {
+    const pending = deferred<ReturnType<typeof result>>(); mocks.confirmSessionLogout.mockReturnValue(pending.promise);
+    const originalSettled = vi.fn(); const nextSettled = vi.fn();
+    const view = render(<SessionLogoutPanel accountId="account-1" onSettled={originalSettled} />);
+    await preview(); await confirm();
+    view.rerender(<SessionLogoutPanel accountId="account-2" onSettled={nextSettled} />);
+    await act(async () => pending.resolve(result()));
+    expect(originalSettled).toHaveBeenCalledWith('account-1');
+    expect(nextSettled).not.toHaveBeenCalledWith('account-1');
+  });
 });

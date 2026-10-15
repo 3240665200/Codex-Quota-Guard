@@ -11,6 +11,8 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock('../../services/api', () => mocks);
 vi.mock('../../services/sessionBindingsApi', () => ({ listSessionBindings: vi.fn().mockResolvedValue([]) }));
+vi.mock('../../services/sessionLogoutApi', () => ({ getSessionLogoutCurrent: vi.fn().mockResolvedValue({ operation: null }),
+  previewSessionLogout: vi.fn(), confirmSessionLogout: vi.fn(), acknowledgeSessionLogoutUnknown: vi.fn() }));
 
 const connection = { configured: true, encryptionReady: true, status: 'UNVERIFIED',
   requestedAccountId: 'official-workspace', proxyNodeId: 'proxy-1', hasAuthorization: true, hasCookie: true,
@@ -55,7 +57,7 @@ describe('官方账户授权与只读会话', () => {
       enabled: false, hasCredentials: false, version: 0 }]);
   });
 
-  it('shows safe official identity and session snapshots without automatic refresh or logout controls', async () => {
+  it('shows safe snapshots and explicit logout preview controls without an automatic official refresh', async () => {
     const dialog = await openConnection();
     expect(await within(dialog).findByText('official@example.com')).toBeInTheDocument();
     expect(within(dialog).getByText('办公电脑')).toBeInTheDocument();
@@ -64,6 +66,8 @@ describe('官方账户授权与只读会话', () => {
     expect(within(dialog).getByLabelText('官方 Authorization')).toHaveValue('');
     expect(within(dialog).getByLabelText('官方 Cookie（可选）')).toHaveValue('');
     expect(within(dialog).queryByRole('button', { name: /下线|退出会话|撤销设备/ })).not.toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: '登出所有会话' })).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: '登出所有未绑定会话' })).toBeInTheDocument();
     expect(mocks.refreshOfficialAccountConnection).not.toHaveBeenCalled();
   });
 
