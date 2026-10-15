@@ -587,6 +587,7 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
       // Native title-bar interactions can refocus the WebView. Revalidate the
       // current user's query without tearing down a still-fresh workspace.
       const check = ++returnCheck;
+      setNow(Date.now());
       setCheckingReturn(true);
       void refetchAccess({ cancelRefetch: false }).finally(() => {
         if (!disposed && check === returnCheck) setCheckingReturn(false);
