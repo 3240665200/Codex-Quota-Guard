@@ -145,6 +145,8 @@
 
 管理员通过 `POST /admin/session-bindings/{id}/release` 解除单条绑定，请求为 `{ "officialAccountId": "所属官方账户UUID", "acknowledgeUnbind": true }`，成功返回 204 与 `Cache-Control: no-store`。接口要求 ADMIN 及管理传输保护；未确认返回 400，记录不存在或不属于指定账户返回 404，官方登出执行中/待核对保护锁返回 409。绑定转为 ENDED 并保留历史，同时阻止旧 BOUND 尝试继续被视为有效绑定；重复请求不改变原结束时间。此接口不会调用官方登出或撤销计量设备授权。
 
+管理员选中登出复用 `POST /admin/official-accounts/{id}/session-logout/preview`，请求 `{ "mode": "SELECTED", "sessionIds": ["官方会话ID"] }`。选中列表为 1–100 个唯一、非空、最长 512 字符的 ID，后台从本账户新鲜快照核验范围；不接受把其他模式与非空选择混用。确认仍使用现有 `/session-logout/confirm` 的 `planId` 与 `acknowledgeLogoutRisk: true`，不会重新从前端接收或扩大目标。执行状态、单次确认、未知结果核对和不自动重试规则与其他模式一致。
+
 ## 官方额度安全摘要
 
 | 方法 | 路径 | 说明 |
