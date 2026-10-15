@@ -2398,6 +2398,8 @@ mod tests {
         run_synthetic_worker(&config_path);
         let outbox = config.state_dir.join("usage-outbox.json");
         assert!(outbox.is_file(), "offline usage must be durably copied before upload");
+        let offline_status: serde_json::Value = serde_json::from_slice(&fs::read(&config.status_file).unwrap()).unwrap();
+        assert_eq!(offline_status["pendingEvents"], 1, "pending offline usage must be visible without exposing contents");
         fs::remove_file(&log).unwrap();
 
         let listener = TcpListener::bind(address).unwrap();
@@ -2480,7 +2482,7 @@ mod tests {
     #[test]
     fn stale_usage_is_retained_while_new_usage_continues_to_upload() {
         let root = TestDir::new();
-        let (url, receiver) = mock_meter_http(vec![(200, "{}".into())]);
+        let (url, receiver) = mock_meter_http(vec![(200, "{}".into()), (200, "{}".into())]);
         let config = MeterConfig {
             server_url: url, codex_home: root.path().join(".codex"),
             pairing_inbox: root.path().join("pairing.json"), state_dir: root.path().join("state"),
@@ -2496,11 +2498,13 @@ mod tests {
         let mut runtime = MeterRuntime::new_for_test(config.clone()).unwrap();
         let status = runtime.tick();
         let requests = receiver.join().unwrap();
-        assert_eq!(requests.len(), 1, "invalid old records must not prevent later valid uploads");
+        assert_eq!(requests.len(), 2, "invalid old records must not prevent valid uploads or heartbeat");
         assert!(String::from_utf8_lossy(&requests[0]).contains("\"totalTokens\":99"));
         assert_eq!(status.error_code.as_deref(), Some("METER_EVENT_OUTSIDE_REPORT_WINDOW"));
         let outbox: serde_json::Value = serde_json::from_slice(&fs::read(config.state_dir.join("usage-outbox.json")).unwrap()).unwrap();
         assert_eq!(outbox["pending"].as_array().unwrap().len(), 2);
+        let public: serde_json::Value = serde_json::from_slice(&fs::read(&config.status_file).unwrap()).unwrap();
+        assert_eq!(public["pendingEvents"], 2);
     }
 
     #[test]
