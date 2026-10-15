@@ -168,13 +168,21 @@ it("allows only one in-flight read and one trailing read for a burst while curre
   expect(api.loginAssistanceCurrent).toHaveBeenCalledTimes(before + 2);
 });
 it("reads the known listener terminal state once when resumable current becomes null", async () => {
-  vi.mocked(api.loginAssistanceCurrent).mockResolvedValue({listener:mail});
-  render(<LoginAssistance userId="alice"/>);await screen.findByText("正在监听");
-  vi.mocked(api.loginAssistanceCurrent).mockResolvedValue({listener:null});
-  vi.mocked(api.loginAssistanceStatus).mockResolvedValue({...mail,state:"FAILED",errorCode:"MAIL_AUTH_FAILED"});
-  await signal();await screen.findByText(/邮箱认证失败.*IMAP/);
-  expect(api.loginAssistanceStatus).toHaveBeenCalledExactlyOnceWith(mail.id);
-  await signal();expect(api.loginAssistanceStatus).toHaveBeenCalledTimes(1);
+  vi.mocked(api.loginAssistanceCurrent).mockResolvedValue({ listener: mail });
+  render(<LoginAssistance userId="alice" />);
+  await screen.findByText("正在监听");
+  vi.mocked(api.loginAssistanceCurrent).mockResolvedValue({ listener: null });
+  vi.mocked(api.loginAssistanceStatus).mockResolvedValue({
+    ...mail,
+    state: "FAILED",
+    errorCode: "MAIL_AUTH_FAILED",
+  });
+  await signal();
+  await screen.findByText(/邮箱认证失败.*IMAP/);
+  expect(api.loginAssistanceStatus).toHaveBeenCalledTimes(1);
+  expect(api.loginAssistanceStatus).toHaveBeenCalledWith(mail.id);
+  await signal();
+  expect(api.loginAssistanceStatus).toHaveBeenCalledTimes(1);
   expect(screen.getByText(/邮箱认证失败.*IMAP/)).toBeVisible();
 });
 it("server advances queue without renderer prepare polling and the countdown follows the supplied deadline", async () => {

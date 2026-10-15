@@ -140,6 +140,8 @@ const sessionBindingAttemptSchema = z.strictObject({
     .nullable(),
   quarantined: z.boolean(),
   binding: sessionBindingSchema.nullable(),
+  queueState: z.enum(["IDLE", "SETTLING", "RETRYING", "PREPARING", "ACTIVE"]),
+  retryAt: z.iso.datetime({ offset: true }).nullable(),
 });
 const sessionBindingCurrentSchema = z.strictObject({
   attempt: sessionBindingAttemptSchema.nullable(),
@@ -689,6 +691,11 @@ export const api = {
     ),
   loginAssistanceInfo: () =>
     invokeValidated("login_assistance_info", loginAssistanceInfoSchema),
+  loginAssistanceCurrent: () =>
+    invokeValidated(
+      "login_assistance_current",
+      z.strictObject({ listener: loginAssistanceListenerSchema.nullable() }),
+    ),
   loginAssistanceStart: () =>
     invokeValidated("login_assistance_start", loginAssistanceListenerSchema),
   loginAssistanceStatus: async (listenerId: string) => {

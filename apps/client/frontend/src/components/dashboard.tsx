@@ -6,7 +6,6 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { flushSync } from "react-dom";
 import {
   Activity,
   ChartNoAxesCombined,
@@ -597,13 +596,15 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
     };
   }, [recheckAccess]);
   const [workspace, setWorkspace] = useState<WorkspaceId>("quota");
-  const [assistanceGeneration, setAssistanceGeneration] = useState(0);
+  const accessResolvedFor = useRef<string | null>(null);
+  if (!accessQuery.isPending) accessResolvedFor.current = session.user!.id;
   const [collapsed, setCollapsed] = useState(false);
   const scrollArea = useRef<HTMLDivElement>(null);
   const visibleWorkspace = bindingAllowed ? workspace : "login-assistance";
   const showAssistance =
     visibleWorkspace === "login-assistance" &&
-    (workspace === "login-assistance" || !accessQuery.isPending);
+    (workspace === "login-assistance" ||
+      accessResolvedFor.current === session.user!.id);
   const currentPage = workspaces.find((page) => page.id === visibleWorkspace)!;
   const navigate = (next: WorkspaceId) => {
     if (!bindingAllowed && next !== "login-assistance") return;
@@ -731,6 +732,7 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
     usageStatusQuery.isFetching ||
     rateLimitsQuery.isFetching;
   const refresh = async () => {
+    window.dispatchEvent(new Event("quota-guard:assistance-refresh"));
     if (!bindingAllowed) {
       recheckAccess();
       return;
@@ -892,14 +894,8 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
               size="icon"
               className="size-8 shrink-0"
               onClick={() => {
-                // Dispose the local code and request cancellation before the
-                // surrounding app clears the signed-in bridge session.
-                if (visibleWorkspace === "login-assistance") {
-                  flushSync(() => {
-                    setWorkspace("quota");
-                    setAssistanceGeneration((value) => value + 1);
-                  });
-                }
+                // Clear renderer-only codes; authenticated logout owns server cancellation.
+                window.dispatchEvent(new Event("quota-guard:assistance-clear"));
                 onLogout();
               }}
               aria-label="退出系统"
@@ -1063,7 +1059,7 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
               showAssistance ? (
                 <>
                   <LoginAssistance
-                    key={`assistance:${session.user!.id}:${assistanceGeneration}`}
+                    key={`assistance:${session.user!.id}`}
                     userId={session.user!.id}
                   />
                   {session.user?.role === "ADMIN" ? (

@@ -3,6 +3,7 @@ import { Check, Copy, LoaderCircle, Mail } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { useAssistanceRefresh } from "@/lib/use-assistance-refresh";
 import {
   api,
   getApiErrorMessage,
@@ -43,7 +44,7 @@ function failedMessage(errorCode: string | null) {
     case "MAIL_AUTH_FAILED":
       return "邮箱认证失败，请联系管理员检查邮箱地址、IMAP 开关与授权码。";
     case "MAIL_TLS_FAILED":
-      return "邮箱 TLS 验证失败，请联系管理员检查证书与代理设置。";
+      return "邮箱加密连接失败，请联系管理员检查邮箱服务与网络设置。";
     case "MAIL_CONNECTION_TIMEOUT":
       return "连接邮箱超时，请稍后重新监听；如持续失败，请联系管理员检查网络。";
     case "MAIL_FOLDER_FAILED":
@@ -97,6 +98,7 @@ interface Lifetime {
   active: boolean;
   generation: number;
   busy: boolean;
+  refreshQueued?: boolean;
   listener: LoginAssistanceListener | null;
 }
 
@@ -133,66 +135,94 @@ export function LoginAssistance({ userId }: { userId: string }) {
     setCopied(false);
     setCodeExpired(false);
     setError(null);
+    const clear = () => {
+      lifetime.generation += 1;
+      lifetime.busy = false;
+      lifetime.listener = null;
+      setListener(null);
+      setCopied(false);
+      setPending(null);
+      setCodeExpired(false);
+      setError(null);
+    };
+    window.addEventListener("quota-guard:assistance-clear", clear);
+    return () => {
+      window.removeEventListener("quota-guard:assistance-clear", clear);
+      lifetime.active = false;
+      lifetime.generation += 1;
+      lifetime.listener = null;
+    };
+  }, [userId]);
+
+  useEffect(() => {
+    let active = true;
+    setInfoLoading(true);
     void api
       .loginAssistanceInfo()
       .then(
         (result) => {
-          if (lifetime.active) setInfo(result);
+          if (active) setInfo(result);
         },
         (failure: unknown) => {
-          if (lifetime.active)
+          if (active)
             setError(`登录辅助读取失败：${getApiErrorMessage(failure)}`);
         },
       )
       .finally(() => {
-        if (lifetime.active) setInfoLoading(false);
+        if (active) setInfoLoading(false);
       });
     return () => {
-      lifetime.active = false;
-      lifetime.generation += 1;
-      const current = lifetime.listener;
-      lifetime.listener = null;
-      if (isActive(current)) {
-        void api.loginAssistanceCancel(current!.id).catch(() => {});
-      }
+      active = false;
     };
   }, [userId, infoAttempt]);
 
-  useEffect(() => {
-    if (!isActive(listener) || pending) return;
+  const refresh = useAssistanceRefresh(userId, async () => {
     const lifetime = lifetimeRef.current;
-    if (!lifetime) return;
+    if (!lifetime?.active) return;
+    if (lifetime.busy) {
+      lifetime.refreshQueued = true;
+      return;
+    }
     const generation = lifetime.generation;
-    const id = listener!.id;
-    let disposed = false;
-    let timer: number | undefined;
-    const current = () =>
-      !disposed &&
-      lifetime.active &&
-      lifetime.generation === generation &&
-      lifetime.listener?.id === id;
-    const poll = async () => {
-      try {
-        const result = await api.loginAssistanceStatus(id);
-        if (!current()) return;
-        lifetime.listener = result;
-        setListener(result);
-        setError(null);
-        if (!isActive(result)) return;
-      } catch (failure) {
-        if (!current()) return;
-        setError(
-          `无法读取监听状态：${getApiErrorMessage(failure)} 后台监听会在到期后自动结束。`,
-        );
+    const current = () => lifetime.active && lifetime.generation === generation;
+    try {
+      let { listener: result } = await api.loginAssistanceCurrent();
+      if (!current()) return;
+      const known = lifetime.listener;
+      if (!result && known) {
+        if (isActive(known) || known.state === "RECEIVED") {
+          // /current restores only resumable work. Read this page's known task
+          // once to retain a safe terminal failure/cancellation/timeout message.
+          if (known.code) {
+            lifetime.listener = { ...known, code: null };
+            setListener(lifetime.listener);
+            setCopied(false);
+          }
+          result = await api.loginAssistanceStatus(known.id);
+        } else result = known;
       }
-      if (current()) timer = window.setTimeout(() => void poll(), 2_000);
-    };
-    timer = window.setTimeout(() => void poll(), 2_000);
-    return () => {
-      disposed = true;
-      window.clearTimeout(timer);
-    };
-  }, [listener?.id, listener?.state, pending]);
+      if (!current()) return;
+      const expired =
+        result?.state === "RECEIVED" &&
+        Date.parse(result.expiresAt) <= Date.now();
+      const safe = result && expired ? { ...result, code: null } : result;
+      lifetime.listener = safe;
+      setListener(safe);
+      setCodeExpired(!!expired);
+      setCopied(false);
+      if (result) setAttempted(true);
+      setError(null);
+    } catch (failure) {
+      if (!current()) return;
+      const message = getApiErrorMessage(failure);
+      if (message === "请先登录系统账户。") {
+        lifetime.listener = null;
+        setListener(null);
+        setCopied(false);
+      }
+      setError(`无法读取监听状态：${message} 后台监听不会因离开页面而停止。`);
+    }
+  });
 
   useEffect(() => {
     if (!listener || (!isActive(listener) && listener.state !== "RECEIVED"))
@@ -209,34 +239,18 @@ export function LoginAssistance({ userId }: { userId: string }) {
           current.expiresAt !== expiresAt
         )
           return;
-        // Expiry also invalidates an in-flight status/cancel/copy result, so an
-        // unavailable server cannot leave a listener or code visible forever.
-        lifetime.generation += 1;
-        lifetime.busy = false;
-        setPending(null);
         setCopied(false);
-        setError(null);
-        if (isActive(current)) {
-          const timedOut: LoginAssistanceListener = {
-            ...current,
-            state: "TIMED_OUT",
-            code: null,
-            receivedAt: null,
-            errorCode: null,
-          };
-          lifetime.listener = timedOut;
-          setListener(timedOut);
-          void api.loginAssistanceCancel(id).catch(() => {});
-        } else if (current.state === "RECEIVED") {
-          lifetime.listener = null;
-          setListener(null);
+        if (current.state === "RECEIVED") {
+          lifetime.listener = { ...current, code: null };
+          setListener(lifetime.listener);
           setCodeExpired(true);
         }
+        refresh();
       },
       Math.max(0, Date.parse(expiresAt) - Date.now()),
     );
     return () => window.clearTimeout(timer);
-  }, [listener?.id, listener?.state, listener?.expiresAt]);
+  }, [listener?.id, listener?.state, listener?.expiresAt, refresh]);
 
   const start = async () => {
     const lifetime = lifetimeRef.current;
@@ -259,13 +273,7 @@ export function LoginAssistance({ userId }: { userId: string }) {
     const current = () => lifetime.active && lifetime.generation === generation;
     try {
       const result = await api.loginAssistanceStart();
-      if (!current()) {
-        // A start can finish after navigation or a user switch. Cancel that
-        // server listener without publishing its response into another page.
-        if (isActive(result))
-          void api.loginAssistanceCancel(result.id).catch(() => {});
-        return;
-      }
+      if (!current()) return;
       lifetime.listener = result;
       setListener(result);
     } catch (failure) {
@@ -274,6 +282,10 @@ export function LoginAssistance({ userId }: { userId: string }) {
       if (current()) {
         lifetime.busy = false;
         setPending(null);
+        if (lifetime.refreshQueued) {
+          lifetime.refreshQueued = false;
+          refresh();
+        }
       }
     }
   };
@@ -304,6 +316,10 @@ export function LoginAssistance({ userId }: { userId: string }) {
       if (current()) {
         lifetime.busy = false;
         setPending(null);
+        if (lifetime.refreshQueued) {
+          lifetime.refreshQueued = false;
+          refresh();
+        }
       }
     }
   };
@@ -311,7 +327,12 @@ export function LoginAssistance({ userId }: { userId: string }) {
   const copy = async () => {
     const lifetime = lifetimeRef.current;
     const code = listener?.state === "RECEIVED" ? listener.code : null;
-    if (!lifetime?.active || !code) return;
+    if (
+      !lifetime?.active ||
+      !code ||
+      Date.parse(listener!.expiresAt) <= Date.now()
+    )
+      return;
     const generation = lifetime.generation;
     try {
       await navigator.clipboard.writeText(code);
@@ -418,7 +439,9 @@ export function LoginAssistance({ userId }: { userId: string }) {
               ? "验证码已过期，请重新监听后再发送验证码"
               : stateMessage(listener, pending === "start")}
           </p>
-          {listener?.state === "RECEIVED" && listener.code ? (
+          {listener?.state === "RECEIVED" &&
+          listener.code &&
+          Date.parse(listener.expiresAt) > Date.now() ? (
             <div className="mt-5 flex flex-wrap items-center gap-4 rounded-md border bg-primary/5 p-4">
               <output
                 aria-label="本次登录验证码"
@@ -441,7 +464,7 @@ export function LoginAssistance({ userId }: { userId: string }) {
             </div>
           ) : null}
           <p className="mt-5 text-xs leading-relaxed text-muted-foreground">
-            邮箱配置由管理员在后台维护。离开此页面或退出系统时会清除本页验证码，并尝试取消仍在进行的监听。
+            刷新或离开页面不会停止后台监听，重新打开可恢复；只有明确取消或退出系统才会取消监听。验证码仅保存在页面内存，过期后隐藏。
           </p>
         </>
       )}

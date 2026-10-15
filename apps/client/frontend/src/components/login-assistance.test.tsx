@@ -154,11 +154,11 @@ describe("one-message login assistance", () => {
   it("keeps fallback assistance mounted during a manual access refresh", async () => {
     await renderDashboard(false);
     await start();
-    const heading=screen.getByRole("heading",{name:"监听登录邮件"});
-    const count=calls("login_assistance_info").length;
-    fireEvent.click(screen.getByRole("button",{name:"刷新数据"}));
+    const heading = screen.getByRole("heading", { name: "监听登录邮件" });
+    const count = calls("login_assistance_info").length;
+    fireEvent.click(screen.getByRole("button", { name: "刷新数据" }));
     await tick(20);
-    expect(screen.getByRole("heading",{name:"监听登录邮件"})).toBe(heading);
+    expect(screen.getByRole("heading", { name: "监听登录邮件" })).toBe(heading);
     expect(calls("login_assistance_info")).toHaveLength(count);
     expect(calls("login_assistance_cancel")).toHaveLength(0);
   });
@@ -181,7 +181,15 @@ describe("one-message login assistance", () => {
         return startResponse;
       }
       if (command === "login_assistance_current")
-        return { listener: serverListenerExists ? statusResponse : null };
+        return {
+          listener:
+            serverListenerExists &&
+            ["CONNECTING", "LISTENING", "RECEIVED"].includes(
+              statusResponse.state,
+            )
+              ? statusResponse
+              : null,
+        };
       if (command === "login_assistance_status") return statusResponse;
       if (command === "login_assistance_cancel") {
         statusResponse = cancelResponse;

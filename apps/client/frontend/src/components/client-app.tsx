@@ -315,7 +315,11 @@ export function ClientApp() {
     </details>
   );
 
-  if (sessionQuery.error) {
+  if (
+    sessionQuery.error &&
+    (!sessionQuery.data?.authenticated ||
+      getApiErrorMessage(sessionQuery.error) === "请先登录系统账户。")
+  ) {
     return (
       <div className="cqg-entry-page">
         <div className="border-b bg-muted/50 px-6 py-2">{guardNotice}</div>
@@ -341,11 +345,28 @@ export function ClientApp() {
   }
 
   return (
-    <Dashboard
-      key={session.user.id}
-      session={session}
-      onLogout={() => void handleLogout()}
-      guardNotice={guardNotice}
-    />
+    <>
+      {sessionQuery.error ? (
+        <Alert variant="destructive" className="rounded-none">
+          <AlertTitle>登录状态暂时无法刷新</AlertTitle>
+          <AlertDescription>
+            已保留当前页面，受保护操作仍需后台核验。
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void sessionQuery.refetch()}
+            >
+              重试登录状态
+            </Button>
+          </AlertDescription>
+        </Alert>
+      ) : null}
+      <Dashboard
+        key={session.user.id}
+        session={session}
+        onLogout={() => void handleLogout()}
+        guardNotice={guardNotice}
+      />
+    </>
   );
 }

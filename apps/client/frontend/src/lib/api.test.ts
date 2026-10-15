@@ -60,6 +60,23 @@ const loginListener = {
 describe("login assistance API boundary", () => {
   beforeEach(() => invokeMock.mockReset());
 
+  it("restores current only through the fixed authenticated command and rejects secret extras", async () => {
+    invokeMock.mockResolvedValue({ listener: null });
+    expect(await api.loginAssistanceCurrent()).toEqual({ listener: null });
+    expect(invokeMock).toHaveBeenLastCalledWith("login_assistance_current");
+    invokeMock.mockResolvedValue({ listener: loginListener });
+    expect(await api.loginAssistanceCurrent()).toEqual({
+      listener: loginListener,
+    });
+    for (const result of [
+      { listener: loginListener, accessToken: "synthetic" },
+      { listener: { ...loginListener, password: "synthetic" } },
+    ]) {
+      invokeMock.mockResolvedValue(result);
+      await expect(api.loginAssistanceCurrent()).rejects.toThrow();
+    }
+  });
+
   it("uses only the four fixed commands with validated listener IDs", async () => {
     invokeMock.mockResolvedValue(loginAssistanceInfo);
     await expect(api.loginAssistanceInfo()).resolves.toEqual(

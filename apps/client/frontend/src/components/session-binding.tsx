@@ -8,6 +8,7 @@ import {
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { useAssistanceRefresh } from "@/lib/use-assistance-refresh";
 
 const activeStates = new Set([
   "QUEUED",
@@ -35,25 +36,21 @@ function message(attempt: SessionBindingAttempt | null) {
     case "BOUND":
       return "本设备官方会话已绑定。";
     case "CANCELLED":
-      return attempt.quarantined
-        ? "本次绑定已取消，原任务不能继续识别或确认。"
-        : "本次绑定已取消，可以重新申请绑定。新申请不会继续上次任务。";
+      return "本次绑定已取消，可以重新申请排队。新申请不会继续上次任务。";
     case "EXPIRED":
-      return attempt.quarantined
-        ? "本次绑定已超时，不能继续确认。"
-        : "本次绑定已超时，可以重新申请绑定。";
+      return "本次绑定已超时，可以重新申请排队。";
     default:
       switch (attempt.errorCode) {
         case "SESSION_BINDING_NO_NEW_SESSION":
-          return "没有发现本次新增的官方会话。已有官方登录不能直接推断为本设备，请联系管理员处理；需要重新登录时，请由你在官方应用中明确操作。";
+          return "没有发现本次新增的官方会话，后台会自动整理队列。已有官方登录不能直接推断为本设备；需要重新登录时，请重新申请名额并由你在官方应用中明确操作。";
         case "SESSION_BINDING_AMBIGUOUS":
-          return "本次出现多个新增官方会话，无法唯一识别。请联系管理员核对并恢复队列。";
+          return "本次出现多个新增官方会话，无法唯一识别，未保存绑定。后台会自动整理队列；请勿将其他人的登录认作本设备。";
         case "SESSION_BINDING_DEVICE_CONFLICT":
           return "本设备已有其他系统账户的有效绑定，请由管理员处理，不能直接接管。";
         case "SESSION_BINDING_SNAPSHOT_UNAVAILABLE":
-          return "无法取得新鲜的官方会话快照，请联系管理员检查官方连接。";
+          return "无法取得新鲜的官方会话快照，后台会自动重试；持续失败请联系管理员检查官方连接。";
         default:
-          return "本次绑定未完成。请联系管理员检查官方会话与队列状态后重试。";
+          return "本次绑定未完成，后台会自动整理队列。可以重新申请排队；持续失败请联系管理员检查官方连接。";
       }
   }
 }
@@ -61,6 +58,7 @@ interface Lifetime {
   active: boolean;
   generation: number;
   busy: boolean;
+  refreshQueued?: boolean;
   attempt: SessionBindingAttempt | null;
 }
 
@@ -77,9 +75,9 @@ export function SessionBinding({
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [reload, setReload] = useState(0);
   const [needsServerCheck, setNeedsServerCheck] = useState(false);
   const [stateVerified, setStateVerified] = useState(false);
+  const [now, setNow] = useState(Date.now);
   const lifetimeRef = useRef<Lifetime | null>(null);
   const onBoundRef = useRef(onBound);
   onBoundRef.current = onBound;
@@ -99,82 +97,60 @@ export function SessionBinding({
     setLoading(true);
     setNeedsServerCheck(false);
     setStateVerified(false);
-    void api
-      .sessionBindingCurrent()
-      .then(
-        (current) => {
-          if (!lifetime.active) return;
-          lifetime.attempt = current.attempt;
-          setAttempt(current.attempt);
-          setBinding(current.binding);
-          setStateVerified(true);
-        },
-        (failure: unknown) => {
-          if (lifetime.active) setError(getApiErrorMessage(failure));
-        },
-      )
-      .finally(() => {
-        if (lifetime.active) setLoading(false);
-      });
     // A prepared official login may still finish after navigation. Keep the central lease;
-    // only an explicit cancel or its server deadline ends it and quarantines late logins.
+    // only an explicit cancel or its server deadline ends it; the server settles the queue.
     return () => {
       lifetime.active = false;
       lifetime.generation += 1;
     };
-  }, [userId, reload]);
+  }, [userId]);
 
-  useEffect(() => {
-    if (!active(attempt) || pending) return;
+  const refresh = useAssistanceRefresh(userId, async () => {
     const lifetime = lifetimeRef.current;
-    if (!lifetime) return;
+    if (!lifetime?.active) return;
+    if (lifetime.busy) {
+      lifetime.refreshQueued = true;
+      return;
+    }
     const generation = lifetime.generation;
-    const id = attempt!.id;
-    let disposed = false;
-    let timer: number | undefined;
-    const current = () =>
-      !disposed &&
-      lifetime.active &&
-      lifetime.generation === generation &&
-      lifetime.attempt?.id === id;
-    const poll = async () => {
-      if (!current() || lifetime.busy) return;
-      try {
-        const result = await api.sessionBindingAction(
-          id,
-          lifetime.attempt?.status === "QUEUED" ? "prepare" : "status",
-        );
-        if (!current()) return;
-        lifetime.attempt = result;
-        setAttempt(result);
-        if (result.binding) setBinding(result.binding);
-        if (result.status === "BOUND") onBoundRef.current?.();
-        setError(null);
-        if (!active(result)) return;
-      } catch (failure) {
-        if (!current()) return;
-        const text = getApiErrorMessage(failure);
-        setError(text);
-        if (text === "请先登录系统账户。") {
-          lifetime.attempt = null;
-          setAttempt(null);
-          setBinding(null);
-          return;
-        }
+    const current = () => lifetime.active && lifetime.generation === generation;
+    try {
+      const result = await api.sessionBindingCurrent();
+      if (!current()) return;
+      const previouslyBound = lifetime.attempt?.status === "BOUND";
+      lifetime.attempt = result.attempt;
+      setAttempt(result.attempt);
+      setBinding(result.binding);
+      setStateVerified(true);
+      setNeedsServerCheck(
+        !!result.attempt &&
+          active(result.attempt) &&
+          Date.parse(result.attempt.expiresAt) <= Date.now(),
+      );
+      setNow(Date.now());
+      setError(null);
+      if (!previouslyBound && result.attempt?.status === "BOUND")
+        onBoundRef.current?.();
+    } catch (failure) {
+      if (!current()) return;
+      const text = getApiErrorMessage(failure);
+      setError(text);
+      if (text === "请先登录系统账户。") {
+        lifetime.attempt = null;
+        setAttempt(null);
+        setBinding(null);
+        setStateVerified(false);
       }
-      if (current()) timer = window.setTimeout(() => void poll(), 2_000);
-    };
-    timer = window.setTimeout(() => void poll(), 2_000);
-    return () => {
-      disposed = true;
-      window.clearTimeout(timer);
-    };
-  }, [attempt?.id, attempt?.status, pending]);
+    } finally {
+      if (current()) setLoading(false);
+    }
+  });
 
   useEffect(() => {
     if (!active(attempt)) return;
     const lifetime = lifetimeRef.current;
     const id = attempt!.id;
+    const ticker = window.setInterval(() => setNow(Date.now()), 1_000);
     const timer = window.setTimeout(
       () => {
         if (
@@ -183,51 +159,46 @@ export function SessionBinding({
           !active(lifetime.attempt)
         )
           return;
-        lifetime.generation += 1;
-        lifetime.busy = false;
-        const expired: SessionBindingAttempt = {
-          ...lifetime.attempt!,
-          status: "EXPIRED",
-          loginAllowed: false,
-          candidateSessionId: null,
-          candidateDisplayName: null,
-          candidatePlatform: null,
-        };
-        lifetime.attempt = expired;
-        setAttempt(expired);
-        setPending(false);
-        setError(null);
+        setNow(Date.now());
         setNeedsServerCheck(true);
+        refresh();
       },
       Math.max(0, Date.parse(attempt!.expiresAt) - Date.now()),
     );
-    return () => window.clearTimeout(timer);
-  }, [attempt?.id, attempt?.expiresAt, attempt?.status]);
+    return () => {
+      window.clearTimeout(timer);
+      window.clearInterval(ticker);
+    };
+  }, [attempt?.id, attempt?.expiresAt, attempt?.status, refresh]);
 
   const run = async (action: "start" | "detect" | "confirm" | "cancel") => {
     const lifetime = lifetimeRef.current;
     if (!lifetime?.active || lifetime.busy) return;
     const existing = lifetime.attempt;
     if (action !== "start" && !existing) return;
+    if (
+      (action === "confirm" || action === "detect") &&
+      existing &&
+      Date.parse(existing.expiresAt) <= Date.now()
+    ) {
+      refresh();
+      return;
+    }
     lifetime.busy = true;
     const generation = ++lifetime.generation;
     setPending(true);
     setError(null);
     const current = () => lifetime.active && lifetime.generation === generation;
     try {
-      let result =
+      const result =
         action === "start"
           ? await api.sessionBindingStart()
           : await api.sessionBindingAction(existing!.id, action);
       if (!current()) return;
       lifetime.attempt = result;
       setAttempt(result);
-      if (action === "start" && result.status === "QUEUED") {
-        result = await api.sessionBindingAction(result.id, "prepare");
-        if (!current()) return;
-        lifetime.attempt = result;
-        setAttempt(result);
-      }
+      setNeedsServerCheck(false);
+      setNow(Date.now());
       if (result.binding) setBinding(result.binding);
       if (result.status === "BOUND") onBoundRef.current?.();
     } catch (failure) {
@@ -244,11 +215,20 @@ export function SessionBinding({
       if (current()) {
         lifetime.busy = false;
         setPending(false);
+        if (lifetime.refreshQueued) {
+          lifetime.refreshQueued = false;
+          refresh();
+        }
       }
     }
   };
 
   const bound = binding?.status === "ACTIVE" || attempt?.status === "BOUND";
+  const remaining = attempt
+    ? Math.max(0, Math.ceil((Date.parse(attempt.expiresAt) - now) / 1000))
+    : 0;
+  const deadlineReached =
+    active(attempt) && (needsServerCheck || remaining === 0);
   return (
     <section className="cqg-surface p-5 sm:p-6" aria-label="本设备官方会话绑定">
       <div className="flex items-start gap-3">
@@ -274,10 +254,22 @@ export function SessionBinding({
           <p role="status" className="mt-4 text-sm leading-relaxed">
             {bound
               ? "本设备官方会话已绑定。"
-              : needsServerCheck
-                ? "本次绑定已超时。请先重新读取绑定状态，确认队列是否允许重新申请。"
+              : deadlineReached
+                ? "倒计时已结束，正在核对服务器到期状态；确认前不能识别或保存。"
                 : message(attempt)}
           </p>
+          {active(attempt) ? (
+            <p
+              className="mt-2 text-sm text-muted-foreground"
+              aria-label="绑定剩余时间"
+            >
+              {attempt?.status === "QUEUED" || attempt?.status === "PREPARING"
+                ? "排队"
+                : "登录名额"}
+              剩余 {String(Math.floor(remaining / 60)).padStart(2, "0")}:
+              {String(remaining % 60).padStart(2, "0")}
+            </p>
+          ) : null}
           {bound && binding ? (
             <p className="mt-2 break-all text-xs text-muted-foreground">
               绑定账户：{binding.userDisplayName} · 会话标识：
@@ -298,11 +290,25 @@ export function SessionBinding({
               </AlertDescription>
             </Alert>
           ) : null}
-          {!bound && attempt?.quarantined ? (
+          {!bound &&
+          attempt &&
+          ["SETTLING", "RETRYING"].includes(attempt.queueState) ? (
             <Alert className="mt-4">
-              <AlertTitle>等待管理员恢复绑定队列</AlertTitle>
+              <AlertTitle>
+                {attempt.queueState === "RETRYING"
+                  ? "正在自动重试"
+                  : "正在整理绑定队列"}
+              </AlertTitle>
               <AlertDescription>
-                本账户的绑定队列仍处于保护状态，迟到的官方登录可能影响识别。请管理员核对官方会话并恢复队列，再检查状态。重新读取不会解除保护或自动创建任务。
+                后台正在自动整理并获取新鲜的官方会话快照，无需手动恢复队列。请等待登录名额，不要提前登录。
+                {attempt.retryAt ? (
+                  <p className="mt-1">
+                    下次检查：
+                    {new Date(attempt.retryAt).toLocaleTimeString("zh-CN", {
+                      hour12: false,
+                    })}
+                  </p>
+                ) : null}
               </AlertDescription>
             </Alert>
           ) : null}
@@ -336,13 +342,12 @@ export function SessionBinding({
             attempt.status,
           ) ? (
             <p className="mt-4 rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-sm leading-relaxed">
-              已取得本次官方登录名额。此时取消后，需管理员核对官方会话并恢复绑定队列，才能重新申请。
+              已取得本次官方登录名额。取消后后台会自动整理队列；不要继续本次官方登录，以免迟到会话影响下一次识别。
             </p>
           ) : null}
           <div className="mt-4 flex flex-wrap gap-3">
             {!bound &&
             !active(attempt) &&
-            !attempt?.quarantined &&
             !needsServerCheck &&
             stateVerified &&
             error !== "请先登录系统账户。" ? (
@@ -358,13 +363,19 @@ export function SessionBinding({
               </Button>
             ) : null}
             {attempt?.status === "READY_FOR_LOGIN" && attempt.loginAllowed ? (
-              <Button disabled={pending} onClick={() => void run("detect")}>
+              <Button
+                disabled={pending || deadlineReached}
+                onClick={() => void run("detect")}
+              >
                 已完成登录，识别本设备
               </Button>
             ) : null}
             {attempt?.status === "AWAITING_CONFIRMATION" &&
             attempt.candidateSessionId ? (
-              <Button disabled={pending} onClick={() => void run("confirm")}>
+              <Button
+                disabled={pending || deadlineReached}
+                onClick={() => void run("confirm")}
+              >
                 确认绑定此会话
               </Button>
             ) : null}
@@ -380,14 +391,8 @@ export function SessionBinding({
             {error ||
             needsServerCheck ||
             (attempt && !active(attempt) && !bound) ? (
-              <Button
-                variant="outline"
-                disabled={pending}
-                onClick={() => setReload((value) => value + 1)}
-              >
-                {attempt?.quarantined
-                  ? "检查队列是否已恢复"
-                  : "重新读取绑定状态"}
+              <Button variant="outline" disabled={pending} onClick={refresh}>
+                重新读取绑定状态
               </Button>
             ) : null}
           </div>

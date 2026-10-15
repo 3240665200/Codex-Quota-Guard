@@ -39,6 +39,8 @@ pub(crate) enum ApiRoute {
     UsageEvents { page: u32, size: u32 },
     UsageAnalytics { days: u32 },
     LoginAssistanceInfo,
+    LoginAssistanceCurrent,
+    LoginAssistanceEvents,
     LoginAssistanceStart,
     LoginAssistanceListener { id: Uuid },
     SessionBindingCurrent,
@@ -68,6 +70,8 @@ impl ApiRoute {
             Self::UsageEvents { .. } => "/api/v1/usage/events",
             Self::UsageAnalytics { .. } => "/api/v1/usage/analytics",
             Self::LoginAssistanceInfo => "/api/v1/login-assistance",
+            Self::LoginAssistanceCurrent => "/api/v1/login-assistance/listeners/current",
+            Self::LoginAssistanceEvents => "/api/v1/login-assistance/events",
             Self::LoginAssistanceStart | Self::LoginAssistanceListener { .. } => {
                 "/api/v1/login-assistance/listeners"
             }
@@ -180,6 +184,7 @@ pub(crate) struct BackendState {
     process: Mutex<Option<RunningBackend>>,
     client: Client,
     guard_ready: Arc<AtomicBool>,
+    assistance_streams: crate::assistance_stream::Subscriptions,
 }
 
 impl BackendState {
@@ -259,6 +264,7 @@ impl BackendState {
             })),
             client: Client::new(),
             guard_ready,
+            assistance_streams: crate::assistance_stream::Subscriptions::default(),
         })
     }
 
@@ -310,6 +316,7 @@ impl BackendState {
         email: String,
         password: String,
     ) -> Result<Value, BackendError> {
+        self.assistance_streams.clear();
         self.json_request(
             Method::POST,
             ApiRoute::SystemLogin,
@@ -366,6 +373,9 @@ impl BackendState {
     }
 
     pub(crate) async fn empty(&self, method: Method, route: ApiRoute) -> Result<(), BackendError> {
+        if route == ApiRoute::SystemLogout {
+            self.assistance_streams.clear();
+        }
         let (url, token) = self.request_target(route)?;
         let response = self
             .client
@@ -388,6 +398,7 @@ impl BackendState {
     }
 
     pub(crate) fn stop(&self) {
+        self.assistance_streams.clear();
         let Some(mut process) = self
             .process
             .lock()
@@ -421,6 +432,24 @@ impl BackendState {
             fixed_url(process.port, route),
             process.token.value().to_owned(),
         ))
+    }
+
+    pub(crate) fn assistance_events_start(
+        &self,
+        subscription_id: &str,
+        channel: tauri::ipc::Channel<crate::assistance_stream::AssistanceSignal>,
+    ) -> Result<(), BackendError> {
+        let id = Uuid::parse_str(subscription_id).map_err(|_| BackendError::InvalidListenerId)?;
+        let (url, token) = self.request_target(ApiRoute::LoginAssistanceEvents)?;
+        self.assistance_streams
+            .start(id, url, token, channel)
+            .map_err(|_| BackendError::Unavailable)
+    }
+
+    pub(crate) fn assistance_events_stop(&self, subscription_id: &str) -> Result<(), BackendError> {
+        let id = Uuid::parse_str(subscription_id).map_err(|_| BackendError::InvalidListenerId)?;
+        self.assistance_streams.stop(id);
+        Ok(())
     }
 }
 
@@ -471,6 +500,8 @@ fn classify_response(route: ApiRoute, status: StatusCode) -> BackendError {
     if matches!(
         route,
         ApiRoute::LoginAssistanceInfo
+            | ApiRoute::LoginAssistanceCurrent
+            | ApiRoute::LoginAssistanceEvents
             | ApiRoute::LoginAssistanceStart
             | ApiRoute::LoginAssistanceListener { .. }
     ) {
@@ -759,6 +790,14 @@ mod tests {
         assert_eq!(
             fixed_url(43117, ApiRoute::LoginAssistanceStart),
             "http://127.0.0.1:43117/api/v1/login-assistance/listeners"
+        );
+        assert_eq!(
+            fixed_url(43117, ApiRoute::LoginAssistanceCurrent),
+            "http://127.0.0.1:43117/api/v1/login-assistance/listeners/current"
+        );
+        assert_eq!(
+            fixed_url(43117, ApiRoute::LoginAssistanceEvents),
+            "http://127.0.0.1:43117/api/v1/login-assistance/events"
         );
         for invalid in [
             "",

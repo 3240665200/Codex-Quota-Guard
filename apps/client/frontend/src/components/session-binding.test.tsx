@@ -11,6 +11,22 @@ import { invoke } from "@tauri-apps/api/core";
 import { SessionBinding } from "./session-binding";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+const handlers = vi.hoisted(() => new Set<(event: { type: string }) => void>());
+vi.mock("@/lib/assistance-events", () => ({
+  subscribeToAssistanceEvents: (
+    _user: string,
+    handler: (event: { type: string }) => void,
+  ) => {
+    handlers.add(handler);
+    return () => handlers.delete(handler);
+  },
+}));
+async function changed() {
+  await act(async () => {
+    handlers.forEach((handler) => handler({ type: "state_changed" }));
+    await vi.advanceTimersByTimeAsync(1);
+  });
+}
 const native = vi.mocked(invoke);
 const id = "11111111-1111-4111-8111-111111111111";
 const deviceId = "22222222-2222-4222-8222-222222222222";
@@ -45,6 +61,8 @@ function attempt(status = "READY_FOR_LOGIN", extras = {}) {
     errorCode: null,
     quarantined: false,
     binding: null,
+    queueState: "ACTIVE",
+    retryAt: null,
     ...extras,
   };
 }
@@ -52,11 +70,11 @@ beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   vi.setSystemTime(new Date("2026-10-15T10:00:00Z"));
   native.mockReset();
+  handlers.clear();
   native.mockImplementation(async (name) => {
     if (name === "session_binding_current")
       return { attempt: null, binding: null };
-    if (name === "session_binding_start")
-      return attempt("QUEUED", { queuePosition: 1 });
+    if (name === "session_binding_start") return attempt();
     if (name === "session_binding_prepare") return attempt();
     if (name === "session_binding_cancel") return attempt("CANCELLED");
     return attempt();
@@ -112,25 +130,31 @@ describe("本设备官方会话绑定", () => {
     await screen.findByText("本设备官方会话已绑定。");
     expect(screen.queryByRole("button", { name: "开始绑定本设备" })).toBeNull();
   });
-  it("轮到排队用户后自动准备，但不会替用户发起官方登录或识别", async () => {
+  it("推送后读取后台准备结果，不会替用户发起官方登录或识别", async () => {
+    let ready = false;
     native.mockImplementation(async (name) =>
       name === "session_binding_current"
-        ? { attempt: attempt("QUEUED", { queuePosition: 2 }), binding: null }
+        ? {
+            attempt: ready
+              ? attempt()
+              : attempt("QUEUED", { queuePosition: 2 }),
+            binding: null,
+          }
         : attempt(),
     );
     render(<SessionBinding userId="user-a" />);
     await screen.findByText(/正在排队/);
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(2_100);
-    });
+    ready = true;
+    await changed();
     await screen.findByRole("button", { name: "已完成登录，识别本设备" });
     expect(
       native.mock.calls.some(([name]) => name === "session_binding_detect"),
     ).toBe(false);
   });
   it("产品登录过期时立即清除已识别候选", async () => {
+    let expired = false;
     native.mockImplementation(async (name) => {
-      if (name === "session_binding_current")
+      if (name === "session_binding_current" && !expired)
         return {
           attempt: attempt("AWAITING_CONFIRMATION", {
             candidateSessionId: "candidate",
@@ -142,9 +166,8 @@ describe("本设备官方会话绑定", () => {
     });
     render(<SessionBinding userId="user-a" />);
     await screen.findByText("过期前候选");
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(2_100);
-    });
+    expired = true;
+    await changed();
     await screen.findByText("请先登录系统账户。");
     expect(screen.queryByText("过期前候选")).toBeNull();
     expect(screen.queryByRole("button", { name: "确认绑定此会话" })).toBeNull();
@@ -154,7 +177,7 @@ describe("本设备官方会话绑定", () => {
     expect(screen.getByText(/官方 Codex 应用/)).toBeVisible();
     expect(
       native.mock.calls.some(([name]) => name === "session_binding_prepare"),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       native.mock.calls.some(([name]) => name === "session_binding_detect"),
     ).toBe(false);
@@ -213,7 +236,7 @@ describe("本设备官方会话绑定", () => {
     );
     render(<SessionBinding userId="user-a" />);
     await screen.findByText(/没有发现本次新增的官方会话/);
-    expect(screen.getByText("等待管理员恢复绑定队列")).toBeVisible();
+    expect(screen.queryByText("等待管理员恢复绑定队列")).toBeNull();
   });
   it("取消会释放本次任务并清除候选", async () => {
     await begin();
@@ -226,7 +249,7 @@ describe("本设备官方会话绑定", () => {
     ).toEqual({ attemptId: id });
   });
   it.each(["READY_FOR_LOGIN", "DETECTING", "AWAITING_CONFIRMATION"])(
-    "取得登录名额后在取消前明确告知管理员恢复要求：%s",
+    "取得登录名额后在取消前明确告知自动整理与迟到会话风险：%s",
     async (status) => {
       native.mockImplementation(async (name) =>
         name === "session_binding_current"
@@ -234,9 +257,7 @@ describe("本设备官方会话绑定", () => {
           : attempt("CANCELLED", { quarantined: true }),
       );
       render(<SessionBinding userId="user-a" />);
-      await screen.findByText(
-        /此时取消后.*需管理员.*恢复绑定队列.*才能重新申请/,
-      );
+      await screen.findByText(/取消后后台会自动整理队列.*迟到会话/);
       expect(
         screen.getByRole("button", { name: "取消本次绑定" }),
       ).toBeEnabled();
@@ -253,7 +274,7 @@ describe("本设备官方会话绑定", () => {
         : original(name, args),
     );
     render(<SessionBinding userId="user-a" />);
-    expect(await screen.findByText(/可以重新申请绑定/)).toBeVisible();
+    expect(await screen.findByText(/可以重新申请排队/)).toBeVisible();
     expect(
       native.mock.calls.some(([name]) => name === "session_binding_start"),
     ).toBe(false);
@@ -263,25 +284,29 @@ describe("本设备官方会话绑定", () => {
       native.mock.calls.filter(([name]) => name === "session_binding_start"),
     ).toHaveLength(1);
   });
-  it("取消后的队列保护由管理员恢复，重新检查不会自动重建或绕过旧任务", async () => {
+  it("取消后显示自动整理，重新检查不会自动重建或绕过旧任务", async () => {
     let quarantined = true;
     native.mockImplementation(async (name) =>
       name === "session_binding_current"
-        ? { attempt: attempt("CANCELLED", { quarantined }), binding: null }
+        ? {
+            attempt: attempt("CANCELLED", {
+              quarantined,
+              queueState: quarantined ? "SETTLING" : "IDLE",
+            }),
+            binding: null,
+          }
         : attempt(),
     );
     render(<SessionBinding userId="user-a" />);
-    await screen.findByText("等待管理员恢复绑定队列");
-    expect(
-      screen.queryByRole("button", { name: /重新申请绑定|开始绑定本设备/ }),
-    ).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "检查队列是否已恢复" }));
-    await screen.findByText("等待管理员恢复绑定队列");
+    await screen.findByText("正在整理绑定队列");
+    expect(screen.getByRole("button", { name: "重新申请绑定" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "重新读取绑定状态" }));
+    await screen.findByText("正在整理绑定队列");
     expect(
       native.mock.calls.some(([name]) => name === "session_binding_start"),
     ).toBe(false);
     quarantined = false;
-    fireEvent.click(screen.getByRole("button", { name: "检查队列是否已恢复" }));
+    fireEvent.click(screen.getByRole("button", { name: "重新读取绑定状态" }));
     await screen.findByRole("button", { name: "重新申请绑定" });
     expect(screen.queryByText("等待管理员恢复绑定队列")).toBeNull();
     expect(
@@ -307,7 +332,7 @@ describe("本设备官方会话绑定", () => {
     await screen.findByRole("button", { name: "已完成登录，识别本设备" });
     expect(starts).toBe(2);
   });
-  it("重新检查失败不能把已保护的取消任务当作可重试", async () => {
+  it("重新检查失败保留已知终态，但不会自动重建任务", async () => {
     let reads = 0;
     native.mockImplementation(async () => {
       if (reads++ === 0)
@@ -319,14 +344,12 @@ describe("本设备官方会话绑定", () => {
     });
     render(<SessionBinding userId="user-a" />);
     fireEvent.click(
-      await screen.findByRole("button", { name: "检查队列是否已恢复" }),
+      await screen.findByRole("button", { name: "重新读取绑定状态" }),
     );
     await screen.findByText("暂时无法连接本地服务，请确认应用仍在运行。");
     expect(
-      screen.queryByRole("button", {
-        name: /重试申请绑定|重新申请绑定|开始绑定本设备/,
-      }),
-    ).toBeNull();
+      native.mock.calls.some(([name]) => name === "session_binding_start"),
+    ).toBe(false);
     expect(
       screen.getByRole("button", { name: "重新读取绑定状态" }),
     ).toBeEnabled();
@@ -350,6 +373,9 @@ describe("本设备官方会话绑定", () => {
         }),
     );
     const view = render(<SessionBinding userId="user-a" />);
+    await waitFor(() =>
+      expect(native).toHaveBeenCalledWith("session_binding_current"),
+    );
     view.rerender(<SessionBinding userId="user-b" />);
     await screen.findByRole("button", { name: "开始绑定本设备" });
     await act(async () =>
@@ -371,7 +397,7 @@ describe("本设备官方会话绑定", () => {
       native.mock.calls.some(([name]) => name === "session_binding_cancel"),
     ).toBe(false);
   });
-  it("本地到期清除确认入口，即使服务离线也不会无限保留候选", async () => {
+  it("本地倒计时结束禁用确认，等待服务器核对而非伪造过期", async () => {
     native.mockImplementation(async () => ({
       attempt: attempt("AWAITING_CONFIRMATION", {
         candidateSessionId: "session",
@@ -387,10 +413,10 @@ describe("本设备官方会话绑定", () => {
     });
     await waitFor(() =>
       expect(
-        screen.queryByRole("button", { name: "确认绑定此会话" }),
-      ).toBeNull(),
+        screen.getByRole("button", { name: "确认绑定此会话" }),
+      ).toBeDisabled(),
     );
-    expect(screen.getByText(/本次绑定已超时/)).toBeVisible();
+    expect(screen.getByText(/正在核对服务器到期状态/)).toBeVisible();
     expect(
       screen.queryByRole("button", { name: /重新申请绑定|开始绑定本设备/ }),
     ).toBeNull();

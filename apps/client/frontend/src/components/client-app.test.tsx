@@ -13,7 +13,9 @@ import { ClientApp } from "@/components/client-app";
 import i18n from "@/lib/i18n";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
-vi.mock("@/lib/assistance-events", () => ({subscribeToAssistanceEvents: () => () => {}}));
+vi.mock("@/lib/assistance-events", () => ({
+  subscribeToAssistanceEvents: () => () => {},
+}));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
 vi.mock("sonner", () => ({
   toast: { success: vi.fn(), warning: vi.fn(), error: vi.fn() },
@@ -81,17 +83,23 @@ function renderClientApp() {
 
 describe("ClientApp system session gate", () => {
   it("keeps the mounted workspace on a transient background session refresh error", async () => {
-    const original=invokeMock.getMockImplementation()!;
-    let unavailable=false;
-    invokeMock.mockImplementation(async (command,args) => {
-      if(command === "system_current") {if(unavailable) throw new Error("synthetic offline");return signedIn;}
-      return original(command,args);
+    const original = invokeMock.getMockImplementation()!;
+    let unavailable = false;
+    invokeMock.mockImplementation(async (command, args) => {
+      if (command === "system_current") {
+        if (unavailable) throw new Error("synthetic offline");
+        return signedIn;
+      }
+      return original(command, args);
     });
-    const {queryClient}=renderClientApp();
-    const heading=await screen.findByRole("heading",{name:"个人 Token"});
-    unavailable=true;await act(async () => {await queryClient.refetchQueries({queryKey:["system-session"]});});
+    const { queryClient } = renderClientApp();
+    const heading = await screen.findByRole("heading", { name: "个人 Token" });
+    unavailable = true;
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ["system-session"] });
+    });
     expect(await screen.findByText(/登录状态暂时无法刷新/)).toBeVisible();
-    expect(screen.getByRole("heading",{name:"个人 Token"})).toBe(heading);
+    expect(screen.getByRole("heading", { name: "个人 Token" })).toBe(heading);
   });
   it("explains the seven-day local remembered session on the login page", async () => {
     renderClientApp();

@@ -161,6 +161,8 @@ describe("device binding access gate", () => {
       expiresAt: new Date(Date.now() + 60000).toISOString(),
       errorCode: null,
       quarantined: false,
+      queueState: "ACTIVE",
+      retryAt: null,
       binding: null,
     };
     mock.mockImplementation(async (command, args) => {
@@ -249,3 +251,6 @@ describe("device binding access gate", () => {
     }
   });
 });
+vi.mock("@/lib/assistance-events", () => ({
+  subscribeToAssistanceEvents: () => () => {},
+}));

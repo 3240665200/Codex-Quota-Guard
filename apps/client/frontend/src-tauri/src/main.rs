@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod assistance_stream;
 mod autostart;
 mod backend;
 mod codex_connection;
@@ -255,6 +256,35 @@ async fn login_assistance_info(state: State<'_, BackendState>) -> CommandResult<
 }
 
 #[tauri::command]
+async fn login_assistance_current(state: State<'_, BackendState>) -> CommandResult<Value> {
+    state
+        .json(Method::GET, ApiRoute::LoginAssistanceCurrent)
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
+fn login_assistance_events_start(
+    subscription_id: String,
+    channel: tauri::ipc::Channel<assistance_stream::AssistanceSignal>,
+    state: State<'_, BackendState>,
+) -> CommandResult<()> {
+    state
+        .assistance_events_start(&subscription_id, channel)
+        .map_err(command_error)
+}
+
+#[tauri::command]
+fn login_assistance_events_stop(
+    subscription_id: String,
+    state: State<'_, BackendState>,
+) -> CommandResult<()> {
+    state
+        .assistance_events_stop(&subscription_id)
+        .map_err(command_error)
+}
+
+#[tauri::command]
 async fn login_assistance_start(state: State<'_, BackendState>) -> CommandResult<Value> {
     state
         .json(Method::POST, ApiRoute::LoginAssistanceStart)
@@ -485,6 +515,9 @@ fn main() {
             system_current,
             system_logout,
             login_assistance_info,
+            login_assistance_current,
+            login_assistance_events_start,
+            login_assistance_events_stop,
             login_assistance_start,
             login_assistance_status,
             login_assistance_cancel,

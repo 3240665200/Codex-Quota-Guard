@@ -997,3 +997,6 @@ describe("Dashboard", () => {
     expect(screen.getByRole("button", { name: "重试" })).toBeVisible();
   });
 });
+vi.mock("@/lib/assistance-events", () => ({
+  subscribeToAssistanceEvents: () => () => {},
+}));

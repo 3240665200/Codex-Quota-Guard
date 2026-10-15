@@ -34,10 +34,32 @@ const attempt = {
   expiresAt: "2026-10-15T10:02:00Z",
   errorCode: null,
   quarantined: false,
+  queueState: "ACTIVE",
+  retryAt: null,
   binding: null,
 };
 beforeEach(() => native.mockReset());
 describe("desktop binding transport", () => {
+  it("accepts only the explicit automatic queue states and an optional retry deadline", async () => {
+    for (const queueState of [
+      "IDLE",
+      "SETTLING",
+      "RETRYING",
+      "PREPARING",
+      "ACTIVE",
+    ]) {
+      native.mockResolvedValue({
+        ...attempt,
+        queueState,
+        retryAt: "2026-10-15T10:00:30Z",
+      });
+      expect((await api.sessionBindingStart()).queueState).toBe(queueState);
+    }
+    native.mockResolvedValue({ ...attempt, queueState: "MANUAL_UNLOCK" });
+    await expect(api.sessionBindingStart()).rejects.toThrow();
+    native.mockResolvedValue({ ...attempt, generation: 7 });
+    await expect(api.sessionBindingStart()).rejects.toThrow();
+  });
   it("validates and restores a persisted safe binding", async () => {
     native.mockResolvedValue({ attempt: null, binding });
     expect(await api.sessionBindingCurrent()).toEqual({
