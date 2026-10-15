@@ -21,6 +21,7 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class MeterDeviceService {
     private static final Duration TOKEN_LIFETIME = Duration.ofDays(30);
+    private static final Duration RENEWAL_GRACE = Duration.ofDays(30);
     private static final SecureRandom RANDOM = new SecureRandom();
     private final MeterDeviceRepository devices;
     private final UserRepository users;
@@ -52,15 +53,25 @@ public class MeterDeviceService {
             device.rotate(tokenHash, expiresAt);
         }
         devices.saveAndFlush(device);
-        return new MeterEnrollmentResponse(deviceId, token, expiresAt);
+        return new MeterEnrollmentResponse(deviceId, token, expiresAt, userId);
     }
 
     @Transactional(readOnly = true)
     public MeterIdentity authenticate(String token) {
+        return authenticate(token, false);
+    }
+
+    @Transactional(readOnly = true)
+    public MeterIdentity authenticateForRenewal(String token) {
+        return authenticate(token, true);
+    }
+
+    private MeterIdentity authenticate(String token, boolean renewal) {
         if (token == null || !token.matches("[A-Za-z0-9_-]{43}")) throw invalidToken();
         MeterDevice device = devices.findByTokenHash(hash(token)).orElseThrow(this::invalidToken);
+        Instant cutoff = renewal ? clock.instant().minus(RENEWAL_GRACE) : clock.instant();
         if (device.getStatus() != MeterDevice.Status.ACTIVE
-                || !device.getExpiresAt().isAfter(clock.instant())) throw invalidToken();
+                || !device.getExpiresAt().isAfter(cutoff)) throw invalidToken();
         User user = users.findById(device.getUserId()).orElseThrow(this::invalidToken);
         if (user.getStatus() != User.Status.ACTIVE) throw invalidToken();
         return new MeterIdentity(device.getId(), device.getUserId());
@@ -70,9 +81,33 @@ public class MeterDeviceService {
     public Instant heartbeat(UUID deviceId) {
         MeterDevice device = devices.findByIdForUpdate(deviceId).orElseThrow(this::invalidToken);
         Instant now = clock.instant();
+        assertActive(device, now, false);
         device.seen(now);
+        device.renew(now.plus(TOKEN_LIFETIME));
         devices.save(device);
         return now;
+    }
+
+    /** The device grant is independent of desktop sessions. A bounded offline
+     * grace permits recovery, while administrative revocation remains final. */
+    @Transactional
+    public MeterRenewalResponse renew(UUID deviceId) {
+        MeterDevice device = devices.findByIdForUpdate(deviceId).orElseThrow(this::invalidToken);
+        Instant now = clock.instant();
+        assertActive(device, now, true);
+        Instant expiresAt = now.plus(TOKEN_LIFETIME);
+        // Preserve the key so a lost response cannot strand an unattended service.
+        device.renew(expiresAt);
+        devices.save(device);
+        return new MeterRenewalResponse(device.getId(), device.getUserId(), expiresAt);
+    }
+
+    private void assertActive(MeterDevice device, Instant now, boolean renewal) {
+        Instant cutoff = renewal ? now.minus(RENEWAL_GRACE) : now;
+        User user = users.findById(device.getUserId()).orElseThrow(this::invalidToken);
+        if (device.getStatus() != MeterDevice.Status.ACTIVE
+                || !device.getExpiresAt().isAfter(cutoff)
+                || user.getStatus() != User.Status.ACTIVE) throw invalidToken();
     }
 
     @Transactional(readOnly = true)

@@ -50,6 +50,8 @@ public class MeterDevice {
 
     public void seen(Instant now) { this.lastSeenAt = now; }
 
+    public void renew(Instant expiration) { this.expiresAt = expiration; }
+
     public void revoke() { this.status = Status.REVOKED; }
 
     public enum Status { ACTIVE, REVOKED }

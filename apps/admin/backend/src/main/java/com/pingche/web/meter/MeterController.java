@@ -2,7 +2,6 @@ package com.pingche.web.meter;
 
 import com.pingche.web.quota.CodexUsageReportRequest;
 import com.pingche.web.quota.CodexUsageReportService;
-import com.pingche.web.quota.QuotaOverviewResponse;
 import jakarta.validation.Valid;
 import java.time.Instant;
 import java.util.Map;
@@ -35,10 +34,18 @@ public class MeterController {
     }
 
     @PostMapping("/usage/events")
-    public ResponseEntity<QuotaOverviewResponse> report(Authentication authentication,
+    public ResponseEntity<Map<String, Integer>> report(Authentication authentication,
             @Valid @RequestBody CodexUsageReportRequest request) {
         MeterIdentity device = (MeterIdentity) authentication.getPrincipal();
+        usage.report(device.userId(), request);
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
-                .body(usage.report(device.userId(), request));
+                .body(Map.of("acceptedEvents", request.events().size()));
+    }
+
+    @PostMapping("/credential/renew")
+    public ResponseEntity<MeterRenewalResponse> renew(Authentication authentication) {
+        MeterIdentity device = (MeterIdentity) authentication.getPrincipal();
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(devices.renew(device.deviceId()));
     }
 }

@@ -37,7 +37,10 @@ public final class MeterTokenFilter extends OncePerRequestFilter {
             return;
         }
         try {
-            MeterIdentity identity = devices.authenticate(request.getHeader("X-Quota-Guard-Meter"));
+            boolean renewal = "POST".equals(request.getMethod())
+                    && "/api/v1/meter/credential/renew".equals(request.getRequestURI());
+            String token = request.getHeader("X-Quota-Guard-Meter");
+            MeterIdentity identity = renewal ? devices.authenticateForRenewal(token) : devices.authenticate(token);
             SecurityContextHolder.getContext().setAuthentication(
                     new UsernamePasswordAuthenticationToken(identity, null,
                             List.of(new SimpleGrantedAuthority("ROLE_METER"))));
