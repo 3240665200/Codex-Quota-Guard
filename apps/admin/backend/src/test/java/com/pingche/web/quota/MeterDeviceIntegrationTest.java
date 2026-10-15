@@ -36,6 +36,7 @@ class MeterDeviceIntegrationTest {
     @Autowired UserRepository users;
     @Autowired MeterDeviceService devices;
     @Autowired MeterDeviceRepository meterRepository;
+    @Autowired QuotaOverviewService overview;
 
     @Test
     void expiredDeviceRenewsIndependentlyButRevokedOrDisabledDevicesCannotRenew() throws Exception {
@@ -56,6 +57,7 @@ class MeterDeviceIntegrationTest {
                         .header("X-Quota-Guard-Meter", pairing.deviceToken()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.deviceId").value(deviceId.toString()))
+                .andExpect(jsonPath("$.userId").value(userId.toString()))
                 .andExpect(jsonPath("$.expiresAt").isString())
                 .andExpect(jsonPath("$.deviceToken").doesNotExist());
         mvc.perform(post("/api/v1/meter/heartbeat")
@@ -75,6 +77,58 @@ class MeterDeviceIntegrationTest {
         mvc.perform(post("/api/v1/meter/credential/renew")
                         .header("X-Quota-Guard-Meter", pairing.deviceToken()))
                 .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void renewalGraceIsBoundedAndCannotBypassTheExactMethodOrPath() throws Exception {
+        String email = "meter-grace-" + UUID.randomUUID() + "@example.com";
+        auth.register(email, "test-password-with-sufficient-length", "Grace");
+        UUID userId = users.findByEmail(email).orElseThrow().getId();
+        UUID deviceId = UUID.randomUUID();
+        var pairing = devices.enroll(userId, deviceId);
+        var stored = meterRepository.findById(deviceId).orElseThrow();
+        stored.rotate(stored.getTokenHash(), Instant.now().minusSeconds(31 * 86400));
+        meterRepository.saveAndFlush(stored);
+        mvc.perform(post("/api/v1/meter/credential/renew")
+                        .header("X-Quota-Guard-Meter", pairing.deviceToken()))
+                .andExpect(status().isUnauthorized());
+        stored = meterRepository.findById(deviceId).orElseThrow();
+        stored.rotate(stored.getTokenHash(), Instant.now().minusSeconds(1));
+        meterRepository.saveAndFlush(stored);
+        mvc.perform(get("/api/v1/meter/credential/renew")
+                        .header("X-Quota-Guard-Meter", pairing.deviceToken()))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(post("/api/v1/meter/credential/renew/")
+                        .header("X-Quota-Guard-Meter", pairing.deviceToken()))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void reusedInstallationIdReturnsItsNewAuthenticatedOwner() throws Exception {
+        String email = "meter-reused-" + UUID.randomUUID() + "@example.com";
+        AuthResponse original = auth.register(email, "test-password-with-sufficient-length", "Original");
+        UUID oldOwner = users.findByEmail(email).orElseThrow().getId();
+        UUID deviceId = UUID.randomUUID();
+        var previous = devices.enroll(oldOwner, deviceId);
+        meterRepository.deleteById(deviceId);
+        meterRepository.flush();
+        String nextEmail = "meter-recreated-" + UUID.randomUUID() + "@example.com";
+        AuthResponse next = auth.register(nextEmail, "test-password-with-sufficient-length", "Recreated");
+        UUID nextOwner = users.findByEmail(nextEmail).orElseThrow().getId();
+        mvc.perform(post("/api/v1/client/meter/enroll")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + next.accessToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"deviceId\":\"%s\"}".formatted(deviceId)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.userId").value(nextOwner.toString()));
+        mvc.perform(post("/api/v1/meter/credential/renew")
+                        .header("X-Quota-Guard-Meter", previous.deviceToken()))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(post("/api/v1/client/meter/enroll")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + original.accessToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"deviceId\":\"%s\"}".formatted(deviceId)))
+                .andExpect(status().isConflict());
     }
 
     @Test
@@ -121,8 +175,10 @@ class MeterDeviceIntegrationTest {
                 .andExpect(jsonPath("$.usage").doesNotExist());
         mvc.perform(get("/api/v1/client/quota/overview")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + session.accessToken()))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.usage.fiveHourUsedTokens").value(120));
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("SESSION_BINDING_REQUIRED"));
+        assertThat(overview.overview(users.findByEmail(email).orElseThrow().getId())
+                .usage().fiveHourUsedTokens()).isEqualTo(120);
     }
 
     @Test
