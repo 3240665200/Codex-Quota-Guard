@@ -2335,6 +2335,84 @@ mod tests {
         assert_eq!(saved["pending"].as_array().unwrap().len(), 0);
     }
 
+    fn mock_meter_http(responses: Vec<(u16, String)>) -> (String, thread::JoinHandle<Vec<Vec<u8>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        listener.set_nonblocking(true).unwrap();
+        let handle = thread::spawn(move || {
+            let mut requests = Vec::new();
+            for (status, body) in responses {
+                let deadline = Instant::now() + Duration::from_secs(3);
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            if Instant::now() >= deadline { return requests; }
+                            thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(error) => panic!("mock listener failed: {error}"),
+                    }
+                };
+                stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                requests.push(read_http_request(&mut stream));
+                write!(stream, "HTTP/1.1 {status} Mock\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+            requests
+        });
+        (url, handle)
+    }
+
+    #[test]
+    fn expired_meter_renews_with_only_device_key_then_retries_the_same_usage() {
+        let root = TestDir::new();
+        let device_id = uuid::Uuid::new_v4();
+        let (url, receiver) = mock_meter_http(vec![
+            (401, "{}".into()),
+            (200, serde_json::json!({ "deviceId": device_id, "expiresAt": (Utc::now() + TimeDelta::days(30)).to_rfc3339() }).to_string()),
+            (200, "{\"acceptedEvents\":1}".into()),
+        ]);
+        let config = MeterConfig {
+            server_url: url, codex_home: root.path().join(".codex"),
+            pairing_inbox: root.path().join("pairing.json"), state_dir: root.path().join("state"),
+            status_file: root.path().join("status.json"), device_id, owner_user_sid: None,
+        };
+        let credential = MeterCredential { device_id, device_token: "A".repeat(43) };
+        let event = parse_direct_record(record("retry-stable", 42).trim().as_bytes()).unwrap();
+        let result = send_events(&reqwest::blocking::Client::new(), &config, &credential, &[event]);
+        let requests = receiver.join().unwrap();
+        assert!(result.is_ok(), "expired device grant must recover without a desktop session");
+        assert_eq!(requests.len(), 3);
+        assert!(requests[1].starts_with(b"POST /api/v1/meter/credential/renew HTTP/1.1"));
+        assert_eq!(requests[0], requests[2]);
+        assert!(requests.iter().all(|request| !String::from_utf8_lossy(request).to_ascii_lowercase().contains("authorization:")));
+    }
+
+    #[test]
+    fn stale_usage_is_retained_while_new_usage_continues_to_upload() {
+        let root = TestDir::new();
+        let (url, receiver) = mock_meter_http(vec![(200, "{}".into())]);
+        let config = MeterConfig {
+            server_url: url, codex_home: root.path().join(".codex"),
+            pairing_inbox: root.path().join("pairing.json"), state_dir: root.path().join("state"),
+            status_file: root.path().join("status.json"), device_id: uuid::Uuid::new_v4(), owner_user_sid: None,
+        };
+        fs::create_dir_all(config.codex_home.join("sessions")).unwrap();
+        save_state(&config.state_dir.join("scan-state.json"), &ScanState::default()).unwrap();
+        save_credential(&config.state_dir, &MeterCredential { device_id: config.device_id, device_token: "A".repeat(43) }).unwrap();
+        let stale = (Utc::now() - TimeDelta::days(31)).to_rfc3339();
+        let future = (Utc::now() + TimeDelta::days(1)).to_rfc3339();
+        fs::write(config.codex_home.join("sessions/run.jsonl"),
+            record_at("stale", 10, &stale) + &record_at("future", 20, &future) + &record("fresh", 99)).unwrap();
+        let mut runtime = MeterRuntime::new_for_test(config.clone()).unwrap();
+        let status = runtime.tick();
+        let requests = receiver.join().unwrap();
+        assert_eq!(requests.len(), 1, "invalid old records must not prevent later valid uploads");
+        assert!(String::from_utf8_lossy(&requests[0]).contains("\"totalTokens\":99"));
+        assert_eq!(status.error_code.as_deref(), Some("METER_EVENT_OUTSIDE_REPORT_WINDOW"));
+        let outbox: serde_json::Value = serde_json::from_slice(&fs::read(config.state_dir.join("usage-outbox.json")).unwrap()).unwrap();
+        assert_eq!(outbox["pending"].as_array().unwrap().len(), 2);
+    }
+
     #[test]
     fn runtime_keeps_a_local_history_of_start_baseline_and_unpaired_state() {
         let root = TestDir::new();
