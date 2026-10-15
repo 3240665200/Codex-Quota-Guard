@@ -2562,6 +2562,7 @@ mod tests {
         let mut journal: serde_json::Value = serde_json::from_slice(&fs::read(&outbox_path).unwrap()).unwrap();
         journal["userId"] = uuid::Uuid::from_u128(1).to_string().into();
         fs::write(&outbox_path, serde_json::to_vec(&journal).unwrap()).unwrap();
+        fs::write(&log, record("previous-owner", 41) + &record("ownership-transition", 17)).unwrap();
         // Simulate deletion of the original system user and a later enrollment
         // with the same installation UUID but another authenticated owner.
         fs::write(credential_file(&config.state_dir), serde_json::json!({
@@ -2571,7 +2572,7 @@ mod tests {
         let mut runtime = MeterRuntime::new_for_test(config.clone()).unwrap();
         let first = runtime.tick();
         assert_eq!(first.error_code.as_deref(), Some("METER_OUTBOX_OWNER_MISMATCH"));
-        fs::write(&log, record("previous-owner", 41) + &record("new-owner", 99)).unwrap();
+        fs::write(&log, record("previous-owner", 41) + &record("ownership-transition", 17) + &record("new-owner", 99)).unwrap();
         runtime.tick();
         let requests = receiver.join().unwrap();
         assert_eq!(requests.len(), 2);
@@ -2581,6 +2582,8 @@ mod tests {
         assert!(!String::from_utf8_lossy(&requests[1]).contains("\"totalTokens\":41"));
         let saved: serde_json::Value = serde_json::from_slice(&fs::read(outbox_path).unwrap()).unwrap();
         assert_eq!(saved["quarantined"][0]["events"][0]["totalTokens"], 41);
+        assert_eq!(saved["quarantined"][1]["events"][0]["totalTokens"], 17);
+        assert!(saved["quarantined"][1]["userId"].is_null());
         assert_eq!(saved["pending"].as_array().unwrap().len(), 0);
     }
 
