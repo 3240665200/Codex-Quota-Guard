@@ -68,7 +68,7 @@ final class BrowserCredentialCapture {
         }
         return String.join("; ", accepted.values());
     }
-    private static URI officialRead(String value) {
+    static URI officialRead(String value) {
         try {
             URI uri = URI.create(value);
             String path = uri.getRawPath();

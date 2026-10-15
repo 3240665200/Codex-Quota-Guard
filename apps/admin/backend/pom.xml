@@ -128,6 +128,7 @@
                         <include>com/pingche/web/officialsession/*</include>
                         <include>com/pingche/web/sessionbinding/*</include>
                         <include>com/pingche/web/proxy/*</include>
+                        <include>com/pingche/web/weblogin/*</include>
                         <include>com/pingche/web/team/TeamMembership*</include>
                     </includes>
                 </configuration>

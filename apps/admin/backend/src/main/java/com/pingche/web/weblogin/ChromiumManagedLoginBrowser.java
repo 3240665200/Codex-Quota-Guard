@@ -21,12 +21,15 @@ import java.security.NoSuchAlgorithmException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 /** Every task owns its browser process, profile and selected proxy lease. No normal browser profile is read. */
 @Component
 public final class ChromiumManagedLoginBrowser implements ManagedLoginBrowser {
+    private static final Logger LOG = LoggerFactory.getLogger(ChromiumManagedLoginBrowser.class);
     private static final String LOGIN_URL = "https://chatgpt.com/settings/security?view=sessions";
     private final ObjectMapper json;
     private final ManagedProxyGateway proxies;
@@ -73,8 +76,11 @@ public final class ChromiumManagedLoginBrowser implements ManagedLoginBrowser {
                 OwnedSession current = active.get(); if (current != null) current.enqueue(event);
             });
             session = new OwnedSession(cdp, json, () -> {
-                terminate(ownedProcess); ownedProfile.close(); proxy.close();
-                OwnedSession current = active.get(); if (current != null) sessions.remove(current);
+                try { terminate(ownedProcess); }
+                finally {
+                    try { ownedProfile.close(); }
+                    finally { try { proxy.close(); } finally { OwnedSession current = active.get(); if (current != null) sessions.remove(current); } }
+                }
             }, System::nanoTime);
             active.set(session); sessions.add(session);
             session.proxyAlive = proxy::isAlive;
@@ -178,6 +184,8 @@ public final class ChromiumManagedLoginBrowser implements ManagedLoginBrowser {
         private final BrowserCredentialCapture capture;
         private final AtomicBoolean closed = new AtomicBoolean();
         private final Set<String> attached = ConcurrentHashMap.newKeySet();
+        private final Map<String, String> requestCookies = new ConcurrentHashMap<>();
+        private final Set<String> reportedHosts = new HashSet<>();
         private final ThreadPoolExecutor events = new ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS,
                 new ArrayBlockingQueue<>(64), r -> { Thread t = new Thread(r, "managed-login-events"); t.setDaemon(true); return t; });
         private volatile String mainSession;
@@ -244,27 +252,39 @@ public final class ChromiumManagedLoginBrowser implements ManagedLoginBrowser {
                     String url = params.path("request").path("url").asString("");
                     if (requestId.isBlank() || requestId.length() > 200) { close(); return; }
                     if (OfficialDomainPolicy.allowed(url)) call("Fetch.continueRequest", Map.of("requestId", requestId), session);
-                    else { errorCode = blockedCode(url); call("Fetch.failRequest", Map.of("requestId", requestId, "errorReason", "BlockedByClient"), session); }
+                    else {
+                        blocked(url, params.path("resourceType").asString(""));
+                        call("Fetch.failRequest", Map.of("requestId", requestId, "errorReason", "BlockedByClient"), session);
+                    }
                 }
                 case "Network.requestWillBeSent" -> {
                     String url = params.path("request").path("url").asString("");
                     if (!OfficialDomainPolicy.allowed(url)) {
-                        errorCode = blockedCode(url);
+                        blocked(url, params.path("type").asString(""));
                         if (!(url.startsWith("https:") || url.startsWith("http:") || url.startsWith("data:") || url.startsWith("blob:"))) close();
                         return;
                     }
                     if (url.startsWith("https://auth.openai.com/") || url.startsWith("https://auth0.openai.com/")
                             || url.startsWith("https://chatgpt.com/api/auth/signout") || url.contains("/logout")) invalidate();
+                    if (BrowserCredentialCapture.officialRead(url) != null) {
+                        String key = requestKey(session, params);
+                        if (requestCookies.size() >= 128) requestCookies.clear();
+                        String cookie = currentCookie();
+                        requestCookies.put(key, cookie.isBlank() ? "" : fingerprint(cookie));
+                    }
                     capture.accept(event);
                     if (capture.candidate() == null) cookieFingerprint = null;
                 }
                 case "Network.responseReceived", "Network.loadingFailed" -> {
                     BrowserCredentialCapture.Candidate before = capture.candidate();
                     capture.accept(event);
+                    String dispatchedCookie = requestCookies.remove(requestKey(session, params));
                     if (capture.candidate() != null && capture.candidate() != before) {
                         String cookie = currentCookie();
-                        cookieFingerprint = cookie.isBlank() ? null : fingerprint(cookie);
-                        errorCode = null;
+                        String current = cookie.isBlank() ? "" : fingerprint(cookie);
+                        if (dispatchedCookie == null || dispatchedCookie.isBlank() || !dispatchedCookie.equals(current)) {
+                            invalidate(); errorCode = "WEB_LOGIN_SESSION_CHANGED";
+                        } else { cookieFingerprint = current; errorCode = null; }
                     }
                 }
                 case "Page.frameNavigated" -> {
@@ -275,7 +295,7 @@ public final class ChromiumManagedLoginBrowser implements ManagedLoginBrowser {
                             pageOrigin = OfficialDomainPolicy.origin(url);
                             if (!"https://chatgpt.com".equals(pageOrigin)) invalidate();
                         }
-                        else if (!"about:blank".equals(url) && !url.startsWith("chrome-error://")) { errorCode = blockedCode(url); close(); }
+                        else if (!"about:blank".equals(url) && !url.startsWith("chrome-error://")) { blocked(url, "Document"); close(); }
                     }
                 }
                 default -> { }
@@ -324,7 +344,21 @@ public final class ChromiumManagedLoginBrowser implements ManagedLoginBrowser {
         private String currentCookie() {
             return BrowserCredentialCapture.loginCookies(call("Network.getCookies", Map.of("urls", List.of("https://chatgpt.com")), mainSession));
         }
-        private void invalidate() { capture.clear(); cookieFingerprint = null; }
+        private void invalidate() { capture.clear(); cookieFingerprint = null; requestCookies.clear(); }
+        private static String requestKey(String session, JsonNode params) {
+            String id = params.path("requestId").asString("");
+            return id.length() > 200 ? "invalid" : session + ":" + id;
+        }
+        private void blocked(String url, String resourceType) {
+            String code = blockedCode(url);
+            if (resourceType.isBlank() || "Document".equals(resourceType) || "WEB_LOGIN_EXTERNAL_PROVIDER_UNSUPPORTED".equals(code)) errorCode = code;
+            try {
+                String host = URI.create(url).getHost();
+                if (host != null && host.matches("[A-Za-z0-9.-]{1,253}") && reportedHosts.size() < 16 && reportedHosts.add(host)) {
+                    LOG.info("Managed login blocked destination host={}", host);
+                }
+            } catch (IllegalArgumentException ignored) { /* Never include raw URL, query, headers or input in diagnostics. */ }
+        }
         private static String fingerprint(String cookie) {
             try { return Base64.getEncoder().encodeToString(MessageDigest.getInstance("SHA-256").digest(cookie.getBytes(StandardCharsets.UTF_8))); }
             catch (NoSuchAlgorithmException unavailable) { throw failure(); }
