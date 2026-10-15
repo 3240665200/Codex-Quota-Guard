@@ -21,7 +21,8 @@
 - `DELETE /api/v1/admin/users/{id}`：删除用户
 - `POST /api/v1/admin/users/{id}/force-logout`：强制用户所有会话下线
 - `GET /api/v1/client/quota/overview`：当前系统用户的个人用量、团队共享额度和可用量
-- `POST /api/v1/client/usage/events`：客户端幂等上报本机 Codex Token 事件
+- `GET /api/v1/client/access`：查询当前用户与安装实例的有效会话绑定，返回 `{allowed,bindingId,reason}`
+- `POST /api/v1/client/usage/events`：客户端幂等上报本机 Codex Token 事件，仅返回 `{acceptedEvents}` 接收回执
 - `PUT /api/v1/client/official-quota`：客户端上报不含凭据的官方额度摘要
 - `GET /api/v1/admin/users/{id}/quota-overview`：管理员查看个人 Token 用量
 - `GET /api/v1/admin/teams/{id}/quota-overview`：管理员查看团队成员合计的 5 小时/7 天已用与剩余 Token
@@ -49,6 +50,22 @@
 `USER`，系统也会阻止禁用或降级最后一个启用中的管理员；这些冲突返回 `409`，后者
 使用错误码 `ADMIN_LAST_ACTIVE`。用户列表的 `page` 从 0 开始，`size` 范围为 1 到
 100，按 `createdAt DESC, id DESC` 稳定排序。
+
+客户端业务接口 `/api/v1/client/**` 要求 `Authorization` 和 `X-Quota-Guard-Device-ID`。
+每个请求都从数据库校验该安装实例属于当前用户、设备登记有效、会话绑定为 `ACTIVE`、
+团队与官方连接 revision 一致且连接为 `CONNECTED`；官方下线操作为 `EXECUTING` 或
+`UNKNOWN`、账号隔离、设备撤销、绑定结束或上下文改变时立即拒绝。未满足条件的业务请求
+返回 `403 SESSION_BINDING_REQUIRED`。`GET /api/v1/client/access` 使用相同规则，仅只读查询并
+返回 `Cache-Control: no-store`，客户端 `allowed` / `bound` 布尔值、请求体用户 ID 均不能授予权限。
+
+白名单只开放既有方法和路径：访问状态查询、设备首次登记、登录辅助、会话绑定流程、
+`POST /api/v1/client/usage/events` 采集；身份登录/刷新/退出、`users/me` 和独立设备令牌
+`/api/v1/meter/**` 继续使用各自鉴权。未绑定和桌面退出不停止计量；采集回执不包含配额或统计数据。
+`/api/v1/admin/**` 是网页后台与桌面共用的管理接口，`ROLE_ADMIN` 本身具有管理授权，
+不受客户端设备绑定限制，以便未绑定管理员配置官方登录助手与处理绑定故障。
+
+设备 ID 是安装实例 UUID，不是不可复制的硬件身份。拥有本机全部文件和凭据的管理员
+可能复制该身份；本门禁防止客户端伪造“已绑定”状态，不能宣称阻止完整本机身份克隆。
 
 ## 必填环境变量
 

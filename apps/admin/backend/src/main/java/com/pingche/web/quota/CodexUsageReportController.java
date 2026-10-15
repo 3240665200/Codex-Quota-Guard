@@ -21,11 +21,14 @@ public class CodexUsageReportController {
     }
 
     @PostMapping("/events")
-    public ResponseEntity<QuotaOverviewResponse> report(
+    public ResponseEntity<UsageReportReceipt> report(
             Authentication authentication,
             @Valid @RequestBody CodexUsageReportRequest request
     ) {
+        service.report((UUID) authentication.getPrincipal(), request);
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
-                .body(service.report((UUID) authentication.getPrincipal(), request));
+                .body(new UsageReportReceipt(request.events().size()));
     }
+
+    public record UsageReportReceipt(int acceptedEvents) { }
 }

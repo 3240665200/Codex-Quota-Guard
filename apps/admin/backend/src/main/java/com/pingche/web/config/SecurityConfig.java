@@ -4,6 +4,8 @@ import com.pingche.web.auth.JwtService;
 import com.pingche.web.common.SecurityErrorWriter;
 import com.pingche.web.meter.MeterDeviceService;
 import com.pingche.web.meter.MeterTokenFilter;
+import com.pingche.web.sessionbinding.ClientAccessFilter;
+import com.pingche.web.sessionbinding.ClientAccessService;
 import com.pingche.web.user.UserRepository;
 import jakarta.servlet.DispatcherType;
 import java.util.Arrays;
@@ -52,7 +54,7 @@ public class SecurityConfig {
                 "DELETE",
                 "OPTIONS"
         ));
-        configuration.setAllowedHeaders(List.of("Authorization", "Content-Type"));
+        configuration.setAllowedHeaders(List.of("Authorization", "Content-Type", ClientAccessService.DEVICE_HEADER));
         configuration.setAllowCredentials(false);
         configuration.setMaxAge(600L);
 
@@ -67,6 +69,7 @@ public class SecurityConfig {
             JwtService jwtService,
             UserRepository users,
             MeterDeviceService meterDevices,
+            ClientAccessService clientAccess,
             SecurityErrorWriter errorWriter,
             @Value("${app.auth-rate-limit-per-minute:20}") int authRateLimit,
             @Value("${app.require-https:false}") boolean requireHttps
@@ -110,6 +113,7 @@ public class SecurityConfig {
                         .requestMatchers("/api/v1/meter/**").hasRole("METER")
                         .anyRequest().authenticated())
                 .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class)
+                .addFilterAfter(new ClientAccessFilter(clientAccess, errorWriter), JwtFilter.class)
                 .addFilterBefore(meterTokenFilter, JwtFilter.class)
                 .addFilterBefore(rateLimitFilter, JwtFilter.class);
 
