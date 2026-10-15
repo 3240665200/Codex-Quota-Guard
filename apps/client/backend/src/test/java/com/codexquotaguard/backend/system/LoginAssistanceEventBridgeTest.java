@@ -97,11 +97,40 @@ class LoginAssistanceEventBridgeTest {
         }
     }
 
+    @Test void anIdentityChangeBetweenTheLastCheckAndPublicationCannotEmit() throws Exception {
+        login();var fenced=spy(sessions);var input=new BlockingInput();var emitter=mock(SseEmitter.class);
+        AtomicBoolean revoke=new AtomicBoolean();
+        doAnswer(call->{
+            boolean valid=(boolean)call.callRealMethod();
+            if(valid && revoke.compareAndSet(true,false))fenced.logout();
+            return valid;
+        }).when(fenced).matches(any());
+        when(gateway.loginAssistanceEvents("synthetic-access")).thenReturn(new AssistanceEventStream(input));
+        try(var bridge=new LoginAssistanceEventBridge(fenced,gateway,()->emitter,clock)) {
+            bridge.subscribe();assertThat(input.reading.await(2,java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            revoke.set(true);input.event("state_changed");
+            await().atMost(Duration.ofSeconds(2)).untilTrue(input.closed);
+            verify(emitter,never()).send(any(SseEmitter.SseEventBuilder.class));
+        }
+    }
+
+    @Test void identityCheckFailureClosesTheStreamInsteadOfBreakingTheWatchdog() throws Exception {
+        login();var fenced=spy(sessions);var input=new BlockingInput();
+        when(gateway.loginAssistanceEvents("synthetic-access")).thenReturn(new AssistanceEventStream(input));
+        try(var bridge=new LoginAssistanceEventBridge(fenced,gateway,()->mock(SseEmitter.class),clock)) {
+            bridge.subscribe();assertThat(input.reading.await(2,java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            doThrow(new IllegalStateException("private-local-failure")).when(fenced).matches(any());
+            assertThatCode(bridge::sweep).doesNotThrowAnyException();
+            assertThat(input.closed).isTrue();
+        }
+    }
+
     static final class BlockingInput extends InputStream {
         final LinkedBlockingQueue<Integer> values=new LinkedBlockingQueue<>();
         final AtomicBoolean closed=new AtomicBoolean();
+        final java.util.concurrent.CountDownLatch reading=new java.util.concurrent.CountDownLatch(1);
         void event(String name){("event:"+name+"\ndata:{}\n\n").chars().forEach(values::add);}
-        @Override public int read(){try{return values.take();}catch(InterruptedException ignored){Thread.currentThread().interrupt();return -1;}}
+        @Override public int read(){reading.countDown();try{return values.take();}catch(InterruptedException ignored){Thread.currentThread().interrupt();return -1;}}
         @Override public void close(){closed.set(true);values.offer(-1);}
     }
 }
