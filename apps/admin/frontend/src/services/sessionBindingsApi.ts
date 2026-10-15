@@ -11,7 +11,7 @@ export interface SessionBinding {
   sessionId: string;
   status: 'ACTIVE' | 'ENDED' | 'INVALIDATED';
   matchMethod: 'SERIAL_LOGIN_DIFF';
-  verificationLevel: 'USER_CONFIRMED_INFERENCE';
+  verificationLevel: 'USER_CONFIRMED_INFERENCE' | 'AUTOMATIC_SERIAL_INFERENCE';
   createdAt: string;
   endedAt: string | null;
 }

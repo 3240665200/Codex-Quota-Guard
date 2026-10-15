@@ -28,11 +28,11 @@ function message(attempt: SessionBindingAttempt | null) {
     case "PREPARING":
       return "正在取得本次登录前的官方会话快照，请稍候。";
     case "READY_FOR_LOGIN":
-      return "已取得本次独占登录名额。请打开官方 Codex 应用，使用应用内的正常登录入口完成登录，然后点击下方识别按钮。";
+      return "已取得本次独占登录名额。请打开官方 Codex 应用，使用应用内的正常登录入口完成登录，后台会自动检测并完成绑定。";
     case "DETECTING":
-      return "正在读取本次登录后的官方会话，识别唯一新增候选…";
+      return "后台正在检查官方登录结果并识别新增会话，请稍候…";
     case "AWAITING_CONFIRMATION":
-      return "已找到一个新增官方会话。请核对以下信息，再确认是否属于本次登录。";
+      return "已找到一个新增官方会话，后台正在复核，完成后会自动保存绑定。";
     case "BOUND":
       return "本设备官方会话已绑定。";
     case "CANCELLED":
@@ -45,6 +45,8 @@ function message(attempt: SessionBindingAttempt | null) {
           return "没有发现本次新增的官方会话，后台会自动整理队列。已有官方登录不能直接推断为本设备；需要重新登录时，请重新申请名额并由你在官方应用中明确操作。";
         case "SESSION_BINDING_AMBIGUOUS":
           return "本次出现多个新增官方会话，无法唯一识别，未保存绑定。后台会自动整理队列；请勿将其他人的登录认作本设备。";
+        case "SESSION_BINDING_INVALID_CANDIDATE":
+          return "新增会话无法确认用于 Codex，未保存绑定。后台会自动整理队列，可以重新申请排队。";
         case "SESSION_BINDING_DEVICE_CONFLICT":
           return "本设备已有其他系统账户的有效绑定，请由管理员处理，不能直接接管。";
         case "SESSION_BINDING_SNAPSHOT_UNAVAILABLE":
@@ -171,19 +173,11 @@ export function SessionBinding({
     };
   }, [attempt?.id, attempt?.expiresAt, attempt?.status, refresh]);
 
-  const run = async (action: "start" | "detect" | "confirm" | "cancel") => {
+  const run = async (action: "start" | "cancel") => {
     const lifetime = lifetimeRef.current;
     if (!lifetime?.active || lifetime.busy) return;
     const existing = lifetime.attempt;
     if (action !== "start" && !existing) return;
-    if (
-      (action === "confirm" || action === "detect") &&
-      existing &&
-      Date.parse(existing.expiresAt) <= Date.now()
-    ) {
-      refresh();
-      return;
-    }
     lifetime.busy = true;
     const generation = ++lifetime.generation;
     setPending(true);
@@ -241,7 +235,7 @@ export function SessionBinding({
           <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
             {bound
               ? "已保存本设备与系统账户的官方会话映射，重新打开客户端可继续查看。"
-              : "排队取得名额 → 在官方 Codex 登录 → 识别新增会话 → 你确认后保存绑定。"}
+              : "申请登录名额 → 在官方 Codex 登录 → 后台自动识别并保存绑定。"}
           </p>
         </div>
       </div>
@@ -255,7 +249,7 @@ export function SessionBinding({
             {bound
               ? "本设备官方会话已绑定。"
               : deadlineReached
-                ? "倒计时已结束，正在核对服务器到期状态；确认前不能识别或保存。"
+                ? "倒计时已结束，正在核对服务器到期状态，请等待后台返回结果。"
                 : message(attempt)}
           </p>
           {active(attempt) ? (
@@ -362,23 +356,6 @@ export function SessionBinding({
                     : "开始绑定本设备"}
               </Button>
             ) : null}
-            {attempt?.status === "READY_FOR_LOGIN" && attempt.loginAllowed ? (
-              <Button
-                disabled={pending || deadlineReached}
-                onClick={() => void run("detect")}
-              >
-                已完成登录，识别本设备
-              </Button>
-            ) : null}
-            {attempt?.status === "AWAITING_CONFIRMATION" &&
-            attempt.candidateSessionId ? (
-              <Button
-                disabled={pending || deadlineReached}
-                onClick={() => void run("confirm")}
-              >
-                确认绑定此会话
-              </Button>
-            ) : null}
             {active(attempt) ? (
               <Button
                 variant="outline"
@@ -398,7 +375,7 @@ export function SessionBinding({
           </div>
           {!bound ? (
             <p className="mt-4 text-xs leading-relaxed text-muted-foreground">
-              需要验证码时可在“登录辅助”页面监听邮件。收到验证码仅用于官方登录，仍需完成识别与确认。本流程根据排他时段内的新增会话推断归属，不能证明物理设备身份。设备标识为本次安装持久保存的随机
+              需要验证码时可在“登录辅助”页面监听邮件。完成官方登录后，后台会自动检查绑定结果。本流程根据排他时段内的新增会话推断归属，不能证明物理设备身份；外部迟到登录仍可能影响归属判断。设备标识为本次安装持久保存的随机
               UUID，升级不变。
             </p>
           ) : null}

@@ -27,10 +27,12 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.ObjectMapper;
 
-/** A confirmed serial-login inference, never a cryptographic device attestation. */
+/** A serial-login inference, never a cryptographic device attestation. */
 @Service
 public class SessionBindingService {
     private static final String PENDING = "('QUEUED','PREPARING','READY_FOR_LOGIN','DETECTING','AWAITING_CONFIRMATION')";
+    // Match OfficialConnectionService's per-account minimum refresh interval.
+    private static final long CHECK_INTERVAL_SECONDS = 10;
     private final JdbcTemplate jdbc;
     private final OfficialConnectionService official;
     private final Clock clock;
@@ -113,8 +115,12 @@ public class SessionBindingService {
             lockAccount(accountId);
             sweep(accountId);
             Guard guard = guard(accountId);
-            if (guard.activeAttempt != null || guard.recoveryId != null
-                    || future(guard.nextPrepareAt) || future(guard.settleUntil)) return null;
+            if (guard.recoveryId != null || future(guard.nextPrepareAt) || future(guard.settleUntil)) return null;
+            if (guard.activeAttempt != null) {
+                Attempt active = load(guard.activeAttempt);
+                if (guard.quarantined || !Set.of("READY_FOR_LOGIN", "AWAITING_CONFIRMATION").contains(active.status)) return null;
+                return new Preparation(reserveAfter(active), null);
+            }
             List<Attempt> heads = jdbc.query("select * from session_binding_attempts where official_account_id=? and status='QUEUED' order by sequence_id limit 1", this::attempt, accountId);
             if (!heads.isEmpty()) {
                 Attempt head = heads.get(0);
@@ -136,6 +142,10 @@ public class SessionBindingService {
         if (preparation == null) return;
         if (preparation.work != null) {
             Work work = preparation.work;
+            if ("DETECTING".equals(work.status)) {
+                checkAutomatically(work);
+                return;
+            }
             try {
                 OfficialConnectionRefreshResponse snapshot = fresh(work);
                 finish(work, () -> grant(load(work.attempt.id), snapshot));
@@ -148,6 +158,7 @@ public class SessionBindingService {
                 json.writeValueAsString(snapshot.sessions().devices().stream().map(OfficialSessionInfo::sessionId).filter(value -> value != null && !value.isBlank()).toList()),
                 snapshot.account().accountId(), snapshot.account().userId(), at(clock.instant().plusSeconds(1800)), attempt.id);
         clearRecovery(attempt.accountId);
+        scheduleCheck(attempt.accountId);
         return response(load(attempt.id));
     }
 
@@ -195,10 +206,67 @@ public class SessionBindingService {
     }
 
     private void scheduleRetry(UUID accountId) {
+        scheduleRetry(accountId, 5);
+    }
+
+    private void scheduleRetry(UUID accountId, long minimumSeconds) {
         Guard guard = guard(accountId);
         int failures = Math.min(guard.prepareFailures + 1, 16);
-        long seconds = Math.min(5L << Math.min(failures - 1, 4), 60L);
+        long seconds = Math.min(minimumSeconds << Math.min(failures - 1, 4), 60L);
         jdbc.update("update session_binding_accounts set next_prepare_at=?,prepare_failures=?,updated_at=? where official_account_id=?", at(clock.instant().plusSeconds(seconds)), failures, at(clock.instant()), accountId);
+    }
+
+    private void scheduleCheck(UUID accountId) {
+        jdbc.update("update session_binding_accounts set next_prepare_at=?,prepare_failures=0,updated_at=? where official_account_id=?",
+                at(clock.instant().plusSeconds(CHECK_INTERVAL_SECONDS)), at(clock.instant()), accountId);
+    }
+
+    private void checkAutomatically(Work work) {
+        try {
+            OfficialConnectionRefreshResponse snapshot = fresh(work);
+            finish(work, () -> identifyAutomatically(load(work.attempt.id), snapshot));
+        } catch (DataIntegrityViolationException conflict) {
+            fail(work, "SESSION_BINDING_CURRENT_CONFLICT");
+        } catch (DomainException failure) {
+            if (!Set.of("SESSION_BINDING_SNAPSHOT_UNAVAILABLE", "OFFICIAL_UNAVAILABLE", "OFFICIAL_RATE_LIMITED",
+                    "OFFICIAL_REFRESH_RATE_LIMITED", "OFFICIAL_REFRESH_BUSY").contains(failure.getCode())) {
+                fail(work, failure.getCode());
+                return;
+            }
+            finish(work, () -> {
+                Attempt attempt = load(work.attempt.id);
+                jdbc.update("update session_binding_attempts set status=?,error_code=?,operation_id=null,operation_started_at=null where id=?",
+                        attempt.candidateSessionId == null ? "READY_FOR_LOGIN" : "AWAITING_CONFIRMATION", failure.getCode(), attempt.id);
+                scheduleRetry(attempt.accountId, CHECK_INTERVAL_SECONDS);
+                return response(load(attempt.id));
+            });
+        }
+    }
+
+    private SessionBindingAttemptResponse identifyAutomatically(Attempt attempt, OfficialConnectionRefreshResponse snapshot) {
+        Set<String> before = new HashSet<>();
+        for (var id : json.readTree(attempt.beforeSessionIds)) before.add(id.asString());
+        List<OfficialSessionInfo> candidates = snapshot.sessions().devices().stream()
+                .filter(device -> device.sessionId() != null && !device.sessionId().isBlank())
+                .filter(device -> !before.contains(device.sessionId())).toList();
+        if (candidates.isEmpty() && attempt.candidateSessionId == null) {
+            jdbc.update("update session_binding_attempts set status='READY_FOR_LOGIN',error_code=null,operation_id=null,operation_started_at=null where id=?", attempt.id);
+            scheduleCheck(attempt.accountId);
+        } else if (candidates.size() != 1 || (attempt.candidateSessionId != null && !attempt.candidateSessionId.equals(candidates.get(0).sessionId()))) {
+            terminate(attempt, "REJECTED", candidates.isEmpty() ? "SESSION_BINDING_NO_NEW_SESSION" : "SESSION_BINDING_AMBIGUOUS");
+        } else {
+            OfficialSessionInfo candidate = candidates.get(0);
+            if (candidate.applications().stream().noneMatch(app -> "Codex".equalsIgnoreCase(app.trim()))) {
+                terminate(attempt, "REJECTED", "SESSION_BINDING_INVALID_CANDIDATE");
+            } else if (attempt.candidateSessionId != null) {
+                return bind(attempt, candidate.sessionId(), "AUTOMATIC_SERIAL_INFERENCE");
+            } else {
+                jdbc.update("update session_binding_attempts set status='AWAITING_CONFIRMATION',candidate_session_id=?,candidate_display_name=?,candidate_platform=?,candidate_fetched_at=?,error_code=null,operation_id=null,operation_started_at=null where id=?",
+                        candidate.sessionId(), truncate(candidate.displayName(), 1000), truncate(candidate.platform(), 320), at(snapshot.fetchedAt()), attempt.id);
+                scheduleCheck(attempt.accountId);
+            }
+        }
+        return response(load(attempt.id));
     }
 
     public SessionBindingAttemptResponse detect(UUID userId, UUID id) {
@@ -235,20 +303,7 @@ public class SessionBindingService {
                 if ("BOUND".equals(attempt.status)) return response(attempt);
                 if (!"AWAITING_CONFIRMATION".equals(attempt.status)) return response(attempt);
                 if (!Objects.equals(sessionId, attempt.candidateSessionId)) throw error("SESSION_BINDING_CANDIDATE_MISMATCH");
-                if (accountStateUnlocked(attempt.accountId).quarantined() || !owns(attempt) || !valid(attempt)) {
-                    terminate(attempt, "REJECTED", "SESSION_BINDING_CONTEXT_CHANGED");
-                    return response(load(id));
-                }
-                if (jdbc.queryForObject("select count(*) from session_bindings where active_device_id=? or (official_account_id=? and active_session_id=?)", Integer.class, attempt.deviceId, attempt.accountId, sessionId) > 0) {
-                    terminate(attempt, "REJECTED", "SESSION_BINDING_CURRENT_CONFLICT");
-                    return response(load(id));
-                }
-                jdbc.update("insert into session_bindings (id,attempt_id,user_id,device_id,enrollment_id,team_id,team_version,official_account_id,connection_revision,session_id,active_device_id,active_session_id,status,match_method,verification_level,created_at) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        UUID.randomUUID(), id, userId, attempt.deviceId, attempt.enrollmentId, attempt.teamId, attempt.teamVersion,
-                        attempt.accountId, attempt.revision, sessionId, attempt.deviceId, sessionId, "ACTIVE", "SERIAL_LOGIN_DIFF", "USER_CONFIRMED_INFERENCE", at(clock.instant()));
-                jdbc.update("update session_binding_attempts set status='BOUND',operation_id=null,operation_started_at=null where id=?", id);
-                jdbc.update("update session_binding_accounts set active_attempt_id=null,generation=generation+1,updated_at=? where official_account_id=? and active_attempt_id=?", at(clock.instant()), attempt.accountId, id);
-                return response(load(id));
+                return bind(attempt, sessionId, "USER_CONFIRMED_INFERENCE");
             });
         } catch (DataIntegrityViolationException conflict) {
             // Database uniqueness remains authoritative across different account queues.
@@ -257,6 +312,24 @@ public class SessionBindingService {
                 return response(load(id));
             });
         }
+    }
+
+    private SessionBindingAttemptResponse bind(Attempt attempt, String sessionId, String verificationLevel) {
+        if (accountStateUnlocked(attempt.accountId).quarantined() || !owns(attempt) || !valid(attempt)) {
+            terminate(attempt, "REJECTED", "SESSION_BINDING_CONTEXT_CHANGED");
+            return response(load(attempt.id));
+        }
+        if (jdbc.queryForObject("select count(*) from session_bindings where active_device_id=? or (official_account_id=? and active_session_id=?)", Integer.class, attempt.deviceId, attempt.accountId, sessionId) > 0) {
+            terminate(attempt, "REJECTED", "SESSION_BINDING_CURRENT_CONFLICT");
+            return response(load(attempt.id));
+        }
+        jdbc.update("insert into session_bindings (id,attempt_id,user_id,device_id,enrollment_id,team_id,team_version,official_account_id,connection_revision,session_id,active_device_id,active_session_id,status,match_method,verification_level,created_at) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                UUID.randomUUID(), attempt.id, attempt.userId, attempt.deviceId, attempt.enrollmentId, attempt.teamId, attempt.teamVersion,
+                attempt.accountId, attempt.revision, sessionId, attempt.deviceId, sessionId, "ACTIVE", "SERIAL_LOGIN_DIFF", verificationLevel, at(clock.instant()));
+        if (mail != null) mail.endBindingClaim(attempt.userId, attempt.accountId);
+        jdbc.update("update session_binding_attempts set status='BOUND',error_code=null,operation_id=null,operation_started_at=null where id=?", attempt.id);
+        jdbc.update("update session_binding_accounts set active_attempt_id=null,generation=generation+1,next_prepare_at=null,prepare_failures=0,updated_at=? where official_account_id=? and active_attempt_id=?", at(clock.instant()), attempt.accountId, attempt.id);
+        return response(load(attempt.id));
     }
 
     public SessionBindingAttemptResponse cancel(UUID userId, UUID id) {
