@@ -69,6 +69,34 @@ class ManagedBrowserSessionTest {
         session.close();
     }
 
+    @Test
+    void blockedOptionalSubresourcesDoNotAbortTheHumanLoginWhileNavigationStillFailsClosed() {
+        FakeCdp cdp = new FakeCdp();
+        var session = new ChromiumManagedLoginBrowser.OwnedSession(cdp, json, () -> {}, () -> 0L);
+        session.initialize();
+        session.accept(event("Fetch.requestPaused", "owned", Map.of("requestId", "tracker", "resourceType", "Script",
+                "request", Map.of("url", "https://analytics.example.test/script.js?private=synthetic"))));
+        assertThat(cdp.methods).contains("Fetch.failRequest");
+        assertThat(session.frame().errorCode()).isNull();
+        session.accept(event("Fetch.requestPaused", "owned", Map.of("requestId", "navigation", "resourceType", "Document",
+                "request", Map.of("url", "https://evil.test/login?private=synthetic"))));
+        assertThat(session.frame().errorCode()).isEqualTo("WEB_LOGIN_DESTINATION_BLOCKED");
+        session.close();
+    }
+
+    @Test
+    void cookieChangeWhileTheAccountRequestIsInFlightCannotBindAnOldBearerToANewCookie() {
+        FakeCdp cdp = new FakeCdp();
+        var session = new ChromiumManagedLoginBrowser.OwnedSession(cdp, json, () -> {}, () -> 0L);
+        session.initialize(); String url = "https://chatgpt.com/backend-api/accounts/sessions";
+        session.accept(event("Network.requestWillBeSent", "owned", Map.of("requestId", "inflight", "request", Map.of("method", "GET", "url", url,
+                "headers", Map.of("Authorization", "Bearer first", "Chatgpt-Account-Id", "synthetic-account")))));
+        cdp.cookie = "changed-before-response";
+        session.accept(event("Network.responseReceived", "owned", Map.of("requestId", "inflight", "response", Map.of("status", 200, "mimeType", "application/json", "url", url))));
+        assertThat(session.capture()).isNull();
+        session.close();
+    }
+
     private void successfulRead(ChromiumManagedLoginBrowser.OwnedSession session, String authorization) {
         String url = "https://chatgpt.com/backend-api/accounts/sessions";
         session.accept(event("Network.requestWillBeSent", "owned", Map.of("requestId", "r", "request", Map.of("method", "GET", "url", url,
