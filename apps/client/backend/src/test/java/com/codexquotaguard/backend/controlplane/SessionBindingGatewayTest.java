@@ -48,7 +48,8 @@ class SessionBindingGatewayTest {
                     {"id":"%s","deviceId":"%s","enrollmentId":"%s","officialAccountId":"%s",
                      "status":"QUEUED","queuePosition":1,"loginAllowed":false,"candidateSessionId":null,
                      "candidateDisplayName":null,"candidatePlatform":null,"expiresAt":"2026-10-15T10:02:00Z",
-                     "errorCode":null,"quarantined":false,"binding":null}
+                     "errorCode":null,"quarantined":false,"binding":null,
+                     "queueState":"SETTLING","retryAt":"2026-10-15T10:01:00Z"}
                     """.formatted(id, device, device, id);
             byte[] bytes = json.getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "application/json");
@@ -59,7 +60,10 @@ class SessionBindingGatewayTest {
             var gateway = new HttpControlPlaneGateway("http://127.0.0.1:" + server.getAddress().getPort(), new ObjectMapper());
             assertThat(gateway.sessionBindingCurrent("native-access", device, device).binding()).isNull();
             assertThat(requestPath.get()).isEqualTo("/api/v1/client/session-bindings/current?deviceId=" + device + "&enrollmentId=" + device);
-            assertThat(gateway.startSessionBinding("native-access", device, device).status()).isEqualTo("QUEUED");
+            var attempt=gateway.startSessionBinding("native-access", device, device);
+            assertThat(attempt.status()).isEqualTo("QUEUED");
+            assertThat(attempt.queueState()).isEqualTo("SETTLING");
+            assertThat(attempt.retryAt()).isEqualTo(java.time.Instant.parse("2026-10-15T10:01:00Z"));
             assertThat(requestBody.get()).contains(device.toString()).doesNotContain("userId", "accessToken");
             assertThat(authorization.get()).isEqualTo("Bearer native-access");
             for (String action : new String[] { "prepare", "detect", "cancel", "confirm" }) {
