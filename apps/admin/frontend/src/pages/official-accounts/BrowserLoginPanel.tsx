@@ -23,6 +23,7 @@ export default function BrowserLoginPanel({ accountId, version, proxyNodeId, dis
   const [working, setWorking] = useState<'start' | 'cancel' | 'complete' | null>(null);
   const [error, setError] = useState('');
   const [paused, setPaused] = useState(false);
+  const [needsRecheck, setNeedsRecheck] = useState(false);
   const [revision, setRevision] = useState(0);
   const current = useRef(lifetime(accountId));
   const canvas = useRef<HTMLCanvasElement>(null);
@@ -45,7 +46,7 @@ export default function BrowserLoginPanel({ accountId, version, proxyNodeId, dis
   const accept = async (scope: Lifetime, value: OfficialWebLoginJob) => {
     if (!isCurrent(scope) || value.officialAccountId !== scope.accountId || scope.job && value.id !== scope.job.id) return;
     if (scope.job && Date.parse(value.expiresAt) > Date.parse(scope.job.expiresAt)) value = { ...value, expiresAt: scope.job.expiresAt };
-    scope.job = value; setJob(value);
+    scope.job = value; setJob(value); setNeedsRecheck(false);
     if (!pending(value)) { scope.queue.length = 0; clearFrame(); }
     if (['COMPLETED', 'FAILED'].includes(value.state) && completedId.current !== value.id) {
       completedId.current = value.id;
@@ -56,7 +57,7 @@ export default function BrowserLoginPanel({ accountId, version, proxyNodeId, dis
 
   useEffect(() => {
     const scope = lifetime(accountId); current.current = scope;
-    setJob(null); clearFrame(); setWorking(null); setError(''); setPaused(false);
+    setJob(null); clearFrame(); setWorking(null); setError(''); setPaused(false); setNeedsRecheck(false);
     return () => {
       scope.alive = false; scope.epoch += 1; scope.queue.length = 0; scope.paused = true;
       const element = canvas.current; element?.getContext('2d')?.clearRect(0, 0, element.width, element.height);
@@ -71,8 +72,10 @@ export default function BrowserLoginPanel({ accountId, version, proxyNodeId, dis
       if (!pending(scope.job)) return;
       scope.epoch += 1; scope.paused = true; scope.queue.length = 0;
       abandon(scope.job);
-      scope.job = { ...scope.job!, state: 'CANCELLED', pageOrigin: null, readyToSave: false };
-      setJob(scope.job); setWorking(null); setPaused(true); clearFrame();
+      // Cancellation is best effort: SAVING may already have committed, so only a safe read can confirm the result.
+      scope.job = { ...scope.job!, pageOrigin: null, readyToSave: false };
+      setJob(scope.job); setWorking(null); setPaused(true); setNeedsRecheck(true); clearFrame();
+      setError('页面已离开，任务结果尚未确认。返回后请点击“重新检查任务”；保存和输入不会自动重发。');
     };
     window.addEventListener('pagehide', closePage);
     return () => window.removeEventListener('pagehide', closePage);
@@ -109,7 +112,7 @@ export default function BrowserLoginPanel({ accountId, version, proxyNodeId, dis
   }, [visibleJob?.id, visibleJob?.state, paused, revision, working]);
 
   useEffect(() => {
-    if (!visibleJob || !pending(visibleJob)) return;
+    if (!visibleJob || !pending(visibleJob) || needsRecheck || current.current.saveAttempted) return;
     const scope = current.current;
     const expire = () => {
       if (!isCurrent(scope) || !pending(scope.job)) return;
@@ -120,7 +123,7 @@ export default function BrowserLoginPanel({ accountId, version, proxyNodeId, dis
     const remaining = Date.parse(visibleJob.expiresAt) - Date.now();
     const timer = setTimeout(expire, Math.max(0, Math.min(remaining, 2_147_483_647)));
     return () => clearTimeout(timer);
-  }, [visibleJob?.id, visibleJob?.expiresAt, visibleJob?.state]);
+  }, [visibleJob?.id, visibleJob?.expiresAt, visibleJob?.state, needsRecheck]);
 
   useEffect(() => {
     if (!frame || !canvas.current) return;
@@ -201,7 +204,7 @@ export default function BrowserLoginPanel({ accountId, version, proxyNodeId, dis
     <Typography.Paragraph style={{ marginBottom: 0 }}>登录在服务器的独立浏览器中进行。请在下方官方页面亲自输入账号、密码和验证码；验证码与浏览器验证需要你自行完成。</Typography.Paragraph>
     <Typography.Text type="secondary">登录与后续读取均使用所选代理节点；失败时不会自动切换出口。登录画面和输入仅用于本次任务，关闭、取消或到期会销毁该浏览器。</Typography.Text>
     {error ? <Alert type="error" showIcon title="登录任务操作未完成" description={error} /> : null}
-    {visibleJob ? <><Tag color={visibleJob.state === 'COMPLETED' ? 'success' : active ? 'processing' : 'default'}>{labels[visibleJob.state]}</Tag>
+    {visibleJob ? <><Tag color={visibleJob.state === 'COMPLETED' ? 'success' : active ? 'processing' : 'default'}>{needsRecheck ? '登录任务结果待核对' : labels[visibleJob.state]}</Tag>
       <Descriptions size="small" column={1} items={[
         { key: 'origin', label: '当前官方站点', children: frame?.pageOrigin || visibleJob.pageOrigin || '等待官方页面' },
         { key: 'expires', label: '任务有效期至', children: new Date(visibleJob.expiresAt).toLocaleString('zh-CN') },
