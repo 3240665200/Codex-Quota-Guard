@@ -1,4 +1,4 @@
-import { configure, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, configure, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { App as AntApp } from 'antd';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import ConnectionModal from './ConnectionModal';
@@ -88,6 +88,29 @@ describe('会话表手动勾选登出范围', () => {
     await waitFor(() => expect(within(dialog).getByRole('button', { name: '登出选中会话（0）' })).toBeDisabled());
     expect(within(dialog).queryByText('选中目标')).not.toBeInTheDocument();
     expect(mocks.confirmSessionLogout).not.toHaveBeenCalled();
+  });
+
+  it('ignores a late snapshot refresh from the previously selected account', async () => {
+    let finish!: (value: typeof snapshot) => void;
+    mocks.refreshOfficialAccountConnection.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    const view = render(<AntApp><ConnectionModal account={{ id: 'selected-account', label: '选择会话账户' } as OfficialAccountResponse} onClose={vi.fn()} /></AntApp>);
+    const dialog = screen.getByRole('dialog'); await within(dialog).findByText('selected@example.test');
+    await selectFirst(dialog);
+    fireEvent.click(within(dialog).getByRole('button', { name: '刷新官方账户与会话' }));
+    await waitFor(() => expect(mocks.refreshOfficialAccountConnection).toHaveBeenCalledWith('selected-account'));
+    mocks.getOfficialAccountConnection.mockResolvedValue({ ...connection, requestedAccountId: 'workspace-2', version: 20 });
+    mocks.getOfficialAccountSessions.mockResolvedValue({ ...snapshot, account: { email: 'second@example.test' },
+      sessions: { showSessionManager: true, devices: [{ ...snapshot.sessions.devices[0], renderId: 'second-row',
+        sessionId: 'second-session', displayName: '第二账户设备' }] } });
+    mocks.listSessionBindings.mockResolvedValue([]);
+    view.rerender(<AntApp><ConnectionModal account={{ id: 'second-account', label: '第二账户' } as OfficialAccountResponse} onClose={vi.fn()} /></AntApp>);
+    await within(dialog).findByText('second@example.test');
+    await act(async () => finish(snapshot));
+    expect(within(dialog).getByText('second@example.test')).toBeInTheDocument();
+    expect(within(dialog).getByText('第二账户设备')).toBeInTheDocument();
+    expect(within(dialog).queryByText('selected@example.test')).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole('checkbox', { name: /Session ID：session-1/ })).not.toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: '登出选中会话（0）' })).toBeDisabled();
   });
 
 });
