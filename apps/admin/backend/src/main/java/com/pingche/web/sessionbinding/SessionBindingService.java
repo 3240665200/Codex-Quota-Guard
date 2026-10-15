@@ -4,6 +4,7 @@ import com.pingche.web.auth.DomainException;
 import com.pingche.web.officialsession.OfficialConnectionRefreshResponse;
 import com.pingche.web.officialsession.OfficialConnectionService;
 import com.pingche.web.officialsession.OfficialSessionInfo;
+import com.pingche.web.officialsession.OfficialSessionLogoutFence;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Clock;
@@ -33,6 +34,7 @@ public class SessionBindingService {
     private final Clock clock;
     private final ObjectMapper json;
     private final TransactionTemplate tx;
+    private final OfficialSessionLogoutFence logoutFence;
 
     public SessionBindingService(JdbcTemplate jdbc, OfficialConnectionService official, Clock clock,
             ObjectMapper json, PlatformTransactionManager transactionManager) {
@@ -41,6 +43,7 @@ public class SessionBindingService {
         this.clock = clock;
         this.json = json;
         this.tx = new TransactionTemplate(transactionManager);
+        this.logoutFence = new OfficialSessionLogoutFence(jdbc);
     }
 
     public SessionBindingAttemptResponse create(UUID userId, UUID deviceId, UUID enrollmentId, UUID requestedAccount) {
@@ -313,6 +316,7 @@ public class SessionBindingService {
 
     private void lockAccount(UUID accountId) {
         if (jdbc.query("select id from official_accounts where id=? for update", (rs,n) -> uuid(rs,"id"), accountId).isEmpty()) throw forbidden();
+        logoutFence.assertAvailable(accountId);
         if (jdbc.queryForObject("select count(*) from session_binding_accounts where official_account_id=?", Integer.class, accountId) == 0)
             jdbc.update("insert into session_binding_accounts (official_account_id,quarantined,updated_at) values (?,false,?)", accountId, at(clock.instant()));
     }

@@ -23,11 +23,13 @@ public class BrowserLoginService {
     private final OfficialConnectionService connections;
     private final Clock clock;
     private final TransactionTemplate transaction;
+    private final OfficialSessionLogoutFence logoutFence;
 
     public BrowserLoginService(JdbcTemplate jdbc, OfficialConnectionService connections, Clock clock,
             PlatformTransactionManager manager) {
         this.jdbc = jdbc; this.connections = connections; this.clock = clock;
         transaction = new TransactionTemplate(manager);
+        logoutFence = new OfficialSessionLogoutFence(jdbc);
     }
 
     public record StartRequest(@NotNull @PositiveOrZero Long version, UUID proxyNodeId) { }
@@ -45,6 +47,7 @@ public class BrowserLoginService {
         return tx(() -> {
             List<String> names = jdbc.query("select label from official_accounts where id=? for update", (rs,n) -> rs.getString(1), account);
             if (names.isEmpty()) throw fail("OFFICIAL_ACCOUNT_NOT_FOUND", HttpStatus.NOT_FOUND);
+            logoutFence.assertAvailable(account);
             var connection = connections.read(account);
             if (!connection.encryptionReady()) throw fail("OFFICIAL_ENCRYPTION_UNAVAILABLE", HttpStatus.SERVICE_UNAVAILABLE);
             if (request.version() == null || request.version() != connection.version())

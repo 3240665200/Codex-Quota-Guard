@@ -2,6 +2,7 @@ package com.pingche.web.quota;
 
 import com.pingche.web.auth.DomainException;
 import com.pingche.web.auth.RefreshSessionRepository;
+import com.pingche.web.officialsession.OfficialSessionLogoutFence;
 import com.pingche.web.team.Team;
 import com.pingche.web.team.TeamRepository;
 import com.pingche.web.user.User;
@@ -23,15 +24,18 @@ public class OfficialAccountService {
     private final UserRepository users;
     private final RefreshSessionRepository sessions;
     private final Clock clock;
+    private final OfficialSessionLogoutFence logoutFence;
 
     public OfficialAccountService(OfficialAccountRepository accounts, OfficialQuotaSnapshotService snapshots,
-            TeamRepository teams, UserRepository users, RefreshSessionRepository sessions, Clock clock) {
+            TeamRepository teams, UserRepository users, RefreshSessionRepository sessions, Clock clock,
+            OfficialSessionLogoutFence logoutFence) {
         this.accounts = accounts;
         this.snapshots = snapshots;
         this.teams = teams;
         this.users = users;
         this.sessions = sessions;
         this.clock = clock;
+        this.logoutFence = logoutFence;
     }
 
     @Transactional(readOnly = true)
@@ -85,7 +89,8 @@ public class OfficialAccountService {
 
     @Transactional
     public void delete(UUID id) {
-        OfficialAccount account = accounts.findById(id).orElseThrow(this::notFound);
+        OfficialAccount account = accounts.findByIdForUpdate(id).orElseThrow(this::notFound);
+        logoutFence.assertAvailable(id);
         if (teams.existsByOfficialAccountId(id)) {
             throw conflict("OFFICIAL_ACCOUNT_IN_USE", "请先解除团队与该账户的关联。");
         }

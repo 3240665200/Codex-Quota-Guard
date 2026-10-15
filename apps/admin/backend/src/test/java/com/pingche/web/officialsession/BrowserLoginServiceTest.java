@@ -31,6 +31,7 @@ class BrowserLoginServiceTest {
         jdbc.execute("create table users(id uuid primary key)");
         jdbc.execute("create table official_accounts(id uuid primary key, label varchar(120))");
         jdbc.execute("create table managed_proxy_nodes(id uuid primary key, enabled boolean not null default true)");
+        jdbc.execute("create table official_session_logout_plans(official_account_id uuid,status varchar(32))");
         jdbc.update("insert into users values (?)", owner);
         jdbc.update("insert into official_accounts values (?,?)", account, "Synthetic account");
         new ResourceDatabasePopulator(new ClassPathResource("db/migration/V25__add_official_browser_login_jobs.sql")).execute(source);

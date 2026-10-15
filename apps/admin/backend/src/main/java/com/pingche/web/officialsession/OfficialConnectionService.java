@@ -24,6 +24,7 @@ public class OfficialConnectionService {
     private final JdbcTemplate jdbc;
     private final Clock clock;
     private final TransactionTemplate transaction;
+    private final OfficialSessionLogoutFence logoutFence;
 
     public OfficialConnectionService(OfficialAccountRepository accounts, OfficialAccountConnectionRepository connections,
             OfficialSessionCipher cipher, OfficialSessionClient client, ObjectMapper mapper,
@@ -36,6 +37,7 @@ public class OfficialConnectionService {
         this.jdbc = jdbc;
         this.clock = clock;
         this.transaction = new TransactionTemplate(transactionManager);
+        this.logoutFence = new OfficialSessionLogoutFence(jdbc);
     }
 
     public OfficialConnectionResponse read(UUID accountId) {
@@ -200,6 +202,7 @@ public class OfficialConnectionService {
     private void requireAccount(UUID accountId, boolean lock) {
         if ((lock ? accounts.findByIdForUpdate(accountId) : accounts.findById(accountId)).isEmpty())
             throw error("OFFICIAL_ACCOUNT_NOT_FOUND", "Official account not found", HttpStatus.NOT_FOUND);
+        if (lock) logoutFence.assertAvailable(accountId);
     }
 
     private DomainException safeFailure(String code) {
