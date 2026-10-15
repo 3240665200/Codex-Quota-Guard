@@ -5,6 +5,7 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import java.util.UUID;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -17,9 +18,11 @@ import org.springframework.web.bind.annotation.RestController;
 public class AuthController {
 
     private final AuthService authService;
+    private final ApplicationEventPublisher events;
 
-    public AuthController(AuthService authService) {
+    public AuthController(AuthService authService, ApplicationEventPublisher events) {
         this.authService = authService;
+        this.events = events;
     }
 
     @PostMapping("/register")
@@ -48,6 +51,7 @@ public class AuthController {
             @Valid @RequestBody RefreshRequest request
     ) {
         authService.logout((UUID) authentication.getPrincipal(), request.refreshToken());
+        events.publishEvent(new SystemLogoutEvent((UUID) authentication.getPrincipal()));
         return ResponseEntity.noContent().build();
     }
 

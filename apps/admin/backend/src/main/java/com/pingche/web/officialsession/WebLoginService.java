@@ -1,6 +1,7 @@
 package com.pingche.web.officialsession;
 
 import com.pingche.web.auth.DomainException;
+import com.pingche.web.auth.SystemLogoutEvent;
 import com.pingche.web.weblogin.BrowserInputPolicy;
 import com.pingche.web.weblogin.ManagedLoginBrowser;
 import jakarta.annotation.PostConstruct;
@@ -22,6 +23,9 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 import org.springframework.http.HttpStatus;
+import org.springframework.context.event.EventListener;
+import org.springframework.dao.PessimisticLockingFailureException;
+import org.springframework.dao.QueryTimeoutException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -58,8 +62,8 @@ public class WebLoginService implements AutoCloseable {
     private static final class Entry {
         final UUID owner;
         final Instant expiresAt;
-        ManagedLoginBrowser.Session session;
-        boolean closed;
+        volatile ManagedLoginBrowser.Session session;
+        volatile boolean closed;
         Instant nextFrame = Instant.MIN, inputWindow = Instant.MIN;
         int inputs;
         String pageOrigin;
@@ -86,7 +90,7 @@ public class WebLoginService implements AutoCloseable {
             var names=jdbc.query("select label from official_accounts where id=? for update",(rs,n) -> rs.getString(1),account);
             if(names.isEmpty()) throw failure("OFFICIAL_ACCOUNT_NOT_FOUND",HttpStatus.NOT_FOUND);
             logoutFence.assertAvailable(account);
-            long ownerVersion=ownerVersion(owner);
+            long ownerVersion=ownerVersion(owner,true);
             var current=connections.read(account);
             if(!current.encryptionReady()) throw failure("OFFICIAL_ENCRYPTION_UNAVAILABLE",HttpStatus.SERVICE_UNAVAILABLE);
             if(request.version()==null || request.version()!=current.version()) throw failure("OFFICIAL_CONNECTION_VERSION_CONFLICT",HttpStatus.CONFLICT);
@@ -133,12 +137,13 @@ public class WebLoginService implements AutoCloseable {
             var frame=entry.session.frame();
             requireActive(owner,id,"WAITING_FOR_LOGIN");
             if(frame==null || frame.width()!=ManagedLoginBrowser.WIDTH || frame.height()!=ManagedLoginBrowser.HEIGHT
-                    || frame.jpegBase64()==null || frame.jpegBase64().isBlank() || frame.jpegBase64().length()>1_048_576)
+                    || frame.jpegBase64()==null || frame.jpegBase64().isBlank() || frame.jpegBase64().length()>2_097_152)
                 throw failure("BROWSER_LOGIN_FRAME_UNAVAILABLE",HttpStatus.SERVICE_UNAVAILABLE);
-            if(frame.errorCode()!=null) throw failure(browserCode(frame.errorCode()),HttpStatus.SERVICE_UNAVAILABLE);
+            boolean sessionChanged="WEB_LOGIN_SESSION_CHANGED".equals(frame.errorCode());
+            if(frame.errorCode()!=null && !sessionChanged) throw failure(browserCode(frame.errorCode()),HttpStatus.SERVICE_UNAVAILABLE);
             String origin=safeOrigin(frame.pageOrigin());
-            synchronized(entry) {entry.pageOrigin=origin;entry.ready=frame.readyToSave() && "https://chatgpt.com".equals(origin);}
-            return new ManagedLoginBrowser.Frame(frame.width(),frame.height(),frame.jpegBase64(),origin,entry.ready,null);
+            synchronized(entry) {entry.pageOrigin=origin;entry.ready=!sessionChanged && frame.readyToSave() && "https://chatgpt.com".equals(origin);}
+            return new ManagedLoginBrowser.Frame(frame.width(),frame.height(),frame.jpegBase64(),origin,entry.ready,sessionChanged?"BROWSER_LOGIN_SESSION_CHANGED":null);
         } catch(RuntimeException failure) {
             String code=safeCode(failure);failSession(id,"FAILED",code);throw failure(code,HttpStatus.SERVICE_UNAVAILABLE);
         }
@@ -177,12 +182,13 @@ public class WebLoginService implements AutoCloseable {
                     || snapshot.account().userId()==null || snapshot.account().userId().isBlank())
                 throw failure("OFFICIAL_ACCOUNT_MISMATCH",HttpStatus.BAD_GATEWAY);
             tx(() -> {
-                // Global order is official account, then job, then connection; no job lock spans network I/O.
+                // Match binding's account-first order; NOWAIT on the owner also avoids user-deletion cycles.
                 if(jdbc.query("select id from official_accounts where id=? for update",(rs,n) -> rs.getObject(1,UUID.class),work.account()).isEmpty())
                     throw failure("OFFICIAL_ACCOUNT_NOT_FOUND",HttpStatus.NOT_FOUND);
                 logoutFence.assertAvailable(work.account());
                 Row current=row(owner,id,true);
                 validateActive(current,"SAVING");
+                if(ownerVersion(owner,true)!=work.ownerVersion())throw failure("BROWSER_LOGIN_ACCESS_REVOKED",HttpStatus.FORBIDDEN);
                 if(sessions.get(id)!=entry || entry.closed)throw failure("BROWSER_LOGIN_ACCESS_REVOKED",HttpStatus.CONFLICT);
                 connections.saveVerified(work.account(),new OfficialConnectionRequest(credentials.authorization(),credentials.cookie(),
                         credentials.requestedAccountId(),work.proxyNode(),work.version()),snapshot);
@@ -212,10 +218,13 @@ public class WebLoginService implements AutoCloseable {
         finally{sessions.forEach((id,entry) -> {if(entry.owner.equals(owner))closeSession(id);});}
     }
 
+    @EventListener
+    public void systemLogout(SystemLogoutEvent event) {cancelOwner(event.userId());}
+
     public void cleanup() {
         // Closing a locally expired process must also work while the database is temporarily unavailable.
         sessions.forEach((id,entry) -> {if(!entry.expiresAt.isAfter(clock.instant()))closeSession(id);});
-        jdbc.update("update official_browser_login_jobs set state='EXPIRED',error_code='BROWSER_LOGIN_EXPIRED' where login_method='WEB' and expires_at<=? and state in "+ACTIVE,at(clock.instant()));
+        jdbc.update("update official_browser_login_jobs set state='EXPIRED',error_code='BROWSER_LOGIN_EXPIRED' where expires_at<=? and state in "+ACTIVE,at(clock.instant()));
         jdbc.update("update official_browser_login_jobs set state='CANCELLED',error_code='BROWSER_LOGIN_ACCESS_REVOKED' where login_method='WEB' and state in "+ACTIVE
                 + " and not exists (select 1 from users u where u.id=official_browser_login_jobs.owner_id and u.role='ADMIN' and u.status='ACTIVE' and u.session_version=official_browser_login_jobs.owner_session_version)");
         sessions.forEach((id,entry) -> {
@@ -234,10 +243,15 @@ public class WebLoginService implements AutoCloseable {
         if(!state.equals(current.state())) throw failure("BROWSER_LOGIN_NOT_ACTIVE",HttpStatus.CONFLICT);
         if(ownerVersion(current.owner())!=current.ownerVersion()) throw failure("BROWSER_LOGIN_ACCESS_REVOKED",HttpStatus.FORBIDDEN);
     }
-    private long ownerVersion(UUID owner) {
-        var rows=jdbc.query("select session_version from users where id=? and role='ADMIN' and status='ACTIVE'",(rs,n) -> rs.getLong(1),owner);
-        if(rows.isEmpty()) throw failure("BROWSER_LOGIN_ACCESS_REVOKED",HttpStatus.FORBIDDEN);
-        return rows.get(0);
+    private long ownerVersion(UUID owner) {return ownerVersion(owner,false);}
+    private long ownerVersion(UUID owner,boolean lock) {
+        try {
+            var rows=jdbc.query("select session_version from users where id=? and role='ADMIN' and status='ACTIVE'"+(lock?" for update nowait":""),(rs,n) -> rs.getLong(1),owner);
+            if(rows.isEmpty()) throw failure("BROWSER_LOGIN_ACCESS_REVOKED",HttpStatus.FORBIDDEN);
+            return rows.get(0);
+        } catch(PessimisticLockingFailureException|QueryTimeoutException ignored) {
+            throw failure("BROWSER_LOGIN_ACCESS_REVOKED",HttpStatus.CONFLICT);
+        }
     }
     private Row row(UUID owner,UUID id,boolean lock) {
         var rows=jdbc.query("select * from official_browser_login_jobs where id=? and owner_id=? and login_method='WEB'"+(lock?" for update":""),(rs,n) -> map(rs),id,owner);
