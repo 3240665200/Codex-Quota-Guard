@@ -105,7 +105,7 @@ class OfficialSessionLogoutLivenessTest {
         assertThat(request("POST",url("confirm"),Map.of("planId",plan,"acknowledgeLogoutRisk",true)).statusCode()).isEqualTo(409);
         assertAdministrationStillAvailable();
         assertThat(output.getAll()).contains("Official logout audit event=STARTED planId="+plan+" mode=UNBOUND")
-                .contains("Official logout audit event=FINISHED planId="+plan+" mode=UNBOUND outcome=ACCEPTED accepted=5 failed=0 unknown=0 notAttempted=0");
+                .contains("Official logout audit event=WORKER_FINISHED planId="+plan+" mode=UNBOUND workerOutcome=ACCEPTED accepted=5 failed=0 unknown=0 notAttempted=0");
         assertAuditHasNoSensitiveData(output);
     }
 
@@ -132,7 +132,7 @@ class OfficialSessionLogoutLivenessTest {
         assertThat(result.path("results").get(0).path("status").asString()).isEqualTo("NOT_ATTEMPTED");
         verify(official,never()).revokeSession(any(),any(),any());
         assertAdministrationStillAvailable();
-        assertThat(output.getAll()).contains("Official logout audit event=FINISHED planId="+plan+" mode=UNBOUND outcome=FAILED accepted=0 failed=0 unknown=0 notAttempted=1");
+        assertThat(output.getAll()).contains("Official logout audit event=WORKER_FINISHED planId="+plan+" mode=UNBOUND workerOutcome=FAILED accepted=0 failed=0 unknown=0 notAttempted=1");
         assertAuditHasNoSensitiveData(output);
     }
 

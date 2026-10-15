@@ -163,7 +163,8 @@ public class OfficialSessionLogoutService {
             case "ACCEPTED", "PARTIAL", "FAILED", "UNKNOWN" -> result.status();
             default -> "UNKNOWN";
         };
-        LOG.info("Official logout audit event=FINISHED planId={} mode={} outcome={} accepted={} failed={} unknown={} notAttempted={}",
+        // The final execution fence can supersede this computed worker outcome; it is not a durable plan-state claim.
+        LOG.info("Official logout audit event=WORKER_FINISHED planId={} mode={} workerOutcome={} accepted={} failed={} unknown={} notAttempted={}",
                 work.plan.id, auditMode(work.plan.mode), outcome, auditCount(items, "ACCEPTED"), auditCount(items, "FAILED"),
                 auditCount(items, "UNKNOWN"), auditCount(items, "NOT_ATTEMPTED"));
     }
