@@ -5,6 +5,8 @@ import com.pingche.web.proxy.ManagedProxyGateway;
 import com.pingche.web.proxy.ProxyLease;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.net.Proxy;
 import java.net.ProxySelector;
 import java.net.SocketAddress;
@@ -30,6 +32,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.ObjectMapper;
 
 @Component
@@ -111,7 +114,8 @@ public class OfficialSessionClient {
             String contentType = response.headers().firstValue("Content-Type").orElse("").toLowerCase(Locale.ROOT);
             if (!contentType.startsWith("application/json") || body == null || body.length > MAX_BODY) throw invalidResponse();
             try {
-                JsonNode payload = mapper.readTree(body);
+                JsonNode payload = mapper.reader()
+                        .with(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS).readTree(body);
                 if (payload == null || !payload.isObject()) throw invalidResponse();
                 return payload;
             } catch (RuntimeException ignored) { throw invalidResponse(); }
@@ -169,10 +173,15 @@ public class OfficialSessionClient {
     private Instant timestamp(JsonNode node, String field) {
         JsonNode value = node.get(field);
         if (value == null || value.isNull()) return null;
-        if (!value.isIntegralNumber() || !value.canConvertToLong()) throw invalidResponse();
-        long seconds = value.asLong();
-        if (seconds < 0 || seconds > 253_402_300_799L) throw invalidResponse();
-        return Instant.ofEpochSecond(seconds);
+        if (!value.isNumber()) throw invalidResponse();
+        BigDecimal seconds = value.decimalValue();
+        if (seconds.signum() < 0 || seconds.compareTo(BigDecimal.valueOf(253_402_300_800L)) >= 0) {
+            throw invalidResponse();
+        }
+        long wholeSeconds = seconds.longValue();
+        long nanos = seconds.subtract(BigDecimal.valueOf(wholeSeconds)).movePointRight(9)
+                .setScale(0, RoundingMode.DOWN).longValueExact();
+        return Instant.ofEpochSecond(wholeSeconds, nanos);
     }
 
     private DomainException invalidResponse() { return failure("OFFICIAL_RESPONSE_INVALID"); }
