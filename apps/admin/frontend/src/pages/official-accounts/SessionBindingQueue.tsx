@@ -36,7 +36,7 @@ export default function SessionBindingQueue({ accountId, disabled = false }: { a
       if (!lifetime.active) return;
       // Only the verified server response may remove quarantine.
       setState(next);
-      if (next.quarantined) setError('后台尚未确认恢复，队列仍需管理员处理。');
+      if (next.quarantined) setError('后台仍在自动整理或重试，请稍后查看状态。');
       else setNotice('后台已确认新鲜会话快照，队列已恢复。');
     } catch (failure) {
       if (lifetime.active) setError(managedErrorMessage(failure, '队列恢复未完成，请检查官方连接后刷新状态重试。'));
@@ -45,19 +45,24 @@ export default function SessionBindingQueue({ accountId, disabled = false }: { a
     }
   };
   const processing = !!state?.activeAttemptId;
-  const label = processing ? '登录处理中' : state?.quarantined ? '需管理员处理' : state ? '队列正常' : '状态待确认';
+  const label = processing ? state?.queueState === 'PREPARING' ? '正在准备' : '登录处理中'
+    : state?.queueState === 'RETRYING' ? '自动重试中' : state?.quarantined ? '自动整理中' : state ? '队列正常' : '状态待确认';
   return <Card size="small" title="本设备绑定登录队列" extra={<Tag color={processing ? 'processing' : state?.quarantined ? 'warning' : state ? 'success' : 'default'}>{label}</Tag>}>
     <Space orientation="vertical" size={12} style={{ width: '100%' }}>
-      <Typography.Text type="secondary">官方登录按账户排队。取消、超时或无法唯一识别新增会话时，需要管理员核对后恢复，防止迟到登录归到下一位用户。</Typography.Text>
+      <Typography.Text type="secondary">排队最长 60 分钟；取得登录名额后有 30 分钟完成登录。取消、超时或识别失败后，后台会短暂整理并自动交接，无需人工恢复。</Typography.Text>
+      <Typography.Text type="secondary">整理后会重新读取会话并排除已出现的旧会话，但不能完全保证不受控的官网迟到登录的真实归属。请停止已取消的登录页面；多个新增候选不会自动绑定。</Typography.Text>
       {state?.quarantined ? <>
-        <Alert type="warning" showIcon title="恢复前请确认前一位用户已停止官方登录"
-          description="已打开的官方登录页面可能继续产生迟到会话。请先与前一位用户核对；确认后，后台会重新取得新鲜官方会话快照，成功后才允许后续用户登录。" />
+        <Alert type="info" showIcon title={state.queueState === 'RETRYING' ? '等待新鲜官方会话快照，后台将自动重试' : '后台正在自动整理登录队列'}
+          description="通常先等待约 30 秒，再重新取得会话基线。只有后台验证成功后才会授予下一位登录名额，无需点击恢复。" />
+        {state.retryAt ? <Typography.Text type="secondary">下次整理或重试时间：{new Date(state.retryAt).toLocaleString('zh-CN')}</Typography.Text> : null}
         {processing ? <Typography.Text>当前仍有登录任务，请等待任务结束并刷新状态后再处理。</Typography.Text> : null}
+        <Typography.Text type="secondary">高级手动恢复（通常无需操作）：仅在确认前一位用户已经停止登录后使用。</Typography.Text>
         <Checkbox disabled={disabled || processing || pending !== null} checked={acknowledged}
           onChange={(event) => setAcknowledged(event.target.checked)}>已确认前一个用户停止登录，理解迟到会话风险</Checkbox>
         <Button danger disabled={disabled || processing || pending !== null || !acknowledged}
           loading={pending === 'recover'} onClick={() => void recover()}>确认风险并恢复队列</Button>
-      </> : processing ? <Typography.Text>当前用户正在完成官方登录，请等待本次任务结束。</Typography.Text> : null}
+      </> : processing ? <Typography.Text>当前用户正在完成官方登录，请等待本次任务结束。</Typography.Text>
+        : state?.queueState === 'RETRYING' ? <Alert type="info" showIcon title="等待新鲜官方会话快照，后台将自动重试" /> : null}
       {error ? <Alert type="error" showIcon title={error} /> : null}
       {notice ? <Alert type="success" showIcon title={notice} /> : null}
       <Button disabled={disabled || pending !== null} loading={pending === 'read'} onClick={() => setRefresh((value) => value + 1)}>刷新队列状态</Button>
