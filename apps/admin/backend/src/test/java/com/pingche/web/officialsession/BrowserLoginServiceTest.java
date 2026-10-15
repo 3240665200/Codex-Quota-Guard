@@ -106,4 +106,23 @@ class BrowserLoginServiceTest {
         assertThatThrownBy(() -> service.create(owner,account,new BrowserLoginService.StartRequest(0L,UUID.randomUUID())))
                 .isInstanceOfSatisfying(DomainException.class,error -> assertThat(error.getCode()).isEqualTo("OFFICIAL_PROXY_UNAVAILABLE"));
     }
+
+    @Test void reservationRechecksOriginalDeadlineAfterWaitingForTheJobLock() {
+        var job=service.create(owner,account,new BrowserLoginService.StartRequest(0L,null));
+        service.claim(owner,job.id(),helper);
+        Clock delayed=mock(Clock.class);
+        when(delayed.instant()).thenReturn(time.get(),time.get().plusSeconds(601));
+        var delayedService=new BrowserLoginService(jdbc,connections,delayed,new DataSourceTransactionManager(source));
+        assertThatThrownBy(() -> delayedService.complete(owner,job.id(),new BrowserLoginService.CompleteRequest(
+                helper,"Bearer synthetic-token",null,"synthetic-account"))).isInstanceOf(DomainException.class);
+        verify(connections,never()).save(any(),any());
+    }
+
+    @Test void claimRechecksDeadlineAfterWaitingForTheJobLock() {
+        var job=service.create(owner,account,new BrowserLoginService.StartRequest(0L,null));
+        Clock delayed=mock(Clock.class);
+        when(delayed.instant()).thenReturn(time.get(),time.get().plusSeconds(601));
+        var delayedService=new BrowserLoginService(jdbc,connections,delayed,new DataSourceTransactionManager(source));
+        assertThatThrownBy(() -> delayedService.claim(owner,job.id(),helper)).isInstanceOf(DomainException.class);
+    }
 }
