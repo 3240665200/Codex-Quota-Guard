@@ -16,6 +16,16 @@ import type { LoginAssistanceInfo, SystemSession } from "@/lib/api";
 import i18n from "@/lib/i18n";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+const handlers = vi.hoisted(() => new Set<(event: { type: string }) => void>());
+vi.mock("@/lib/assistance-events", () => ({
+  subscribeToAssistanceEvents: (
+    _user: string,
+    handler: (event: { type: string }) => void,
+  ) => {
+    handlers.add(handler);
+    return () => handlers.delete(handler);
+  },
+}));
 const invokeMock = vi.mocked(invoke);
 const listenerId = "11111111-1111-4111-8111-111111111111";
 const nextListenerId = "22222222-2222-4222-8222-222222222222";
@@ -67,6 +77,7 @@ let infoResponse = available;
 let startResponse = listener();
 let statusResponse = listener();
 let cancelResponse = listener("CANCELLED");
+let serverListenerExists = false;
 function calls(command: string) {
   return invokeMock.mock.calls.filter(([name]) => name === command);
 }
@@ -107,7 +118,8 @@ async function renderDashboard(bound = true) {
     ...view,
     client,
     onLogout,
-    switchUser: () =>
+    switchUser: () => {
+      serverListenerExists = false;
       view.rerender(
         tree({
           ...session,
@@ -118,7 +130,8 @@ async function renderDashboard(bound = true) {
             displayName: "Bob",
           },
         }),
-      ),
+      );
+    },
   };
 }
 async function openPage() {
@@ -131,25 +144,49 @@ async function start() {
 }
 async function tick(ms = 2_000) {
   await act(async () => {
+    if (ms === 2_000)
+      handlers.forEach((handler) => handler({ type: "state_changed" }));
     await vi.advanceTimersByTimeAsync(ms);
   });
 }
 
 describe("one-message login assistance", () => {
+  it("keeps fallback assistance mounted during a manual access refresh", async () => {
+    await renderDashboard(false);
+    await start();
+    const heading=screen.getByRole("heading",{name:"监听登录邮件"});
+    const count=calls("login_assistance_info").length;
+    fireEvent.click(screen.getByRole("button",{name:"刷新数据"}));
+    await tick(20);
+    expect(screen.getByRole("heading",{name:"监听登录邮件"})).toBe(heading);
+    expect(calls("login_assistance_info")).toHaveLength(count);
+    expect(calls("login_assistance_cancel")).toHaveLength(0);
+  });
   beforeEach(() => {
     clients = [];
     infoResponse = available;
     startResponse = listener();
     statusResponse = listener();
     cancelResponse = listener("CANCELLED");
+    serverListenerExists = false;
+    handlers.clear();
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(new Date("2026-10-12T10:00:01Z"));
     invokeMock.mockReset();
     invokeMock.mockImplementation(async (command) => {
       if (command === "login_assistance_info") return infoResponse;
-      if (command === "login_assistance_start") return startResponse;
+      if (command === "login_assistance_start") {
+        serverListenerExists = true;
+        statusResponse = startResponse;
+        return startResponse;
+      }
+      if (command === "login_assistance_current")
+        return { listener: serverListenerExists ? statusResponse : null };
       if (command === "login_assistance_status") return statusResponse;
-      if (command === "login_assistance_cancel") return cancelResponse;
+      if (command === "login_assistance_cancel") {
+        statusResponse = cancelResponse;
+        return cancelResponse;
+      }
       if (command === "status")
         return { service: "codex-quota-guard", state: "online" };
       if (command === "quota_overview")
@@ -224,7 +261,7 @@ describe("one-message login assistance", () => {
     expect(calls("login_assistance_start")).toHaveLength(0);
   });
 
-  it("does not say ready while connecting and only polls active listener states", async () => {
+  it("does not say ready while connecting and reads current after a state signal", async () => {
     startResponse = listener("CONNECTING");
     await renderDashboard();
     await openPage();
@@ -234,7 +271,8 @@ describe("one-message login assistance", () => {
     statusResponse = listener("LISTENING");
     await tick();
     expect(screen.getByText("正在监听")).toBeVisible();
-    expect(calls("login_assistance_status")[0]?.[1]).toEqual({ listenerId });
+    expect(calls("login_assistance_status")).toHaveLength(0);
+    expect(calls("login_assistance_current").length).toBeGreaterThan(1);
   });
 
   it("receives one code, stops polling, and stores it outside the global query cache", async () => {
@@ -309,7 +347,7 @@ describe("one-message login assistance", () => {
     expect(screen.queryByText("监听已取消")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "取消监听" })).toBeEnabled();
     await tick();
-    expect(calls("login_assistance_status").length).toBeGreaterThan(0);
+    expect(calls("login_assistance_current").length).toBeGreaterThan(1);
   });
 
   it("shows timeout without an old code and permits another attempt", async () => {
@@ -345,10 +383,10 @@ describe("one-message login assistance", () => {
     expect(screen.getByRole("button", { name: "再次监听" })).toBeEnabled();
   });
 
-  it("stops a locally expired listener even while every status request fails", async () => {
+  it("does not cancel or fake a timeout when the server cannot confirm local expiry", async () => {
     const original = invokeMock.getMockImplementation()!;
     invokeMock.mockImplementation(async (command, args) => {
-      if (command === "login_assistance_status")
+      if (command === "login_assistance_current" && serverListenerExists)
         throw new Error("synthetic unavailable");
       return original(command, args);
     });
@@ -357,12 +395,11 @@ describe("one-message login assistance", () => {
     await start();
     await tick(120_000);
     expect(
-      screen.getByText("监听已超时，请重新监听后再发送验证码"),
-    ).toBeVisible();
-    expect(screen.getByRole("button", { name: "再次监听" })).toBeEnabled();
-    expect(
-      screen.queryByRole("button", { name: "取消监听" }),
-    ).not.toBeInTheDocument();
+      screen.queryByText("监听已超时，请重新监听后再发送验证码"),
+    ).toBeNull();
+    expect(screen.getByRole("button", { name: "再次监听" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "取消监听" })).toBeEnabled();
+    expect(calls("login_assistance_cancel")).toHaveLength(0);
     const count = calls("login_assistance_status").length;
     await tick(6_000);
     expect(calls("login_assistance_status")).toHaveLength(count);
@@ -391,7 +428,10 @@ describe("one-message login assistance", () => {
       "MAIL_AUTH_FAILED",
       "邮箱认证失败，请联系管理员检查邮箱地址、IMAP 开关与授权码。",
     ],
-    ["MAIL_TLS_FAILED", "邮箱 TLS 验证失败，请联系管理员检查证书与代理设置。"],
+    [
+      "MAIL_TLS_FAILED",
+      "邮箱加密连接失败，请联系管理员检查邮箱服务与网络设置。",
+    ],
     [
       "MAIL_CONNECTION_TIMEOUT",
       "连接邮箱超时，请稍后重新监听；如持续失败，请联系管理员检查网络。",
@@ -431,7 +471,7 @@ describe("one-message login assistance", () => {
     expect(calls("login_assistance_start")).toHaveLength(0);
   });
 
-  it("allows an inactive failed listener to reload fresh mailbox details and clears its old failure", async () => {
+  it("allows an inactive failed listener to reload mailbox details without fabricating listener recovery", async () => {
     await renderDashboard();
     await openPage();
     await start();
@@ -444,16 +484,16 @@ describe("one-message login assistance", () => {
     infoResponse = { ...available, recipientEmail: "updated@example.com" };
     fireEvent.click(screen.getByRole("button", { name: "重新读取邮箱配置" }));
     await screen.findByText("updated@example.com");
-    expect(screen.queryByText(/团队或邮箱配置已变更/)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "监听邮件" })).toBeEnabled();
+    expect(screen.getByText(/团队或邮箱配置已变更/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "再次监听" })).toBeEnabled();
   });
 
-  it("cancels on leaving the page and does not display a late status response after reopening", async () => {
+  it("keeps listening on leaving the page and ignores a disposed current response", async () => {
     const pending = deferred<ReturnType<typeof listener>>();
     const original = invokeMock.getMockImplementation()!;
     invokeMock.mockImplementation(async (command, args) =>
-      command === "login_assistance_status"
-        ? pending.promise
+      command === "login_assistance_current" && serverListenerExists
+        ? pending.promise.then((value) => ({ listener: value }))
         : original(command, args),
     );
     await renderDashboard();
@@ -461,16 +501,15 @@ describe("one-message login assistance", () => {
     await start();
     await tick();
     fireEvent.click(screen.getByRole("button", { name: "额度总览" }));
-    await waitFor(() =>
-      expect(calls("login_assistance_cancel")).toHaveLength(1),
-    );
+    expect(calls("login_assistance_cancel")).toHaveLength(0);
+    serverListenerExists = false;
     await openPage();
     await act(async () => pending.resolve(listener("RECEIVED")));
     expect(screen.queryByLabelText("本次登录验证码")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "监听邮件" })).toBeEnabled();
   });
 
-  it("cancels a late start response after unmount instead of attaching it to a new page", async () => {
+  it("ignores a late start response after unmount without cancelling the background task", async () => {
     const pending = deferred<ReturnType<typeof listener>>();
     const original = invokeMock.getMockImplementation()!;
     invokeMock.mockImplementation(async (command, args) =>
@@ -483,7 +522,7 @@ describe("one-message login assistance", () => {
     fireEvent.click(screen.getByRole("button", { name: "监听邮件" }));
     unmount();
     await act(async () => pending.resolve(listener("LISTENING")));
-    expect(calls("login_assistance_cancel")[0]?.[1]).toEqual({ listenerId });
+    expect(calls("login_assistance_cancel")).toHaveLength(0);
     expect(calls("login_assistance_status")).toHaveLength(0);
   });
 
@@ -499,12 +538,12 @@ describe("one-message login assistance", () => {
     await waitFor(() => expect(calls("login_assistance_info")).toHaveLength(2));
   });
 
-  it("cancels and ignores an active old-user status result when the user changes", async () => {
+  it("ignores an active old-user current result when the user changes", async () => {
     const pending = deferred<ReturnType<typeof listener>>();
     const original = invokeMock.getMockImplementation()!;
     invokeMock.mockImplementation(async (command, args) =>
-      command === "login_assistance_status"
-        ? pending.promise
+      command === "login_assistance_current" && serverListenerExists
+        ? pending.promise.then((value) => ({ listener: value }))
         : original(command, args),
     );
     const { switchUser } = await renderDashboard();
@@ -514,30 +553,26 @@ describe("one-message login assistance", () => {
     switchUser();
     await act(async () => pending.resolve(listener("RECEIVED")));
     expect(screen.queryByLabelText("本次登录验证码")).not.toBeInTheDocument();
-    expect(calls("login_assistance_cancel")).toHaveLength(1);
+    expect(calls("login_assistance_cancel")).toHaveLength(0);
   });
 
-  it("clears and cancels before handing logout to the surrounding app", async () => {
+  it("clears local codes and delegates authenticated cancellation to system logout", async () => {
     const { onLogout } = await renderDashboard();
     await openPage();
     await start();
     fireEvent.click(screen.getByRole("button", { name: "退出系统" }));
-    await waitFor(() =>
-      expect(calls("login_assistance_cancel")).toHaveLength(1),
-    );
+    expect(calls("login_assistance_cancel")).toHaveLength(0);
     expect(onLogout).toHaveBeenCalledOnce();
     expect(
       screen.queryByRole("button", { name: "取消监听" }),
     ).not.toBeInTheDocument();
   });
 
-  it("also cancels the fallback assistance listener before logging out an unbound user", async () => {
+  it("also clears fallback assistance without remounting when an unbound user logs out", async () => {
     const { onLogout } = await renderDashboard(false);
     await start();
     fireEvent.click(screen.getByRole("button", { name: "退出系统" }));
-    await waitFor(() =>
-      expect(calls("login_assistance_cancel")).toHaveLength(1),
-    );
+    expect(calls("login_assistance_cancel")).toHaveLength(0);
     expect(onLogout).toHaveBeenCalledOnce();
     expect(
       screen.queryByRole("button", { name: "取消监听" }),
