@@ -128,13 +128,20 @@
 
 | 方法 | 路径 | 身份 | 说明 |
 | --- | --- | --- | --- |
-| POST | `/client/meter/enroll` | 系统用户 access token | 以 `deviceId` 配对一个 Windows 用户设备，返回一次设备令牌；响应 `no-store` |
-| POST | `/meter/heartbeat` | `X-Quota-Guard-Meter` 设备令牌 | 更新最后心跳，不需要桌面窗口保持打开 |
-| POST | `/meter/usage/events` | `X-Quota-Guard-Meter` 设备令牌 | 与客户端上报相同的事件格式、幂等去重 |
+| POST | `/client/meter/enroll` | 系统用户 access token | 以 `deviceId` 配对一个 Windows 用户设备，返回设备令牌及服务端确认的 `userId`；响应 `no-store` |
+| POST | `/meter/heartbeat` | `X-Quota-Guard-Meter` 设备令牌 | 更新最后心跳并延长有效设备授权 30 天，不需要桌面窗口保持打开 |
+| POST | `/meter/credential/renew` | `X-Quota-Guard-Meter` 设备令牌 | 独立续期；返回 `deviceId`、`userId`、`expiresAt`；过期后最多 30 天恢复宽限，撤销或用户禁用不恢复 |
+| POST | `/meter/usage/events` | `X-Quota-Guard-Meter` 设备令牌 | 与客户端上报相同的事件格式、幂等去重，仅返回 `acceptedEvents` 回执 |
 | GET | `/admin/users/{id}/meter-devices` | 管理员 | 查看该用户的设备 ID、在线状态和最后心跳，不返回令牌 |
 | DELETE | `/admin/users/{id}/meter-devices/{deviceId}` | 管理员 | 撤销设备令牌；此后服务不能继续上报或心跳 |
 
 设备令牌只能访问 `/meter/**`，不能访问普通用户或管理员接口，也不是官方 Codex 凭证。一个 `deviceId` 一旦与系统用户绑定，其他系统用户不能重新配对；撤销后该 ID 也不能自行恢复，改绑需管理员重新登记新设备。客户端关闭不影响已配对的 Rust 统计程序。心跳中断时后台显示离线，但官方 Codex 不经本系统，因此不会被阻断。
+
+## 桌面绑定访问校验
+
+`GET /client/access` 使用系统用户 access token 和 `X-Quota-Guard-Device-ID`，返回 `{allowed, bindingId, reason}`。安装 ID 由本机 Java 从固定设备文件读取，不接受 renderer 指定另一个设备。后台检查数据库中的真实绑定与当前身份；受保护的 `/client/**` 接口缺少有效绑定时返回 403 / `SESSION_BINDING_REQUIRED`。
+
+登录、设备登记、登录辅助及绑定本身仅开放必要的启动接口；管理员接口仍要求 ADMIN。`/meter/**` 通过独立的设备认证上报，不因桌面门禁关闭而停止。`POST /client/usage/events` 也只返回 `acceptedEvents`，不再夹带可用于绕过读门禁的额度对象；额度需通过受保护的 GET 接口读取。
 
 ## 官方额度安全摘要
 

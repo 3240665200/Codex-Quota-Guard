@@ -358,7 +358,7 @@ dependencies = [
 
 [[package]]
 name = "codex-quota-guard"
-version = "0.3.13"
+version = "0.3.14"
 dependencies = [
  "reqwest 0.12.28",
  "rusqlite",
