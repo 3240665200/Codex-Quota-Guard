@@ -555,6 +555,7 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [accessEpoch, setAccessEpoch] = useState(0);
+  const [checkingReturn, setCheckingReturn] = useState(false);
   const [now, setNow] = useState(Date.now);
   const accessQuery = useQuery({
     queryKey: ["client-access", session.user!.id, accessEpoch],
@@ -576,25 +577,40 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
     !accessQuery.isError &&
     accessQuery.data.allowed &&
     now - accessQuery.dataUpdatedAt < 10_000;
+  const blockingReturn = bindingAllowed && checkingReturn;
+  const { refetch: refetchAccess } = accessQuery;
   useEffect(() => {
+    let disposed = false;
+    let returnCheck = 0;
+    setCheckingReturn(false);
+    const recheckOnReturn = () => {
+      // Native title-bar interactions can refocus the WebView. Revalidate the
+      // current user's query without tearing down a still-fresh workspace.
+      const check = ++returnCheck;
+      setCheckingReturn(true);
+      void refetchAccess({ cancelRefetch: false }).finally(() => {
+        if (!disposed && check === returnCheck) setCheckingReturn(false);
+      });
+    };
     const onVisible = () => {
-      if (document.visibilityState === "visible") recheckAccess();
+      if (document.visibilityState === "visible") recheckOnReturn();
     };
     window.addEventListener(bindingGateEvent, recheckAccess);
     window.addEventListener("online", recheckAccess);
     window.addEventListener("offline", recheckAccess);
-    window.addEventListener("focus", recheckAccess);
+    window.addEventListener("focus", recheckOnReturn);
     document.addEventListener("visibilitychange", onVisible);
     const timer = window.setInterval(() => setNow(Date.now()), 500);
     return () => {
+      disposed = true;
       window.removeEventListener(bindingGateEvent, recheckAccess);
       window.removeEventListener("online", recheckAccess);
       window.removeEventListener("offline", recheckAccess);
-      window.removeEventListener("focus", recheckAccess);
+      window.removeEventListener("focus", recheckOnReturn);
       document.removeEventListener("visibilitychange", onVisible);
       window.clearInterval(timer);
     };
-  }, [recheckAccess]);
+  }, [recheckAccess, refetchAccess, accessEpoch, session.user!.id]);
   const [workspace, setWorkspace] = useState<WorkspaceId>("quota");
   const accessResolvedFor = useRef<string | null>(null);
   if (!accessQuery.isPending) accessResolvedFor.current = session.user!.id;
@@ -607,6 +623,7 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
       accessResolvedFor.current === session.user!.id);
   const currentPage = workspaces.find((page) => page.id === visibleWorkspace)!;
   const navigate = (next: WorkspaceId) => {
+    if (blockingReturn) return;
     if (!bindingAllowed && next !== "login-assistance") return;
     setWorkspace(next);
     if (scrollArea.current) scrollArea.current.scrollTop = 0;
@@ -732,6 +749,7 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
     usageStatusQuery.isFetching ||
     rateLimitsQuery.isFetching;
   const refresh = async () => {
+    if (blockingReturn) return;
     window.dispatchEvent(new Event("quota-guard:assistance-refresh"));
     if (!bindingAllowed) {
       recheckAccess();
@@ -829,7 +847,9 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
             <button
               key={id}
               type="button"
-              disabled={!bindingAllowed && id !== "login-assistance"}
+              disabled={
+                blockingReturn || (!bindingAllowed && id !== "login-assistance")
+              }
               onClick={() => navigate(id)}
               aria-label={label}
               title={label}
@@ -851,7 +871,7 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
           <button
             type="button"
             className="cqg-meter-link"
-            disabled={!bindingAllowed}
+            disabled={!bindingAllowed || blockingReturn}
             onClick={() => navigate("diagnostics")}
             title={meterLabel}
             aria-label={`查看统计程序：${meterLabel}`}
@@ -927,7 +947,9 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
             <div className="min-w-0">
               <h1 className="text-base font-semibold">{currentPage.title}</h1>
               <p className="cqg-page-description mt-1 truncate text-xs text-muted-foreground">
-                {currentPage.description}
+                {blockingReturn
+                  ? "正在重新核验本设备绑定…"
+                  : currentPage.description}
               </p>
             </div>
           </div>
@@ -948,7 +970,7 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
               variant="outline"
               size="sm"
               onClick={refresh}
-              disabled={isRefreshing}
+              disabled={isRefreshing || blockingReturn}
               aria-label={isRefreshing ? t("refreshing") : t("refresh")}
               title={isRefreshing ? t("refreshing") : t("refresh")}
             >
@@ -976,8 +998,24 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
           tabIndex={0}
           role="region"
           aria-label={`${currentPage.label}内容`}
+          aria-busy={blockingReturn || undefined}
+          onClickCapture={(event) => {
+            if (blockingReturn) {
+              event.preventDefault();
+              event.stopPropagation();
+            }
+          }}
+          onSubmitCapture={(event) => {
+            if (blockingReturn) {
+              event.preventDefault();
+              event.stopPropagation();
+            }
+          }}
         >
-          <div className="cqg-workspace-content mx-auto flex w-full max-w-[1240px] flex-col gap-4 p-4">
+          <div
+            className="cqg-workspace-content mx-auto flex w-full max-w-[1240px] flex-col gap-4 p-4"
+            {...{ inert: blockingReturn ? "" : undefined }}
+          >
             {!bindingAllowed ? (
               <Alert>
                 <AlertTitle>
