@@ -1,4 +1,4 @@
-use super::{baseline_codex_home, scan, MeterConfig, ScanOutcome, ScanState, UsageEvent};
+use super::{scan, MeterConfig, ScanOutcome, ScanState, UsageEvent};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fs::{self, File};
@@ -70,6 +70,7 @@ impl Outbox {
                 pending: Vec::new(),
             }
         };
+        let ScanOutcome { events, next_state } = scan(&config.codex_home, &outbox.scan_state)?;
         if outbox.user_id != user_id {
             // Device UUIDs can be reused after deletion of a system user. Keep
             // that owner's records in this same atomic journal, never attach
@@ -80,14 +81,18 @@ impl Outbox {
                     events: std::mem::take(&mut outbox.pending),
                 });
             }
+            // These bytes arrived since the old cursor but before the new
+            // owner was established. Preserve their uncertain attribution.
+            if !events.is_empty() {
+                outbox.quarantined.push(QuarantinedUsage { user_id: None, events });
+            }
             outbox.user_id = user_id;
-            outbox.scan_state = baseline_codex_home(&config.codex_home)?;
-        }
-        let ScanOutcome { events, next_state } = scan(&config.codex_home, &outbox.scan_state)?;
-        let mut identities: BTreeSet<String> = outbox.pending.iter().map(|event| event.event_id.clone()).collect();
-        for event in events {
-            if identities.insert(event.event_id.clone()) {
-                outbox.pending.push(event);
+        } else {
+            let mut identities: BTreeSet<String> = outbox.pending.iter().map(|event| event.event_id.clone()).collect();
+            for event in events {
+                if identities.insert(event.event_id.clone()) {
+                    outbox.pending.push(event);
+                }
             }
         }
         outbox.scan_state = next_state;

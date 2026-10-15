@@ -2481,6 +2481,7 @@ mod tests {
                         Err(error) => panic!("mock listener failed: {error}"),
                     }
                 };
+                stream.set_nonblocking(false).unwrap();
                 stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
                 requests.push(read_http_request(&mut stream));
                 write!(stream, "HTTP/1.1 {status} Mock\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
@@ -2571,7 +2572,7 @@ mod tests {
         }).to_string()).unwrap();
         let mut runtime = MeterRuntime::new_for_test(config.clone()).unwrap();
         let first = runtime.tick();
-        assert_eq!(first.error_code.as_deref(), Some("METER_OUTBOX_OWNER_MISMATCH"));
+        assert_eq!(first.error_code.as_deref(), Some("METER_OUTBOX_OWNER_UNKNOWN"));
         fs::write(&log, record("previous-owner", 41) + &record("ownership-transition", 17) + &record("new-owner", 99)).unwrap();
         runtime.tick();
         let requests = receiver.join().unwrap();
