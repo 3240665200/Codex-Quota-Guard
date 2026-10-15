@@ -22,6 +22,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class ClientBindingGateIntegrationTest {
     @Autowired MockMvc mvc;
     @MockitoBean SystemSessionService sessions;
+    @MockitoBean com.codexquotaguard.backend.system.LoginAssistanceEventBridge events;
     private static final String AUTH = "Bearer AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
     @Test void directLocalBusinessRequestsRequireAFreshCentralBindingDecision() throws Exception {
@@ -49,5 +50,26 @@ class ClientBindingGateIntegrationTest {
         mvc.perform(get("/api/v1/login-assistance").header("Authorization", AUTH)).andExpect(status().isOk());
         mvc.perform(get("/api/v1/status").header("Authorization", AUTH)).andExpect(status().isOk());
         verify(sessions, never()).clientAccess();
+    }
+
+    @Test void restoredMailAndAsyncNotificationsKeepLocalAuthenticationWithoutRequiringBinding() throws Exception {
+        mvc.perform(get("/api/v1/login-assistance/events")).andExpect(status().isUnauthorized());
+        verify(events,never()).subscribe();
+        when(sessions.currentLoginAssistance()).thenReturn(new com.codexquotaguard.backend.controlplane.LoginAssistanceCurrent(null));
+        mvc.perform(get("/api/v1/login-assistance/listeners/current").header("Authorization",AUTH))
+                .andExpect(status().isOk()).andExpect(header().string("Cache-Control","no-store"))
+                .andExpect(jsonPath("$.listener").isEmpty());
+        var emitter=new org.springframework.web.servlet.mvc.method.annotation.SseEmitter(5000L);
+        when(events.subscribe()).thenReturn(emitter);
+        var request=mvc.perform(get("/api/v1/login-assistance/events").header("Authorization",AUTH))
+                .andExpect(status().isOk()).andExpect(request().asyncStarted())
+                .andExpect(header().string("X-Accel-Buffering","no"))
+                .andExpect(header().string("Cache-Control","no-store")).andReturn();
+        emitter.send(org.springframework.web.servlet.mvc.method.annotation.SseEmitter.event().name("connected").data("{}"));
+        org.assertj.core.api.Assertions.assertThat(request.getResponse().getContentAsString()).contains("event:connected","data:{}");
+        emitter.complete();
+        mvc.perform(asyncDispatch(request)).andExpect(status().isOk());
+        verify(sessions,never()).clientAccess();
+        verify(sessions,never()).cancelLoginAssistance(any());
     }
 }

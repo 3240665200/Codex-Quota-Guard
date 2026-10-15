@@ -7,13 +7,15 @@ import java.io.IOException;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.Set;
+import java.util.List;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
@@ -31,7 +33,9 @@ public final class LoginAssistanceEventBridge implements AutoCloseable {
     private final Set<Entry> active=ConcurrentHashMap.newKeySet();
     private final Semaphore capacity=new Semaphore(2);
     private final AtomicBoolean stopped=new AtomicBoolean();
-    private final ExecutorService readers=Executors.newFixedThreadPool(2,task->{var thread=new Thread(task,"assistance-event-reader");thread.setDaemon(true);return thread;});
+    private final Object lifecycle=new Object();
+    private final ThreadPoolExecutor readers=new ThreadPoolExecutor(2,2,0,TimeUnit.SECONDS,new ArrayBlockingQueue<>(2),
+            task->{var thread=new Thread(task,"assistance-event-reader");thread.setDaemon(true);return thread;});
     private final ScheduledExecutorService cleaner=Executors.newSingleThreadScheduledExecutor(task->{var thread=new Thread(task,"assistance-event-lifetime");thread.setDaemon(true);return thread;});
 
     @Autowired public LoginAssistanceEventBridge(SystemSessionService sessions,ControlPlaneGateway gateway) {
@@ -53,7 +57,10 @@ public final class LoginAssistanceEventBridge implements AutoCloseable {
             sessions.requireCurrent(identity);
             if(upstream==null || stopped.get())throw new ControlPlaneUnavailableException();
             entry=new Entry(identity,upstream,emitters.get());
-            active.add(entry);
+            synchronized(lifecycle) {
+                if(stopped.get())throw new ControlPlaneUnavailableException();
+                active.add(entry);
+            }
             Entry owned=entry;
             owned.emitter.onCompletion(owned::close);
             owned.emitter.onTimeout(owned::close);
@@ -76,8 +83,10 @@ public final class LoginAssistanceEventBridge implements AutoCloseable {
     void sweep() {
         Instant now=clock.instant();
         for(Entry entry:active) {
-            if(!sessions.matches(entry.identity) || !entry.lastActivity.plusSeconds(45).isAfter(now)
-                    || !entry.created.plusSeconds(600).isAfter(now))entry.close();
+            try {
+                if(!sessions.matches(entry.identity) || !entry.lastActivity.plusSeconds(45).isAfter(now)
+                        || !entry.created.plusSeconds(600).isAfter(now))entry.close();
+            } catch(RuntimeException ignored){entry.close();}
         }
     }
 
@@ -92,12 +101,15 @@ public final class LoginAssistanceEventBridge implements AutoCloseable {
         Entry(SystemSessionService.Probe identity,AssistanceEventStream upstream,SseEmitter emitter){this.identity=identity;this.upstream=upstream;this.emitter=emitter;}
         void read() {
             try {
-                while(!closed.get() && sessions.matches(identity)) {
+                while(!closed.get() && !stopped.get() && sessions.matches(identity)) {
                     var signal=upstream.next();
                     if(signal==null || closed.get() || !sessions.matches(identity))break;
                     lastActivity=clock.instant();
                     // Never send an upstream body or token; only these fixed invalidations cross the boundary.
-                    emitter.send(SseEmitter.event().name(signal.eventName()).data("{}"));
+                    sessions.withCurrentIdentity(identity,()->{
+                        try {emitter.send(SseEmitter.event().name(signal.eventName()).data("{}"));}
+                        catch(IOException ignored){throw new IllegalStateException("Assistance notification unavailable.");}
+                    });
                 }
             } catch(IOException|RuntimeException ignored) { /* No upstream content in errors or logs. */ }
             finally {close();}
@@ -106,12 +118,18 @@ public final class LoginAssistanceEventBridge implements AutoCloseable {
             if(!closed.compareAndSet(false,true))return;
             upstream.close();
             var running=task;if(running!=null)running.cancel(true);
+            readers.purge();
             active.remove(this);capacity.release();
             try{emitter.complete();}catch(RuntimeException ignored){ }
         }
     }
 
     @Override @PreDestroy public void close() {
-        if(stopped.compareAndSet(false,true)){active.forEach(Entry::close);cleaner.shutdownNow();readers.shutdownNow();}
+        List<Entry> owned;
+        synchronized(lifecycle) {
+            if(!stopped.compareAndSet(false,true))return;
+            owned=List.copyOf(active);
+        }
+        owned.forEach(Entry::close);cleaner.shutdownNow();readers.shutdownNow();
     }
 }
