@@ -649,7 +649,7 @@ dependencies = [
 
 [[package]]
 name = "quota-guard-meter"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "chrono",
  "reqwest",

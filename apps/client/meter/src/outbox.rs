@@ -47,13 +47,16 @@ impl Outbox {
             .origin()
             .ascii_serialization();
         let mut outbox = if path.exists() {
-            if fs::metadata(&path).map_err(|_| "METER_OUTBOX_READ_FAILED")?.len()
+            if fs::metadata(&path)
+                .map_err(|_| "METER_OUTBOX_READ_FAILED")?
+                .len()
                 > MAX_OUTBOX_BYTES as u64
             {
                 return Err("METER_OUTBOX_TOO_LARGE".into());
             }
             let bytes = fs::read(&path).map_err(|_| "METER_OUTBOX_READ_FAILED")?;
-            let outbox: Self = serde_json::from_slice(&bytes).map_err(|_| "METER_OUTBOX_INVALID")?;
+            let outbox: Self =
+                serde_json::from_slice(&bytes).map_err(|_| "METER_OUTBOX_INVALID")?;
             if outbox.device_id != config.device_id
                 || outbox.server_origin != origin
                 || outbox.codex_home != config.codex_home
@@ -87,11 +90,19 @@ impl Outbox {
             // These bytes arrived since the old cursor but before the new
             // owner was established. Preserve their uncertain attribution.
             if !events.is_empty() {
-                outbox.quarantined.push(QuarantinedUsage { user_id: None, events, error_code: None });
+                outbox.quarantined.push(QuarantinedUsage {
+                    user_id: None,
+                    events,
+                    error_code: None,
+                });
             }
             outbox.user_id = user_id;
         } else {
-            let mut identities: BTreeSet<String> = outbox.pending.iter().map(|event| event.event_id.clone()).collect();
+            let mut identities: BTreeSet<String> = outbox
+                .pending
+                .iter()
+                .map(|event| event.event_id.clone())
+                .collect();
             for event in events {
                 if identities.insert(event.event_id.clone()) {
                     outbox.pending.push(event);
@@ -104,9 +115,15 @@ impl Outbox {
         Ok(outbox)
     }
 
-    pub(super) fn acknowledge(&mut self, config: &MeterConfig, events: &[UsageEvent]) -> Result<(), String> {
-        let acknowledged: BTreeSet<_> = events.iter().map(|event| event.event_id.as_str()).collect();
-        self.pending.retain(|event| !acknowledged.contains(event.event_id.as_str()));
+    pub(super) fn acknowledge(
+        &mut self,
+        config: &MeterConfig,
+        events: &[UsageEvent],
+    ) -> Result<(), String> {
+        let acknowledged: BTreeSet<_> =
+            events.iter().map(|event| event.event_id.as_str()).collect();
+        self.pending
+            .retain(|event| !acknowledged.contains(event.event_id.as_str()));
         self.save(config)
     }
 
@@ -115,10 +132,19 @@ impl Outbox {
     }
 
     pub(super) fn pending_count(&self) -> usize {
-        self.pending.len() + self.quarantined.iter().map(|batch| batch.events.len()).sum::<usize>()
+        self.pending.len()
+            + self
+                .quarantined
+                .iter()
+                .map(|batch| batch.events.len())
+                .sum::<usize>()
     }
 
-    pub(super) fn quarantine_rejected(&mut self, config: &MeterConfig, events: &[UsageEvent]) -> Result<(), String> {
+    pub(super) fn quarantine_rejected(
+        &mut self,
+        config: &MeterConfig,
+        events: &[UsageEvent],
+    ) -> Result<(), String> {
         self.quarantined.push(QuarantinedUsage {
             user_id: self.user_id,
             events: events.to_vec(),
@@ -130,11 +156,17 @@ impl Outbox {
     pub(super) fn owner_warning(&self) -> Option<&'static str> {
         if self.quarantined.iter().any(|batch| batch.user_id.is_none()) {
             Some("METER_OUTBOX_OWNER_UNKNOWN")
-        } else if self.quarantined.iter().any(|batch| batch.error_code.is_none()) {
+        } else if self
+            .quarantined
+            .iter()
+            .any(|batch| batch.error_code.is_none())
+        {
             Some("METER_OUTBOX_OWNER_MISMATCH")
         } else if !self.quarantined.is_empty() {
             Some("METER_REPORT_REJECTED")
-        } else { None }
+        } else {
+            None
+        }
     }
 
     fn save(&self, config: &MeterConfig) -> Result<(), String> {
@@ -143,10 +175,15 @@ impl Outbox {
             return Err("METER_OUTBOX_TOO_LARGE".into());
         }
         fs::create_dir_all(&config.state_dir).map_err(|_| "METER_OUTBOX_WRITE_FAILED")?;
-        let temporary = config.state_dir.join(format!(".meter-outbox-{}.tmp", uuid::Uuid::new_v4()));
+        let temporary = config
+            .state_dir
+            .join(format!(".meter-outbox-{}.tmp", uuid::Uuid::new_v4()));
         let result = (|| {
-            let mut output = File::create_new(&temporary).map_err(|_| "METER_OUTBOX_WRITE_FAILED")?;
-            output.write_all(&bytes).map_err(|_| "METER_OUTBOX_WRITE_FAILED")?;
+            let mut output =
+                File::create_new(&temporary).map_err(|_| "METER_OUTBOX_WRITE_FAILED")?;
+            output
+                .write_all(&bytes)
+                .map_err(|_| "METER_OUTBOX_WRITE_FAILED")?;
             output.sync_all().map_err(|_| "METER_OUTBOX_WRITE_FAILED")?;
             fs::rename(&temporary, config.state_dir.join("usage-outbox.json"))
                 .map_err(|_| "METER_OUTBOX_WRITE_FAILED")

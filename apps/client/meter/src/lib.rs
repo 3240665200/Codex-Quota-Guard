@@ -847,13 +847,23 @@ fn renew_device_credential(
     }
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
-    struct Renewal { device_id: uuid::Uuid, user_id: uuid::Uuid, expires_at: String }
+    struct Renewal {
+        device_id: uuid::Uuid,
+        user_id: uuid::Uuid,
+        expires_at: String,
+    }
     let mut bytes = Vec::new();
-    response.take(4097).read_to_end(&mut bytes).map_err(|_| "METER_RENEWAL_INVALID")?;
-    if bytes.len() > 4096 { return Err("METER_RENEWAL_INVALID".into()); }
+    response
+        .take(4097)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "METER_RENEWAL_INVALID")?;
+    if bytes.len() > 4096 {
+        return Err("METER_RENEWAL_INVALID".into());
+    }
     let renewal: Renewal = serde_json::from_slice(&bytes).map_err(|_| "METER_RENEWAL_INVALID")?;
     if renewal.device_id != credential.device_id
-        || !DateTime::parse_from_rfc3339(&renewal.expires_at).is_ok_and(|expires| expires > Utc::now())
+        || !DateTime::parse_from_rfc3339(&renewal.expires_at)
+            .is_ok_and(|expires| expires > Utc::now())
     {
         return Err("METER_RENEWAL_INVALID".into());
     }
@@ -1533,9 +1543,10 @@ impl MeterRuntime {
         // restarts cannot erase unacknowledged usage. The journal is bound to
         // the paired device, origin and Windows profile's Codex directory.
         let previous = previous.unwrap();
-        let mut outbox = outbox::Outbox::capture(&self.config, &previous, credential.user_id, || {
-            self.guard.ensure_allowed()
-        })?;
+        let mut outbox =
+            outbox::Outbox::capture(&self.config, &previous, credential.user_id, || {
+                self.guard.ensure_allowed()
+            })?;
         self.pending_events = Some(outbox.pending_count());
         if !credential.owner_verified || credential.user_id.is_none() {
             self.guard.ensure_allowed()?;
@@ -1545,36 +1556,57 @@ impl MeterRuntime {
             }
             credential.user_id = Some(user_id);
             credential.owner_verified = true;
-            self.guard.with_allowed(|| save_credential(&self.config.state_dir, &credential))?;
-            outbox = outbox::Outbox::capture(&self.config, &previous, credential.user_id, || self.guard.ensure_allowed())?;
+            self.guard
+                .with_allowed(|| save_credential(&self.config.state_dir, &credential))?;
+            outbox = outbox::Outbox::capture(&self.config, &previous, credential.user_id, || {
+                self.guard.ensure_allowed()
+            })?;
             self.pending_events = Some(outbox.pending_count());
         }
         let now = Utc::now();
-        let candidates: Vec<_> = outbox.pending.iter()
-            .filter(|event| reportable_at(event, now)).cloned().collect();
+        let candidates: Vec<_> = outbox
+            .pending
+            .iter()
+            .filter(|event| reportable_at(event, now))
+            .cloned()
+            .collect();
         let mut reported_events = Vec::new();
         for batch in candidates.chunks(100) {
             self.guard.ensure_allowed()?;
-            match send_events_guarded(&self.client, &self.config, &credential, batch, || self.guard.ensure_allowed()) {
+            match send_events_guarded(&self.client, &self.config, &credential, batch, || {
+                self.guard.ensure_allowed()
+            }) {
                 Ok(()) => {
                     reported_events.extend_from_slice(batch);
-                    self.guard.with_allowed(|| outbox.acknowledge(&self.config, batch))?;
+                    self.guard
+                        .with_allowed(|| outbox.acknowledge(&self.config, batch))?;
                 }
                 Err(code) if code == "METER_REPORT_REJECTED" => {
                     // A malformed event must not hold later valid events
                     // hostage. Isolate rejected records with their owner.
                     for event in batch {
                         let one = std::slice::from_ref(event);
-                        let result = if batch.len() == 1 { Err(code.clone()) } else {
-                            send_events_guarded(&self.client, &self.config, &credential, one, || self.guard.ensure_allowed())
+                        let result = if batch.len() == 1 {
+                            Err(code.clone())
+                        } else {
+                            send_events_guarded(
+                                &self.client,
+                                &self.config,
+                                &credential,
+                                one,
+                                || self.guard.ensure_allowed(),
+                            )
                         };
                         match result {
                             Ok(()) => {
-                                self.guard.with_allowed(|| outbox.acknowledge(&self.config, one))?;
+                                self.guard
+                                    .with_allowed(|| outbox.acknowledge(&self.config, one))?;
                                 reported_events.push(event.clone());
                             }
                             Err(code) if code == "METER_REPORT_REJECTED" => {
-                                self.guard.with_allowed(|| outbox.quarantine_rejected(&self.config, one))?;
+                                self.guard.with_allowed(|| {
+                                    outbox.quarantine_rejected(&self.config, one)
+                                })?;
                             }
                             Err(code) => return Err(code),
                         }
@@ -1583,11 +1615,19 @@ impl MeterRuntime {
                 Err(code) => return Err(code),
             }
             self.pending_events = Some(outbox.pending_count());
-            if !reported_events.is_empty() { self.last_report_epoch_seconds = Some(epoch_seconds()); }
+            if !reported_events.is_empty() {
+                self.last_report_epoch_seconds = Some(epoch_seconds());
+            }
         }
-        self.guard.with_allowed(|| save_state(&state_path, outbox.scan_state()))?;
-        let warning = outbox.owner_warning().or_else(|| (!outbox.pending.is_empty()).then_some("METER_EVENT_OUTSIDE_REPORT_WINDOW"));
-        let reported = ScanOutcome { events: reported_events, next_state: outbox.scan_state().clone() };
+        self.guard
+            .with_allowed(|| save_state(&state_path, outbox.scan_state()))?;
+        let warning = outbox.owner_warning().or_else(|| {
+            (!outbox.pending.is_empty()).then_some("METER_EVENT_OUTSIDE_REPORT_WINDOW")
+        });
+        let reported = ScanOutcome {
+            events: reported_events,
+            next_state: outbox.scan_state().clone(),
+        };
         if !reported.events.is_empty() {
             self.last_report_epoch_seconds = Some(epoch_seconds());
             let guard = self.guard.snapshot();
@@ -1615,7 +1655,9 @@ impl MeterRuntime {
             .is_none_or(|last| last.elapsed() >= Duration::from_secs(30))
         {
             self.guard.ensure_allowed()?;
-            send_heartbeat_guarded(&self.client, &self.config, &credential, || self.guard.ensure_allowed())?;
+            send_heartbeat_guarded(&self.client, &self.config, &credential, || {
+                self.guard.ensure_allowed()
+            })?;
             self.last_heartbeat = Some(Instant::now());
             let guard = self.guard.snapshot();
             let status = MeterStatus {
@@ -1638,7 +1680,9 @@ impl MeterRuntime {
             self.audit
                 .append(AuditKind::Heartbeat, Some(&status), 0, true)?;
         }
-        if let Some(code) = warning { return Err(code.into()); }
+        if let Some(code) = warning {
+            return Err(code.into());
+        }
         Ok((
             if reported.events.is_empty() {
                 "UP_TO_DATE"
@@ -2446,21 +2490,37 @@ mod tests {
             device_id: uuid::Uuid::new_v4(),
             owner_user_sid: None,
         };
-        save_state(&config.state_dir.join("scan-state.json"),
-            &baseline_codex_home(&config.codex_home).unwrap()).unwrap();
-        save_credential(&config.state_dir, &MeterCredential {
-            device_id: config.device_id, device_token: "A".repeat(43),
-            user_id: Some(uuid::Uuid::from_u128(1)), owner_verified: true,
-        }).unwrap();
+        save_state(
+            &config.state_dir.join("scan-state.json"),
+            &baseline_codex_home(&config.codex_home).unwrap(),
+        )
+        .unwrap();
+        save_credential(
+            &config.state_dir,
+            &MeterCredential {
+                device_id: config.device_id,
+                device_token: "A".repeat(43),
+                user_id: Some(uuid::Uuid::from_u128(1)),
+                owner_verified: true,
+            },
+        )
+        .unwrap();
         let config_path = root.path().join("synthetic-config.json");
         fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
         fs::write(&log, record("baseline", 1) + &record("offline", 42)).unwrap();
         drop(reserved);
         run_synthetic_worker(&config_path);
         let outbox = config.state_dir.join("usage-outbox.json");
-        assert!(outbox.is_file(), "offline usage must be durably copied before upload");
-        let offline_status: serde_json::Value = serde_json::from_slice(&fs::read(&config.status_file).unwrap()).unwrap();
-        assert_eq!(offline_status["pendingEvents"], 1, "pending offline usage must be visible without exposing contents");
+        assert!(
+            outbox.is_file(),
+            "offline usage must be durably copied before upload"
+        );
+        let offline_status: serde_json::Value =
+            serde_json::from_slice(&fs::read(&config.status_file).unwrap()).unwrap();
+        assert_eq!(
+            offline_status["pendingEvents"], 1,
+            "pending offline usage must be visible without exposing contents"
+        );
         fs::remove_file(&log).unwrap();
 
         let listener = TcpListener::bind(address).unwrap();
@@ -2468,14 +2528,28 @@ mod tests {
             let mut uploads = Vec::new();
             for _ in 0..2 {
                 let (mut stream, _) = listener.accept().unwrap();
-                stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
                 let request = read_http_request(&mut stream);
-                assert!(!String::from_utf8_lossy(&request).to_ascii_lowercase().contains("authorization:"));
+                assert!(!String::from_utf8_lossy(&request)
+                    .to_ascii_lowercase()
+                    .contains("authorization:"));
                 if request.starts_with(b"POST /api/v1/meter/usage/events ") {
-                    let end = request.windows(4).position(|value| value == b"\r\n\r\n").unwrap() + 4;
-                    uploads.push(serde_json::from_slice::<serde_json::Value>(&request[end..]).unwrap());
+                    let end = request
+                        .windows(4)
+                        .position(|value| value == b"\r\n\r\n")
+                        .unwrap()
+                        + 4;
+                    uploads.push(
+                        serde_json::from_slice::<serde_json::Value>(&request[end..]).unwrap(),
+                    );
                 }
-                stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").unwrap();
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+                    )
+                    .unwrap();
             }
             uploads
         });
@@ -2488,7 +2562,9 @@ mod tests {
         assert_eq!(saved["pending"].as_array().unwrap().len(), 0);
     }
 
-    fn mock_meter_http(responses: Vec<(u16, String)>) -> (String, thread::JoinHandle<Vec<Vec<u8>>>) {
+    fn mock_meter_http(
+        responses: Vec<(u16, String)>,
+    ) -> (String, thread::JoinHandle<Vec<Vec<u8>>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         listener.set_nonblocking(true).unwrap();
@@ -2500,14 +2576,18 @@ mod tests {
                     match listener.accept() {
                         Ok((stream, _)) => break stream,
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                            if Instant::now() >= deadline { return requests; }
+                            if Instant::now() >= deadline {
+                                return requests;
+                            }
                             thread::sleep(Duration::from_millis(10));
                         }
                         Err(error) => panic!("mock listener failed: {error}"),
                     }
                 };
                 stream.set_nonblocking(false).unwrap();
-                stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
                 requests.push(read_http_request(&mut stream));
                 write!(stream, "HTTP/1.1 {status} Mock\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
             }
@@ -2526,19 +2606,40 @@ mod tests {
             (200, "{\"acceptedEvents\":1}".into()),
         ]);
         let config = MeterConfig {
-            server_url: url, codex_home: root.path().join(".codex"),
-            pairing_inbox: root.path().join("pairing.json"), state_dir: root.path().join("state"),
-            status_file: root.path().join("status.json"), device_id, owner_user_sid: None,
+            server_url: url,
+            codex_home: root.path().join(".codex"),
+            pairing_inbox: root.path().join("pairing.json"),
+            state_dir: root.path().join("state"),
+            status_file: root.path().join("status.json"),
+            device_id,
+            owner_user_sid: None,
         };
-        let credential = MeterCredential { device_id, device_token: "A".repeat(43), user_id: Some(uuid::Uuid::from_u128(1)), owner_verified: true };
+        let credential = MeterCredential {
+            device_id,
+            device_token: "A".repeat(43),
+            user_id: Some(uuid::Uuid::from_u128(1)),
+            owner_verified: true,
+        };
         let event = parse_direct_record(record("retry-stable", 42).trim().as_bytes()).unwrap();
-        let result = send_events(&reqwest::blocking::Client::new(), &config, &credential, &[event]);
+        let result = send_events(
+            &reqwest::blocking::Client::new(),
+            &config,
+            &credential,
+            &[event],
+        );
         let requests = receiver.join().unwrap();
-        assert!(result.is_ok(), "expired device grant must recover without a desktop session");
+        assert!(
+            result.is_ok(),
+            "expired device grant must recover without a desktop session"
+        );
         assert_eq!(requests.len(), 3);
         assert!(requests[1].starts_with(b"POST /api/v1/meter/credential/renew HTTP/1.1"));
         assert_eq!(requests[0], requests[2]);
-        assert!(requests.iter().all(|request| !String::from_utf8_lossy(request).to_ascii_lowercase().contains("authorization:")));
+        assert!(requests
+            .iter()
+            .all(|request| !String::from_utf8_lossy(request)
+                .to_ascii_lowercase()
+                .contains("authorization:")));
     }
 
     #[test]
@@ -2546,26 +2647,58 @@ mod tests {
         let root = TestDir::new();
         let (url, receiver) = mock_meter_http(vec![(200, "{}".into()), (200, "{}".into())]);
         let config = MeterConfig {
-            server_url: url, codex_home: root.path().join(".codex"),
-            pairing_inbox: root.path().join("pairing.json"), state_dir: root.path().join("state"),
-            status_file: root.path().join("status.json"), device_id: uuid::Uuid::new_v4(), owner_user_sid: None,
+            server_url: url,
+            codex_home: root.path().join(".codex"),
+            pairing_inbox: root.path().join("pairing.json"),
+            state_dir: root.path().join("state"),
+            status_file: root.path().join("status.json"),
+            device_id: uuid::Uuid::new_v4(),
+            owner_user_sid: None,
         };
         fs::create_dir_all(config.codex_home.join("sessions")).unwrap();
-        save_state(&config.state_dir.join("scan-state.json"), &ScanState::default()).unwrap();
-        save_credential(&config.state_dir, &MeterCredential { device_id: config.device_id, device_token: "A".repeat(43), user_id: Some(uuid::Uuid::from_u128(1)), owner_verified: true }).unwrap();
+        save_state(
+            &config.state_dir.join("scan-state.json"),
+            &ScanState::default(),
+        )
+        .unwrap();
+        save_credential(
+            &config.state_dir,
+            &MeterCredential {
+                device_id: config.device_id,
+                device_token: "A".repeat(43),
+                user_id: Some(uuid::Uuid::from_u128(1)),
+                owner_verified: true,
+            },
+        )
+        .unwrap();
         let stale = (Utc::now() - TimeDelta::days(31)).to_rfc3339();
         let future = (Utc::now() + TimeDelta::days(1)).to_rfc3339();
-        fs::write(config.codex_home.join("sessions/run.jsonl"),
-            record_at("stale", 10, &stale) + &record_at("future", 20, &future) + &record("fresh", 99)).unwrap();
+        fs::write(
+            config.codex_home.join("sessions/run.jsonl"),
+            record_at("stale", 10, &stale)
+                + &record_at("future", 20, &future)
+                + &record("fresh", 99),
+        )
+        .unwrap();
         let mut runtime = MeterRuntime::new_for_test(config.clone()).unwrap();
         let status = runtime.tick();
         let requests = receiver.join().unwrap();
-        assert_eq!(requests.len(), 2, "invalid old records must not prevent valid uploads or heartbeat");
+        assert_eq!(
+            requests.len(),
+            2,
+            "invalid old records must not prevent valid uploads or heartbeat"
+        );
         assert!(String::from_utf8_lossy(&requests[0]).contains("\"totalTokens\":99"));
-        assert_eq!(status.error_code.as_deref(), Some("METER_EVENT_OUTSIDE_REPORT_WINDOW"));
-        let outbox: serde_json::Value = serde_json::from_slice(&fs::read(config.state_dir.join("usage-outbox.json")).unwrap()).unwrap();
+        assert_eq!(
+            status.error_code.as_deref(),
+            Some("METER_EVENT_OUTSIDE_REPORT_WINDOW")
+        );
+        let outbox: serde_json::Value =
+            serde_json::from_slice(&fs::read(config.state_dir.join("usage-outbox.json")).unwrap())
+                .unwrap();
         assert_eq!(outbox["pending"].as_array().unwrap().len(), 2);
-        let public: serde_json::Value = serde_json::from_slice(&fs::read(&config.status_file).unwrap()).unwrap();
+        let public: serde_json::Value =
+            serde_json::from_slice(&fs::read(&config.status_file).unwrap()).unwrap();
         assert_eq!(public["pendingEvents"], 2);
     }
 
@@ -2574,31 +2707,64 @@ mod tests {
         let root = TestDir::new();
         let (url, receiver) = mock_meter_http(vec![(200, "{}".into()), (200, "{}".into())]);
         let config = MeterConfig {
-            server_url: url, codex_home: root.path().join(".codex"),
-            pairing_inbox: root.path().join("pairing.json"), state_dir: root.path().join("state"),
-            status_file: root.path().join("status.json"), device_id: uuid::Uuid::new_v4(), owner_user_sid: None,
+            server_url: url,
+            codex_home: root.path().join(".codex"),
+            pairing_inbox: root.path().join("pairing.json"),
+            state_dir: root.path().join("state"),
+            status_file: root.path().join("status.json"),
+            device_id: uuid::Uuid::new_v4(),
+            owner_user_sid: None,
         };
         fs::create_dir_all(config.codex_home.join("sessions")).unwrap();
         let log = config.codex_home.join("sessions/run.jsonl");
         fs::write(&log, record("previous-owner", 41)).unwrap();
-        save_state(&config.state_dir.join("scan-state.json"), &ScanState::default()).unwrap();
-        let old = outbox::Outbox::capture(&config, &ScanState::default(), Some(uuid::Uuid::from_u128(1)), || Ok(())).unwrap();
+        save_state(
+            &config.state_dir.join("scan-state.json"),
+            &ScanState::default(),
+        )
+        .unwrap();
+        let old = outbox::Outbox::capture(
+            &config,
+            &ScanState::default(),
+            Some(uuid::Uuid::from_u128(1)),
+            || Ok(()),
+        )
+        .unwrap();
         assert_eq!(old.pending.len(), 1);
         let outbox_path = config.state_dir.join("usage-outbox.json");
-        let mut journal: serde_json::Value = serde_json::from_slice(&fs::read(&outbox_path).unwrap()).unwrap();
+        let mut journal: serde_json::Value =
+            serde_json::from_slice(&fs::read(&outbox_path).unwrap()).unwrap();
         journal["userId"] = uuid::Uuid::from_u128(1).to_string().into();
         fs::write(&outbox_path, serde_json::to_vec(&journal).unwrap()).unwrap();
-        fs::write(&log, record("previous-owner", 41) + &record("ownership-transition", 17)).unwrap();
+        fs::write(
+            &log,
+            record("previous-owner", 41) + &record("ownership-transition", 17),
+        )
+        .unwrap();
         // Simulate deletion of the original system user and a later enrollment
         // with the same installation UUID but another authenticated owner.
-        fs::write(credential_file(&config.state_dir), serde_json::json!({
-            "deviceId": config.device_id, "deviceToken": "B".repeat(43),
-            "userId": uuid::Uuid::from_u128(2), "ownerVerified": true,
-        }).to_string()).unwrap();
+        fs::write(
+            credential_file(&config.state_dir),
+            serde_json::json!({
+                "deviceId": config.device_id, "deviceToken": "B".repeat(43),
+                "userId": uuid::Uuid::from_u128(2), "ownerVerified": true,
+            })
+            .to_string(),
+        )
+        .unwrap();
         let mut runtime = MeterRuntime::new_for_test(config.clone()).unwrap();
         let first = runtime.tick();
-        assert_eq!(first.error_code.as_deref(), Some("METER_OUTBOX_OWNER_UNKNOWN"));
-        fs::write(&log, record("previous-owner", 41) + &record("ownership-transition", 17) + &record("new-owner", 99)).unwrap();
+        assert_eq!(
+            first.error_code.as_deref(),
+            Some("METER_OUTBOX_OWNER_UNKNOWN")
+        );
+        fs::write(
+            &log,
+            record("previous-owner", 41)
+                + &record("ownership-transition", 17)
+                + &record("new-owner", 99),
+        )
+        .unwrap();
         runtime.tick();
         let requests = receiver.join().unwrap();
         assert_eq!(requests.len(), 2);
@@ -2606,7 +2772,8 @@ mod tests {
         assert!(requests[1].starts_with(b"POST /api/v1/meter/usage/events "));
         assert!(String::from_utf8_lossy(&requests[1]).contains("\"totalTokens\":99"));
         assert!(!String::from_utf8_lossy(&requests[1]).contains("\"totalTokens\":41"));
-        let saved: serde_json::Value = serde_json::from_slice(&fs::read(outbox_path).unwrap()).unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(outbox_path).unwrap()).unwrap();
         assert_eq!(saved["quarantined"][0]["events"][0]["totalTokens"], 41);
         assert_eq!(saved["quarantined"][1]["events"][0]["totalTokens"], 17);
         assert!(saved["quarantined"][1]["userId"].is_null());
@@ -2616,25 +2783,54 @@ mod tests {
     #[test]
     fn rejected_record_is_retained_without_blocking_valid_records_in_the_same_batch() {
         let root = TestDir::new();
-        let (url, receiver) = mock_meter_http(vec![(400, "{}".into()), (400, "{}".into()), (200, "{}".into()), (200, "{}".into())]);
+        let (url, receiver) = mock_meter_http(vec![
+            (400, "{}".into()),
+            (400, "{}".into()),
+            (200, "{}".into()),
+            (200, "{}".into()),
+        ]);
         let config = MeterConfig {
-            server_url: url, codex_home: root.path().join(".codex"),
-            pairing_inbox: root.path().join("pairing.json"), state_dir: root.path().join("state"),
-            status_file: root.path().join("status.json"), device_id: uuid::Uuid::new_v4(), owner_user_sid: None,
+            server_url: url,
+            codex_home: root.path().join(".codex"),
+            pairing_inbox: root.path().join("pairing.json"),
+            state_dir: root.path().join("state"),
+            status_file: root.path().join("status.json"),
+            device_id: uuid::Uuid::new_v4(),
+            owner_user_sid: None,
         };
         fs::create_dir_all(config.codex_home.join("sessions")).unwrap();
-        fs::write(config.codex_home.join("sessions/run.jsonl"), record("reject", 41) + &record("accept", 99)).unwrap();
-        save_state(&config.state_dir.join("scan-state.json"), &ScanState::default()).unwrap();
-        save_credential(&config.state_dir, &MeterCredential {
-            device_id: config.device_id, device_token: "A".repeat(43),
-            user_id: Some(uuid::Uuid::from_u128(1)), owner_verified: true,
-        }).unwrap();
+        fs::write(
+            config.codex_home.join("sessions/run.jsonl"),
+            record("reject", 41) + &record("accept", 99),
+        )
+        .unwrap();
+        save_state(
+            &config.state_dir.join("scan-state.json"),
+            &ScanState::default(),
+        )
+        .unwrap();
+        save_credential(
+            &config.state_dir,
+            &MeterCredential {
+                device_id: config.device_id,
+                device_token: "A".repeat(43),
+                user_id: Some(uuid::Uuid::from_u128(1)),
+                owner_verified: true,
+            },
+        )
+        .unwrap();
         let mut runtime = MeterRuntime::new_for_test(config.clone()).unwrap();
         let status = runtime.tick();
         let requests = receiver.join().unwrap();
-        assert_eq!(requests.len(), 4, "a rejected bulk request must isolate invalid records and continue");
+        assert_eq!(
+            requests.len(),
+            4,
+            "a rejected bulk request must isolate invalid records and continue"
+        );
         assert_eq!(status.error_code.as_deref(), Some("METER_REPORT_REJECTED"));
-        let saved: serde_json::Value = serde_json::from_slice(&fs::read(config.state_dir.join("usage-outbox.json")).unwrap()).unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(config.state_dir.join("usage-outbox.json")).unwrap())
+                .unwrap();
         assert_eq!(saved["quarantined"][0]["events"][0]["totalTokens"], 41);
         assert_eq!(saved["pending"].as_array().unwrap().len(), 0);
     }
@@ -2642,9 +2838,149 @@ mod tests {
     #[test]
     fn full_server_history_window_is_reportable() {
         let now = Utc::now();
-        let event = parse_direct_record(record_at("near-expiry", 42,
-            &(now - TimeDelta::hours(29 * 24 + 12)).to_rfc3339()).trim().as_bytes()).unwrap();
+        let event = parse_direct_record(
+            record_at(
+                "near-expiry",
+                42,
+                &(now - TimeDelta::hours(29 * 24 + 12)).to_rfc3339(),
+            )
+            .trim()
+            .as_bytes(),
+        )
+        .unwrap();
         assert!(reportable_at(&event, now));
+    }
+
+    #[test]
+    fn outbox_reloads_deduplicates_and_rejects_other_devices_origins_and_profiles() {
+        let root = TestDir::new();
+        let config = MeterConfig {
+            server_url: "http://127.0.0.1:1".into(),
+            codex_home: root.path().join(".codex"),
+            pairing_inbox: root.path().join("pairing.json"),
+            state_dir: root.path().join("state"),
+            status_file: root.path().join("status.json"),
+            device_id: uuid::Uuid::new_v4(),
+            owner_user_sid: None,
+        };
+        fs::create_dir_all(config.codex_home.join("sessions")).unwrap();
+        fs::write(
+            config.codex_home.join("sessions/run.jsonl"),
+            record("duplicate", 42) + &record("duplicate", 42),
+        )
+        .unwrap();
+        let owner = Some(uuid::Uuid::from_u128(1));
+        let captured =
+            outbox::Outbox::capture(&config, &ScanState::default(), owner, || Ok(())).unwrap();
+        assert_eq!(captured.pending.len(), 1);
+        let replay =
+            outbox::Outbox::capture(&config, &ScanState::default(), owner, || Ok(())).unwrap();
+        assert_eq!(replay.pending[0].event_id, captured.pending[0].event_id);
+        let stored = fs::read(config.state_dir.join("usage-outbox.json")).unwrap();
+        let mut device = config.clone();
+        device.device_id = uuid::Uuid::new_v4();
+        let mut origin = config.clone();
+        origin.server_url = "http://127.0.0.1:2".into();
+        let mut profile = config.clone();
+        profile.codex_home = root.path().join("other-profile");
+        for changed in [device, origin, profile] {
+            assert!(
+                matches!(outbox::Outbox::capture(&changed, &ScanState::default(), owner, || Ok(())), Err(code) if code == "METER_OUTBOX_IDENTITY_MISMATCH")
+            );
+            assert_eq!(
+                fs::read(config.state_dir.join("usage-outbox.json")).unwrap(),
+                stored
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_or_full_outbox_fails_without_replacing_the_original_journal() {
+        let root = TestDir::new();
+        let config = MeterConfig {
+            server_url: "http://127.0.0.1:1".into(),
+            codex_home: root.path().join(".codex"),
+            pairing_inbox: root.path().join("pairing.json"),
+            state_dir: root.path().join("state"),
+            status_file: root.path().join("status.json"),
+            device_id: uuid::Uuid::new_v4(),
+            owner_user_sid: None,
+        };
+        fs::create_dir_all(&config.state_dir).unwrap();
+        let path = config.state_dir.join("usage-outbox.json");
+        fs::write(&path, b"invalid-private-canary").unwrap();
+        assert!(
+            matches!(outbox::Outbox::capture(&config, &ScanState::default(), None, || Ok(())), Err(code) if code == "METER_OUTBOX_INVALID")
+        );
+        assert_eq!(fs::read(&path).unwrap(), b"invalid-private-canary");
+        File::create(&path)
+            .unwrap()
+            .set_len(64 * 1024 * 1024 + 1)
+            .unwrap();
+        assert!(
+            matches!(outbox::Outbox::capture(&config, &ScanState::default(), None, || Ok(())), Err(code) if code == "METER_OUTBOX_TOO_LARGE")
+        );
+        assert_eq!(fs::metadata(&path).unwrap().len(), 64 * 1024 * 1024 + 1);
+    }
+
+    #[test]
+    fn a_new_device_key_cannot_claim_another_owners_pending_usage() {
+        let root = TestDir::new();
+        let device_id = uuid::Uuid::new_v4();
+        let (url, receiver) = mock_meter_http(vec![(
+            200,
+            serde_json::json!({
+                "deviceId": device_id, "userId": uuid::Uuid::from_u128(2),
+                "expiresAt": (Utc::now() + TimeDelta::days(30)).to_rfc3339(),
+            })
+            .to_string(),
+        )]);
+        let config = MeterConfig {
+            server_url: url,
+            codex_home: root.path().join(".codex"),
+            pairing_inbox: root.path().join("pairing.json"),
+            state_dir: root.path().join("state"),
+            status_file: root.path().join("status.json"),
+            device_id,
+            owner_user_sid: None,
+        };
+        fs::create_dir_all(config.codex_home.join("sessions")).unwrap();
+        fs::write(
+            config.codex_home.join("sessions/run.jsonl"),
+            record("bound-to-owner-one", 42),
+        )
+        .unwrap();
+        save_state(
+            &config.state_dir.join("scan-state.json"),
+            &ScanState::default(),
+        )
+        .unwrap();
+        save_credential(
+            &config.state_dir,
+            &MeterCredential {
+                device_id,
+                device_token: "B".repeat(43),
+                user_id: Some(uuid::Uuid::from_u128(1)),
+                owner_verified: false,
+            },
+        )
+        .unwrap();
+        let mut runtime = MeterRuntime::new_for_test(config.clone()).unwrap();
+        let status = runtime.tick();
+        assert_eq!(
+            status.error_code.as_deref(),
+            Some("METER_PAIRING_OWNER_MISMATCH")
+        );
+        assert_eq!(status.pending_events, Some(1));
+        let requests = receiver.join().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].starts_with(b"POST /api/v1/meter/credential/renew "));
+        assert!(
+            !load_credential(&config.state_dir)
+                .unwrap()
+                .unwrap()
+                .owner_verified
+        );
     }
 
     #[test]
