@@ -9,11 +9,13 @@ import java.time.*;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.springframework.jdbc.datasource.SingleConnectionDataSource;
 import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
 
 class BrowserLoginServiceTest {
@@ -22,9 +24,10 @@ class BrowserLoginServiceTest {
     BrowserLoginService service;
     UUID owner = UUID.randomUUID(), account = UUID.randomUUID(), helper = UUID.randomUUID();
     AtomicReference<Instant> time = new AtomicReference<>(Instant.parse("2026-10-15T00:00:00Z"));
+    SingleConnectionDataSource source;
 
     @BeforeEach void setup() {
-        var source = new DriverManagerDataSource("jdbc:h2:mem:browser-login-" + UUID.randomUUID() + ";MODE=PostgreSQL;DB_CLOSE_DELAY=-1", "sa", "");
+        source = new SingleConnectionDataSource("jdbc:h2:mem:browser-login-" + UUID.randomUUID() + ";MODE=PostgreSQL;DB_CLOSE_DELAY=-1", "sa", "", true);
         jdbc = new JdbcTemplate(source);
         jdbc.execute("create table users(id uuid primary key)");
         jdbc.execute("create table official_accounts(id uuid primary key, label varchar(120))");
@@ -39,6 +42,8 @@ class BrowserLoginServiceTest {
         when(clock.instant()).thenAnswer(call -> time.get());
         service = new BrowserLoginService(jdbc, connections, clock, new DataSourceTransactionManager(source));
     }
+
+    @AfterEach void close() { source.destroy(); }
 
     @Test void scopedJobClaimsAndCompletesOnlyForItsOwnerAndHelper() {
         var job = service.create(owner, account, new BrowserLoginService.StartRequest(0L, null));
@@ -83,5 +88,23 @@ class BrowserLoginServiceTest {
         assertThat(result.errorCode()).isEqualTo("OFFICIAL_CHALLENGE_REQUIRED");
         assertThat(jdbc.queryForMap("select * from official_browser_login_jobs where id=?", job.id()).toString())
                 .doesNotContain("synthetic-token", "private-body");
+    }
+
+    @Test void expiredWriterCannotSaveCredentialsAfterItsReservationWasReleased() {
+        Clock delayed = mock(Clock.class);
+        when(delayed.instant()).thenAnswer(call -> time.get());
+        var delayedService = new BrowserLoginService(jdbc,connections,delayed,new DataSourceTransactionManager(source));
+        var job = delayedService.create(owner,account,new BrowserLoginService.StartRequest(0L,null));
+        delayedService.claim(owner,job.id(),helper);
+        Instant now = time.get();
+        when(delayed.instant()).thenReturn(now,now,now.plusSeconds(121),now.plusSeconds(121));
+        delayedService.complete(owner,job.id(),new BrowserLoginService.CompleteRequest(helper,"Bearer synthetic-token",null,"synthetic-account"));
+        verify(connections,never()).save(any(),any());
+        verify(connections,never()).refresh(any());
+    }
+
+    @Test void missingProxyIsRejectedBeforeAskingTheUserToLogIn() {
+        assertThatThrownBy(() -> service.create(owner,account,new BrowserLoginService.StartRequest(0L,UUID.randomUUID())))
+                .isInstanceOfSatisfying(DomainException.class,error -> assertThat(error.getCode()).isEqualTo("OFFICIAL_PROXY_UNAVAILABLE"));
     }
 }
