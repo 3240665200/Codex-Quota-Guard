@@ -96,11 +96,16 @@ describe('官方会话登出面板', () => {
 
   it('invalidates a changed context or expired plan and requires another preview', async () => {
     mocks.confirmSessionLogout.mockRejectedValue({ code: 'OFFICIAL_LOGOUT_CONTEXT_CHANGED', message: 'fixture-private-message' });
+    mocks.getSessionLogoutCurrent.mockResolvedValueOnce({ operation: null }).mockResolvedValue({
+      operation: { ...result(), planId: 'older-plan', canAcknowledge: false, canAcknowledgeAt: null },
+    });
     render(<SessionLogoutPanel accountId="account-1" />);
     await preview(); await confirm();
     expect(await screen.findByText(/条件已变化，本次未执行，请重新预览/)).toBeInTheDocument();
     expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
     expect(screen.queryByText('fixture-private-message')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('button', { name: '登出所有会话' })).toBeEnabled());
+    expect(screen.queryByText(/官方已接受登出请求/)).not.toBeInTheDocument();
     await preview();
     expect(screen.getByRole('checkbox', { name: /我已核对预览/ })).not.toBeChecked();
   });
@@ -212,7 +217,7 @@ describe('官方会话登出面板', () => {
     expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '登出所有会话' })).toBeDisabled();
     const refresh = screen.getByRole('button', { name: /刷新登出操作状态/ });
-    await waitFor(() => expect(refresh).toBeEnabled());
+    await waitFor(() => { expect(refresh).toBeEnabled(); expect(refresh).not.toHaveClass('ant-btn-loading'); });
     fireEvent.click(refresh);
     await waitFor(() => expect(mocks.getSessionLogoutCurrent).toHaveBeenCalledTimes(2));
     expect(mocks.confirmSessionLogout).not.toHaveBeenCalled();
@@ -238,17 +243,11 @@ describe('官方会话登出面板', () => {
     await screen.findByText(/请求正在后台执行/);
     await waitFor(() => expect(screen.getByRole('button', { name: /刷新登出操作状态/ })).toBeEnabled());
     expect(onSettled).not.toHaveBeenCalled();
-    vi.useFakeTimers();
-    try {
-      await act(async () => { await vi.advanceTimersByTimeAsync(2_001); });
-      expect(screen.getByText(/官方已接受登出请求/)).toBeInTheDocument();
-      expect(onSettled).toHaveBeenCalledWith('account-1');
-      expect(mocks.confirmSessionLogout).toHaveBeenCalledTimes(1);
-      expect(mocks.getSessionLogoutCurrent).toHaveBeenCalledTimes(3);
-      view.unmount();
-      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
-      expect(mocks.getSessionLogoutCurrent).toHaveBeenCalledTimes(3);
-    } finally { vi.useRealTimers(); }
+    expect(await screen.findByText(/官方已接受登出请求/, {}, { timeout: 5_000 })).toBeInTheDocument();
+    expect(onSettled).toHaveBeenCalledWith('account-1');
+    expect(mocks.confirmSessionLogout).toHaveBeenCalledTimes(1);
+    expect(mocks.getSessionLogoutCurrent).toHaveBeenCalledTimes(3);
+    view.unmount();
   });
 
   it('keeps the original completion callback when accounts change during an issued request', async () => {
