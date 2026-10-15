@@ -6,6 +6,7 @@ import java.net.InetSocketAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import tools.jackson.databind.ObjectMapper;
@@ -51,6 +52,35 @@ class ClientAccessGatewayTest {
                     .isInstanceOfSatisfying(ControlPlaneException.class,
                             failure -> assertThat(failure.reason().name()).isEqualTo("BINDING_REQUIRED"));
             assertThatThrownBy(() -> new ClientAccess(true, null, null)).isInstanceOf(IllegalArgumentException.class);
+        } finally { server.stop(0); }
+    }
+
+    @Test void currentCentralAllowProjectionRecoversAfterTransientFailureWithoutCaching() throws Exception {
+        UUID device = UUID.randomUUID(), binding = UUID.randomUUID();
+        Path file = temporary.resolve("meter-device-id.txt");
+        Files.writeString(file, device.toString());
+        AtomicInteger calls = new AtomicInteger();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/api/v1/client/access", exchange -> {
+            assertThat(exchange.getRequestHeaders().getFirst("X-Quota-Guard-Device-ID")).isEqualTo(device.toString());
+            boolean unavailable = calls.incrementAndGet() == 2;
+            byte[] body = (unavailable ? "{\"code\":\"INTERNAL_ERROR\",\"message\":\"synthetic detail\"}"
+                    : "{\"allowed\":true,\"bindingId\":\"%s\",\"reason\":null}".formatted(binding)).getBytes();
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(unavailable ? 503 : 200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+        try {
+            var gateway = new HttpControlPlaneGateway("http://127.0.0.1:" + server.getAddress().getPort(),
+                    new ObjectMapper(), new ClientDeviceIdentity(file));
+            assertThat(gateway.clientAccess("synthetic-token")).isEqualTo(new ClientAccess(true, binding, null));
+            assertThatThrownBy(() -> gateway.clientAccess("synthetic-token"))
+                    .isInstanceOfSatisfying(ControlPlaneException.class,
+                            failure -> assertThat(failure.reason().name()).isEqualTo("UNAVAILABLE"));
+            assertThat(gateway.clientAccess("synthetic-token")).isEqualTo(new ClientAccess(true, binding, null));
+            assertThat(calls).hasValue(3);
         } finally { server.stop(0); }
     }
 }

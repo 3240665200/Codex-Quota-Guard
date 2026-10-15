@@ -44,4 +44,18 @@ class ClientAccessSessionTest {
         assertThatThrownBy(sessions::clientAccess).isInstanceOf(SystemSessionRequiredException.class);
         verify(gateway, never()).clientAccess("other-access");
     }
+
+    @Test void transientAccessFailureNeitherErasesLoginNorCachesTheFailure() {
+        var sessions = login();
+        var allowed = new ClientAccess(true, UUID.randomUUID(), null);
+        when(gateway.clientAccess("first-access")).thenReturn(allowed)
+                .thenThrow(ControlPlaneException.unavailable()).thenReturn(allowed);
+        when(gateway.current("first-access")).thenReturn(user);
+        assertThat(sessions.clientAccess()).isEqualTo(allowed);
+        assertThatThrownBy(sessions::clientAccess).isInstanceOf(ControlPlaneUnavailableException.class);
+        assertThat(sessions.currentOverview().authenticated()).isTrue();
+        assertThat(sessions.clientAccess()).isEqualTo(allowed);
+        verify(gateway, never()).refresh(anyString());
+        verify(gateway, never()).logout(anyString(), anyString());
+    }
 }
