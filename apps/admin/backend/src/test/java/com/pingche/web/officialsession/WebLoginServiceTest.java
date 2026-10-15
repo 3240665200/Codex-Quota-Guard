@@ -185,6 +185,50 @@ class WebLoginServiceTest {
         verify(session,times(1)).frame();
     }
 
+    @Test void changedSessionCanBeRecapturedWithoutReopeningTheBrowser() {
+        var job=create();
+        when(session.frame()).thenReturn(new ManagedLoginBrowser.Frame(1024,768,"c3ludGhldGlj","https://chatgpt.com",false,"WEB_LOGIN_SESSION_CHANGED"));
+        var frame=service.frame(owner,job.id());
+        assertThat(frame.errorCode()).isEqualTo("BROWSER_LOGIN_SESSION_CHANGED");
+        assertThat(frame.readyToSave()).isFalse();
+        assertThat(service.get(owner,job.id()).state()).isEqualTo("WAITING_FOR_LOGIN");
+        service.input(owner,job.id(),new ManagedLoginBrowser.Input("OPEN_SESSIONS",null,null,null,null,null,false,false));
+        verify(session).input(any());
+        verify(session,never()).close();
+    }
+
+    @Test void officialLogoutOrSystemLogoutDuringCandidateValidationPreventsSave() {
+        var job=create();
+        when(client.fetch(any(),any())).thenAnswer(call -> {jdbc.update("insert into official_session_logout_plans values (?,'UNKNOWN')",account);return snapshot();});
+        assertThat(service.complete(owner,job.id()).errorCode()).isEqualTo("OFFICIAL_SESSION_LOGOUT_BUSY");
+        verify(connections,never()).saveVerified(any(),any(),any());
+        jdbc.update("delete from official_session_logout_plans");
+        var next=create();
+        when(client.fetch(any(),any())).thenAnswer(call -> {service.cancelOwner(owner);return snapshot();});
+        assertThat(service.complete(owner,next.id()).state()).isEqualTo("CANCELLED");
+        verify(connections,never()).saveVerified(any(),any(),any());
+    }
+
+    @Test void boundedFramesUpToTwoMiBAreAcceptedAndBrowserFailuresHaveSafeCodes() {
+        var job=create();
+        when(session.frame()).thenReturn(new ManagedLoginBrowser.Frame(1024,768,"a".repeat(1_100_000),"https://chatgpt.com/?private=query",true,null));
+        assertThat(service.frame(owner,job.id()).pageOrigin()).isEqualTo("https://chatgpt.com");
+        now.set(now.get().plusSeconds(1));
+        when(session.frame()).thenReturn(new ManagedLoginBrowser.Frame(1024,768,"c3ludGhldGlj",null,false,"WEB_LOGIN_EXTERNAL_PROVIDER_UNSUPPORTED"));
+        assertThatThrownBy(() -> service.frame(owner,job.id())).isInstanceOfSatisfying(DomainException.class,
+                failure -> assertThat(failure.getCode()).isEqualTo("BROWSER_LOGIN_EXTERNAL_PROVIDER_UNSUPPORTED"));
+        assertThat(service.get(owner,job.id()).state()).isEqualTo("FAILED");
+        verify(session).close();
+    }
+
+    @Test void localExpiryClosesBrowserEvenWhenTheDatabaseIsUnavailable() {
+        create();
+        now.set(now.get().plusSeconds(601));
+        jdbc.execute("drop table official_browser_login_jobs");
+        assertThatThrownBy(service::cleanup).isInstanceOf(RuntimeException.class);
+        verify(session).close();
+    }
+
     private WebLoginService.Job create() { return service.create(owner,account,new BrowserLoginService.StartRequest(0L,null)); }
     private OfficialSessionSnapshot snapshot() {
         return new OfficialSessionSnapshot(new OfficialAccountInfo("synthetic-user","owner@example.test","Owner","synthetic-account","Personal","plus","owner",false,true),

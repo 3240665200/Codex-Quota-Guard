@@ -66,6 +66,15 @@ class WebLoginIntegrationTest {
             mvc.perform(get(path).header("Authorization",token(admin)).header("X-Forwarded-Proto","https")).andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.code").value("OFFICIAL_HTTPS_REQUIRED")).andExpect(header().string("Cache-Control","no-store"));
         }
+        for(String suffix:List.of("/input","/complete","/cancel")) {
+            String path="/api/v1/admin/web-logins/"+UUID.randomUUID()+suffix;
+            mvc.perform(post(path).secure(true).contentType(MediaType.APPLICATION_JSON).content("{}"))
+                    .andExpect(status().isUnauthorized()).andExpect(header().string("Cache-Control","no-store"));
+            mvc.perform(post(path).secure(true).header("Authorization",token(member)).contentType(MediaType.APPLICATION_JSON).content("{}"))
+                    .andExpect(status().isForbidden()).andExpect(header().string("Cache-Control","no-store"));
+            mvc.perform(post(path).header("Authorization",token(admin)).contentType(MediaType.APPLICATION_JSON).content("{}"))
+                    .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value("OFFICIAL_HTTPS_REQUIRED"));
+        }
         mvc.perform(post(createUrl()).secure(true).header("Authorization",token(admin)).contentType(MediaType.APPLICATION_JSON).content("{\"version\":null}"))
                 .andExpect(status().isBadRequest()).andExpect(header().string("Cache-Control","no-store"));
         verify(browser,never()).open(any(),any());
