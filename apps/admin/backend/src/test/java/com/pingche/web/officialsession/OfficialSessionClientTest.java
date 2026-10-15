@@ -92,6 +92,35 @@ class OfficialSessionClientTest {
     }
 
     @Test
+    void acceptsIdenticalDefaultAccountAliasWithoutTreatingItAsConflictingIdentity() {
+        ObjectMapper mapper = new ObjectMapper();
+        String item = mapper.readTree(ACCOUNTS).get("accounts").get("not-the-id").toString();
+        for (String entries : List.of("\"default\":" + item + ",\"official-account-one\":" + item,
+                "\"official-account-one\":" + item + ",\"default\":" + item)) {
+            HttpClient http = mock(HttpClient.class);
+            List<HttpRequest> requests = success(http, "{\"accounts\":{" + entries + "}}", SESSIONS);
+
+            OfficialSessionSnapshot result = client(http).fetch(credentials(), null);
+
+            assertThat(result.account().accountId()).isEqualTo("official-account-one");
+            assertThat(result.sessions().devices()).hasSize(2);
+            assertThat(requests).hasSize(3);
+        }
+    }
+
+    @Test
+    void stillRejectsConflictingDataForTheSameAccountId() {
+        String item = new ObjectMapper().readTree(ACCOUNTS).get("accounts").get("not-the-id").toString();
+        String conflicting = item.replace("\"plus\"", "\"pro\"");
+        HttpClient http = mock(HttpClient.class);
+        List<HttpRequest> requests = success(http,
+                "{\"accounts\":{\"default\":" + item + ",\"official-account-one\":" + conflicting + "}}", SESSIONS);
+
+        assertFailure(http, "OFFICIAL_RESPONSE_INVALID");
+        assertThat(requests).hasSize(2);
+    }
+
+    @Test
     void chosenProxyLeaseIsUsedAndAlwaysClosedWithoutFallingBackToDirect() {
         HttpClient http = mock(HttpClient.class);
         success(http);
