@@ -36,4 +36,12 @@ class MailConnectionMessageTest {
                     .contains("MAIL_CONNECTION_FAILED").doesNotContain("private-secret");
         }
     }
+
+    @Test
+    void tlsFailureDoesNotAssertThatTheCertificateWasTheCause() {
+        assertThat(MailAssistanceService.connectionFailureMessage(
+                new DomainException("MAIL_TLS_FAILED", "Remote host terminated the handshake", HttpStatus.BAD_GATEWAY)))
+                .contains("TLS", "加密连接", "证书", "MAIL_TLS_FAILED")
+                .doesNotContain("证书验证失败", "Remote host");
+    }
 }
