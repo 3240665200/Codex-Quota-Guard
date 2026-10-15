@@ -213,7 +213,7 @@ describe("本设备官方会话绑定", () => {
     );
     render(<SessionBinding userId="user-a" />);
     await screen.findByText(/没有发现本次新增的官方会话/);
-    expect(screen.getByText(/管理员/)).toBeVisible();
+    expect(screen.getByText("等待管理员恢复绑定队列")).toBeVisible();
   });
   it("取消会释放本次任务并清除候选", async () => {
     await begin();
@@ -270,6 +270,18 @@ describe("本设备官方会话绑定", () => {
     fireEvent.click(await screen.findByRole("button", { name: "重试申请绑定" }));
     await screen.findByRole("button", { name: "已完成登录，识别本设备" });
     expect(starts).toBe(2);
+  });
+  it("重新检查失败不能把已保护的取消任务当作可重试", async () => {
+    let reads = 0;
+    native.mockImplementation(async () => {
+      if (reads++ === 0) return { attempt: attempt("CANCELLED", { quarantined: true }), binding: null };
+      throw new Error("synthetic unavailable");
+    });
+    render(<SessionBinding userId="user-a" />);
+    fireEvent.click(await screen.findByRole("button", { name: "检查队列是否已恢复" }));
+    await screen.findByText("暂时无法连接本地服务，请确认应用仍在运行。");
+    expect(screen.queryByRole("button", { name: /重试申请绑定|重新申请绑定|开始绑定本设备/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "重新读取绑定状态" })).toBeEnabled();
   });
   it("设备登记不可用时指出先配对统计程序再重新读取状态", async () => {
     native.mockRejectedValue("本设备绑定信息不可用，请检查统计程序设备登记或联系管理员。");
