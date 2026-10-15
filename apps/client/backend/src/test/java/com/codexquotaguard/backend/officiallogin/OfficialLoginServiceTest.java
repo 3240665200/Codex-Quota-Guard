@@ -55,11 +55,15 @@ class OfficialLoginServiceTest {
 
     @Test void rejectsRegularUsersAndConcurrentTasks() {
         when(sessions.current()).thenReturn(user(owner,"USER"));
+        when(sessions.localUser()).thenReturn(Optional.of(user(owner,"USER")));
         assertThatThrownBy(() -> service.jobs()).isInstanceOf(OfficialLoginException.class);
         verifyNoInteractions(gateway,browser);
         when(sessions.current()).thenReturn(user(owner,"ADMIN"));
+        when(sessions.localUser()).thenReturn(Optional.of(user(owner,"ADMIN")));
         service.start(jobId,OfficialLoginBrowser.Browser.EDGE);
         assertThatThrownBy(() -> service.start(UUID.randomUUID(),OfficialLoginBrowser.Browser.CHROME)).isInstanceOf(OfficialLoginException.class);
+        verify(gateway,never()).claim(anyString(),any(),any());
+        tasks.remove().run();
         verify(gateway,times(1)).claim(anyString(),any(),any());
     }
 
@@ -77,6 +81,7 @@ class OfficialLoginServiceTest {
         UUID other = UUID.randomUUID();
         when(sessions.localUserId()).thenReturn(Optional.of(other));
         when(sessions.current()).thenReturn(user(other,"ADMIN"));
+        when(sessions.localUser()).thenReturn(Optional.of(user(other,"ADMIN")));
         service.poll();
         authorization.complete(new OfficialLoginBrowser.Authorization("Bearer synthetic-token",null,"synthetic-account"));
         while(!tasks.isEmpty()) tasks.remove().run();
@@ -89,7 +94,8 @@ class OfficialLoginServiceTest {
 
     @Test void serverExpiryAndShutdownPreventLateSubmission() {
         when(gateway.claim(anyString(),eq(jobId),any())).thenReturn(job("WAITING_FOR_LOGIN",now.minusSeconds(1)));
-        assertThatThrownBy(() -> service.start(jobId,OfficialLoginBrowser.Browser.EDGE)).isInstanceOf(OfficialLoginException.class);
+        service.start(jobId,OfficialLoginBrowser.Browser.EDGE);tasks.remove().run();
+        assertThat(service.status().state()).isEqualTo("FAILED");
         verifyNoInteractions(browser);
         when(gateway.claim(anyString(),eq(jobId),any())).thenReturn(job("WAITING_FOR_LOGIN",now.plusSeconds(600)));
         service.start(jobId,OfficialLoginBrowser.Browser.EDGE); tasks.remove().run();
