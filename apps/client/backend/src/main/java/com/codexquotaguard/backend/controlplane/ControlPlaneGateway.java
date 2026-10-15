@@ -27,6 +27,14 @@ public interface ControlPlaneGateway {
         throw ControlPlaneException.unavailable();
     }
 
+    default LoginAssistanceCurrent currentLoginAssistance(String accessToken) {
+        throw ControlPlaneException.unavailable();
+    }
+
+    default AssistanceEventStream loginAssistanceEvents(String accessToken) {
+        throw ControlPlaneException.unavailable();
+    }
+
     default LoginAssistanceListener startLoginAssistance(String accessToken) {
         throw ControlPlaneException.unavailable();
     }

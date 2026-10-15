@@ -27,7 +27,8 @@ public class ClientBindingGateConfiguration implements WebMvcConfigurer {
         String uuid = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
         if ("GET".equals(method)) {
             return java.util.Set.of("/api/v1/status", "/api/v1/session/current", "/api/v1/session/access",
-                    "/api/v1/login-assistance", "/api/v1/session-bindings", "/api/v1/official-login-helper/jobs",
+                    "/api/v1/login-assistance", "/api/v1/login-assistance/listeners/current", "/api/v1/login-assistance/events",
+                    "/api/v1/session-bindings", "/api/v1/official-login-helper/jobs",
                     "/api/v1/official-login-helper/status").contains(path)
                     || path.matches("/api/v1/login-assistance/listeners/" + uuid)
                     || path.matches("/api/v1/session-bindings/attempts/" + uuid);

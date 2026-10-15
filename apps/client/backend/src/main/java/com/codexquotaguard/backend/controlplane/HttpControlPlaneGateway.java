@@ -109,6 +109,39 @@ final class HttpControlPlaneGateway implements ControlPlaneGateway {
         return sendMailJson(get("/api/v1/client/login-assistance", accessToken), LoginAssistanceInfo.class);
     }
 
+    @Override public LoginAssistanceCurrent currentLoginAssistance(String token) {
+        return sendMailJson(get("/api/v1/client/login-assistance/listeners/current",token),LoginAssistanceCurrent.class);
+    }
+
+    @Override public AssistanceEventStream loginAssistanceEvents(String token) {
+        HttpRequest request=HttpRequest.newBuilder(endpoint("/api/v1/client/login-assistance/events"))
+                .header("Accept","text/event-stream").header("Cache-Control","no-store")
+                .header("Authorization","Bearer "+token).GET().build();
+        CompletableFuture<HttpResponse<java.io.InputStream>> pending=null;
+        java.io.InputStream body=null;
+        boolean transferred=false;
+        try {
+            // Bound response headers here; the stream owner enforces idle and total lifetime limits.
+            pending=client.sendAsync(request,HttpResponse.BodyHandlers.ofInputStream());
+            HttpResponse<java.io.InputStream> response=pending.get(requestTimeout.toMillis(),TimeUnit.MILLISECONDS);
+            body=response.body();
+            if(response.statusCode()==401)throw ControlPlaneException.unauthorized();
+            if(response.statusCode()!=200 || body==null
+                    || !response.headers().firstValue("Content-Type").orElse("").split(";",2)[0].trim().equalsIgnoreCase("text/event-stream")
+                    || !response.headers().firstValue("Content-Encoding").orElse("identity").equalsIgnoreCase("identity"))
+                throw ControlPlaneException.unavailable();
+            AssistanceEventStream stream=new AssistanceEventStream(body);
+            transferred=true;
+            return stream;
+        } catch(InterruptedException ignored) {
+            Thread.currentThread().interrupt();throw ControlPlaneException.unavailable();
+        } catch(ExecutionException|TimeoutException ignored) {throw ControlPlaneException.unavailable();}
+        finally {
+            if(pending!=null && !pending.isDone())pending.cancel(true);
+            if(!transferred && body!=null)try{body.close();}catch(IOException ignored){ }
+        }
+    }
+
     @Override
     public LoginAssistanceListener startLoginAssistance(String accessToken) {
         HttpRequest request = HttpRequest.newBuilder(endpoint("/api/v1/client/login-assistance/listeners"))

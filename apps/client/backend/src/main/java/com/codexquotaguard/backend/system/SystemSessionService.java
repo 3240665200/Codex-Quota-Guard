@@ -5,6 +5,7 @@ import com.codexquotaguard.backend.controlplane.ControlPlaneException;
 import com.codexquotaguard.backend.controlplane.ControlPlaneGateway;
 import com.codexquotaguard.backend.controlplane.LoginAssistanceInfo;
 import com.codexquotaguard.backend.controlplane.LoginAssistanceListener;
+import com.codexquotaguard.backend.controlplane.LoginAssistanceCurrent;
 import com.codexquotaguard.backend.controlplane.MeterEnrollment;
 import com.codexquotaguard.backend.controlplane.SessionBindingAttempt;
 import com.codexquotaguard.backend.controlplane.SessionBindingCurrent;
@@ -96,6 +97,7 @@ public final class SystemSessionService {
     }
     public PersonalQuotaOverview quotaOverview() { return invoke(controlPlane::quotaOverview, null).value(); }
     public LoginAssistanceInfo loginAssistanceInfo() { return invoke(controlPlane::loginAssistanceInfo, null).value(); }
+    public LoginAssistanceCurrent currentLoginAssistance() { return invoke(controlPlane::currentLoginAssistance, null).value(); }
     public LoginAssistanceListener startLoginAssistance() { return invoke(controlPlane::startLoginAssistance, null).value(); }
     public LoginAssistanceListener loginAssistanceStatus(UUID listenerId) { return invoke(token -> controlPlane.loginAssistanceStatus(token, listenerId), null).value(); }
     public LoginAssistanceListener cancelLoginAssistance(UUID listenerId) { return invoke(token -> controlPlane.cancelLoginAssistance(token, listenerId), null).value(); }
