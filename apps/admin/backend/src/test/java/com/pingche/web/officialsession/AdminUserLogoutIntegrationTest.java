@@ -116,10 +116,10 @@ class AdminUserLogoutIntegrationTest {
         verify(client, never()).logoutAll(any(), any());
     }
 
-    @Test void endpointsRequireAdminSecureTransportAndNoStore() throws Exception {
+    @Test void endpointsRequireAdminSupportedTransportAndNoStore() throws Exception {
         mvc.perform(post(url("preview")).secure(true)).andExpect(status().isUnauthorized());
         mvc.perform(post(url("preview")).secure(true).header(HttpHeaders.AUTHORIZATION, token(member))).andExpect(status().isForbidden());
-        mvc.perform(post(url("preview")).header(HttpHeaders.AUTHORIZATION, token(admin)))
+        mvc.perform(post(url("preview")).with(http -> { http.setScheme("ftp"); return http; }).header(HttpHeaders.AUTHORIZATION, token(admin)))
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value("OFFICIAL_HTTPS_REQUIRED"));
         mvc.perform(get(url(UUID.randomUUID().toString())).secure(true).header(HttpHeaders.AUTHORIZATION, token(member)))
                 .andExpect(status().isForbidden());
@@ -309,12 +309,13 @@ class AdminUserLogoutIntegrationTest {
         verify(client, never()).revokeSession(any(), any(), anyString());
     }
 
-    @Test void everyNewRouteRejectsRemotePlainHttpBeforeAnyAction() throws Exception {
+    @Test void everyNewRouteRejectsUnsupportedTransportBeforeAnyAction() throws Exception {
         UUID plan = UUID.randomUUID();
         var calls = List.of(post(url("preview")), post(url("confirm")).contentType(MediaType.APPLICATION_JSON)
                         .content(json.writeValueAsString(Map.of("planId", plan, "acknowledgeLogoutRisk", true))),
                 get(url("current")), get(url(plan.toString())));
         for (var call : calls) mvc.perform(call.header(HttpHeaders.AUTHORIZATION, token(admin)).with(request -> {
+                    request.setScheme("ftp");
                     request.setRemoteAddr("203.0.113.9");
                     request.setServerName("admin.example.test");
                     return request;

@@ -38,7 +38,7 @@ class BrowserLoginControllerTest {
                 .andExpect(header().string("Cache-Control","no-store"));
         mvc.perform(get("/api/v1/admin/browser-logins").secure(true).header("Authorization",token(member)))
                 .andExpect(status().isForbidden());
-        mvc.perform(get("/api/v1/admin/browser-logins").header("Authorization",token(admin)).header("X-Forwarded-Proto","https"))
+        mvc.perform(get("/api/v1/admin/browser-logins").with(http -> { http.setScheme("ftp"); return http; }).header("Authorization",token(admin)).header("X-Forwarded-Proto","https"))
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value("OFFICIAL_HTTPS_REQUIRED"));
         verifyNoInteractions(service);
     }

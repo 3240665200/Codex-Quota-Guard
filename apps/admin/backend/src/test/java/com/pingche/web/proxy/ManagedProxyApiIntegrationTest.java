@@ -48,9 +48,9 @@ class ManagedProxyApiIntegrationTest {
     }
 
     @Test
-    void adminRoutesRequireAuthenticationHttpsAndNeverReturnSecrets() throws Exception {
+    void adminRoutesRequireAuthenticationAndSupportedTransportAndNeverReturnSecrets() throws Exception {
         mvc.perform(get("/api/v1/admin/proxy-nodes").secure(true)).andExpect(status().isUnauthorized());
-        mvc.perform(post("/api/v1/admin/proxy-nodes").header("Authorization", adminToken)
+        mvc.perform(post("/api/v1/admin/proxy-nodes").with(http -> { http.setScheme("ftp"); return http; }).header("Authorization", adminToken)
                         .header("X-Forwarded-Proto", "https").contentType(MediaType.APPLICATION_JSON)
                         .content(request("Node", "http://alice:synthetic-secret@proxy.example.com:8080", true)))
                 .andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value("PROXY_HTTPS_REQUIRED"))

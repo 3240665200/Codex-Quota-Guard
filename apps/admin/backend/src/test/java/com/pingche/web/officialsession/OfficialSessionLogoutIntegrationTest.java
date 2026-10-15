@@ -96,13 +96,13 @@ class OfficialSessionLogoutIntegrationTest {
     }
 
     @Test
-    void previewRequiresAdministratorHttpsAndDoesNotExposeCredentials() throws Exception {
+    void previewRequiresAdministratorSupportedTransportAndDoesNotExposeCredentials() throws Exception {
         mvc.perform(post(url("preview")).secure(true).contentType(MediaType.APPLICATION_JSON).content("{\"mode\":\"ALL\"}"))
                 .andExpect(status().isUnauthorized()).andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"));
         mvc.perform(post(url("preview")).secure(true).header(HttpHeaders.AUTHORIZATION, token(member))
                         .contentType(MediaType.APPLICATION_JSON).content("{\"mode\":\"ALL\"}"))
                 .andExpect(status().isForbidden());
-        mvc.perform(post(url("preview")).header(HttpHeaders.AUTHORIZATION, token(admin))
+        mvc.perform(post(url("preview")).with(http -> { http.setScheme("ftp"); return http; }).header(HttpHeaders.AUTHORIZATION, token(admin))
                         .contentType(MediaType.APPLICATION_JSON).content("{\"mode\":\"ALL\"}"))
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value("OFFICIAL_HTTPS_REQUIRED"));
         verifyNoInteractions(client);

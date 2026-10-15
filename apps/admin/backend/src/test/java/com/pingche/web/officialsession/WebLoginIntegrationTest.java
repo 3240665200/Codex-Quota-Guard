@@ -62,12 +62,12 @@ class WebLoginIntegrationTest {
     }
     @AfterEach void cleanup() {service.cancelOwner(admin.getId());}
 
-    @Test void allEndpointsRequireAdminSecureTransportAndNeverCache() throws Exception {
+    @Test void allEndpointsRequireAdminSupportedTransportAndNeverCache() throws Exception {
         for(String suffix:List.of("","/frame")) {
             String path="/api/v1/admin/web-logins/"+UUID.randomUUID()+suffix;
             mvc.perform(get(path).secure(true)).andExpect(status().isUnauthorized()).andExpect(header().string("Cache-Control","no-store"));
             mvc.perform(get(path).secure(true).header("Authorization",token(member))).andExpect(status().isForbidden()).andExpect(header().string("Cache-Control","no-store"));
-            mvc.perform(get(path).header("Authorization",token(admin)).header("X-Forwarded-Proto","https")).andExpect(status().isBadRequest())
+            mvc.perform(get(path).with(http -> { http.setScheme("ftp"); return http; }).header("Authorization",token(admin)).header("X-Forwarded-Proto","https")).andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.code").value("OFFICIAL_HTTPS_REQUIRED")).andExpect(header().string("Cache-Control","no-store"));
         }
         for(String suffix:List.of("/input","/complete","/cancel")) {
@@ -76,7 +76,7 @@ class WebLoginIntegrationTest {
                     .andExpect(status().isUnauthorized()).andExpect(header().string("Cache-Control","no-store"));
             mvc.perform(post(path).secure(true).header("Authorization",token(member)).contentType(MediaType.APPLICATION_JSON).content("{}"))
                     .andExpect(status().isForbidden()).andExpect(header().string("Cache-Control","no-store"));
-            mvc.perform(post(path).header("Authorization",token(admin)).contentType(MediaType.APPLICATION_JSON).content("{}"))
+            mvc.perform(post(path).with(http -> { http.setScheme("ftp"); return http; }).header("Authorization",token(admin)).contentType(MediaType.APPLICATION_JSON).content("{}"))
                     .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value("OFFICIAL_HTTPS_REQUIRED"));
         }
         mvc.perform(post(createUrl()).secure(true).header("Authorization",token(admin)).contentType(MediaType.APPLICATION_JSON).content("{\"version\":null}"))

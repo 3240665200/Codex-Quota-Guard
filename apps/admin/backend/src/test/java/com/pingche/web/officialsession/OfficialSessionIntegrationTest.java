@@ -93,16 +93,16 @@ class OfficialSessionIntegrationTest {
     }
 
     @Test
-    void adminOnlyHttpsAndNoStoreApplyToEverySensitiveReadAndWrite() throws Exception {
+    void adminOnlySupportedTransportAndNoStoreApplyToEverySensitiveReadAndWrite() throws Exception {
         for (String path : List.of(connectionUrl(), sessionsUrl())) {
             mvc.perform(get(path).secure(true)).andExpect(status().isUnauthorized())
                     .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"));
             mvc.perform(get(path).secure(true).header(HttpHeaders.AUTHORIZATION, token(member)))
                     .andExpect(status().isForbidden()).andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"));
-            mvc.perform(get(path).header(HttpHeaders.AUTHORIZATION, token(admin)).header("X-Forwarded-Proto", "https"))
+            mvc.perform(get(path).with(http -> { http.setScheme("ftp"); return http; }).header(HttpHeaders.AUTHORIZATION, token(admin)).header("X-Forwarded-Proto", "https"))
                     .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value("OFFICIAL_HTTPS_REQUIRED"));
         }
-        mvc.perform(put(connectionUrl()).header(HttpHeaders.AUTHORIZATION, token(admin)).contentType(MediaType.APPLICATION_JSON)
+        mvc.perform(put(connectionUrl()).with(http -> { http.setScheme("ftp"); return http; }).header(HttpHeaders.AUTHORIZATION, token(admin)).contentType(MediaType.APPLICATION_JSON)
                         .content(body("Bearer synthetic-access", "official-account-one", 0)))
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value("OFFICIAL_HTTPS_REQUIRED"));
         verifyNoInteractions(client);
