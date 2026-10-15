@@ -6,7 +6,9 @@ import BrowserLoginPanel from './BrowserLoginPanel';
 const mocks = vi.hoisted(() => ({ startOfficialWebLogin: vi.fn(), getOfficialWebLogin: vi.fn(),
   getOfficialWebLoginFrame: vi.fn(), sendOfficialWebLoginInput: vi.fn(),
   completeOfficialWebLogin: vi.fn(), cancelOfficialWebLogin: vi.fn() }));
-vi.mock('../../services/officialWebLoginApi', () => mocks);
+vi.mock('../../services/officialWebLoginApi', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../services/officialWebLoginApi')>(), ...mocks,
+}));
 vi.mock('antd', () => {
   const Block = ({ children }: { children?: ReactNode }) => <div>{children}</div>;
   return { Card: Block, Space: Block, Tag: Block, Typography: { Paragraph: Block, Text: Block },
@@ -86,5 +88,28 @@ describe('服务器官方网页登录', () => {
     show(); await start(); await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
     expect(screen.queryByLabelText('官方登录浏览器画面')).not.toBeInTheDocument();
     expect(mocks.cancelOfficialWebLogin).toHaveBeenCalledWith('job-1');
+  });
+  it('opens the fixed official session page only after an explicit click', async () => {
+    show(); await start(); expect(mocks.sendOfficialWebLoginInput).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '打开官方会话页' }));
+    await waitFor(() => expect(mocks.sendOfficialWebLoginInput).toHaveBeenCalledExactlyOnceWith('job-1', { type: 'OPEN_SESSIONS' }));
+  });
+  it('bounds input queue and cancels queued text on account switch', async () => {
+    let resolve!: () => void; mocks.sendOfficialWebLoginInput.mockReturnValue(new Promise<void>((done) => { resolve = done; }));
+    const view = show(); await start(); const canvas = screen.getByLabelText('官方登录浏览器画面');
+    for (let i = 0; i < 25; i += 1) fireEvent.paste(canvas, { clipboardData: { getData: () => '临时输入' } });
+    expect(mocks.sendOfficialWebLoginInput).toHaveBeenCalledOnce(); expect(screen.getByText(/输入过快/)).toBeInTheDocument();
+    view.rerender(<BrowserLoginPanel accountId="account-2" version={1} proxyNodeId={null} disabled={false} onResultChanged={vi.fn()} />);
+    await act(async () => { resolve(); });
+    expect(mocks.sendOfficialWebLoginInput).toHaveBeenCalledOnce();
+    expect(mocks.cancelOfficialWebLogin).toHaveBeenCalledWith('job-1');
+    expect(screen.queryByLabelText('官方登录浏览器画面')).not.toBeInTheDocument();
+  });
+  it('clears a failed input and does not automatically replay it', async () => {
+    mocks.sendOfficialWebLoginInput.mockRejectedValue({ status: 503, message: 'fixture-secret' });
+    show(); await start(); fireEvent.paste(screen.getByLabelText('官方登录浏览器画面'), { clipboardData: { getData: () => '临时密码' } });
+    await waitFor(() => expect(screen.queryByLabelText('官方登录浏览器画面')).not.toBeInTheDocument());
+    expect(mocks.sendOfficialWebLoginInput).toHaveBeenCalledOnce(); expect(screen.queryByText('fixture-secret')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '重新检查任务' })).toBeInTheDocument();
   });
 });
