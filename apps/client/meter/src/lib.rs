@@ -729,6 +729,27 @@ pub fn send_events(
     credential: &MeterCredential,
     events: &[UsageEvent],
 ) -> Result<(), String> {
+    send_events_guarded(client, config, credential, events, || Ok(()))
+}
+
+fn send_events_guarded(
+    client: &reqwest::blocking::Client,
+    config: &MeterConfig,
+    credential: &MeterCredential,
+    events: &[UsageEvent],
+    ensure_allowed: impl FnMut() -> Result<(), String>,
+) -> Result<(), String> {
+    with_device_recovery(client, config, credential, ensure_allowed, || {
+        send_events_once(client, config, credential, events)
+    })
+}
+
+fn send_events_once(
+    client: &reqwest::blocking::Client,
+    config: &MeterConfig,
+    credential: &MeterCredential,
+    events: &[UsageEvent],
+) -> Result<(), String> {
     let response = client
         .post(meter_endpoint(config, "/api/v1/meter/usage/events")?)
         .header("X-Quota-Guard-Meter", &credential.device_token)
@@ -748,6 +769,25 @@ pub fn send_heartbeat(
     config: &MeterConfig,
     credential: &MeterCredential,
 ) -> Result<(), String> {
+    send_heartbeat_guarded(client, config, credential, || Ok(()))
+}
+
+fn send_heartbeat_guarded(
+    client: &reqwest::blocking::Client,
+    config: &MeterConfig,
+    credential: &MeterCredential,
+    ensure_allowed: impl FnMut() -> Result<(), String>,
+) -> Result<(), String> {
+    with_device_recovery(client, config, credential, ensure_allowed, || {
+        send_heartbeat_once(client, config, credential)
+    })
+}
+
+fn send_heartbeat_once(
+    client: &reqwest::blocking::Client,
+    config: &MeterConfig,
+    credential: &MeterCredential,
+) -> Result<(), String> {
     let response = client
         .post(meter_endpoint(config, "/api/v1/meter/heartbeat")?)
         .header("X-Quota-Guard-Meter", &credential.device_token)
@@ -758,6 +798,55 @@ pub fn send_heartbeat(
         401 | 403 => Err("METER_PAIRING_EXPIRED".into()),
         _ => Err("METER_BACKEND_UNAVAILABLE".into()),
     }
+}
+
+fn with_device_recovery(
+    client: &reqwest::blocking::Client,
+    config: &MeterConfig,
+    credential: &MeterCredential,
+    mut ensure_allowed: impl FnMut() -> Result<(), String>,
+    mut operation: impl FnMut() -> Result<(), String>,
+) -> Result<(), String> {
+    ensure_allowed()?;
+    match operation() {
+        Err(code) if code == "METER_PAIRING_EXPIRED" => {
+            ensure_allowed()?;
+            renew_device_credential(client, config, credential)?;
+            ensure_allowed()?;
+            operation()
+        }
+        result => result,
+    }
+}
+
+fn renew_device_credential(
+    client: &reqwest::blocking::Client,
+    config: &MeterConfig,
+    credential: &MeterCredential,
+) -> Result<(), String> {
+    let response = client
+        .post(meter_endpoint(config, "/api/v1/meter/credential/renew")?)
+        .header("X-Quota-Guard-Meter", &credential.device_token)
+        .send()
+        .map_err(|_| "METER_BACKEND_UNAVAILABLE")?;
+    match response.status().as_u16() {
+        200..=299 => {}
+        401 | 403 => return Err("METER_PAIRING_EXPIRED".into()),
+        _ => return Err("METER_BACKEND_UNAVAILABLE".into()),
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Renewal { device_id: uuid::Uuid, expires_at: String }
+    let mut bytes = Vec::new();
+    response.take(4097).read_to_end(&mut bytes).map_err(|_| "METER_RENEWAL_INVALID")?;
+    if bytes.len() > 4096 { return Err("METER_RENEWAL_INVALID".into()); }
+    let renewal: Renewal = serde_json::from_slice(&bytes).map_err(|_| "METER_RENEWAL_INVALID")?;
+    if renewal.device_id != credential.device_id
+        || !DateTime::parse_from_rfc3339(&renewal.expires_at).is_ok_and(|expires| expires > Utc::now())
+    {
+        return Err("METER_RENEWAL_INVALID".into());
+    }
+    Ok(())
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -1428,21 +1517,22 @@ impl MeterRuntime {
         let mut outbox = outbox::Outbox::capture(&self.config, &previous.unwrap(), || {
             self.guard.ensure_allowed()
         })?;
-        if outbox.pending.iter().any(|event| !reportable_at(event, Utc::now())) {
-            // The server accepts only recent events. Retain older/future
-            // records for an operator; never alter timestamps or discard them.
-            return Err("METER_EVENT_OUTSIDE_REPORT_WINDOW".into());
-        }
+        let now = Utc::now();
+        let candidates: Vec<_> = outbox.pending.iter()
+            .filter(|event| reportable_at(event, now)).cloned().collect();
         let mut reported_events = Vec::new();
-        while !outbox.pending.is_empty() {
+        for batch in candidates.chunks(100) {
             self.guard.ensure_allowed()?;
-            let count = outbox.pending.len().min(100);
-            let batch = &outbox.pending[..count];
-            send_events(&self.client, &self.config, &credential, batch)?;
+            send_events_guarded(&self.client, &self.config, &credential, batch, || self.guard.ensure_allowed())?;
             reported_events.extend_from_slice(batch);
-            self.guard.with_allowed(|| outbox.acknowledge(&self.config, count))?;
+            self.guard.with_allowed(|| outbox.acknowledge(&self.config, batch))?;
         }
         self.guard.with_allowed(|| save_state(&state_path, outbox.scan_state()))?;
+        if !outbox.pending.is_empty() {
+            // Preserve quarantined timestamps, but never let them prevent
+            // later valid records from being sent to their paired user.
+            return Err("METER_EVENT_OUTSIDE_REPORT_WINDOW".into());
+        }
         let reported = ScanOutcome { events: reported_events, next_state: outbox.scan_state().clone() };
         if !reported.events.is_empty() {
             self.last_report_epoch_seconds = Some(epoch_seconds());
@@ -1470,7 +1560,7 @@ impl MeterRuntime {
             .is_none_or(|last| last.elapsed() >= Duration::from_secs(30))
         {
             self.guard.ensure_allowed()?;
-            send_heartbeat(&self.client, &self.config, &credential)?;
+            send_heartbeat_guarded(&self.client, &self.config, &credential, || self.guard.ensure_allowed())?;
             self.last_heartbeat = Some(Instant::now());
             let guard = self.guard.snapshot();
             let status = MeterStatus {

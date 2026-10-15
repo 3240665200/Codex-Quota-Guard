@@ -69,8 +69,9 @@ impl Outbox {
         Ok(outbox)
     }
 
-    pub(super) fn acknowledge(&mut self, config: &MeterConfig, count: usize) -> Result<(), String> {
-        self.pending.drain(..count);
+    pub(super) fn acknowledge(&mut self, config: &MeterConfig, events: &[UsageEvent]) -> Result<(), String> {
+        let acknowledged: BTreeSet<_> = events.iter().map(|event| event.event_id.as_str()).collect();
+        self.pending.retain(|event| !acknowledged.contains(event.event_id.as_str()));
         self.save(config)
     }
 
