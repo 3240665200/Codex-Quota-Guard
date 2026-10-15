@@ -66,7 +66,7 @@ public class SessionBindingService {
             }
             UUID id = UUID.randomUUID();
             jdbc.update("insert into session_binding_attempts (id,user_id,device_id,enrollment_id,team_id,team_version,official_account_id,connection_revision,status,created_at,expires_at) values (?,?,?,?,?,?,?,?,?,?,?)",
-                    id, userId, deviceId, enrollmentId, current.teamId, current.teamVersion, accountId, current.revision, "QUEUED", at(clock.instant()), at(clock.instant().plusSeconds(1800)));
+                    id, userId, deviceId, enrollmentId, current.teamId, current.teamVersion, accountId, current.revision, "QUEUED", at(clock.instant()), at(clock.instant().plusSeconds(3600)));
             return response(load(id));
         });
     }
@@ -89,29 +89,105 @@ public class SessionBindingService {
     }
 
     public SessionBindingAttemptResponse prepare(UUID userId, UUID id) {
-        Work work = withAttempt(userId, id, () -> {
-            Attempt attempt = load(id);
-            if (!"QUEUED".equals(attempt.status) || accountStateUnlocked(attempt.accountId).quarantined()) return null;
-            UUID head = jdbc.query("select id from session_binding_attempts where official_account_id=? and status in " + PENDING + " order by sequence_id limit 1", (rs, n) -> uuid(rs, "id"), attempt.accountId).stream().findFirst().orElse(null);
-            if (!id.equals(head)) return null;
-            if (!valid(attempt)) { terminate(attempt, "REJECTED", "SESSION_BINDING_CONTEXT_CHANGED"); return null; }
-            UUID operation = UUID.randomUUID();
-            jdbc.update("update session_binding_accounts set active_attempt_id=?,updated_at=? where official_account_id=?", id, at(clock.instant()), attempt.accountId);
-            jdbc.update("update session_binding_attempts set status='PREPARING',operation_id=?,operation_started_at=?,expires_at=? where id=?", operation, at(clock.instant()), at(clock.instant().plusSeconds(600)), id);
-            return new Work(load(id), operation, "PREPARING");
+        UUID accountId = withAttempt(userId, id, () -> "QUEUED".equals(load(id).status) ? load(id).accountId : null);
+        // Compatibility entry point only. The server scheduler progresses the
+        // queue even when no client sends this request or reads current state.
+        if (accountId != null) advance(accountId);
+        return get(userId, id);
+    }
+
+    /** One bounded advancement. All official I/O happens outside database locks. */
+    public void advance(UUID accountId) {
+        Preparation preparation = transaction(() -> {
+            lockAccount(accountId);
+            sweep(accountId);
+            Guard guard = guard(accountId);
+            if (guard.activeAttempt != null || guard.recoveryId != null
+                    || future(guard.nextPrepareAt) || future(guard.settleUntil)) return null;
+            List<Attempt> heads = jdbc.query("select * from session_binding_attempts where official_account_id=? and status='QUEUED' order by sequence_id limit 1", this::attempt, accountId);
+            if (!heads.isEmpty()) {
+                Attempt head = heads.get(0);
+                UUID operation = UUID.randomUUID();
+                long generation = guard.generation + 1;
+                jdbc.update("update session_binding_accounts set active_attempt_id=?,generation=?,next_prepare_at=null,updated_at=? where official_account_id=?", head.id, generation, at(clock.instant()), accountId);
+                jdbc.update("update session_binding_attempts set status='PREPARING',claim_generation=?,operation_id=?,operation_started_at=? where id=?", generation, operation, at(clock.instant()), head.id);
+                return new Preparation(new Work(load(head.id), operation, "PREPARING"), null);
+            }
+            if (!guard.quarantined) {
+                jdbc.update("update session_binding_accounts set next_prepare_at=null,prepare_failures=0,updated_at=? where official_account_id=?", at(clock.instant()), accountId);
+                return null;
+            }
+            UUID recovery = UUID.randomUUID();
+            long generation = guard.generation + 1;
+            jdbc.update("update session_binding_accounts set generation=?,recovery_id=?,recovery_started_at=?,next_prepare_at=null,updated_at=? where official_account_id=?", generation, recovery, at(clock.instant()), at(clock.instant()), accountId);
+            return new Preparation(null, new Recovery(accountId, recovery, generation, connectionRevision(accountId), clock.instant()));
         });
-        if (work == null) return get(userId, id);
-        OfficialConnectionRefreshResponse snapshot;
+        if (preparation == null) return;
+        if (preparation.work != null) {
+            Work work = preparation.work;
+            try {
+                OfficialConnectionRefreshResponse snapshot = fresh(work);
+                finish(work, () -> grant(load(work.attempt.id), snapshot));
+            } catch (DomainException failure) { retryPreparation(work, failure.getCode()); }
+        } else recoverAutomatically(preparation.recovery);
+    }
+
+    private SessionBindingAttemptResponse grant(Attempt attempt, OfficialConnectionRefreshResponse snapshot) {
+        jdbc.update("update session_binding_attempts set status='READY_FOR_LOGIN',before_session_ids=?,official_account_key=?,official_user_key=?,operation_id=null,operation_started_at=null,error_code=null,expires_at=? where id=?",
+                json.writeValueAsString(snapshot.sessions().devices().stream().map(OfficialSessionInfo::sessionId).filter(value -> value != null && !value.isBlank()).toList()),
+                snapshot.account().accountId(), snapshot.account().userId(), at(clock.instant().plusSeconds(1800)), attempt.id);
+        clearRecovery(attempt.accountId);
+        return response(load(attempt.id));
+    }
+
+    private void retryPreparation(Work work, String code) {
+        finish(work, () -> {
+            jdbc.update("update session_binding_attempts set status='QUEUED',error_code=?,operation_id=null,operation_started_at=null where id=?", code, work.attempt.id);
+            jdbc.update("update session_binding_accounts set active_attempt_id=null,generation=generation+1,updated_at=? where official_account_id=?", at(clock.instant()), work.attempt.accountId);
+            scheduleRetry(work.attempt.accountId);
+            return response(load(work.attempt.id));
+        });
+    }
+
+    private void recoverAutomatically(Recovery recovery) {
         try {
-            snapshot = fresh(work);
-        } catch (DomainException failure) { return fail(work, failure.getCode()); }
-        return finish(work, () -> {
-            Attempt attempt = load(id);
-            jdbc.update("update session_binding_attempts set status='READY_FOR_LOGIN',before_session_ids=?,official_account_key=?,official_user_key=?,operation_id=null,operation_started_at=null where id=?",
-                    json.writeValueAsString(snapshot.sessions().devices().stream().map(OfficialSessionInfo::sessionId).filter(idValue -> idValue != null && !idValue.isBlank()).toList()),
-                    snapshot.account().accountId(), snapshot.account().userId(), id);
-            return response(load(id));
-        });
+            OfficialConnectionRefreshResponse snapshot = official.refresh(recovery.accountId);
+            validateSnapshot(snapshot, recovery.startedAt);
+            String requested = jdbc.queryForObject("select requested_account_id from official_account_connections where official_account_id=?", String.class, recovery.accountId);
+            if (!Objects.equals(requested, snapshot.account().accountId())) throw error("SESSION_BINDING_IDENTITY_CHANGED");
+            transaction(() -> {
+                lockAccount(recovery.accountId);
+                if (owns(recovery) && recovery.revision.equals(connectionRevision(recovery.accountId))) clearRecovery(recovery.accountId);
+                else if (owns(recovery)) { clearRecoveryClaim(recovery.accountId); scheduleRetry(recovery.accountId); }
+                return null;
+            });
+        } catch (RuntimeException failure) {
+            transaction(() -> {
+                lockAccount(recovery.accountId);
+                if (owns(recovery)) { clearRecoveryClaim(recovery.accountId); scheduleRetry(recovery.accountId); }
+                return null;
+            });
+        }
+    }
+
+    private boolean owns(Recovery recovery) {
+        Guard guard = guard(recovery.accountId);
+        return recovery.id.equals(guard.recoveryId) && recovery.generation == guard.generation && guard.activeAttempt == null;
+    }
+
+    private void clearRecovery(UUID accountId) {
+        jdbc.update("update session_binding_accounts set quarantined=false,reason=null,recovery_id=null,recovery_started_at=null,settle_until=null,next_prepare_at=null,prepare_failures=0,updated_at=? where official_account_id=?", at(clock.instant()), accountId);
+    }
+
+    private void clearRecoveryClaim(UUID accountId) {
+        jdbc.update("update session_binding_accounts set recovery_id=null,recovery_started_at=null,generation=generation+1,updated_at=? where official_account_id=?", at(clock.instant()), accountId);
+    }
+
+    private void scheduleRetry(UUID accountId) {
+        Guard guard = guard(accountId);
+        int failures = Math.min(guard.prepareFailures + 1, 16);
+        long seconds = Math.min(5L << Math.min(failures - 1, 4), 60L);
+        jdbc.update("update session_binding_accounts set next_prepare_at=?,prepare_failures=?,updated_at=? where official_account_id=?", at(clock.instant().plusSeconds(seconds)), failures, at(clock.instant()), accountId);
     }
 
     public SessionBindingAttemptResponse detect(UUID userId, UUID id) {
@@ -148,7 +224,7 @@ public class SessionBindingService {
                 if ("BOUND".equals(attempt.status)) return response(attempt);
                 if (!"AWAITING_CONFIRMATION".equals(attempt.status)) return response(attempt);
                 if (!Objects.equals(sessionId, attempt.candidateSessionId)) throw error("SESSION_BINDING_CANDIDATE_MISMATCH");
-                if (accountStateUnlocked(attempt.accountId).quarantined() || !valid(attempt)) {
+                if (accountStateUnlocked(attempt.accountId).quarantined() || !owns(attempt) || !valid(attempt)) {
                     terminate(attempt, "REJECTED", "SESSION_BINDING_CONTEXT_CHANGED");
                     return response(load(id));
                 }
@@ -159,8 +235,8 @@ public class SessionBindingService {
                 jdbc.update("insert into session_bindings (id,attempt_id,user_id,device_id,enrollment_id,team_id,team_version,official_account_id,connection_revision,session_id,active_device_id,active_session_id,status,match_method,verification_level,created_at) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         UUID.randomUUID(), id, userId, attempt.deviceId, attempt.enrollmentId, attempt.teamId, attempt.teamVersion,
                         attempt.accountId, attempt.revision, sessionId, attempt.deviceId, sessionId, "ACTIVE", "SERIAL_LOGIN_DIFF", "USER_CONFIRMED_INFERENCE", at(clock.instant()));
-                jdbc.update("update session_binding_attempts set status='BOUND' where id=?", id);
-                jdbc.update("update session_binding_accounts set active_attempt_id=null,updated_at=? where official_account_id=? and active_attempt_id=?", at(clock.instant()), attempt.accountId, id);
+                jdbc.update("update session_binding_attempts set status='BOUND',operation_id=null,operation_started_at=null where id=?", id);
+                jdbc.update("update session_binding_accounts set active_attempt_id=null,generation=generation+1,updated_at=? where official_account_id=? and active_attempt_id=?", at(clock.instant()), attempt.accountId, id);
                 return response(load(id));
             });
         } catch (DataIntegrityViolationException conflict) {
@@ -224,7 +300,7 @@ public class SessionBindingService {
         return transaction(() -> { lockAccount(accountId); sweep(accountId); return accountStateUnlocked(accountId); });
     }
 
-    /** Explicit operator acknowledgement is required because a late external login cannot be ruled out. */
+    /** Optional advanced override; ordinary cancellation recovers automatically after settling. */
     public SessionBindingAccountResponse recover(UUID accountId, boolean acknowledgeLateLoginRisk) {
         if (!acknowledgeLateLoginRisk) throw error("SESSION_BINDING_RECOVERY_ACK_REQUIRED");
         UUID recovery = UUID.randomUUID();
@@ -232,7 +308,7 @@ public class SessionBindingService {
             lockAccount(accountId);
             sweep(accountId);
             if (accountStateUnlocked(accountId).activeAttemptId() != null) throw error("SESSION_BINDING_ACCOUNT_BUSY");
-            jdbc.update("update session_binding_accounts set quarantined=true,reason='SESSION_BINDING_RECOVERY_IN_PROGRESS',recovery_id=?,recovery_started_at=?,updated_at=? where official_account_id=?", recovery, at(clock.instant()), at(clock.instant()), accountId);
+            jdbc.update("update session_binding_accounts set quarantined=true,reason='SESSION_BINDING_RECOVERY_IN_PROGRESS',generation=generation+1,recovery_id=?,recovery_started_at=?,updated_at=? where official_account_id=?", recovery, at(clock.instant()), at(clock.instant()), accountId);
             return connectionRevision(accountId);
         });
         try {
@@ -243,13 +319,16 @@ public class SessionBindingService {
                 lockAccount(accountId);
                 UUID actualRecovery = jdbc.queryForObject("select recovery_id from session_binding_accounts where official_account_id=?", UUID.class, accountId);
                 if (!recovery.equals(actualRecovery) || !revision.equals(connectionRevision(accountId))) throw error("SESSION_BINDING_CONTEXT_CHANGED");
-                jdbc.update("update session_binding_accounts set quarantined=false,reason=null,recovery_id=null,recovery_started_at=null,updated_at=? where official_account_id=?", at(clock.instant()), accountId);
+                clearRecovery(accountId);
                 return accountStateUnlocked(accountId);
             });
         } catch (RuntimeException failure) {
             transaction(() -> {
                 lockAccount(accountId);
-                jdbc.update("update session_binding_accounts set reason='SESSION_BINDING_RECOVERY_FAILED',recovery_id=null,recovery_started_at=null,updated_at=? where official_account_id=? and recovery_id=?", at(clock.instant()), accountId, recovery);
+                if (recovery.equals(guard(accountId).recoveryId)) {
+                    jdbc.update("update session_binding_accounts set reason='SESSION_BINDING_RECOVERY_FAILED',recovery_id=null,recovery_started_at=null,generation=generation+1,updated_at=? where official_account_id=?", at(clock.instant()), accountId);
+                    scheduleRetry(accountId);
+                }
                 return null;
             });
             if (failure instanceof DomainException domain) throw domain;
@@ -258,6 +337,7 @@ public class SessionBindingService {
     }
 
     private Work reserveAfter(Attempt attempt) {
+        if (!owns(attempt)) throw error("SESSION_BINDING_CONTEXT_CHANGED");
         UUID operation = UUID.randomUUID();
         jdbc.update("update session_binding_attempts set status='DETECTING',operation_id=?,operation_started_at=? where id=?", operation, at(clock.instant()), attempt.id);
         return new Work(load(attempt.id), operation, "DETECTING");
@@ -313,7 +393,8 @@ public class SessionBindingService {
             lockAccount(work.attempt.accountId);
             sweep(work.attempt.accountId);
             Attempt current = load(work.attempt.id);
-            if (!work.operation.equals(current.operationId) || !work.status.equals(current.status)) return response(current);
+            if (!work.operation.equals(current.operationId) || !work.status.equals(current.status)
+                    || current.claimGeneration != work.attempt.claimGeneration || !owns(current)) return response(current);
             if (!valid(current)) { terminate(current, "REJECTED", "SESSION_BINDING_CONTEXT_CHANGED"); return response(load(current.id)); }
             return completion.get();
         });
@@ -346,15 +427,36 @@ public class SessionBindingService {
     }
 
     private void sweep(UUID accountId) {
-        UUID active = accountStateUnlocked(accountId).activeAttemptId();
+        Guard guard = guard(accountId);
+        UUID active = guard.activeAttempt;
         if (active != null && jdbc.queryForObject("select count(*) from session_binding_attempts where id=? and official_account_id=? and status in ('PREPARING','READY_FOR_LOGIN','DETECTING','AWAITING_CONFIRMATION')", Integer.class, active, accountId) == 0) {
             // Cascading deletion of a user must not erase the late-login fence.
-            jdbc.update("update session_binding_accounts set quarantined=true,reason='SESSION_BINDING_ORPHANED_ATTEMPT',active_attempt_id=null,updated_at=? where official_account_id=?", at(clock.instant()), accountId);
+            settle(accountId, "SESSION_BINDING_ORPHANED_ATTEMPT");
         }
         List<Attempt> pending = jdbc.query("select * from session_binding_attempts where official_account_id=? and status in " + PENDING + " order by sequence_id", this::attempt, accountId);
         for (Attempt attempt : pending) {
             if (!attempt.expiresAt.isAfter(clock.instant())) terminate(attempt, "EXPIRED", "SESSION_BINDING_EXPIRED");
             else if (!valid(attempt)) terminate(attempt, "REJECTED", "SESSION_BINDING_CONTEXT_CHANGED");
+            else if (attempt.operationId != null && attempt.operationStartedAt != null
+                    && !attempt.operationStartedAt.plusSeconds(90).isAfter(clock.instant())) {
+                if ("PREPARING".equals(attempt.status) && owns(attempt)) {
+                    jdbc.update("update session_binding_attempts set status='QUEUED',error_code='SESSION_BINDING_SNAPSHOT_UNAVAILABLE',operation_id=null,operation_started_at=null where id=?", attempt.id);
+                    jdbc.update("update session_binding_accounts set active_attempt_id=null,generation=generation+1,updated_at=? where official_account_id=?", at(clock.instant()), accountId);
+                    scheduleRetry(accountId);
+                } else terminate(attempt, "REJECTED", "SESSION_BINDING_SNAPSHOT_UNAVAILABLE");
+            }
+        }
+        guard = guard(accountId);
+        if (guard.recoveryId != null && (guard.recoveryStartedAt == null
+                || !guard.recoveryStartedAt.plusSeconds(90).isAfter(clock.instant()))) {
+            clearRecoveryClaim(accountId);
+            scheduleRetry(accountId);
+        }
+        // Old deployments required manual recovery. Upgrade them into the same
+        // short settling + fresh-baseline path, never directly clear the guard.
+        guard = guard(accountId);
+        if (guard.quarantined && guard.settleUntil == null) {
+            jdbc.update("update session_binding_accounts set settle_until=?,updated_at=? where official_account_id=?", at(clock.instant().plusSeconds(30)), at(clock.instant()), accountId);
         }
     }
 
@@ -389,8 +491,17 @@ public class SessionBindingService {
     private void terminate(Attempt attempt, String status, String code) {
         boolean risky = Set.of("READY_FOR_LOGIN", "DETECTING", "AWAITING_CONFIRMATION").contains(attempt.status);
         jdbc.update("update session_binding_attempts set status=?,error_code=?,operation_id=null,operation_started_at=null where id=?", status, code, attempt.id);
-        if (risky) jdbc.update("update session_binding_accounts set quarantined=true,reason=?,updated_at=? where official_account_id=?", code, at(clock.instant()), attempt.accountId);
-        jdbc.update("update session_binding_accounts set active_attempt_id=null,updated_at=? where official_account_id=? and active_attempt_id=?", at(clock.instant()), attempt.accountId, attempt.id);
+        if (risky) settle(attempt.accountId, code);
+        else jdbc.update("update session_binding_accounts set active_attempt_id=null,generation=generation+1,next_prepare_at=null,prepare_failures=0,updated_at=? where official_account_id=? and active_attempt_id=?", at(clock.instant()), attempt.accountId, attempt.id);
+    }
+
+    private void settle(UUID accountId, String code) {
+        jdbc.update("update session_binding_accounts set quarantined=true,reason=?,active_attempt_id=null,generation=generation+1,recovery_id=null,recovery_started_at=null,settle_until=?,next_prepare_at=null,prepare_failures=0,updated_at=? where official_account_id=?", code, at(clock.instant().plusSeconds(30)), at(clock.instant()), accountId);
+    }
+
+    private boolean owns(Attempt attempt) {
+        Guard guard = guard(attempt.accountId);
+        return attempt.id.equals(guard.activeAttempt) && attempt.claimGeneration == guard.generation;
     }
 
     private void invalidateBindings(UUID accountId) {
@@ -406,15 +517,32 @@ public class SessionBindingService {
         int position = pending(attempt.status) ? jdbc.queryForObject("select count(*) from session_binding_attempts where official_account_id=? and status in " + PENDING + " and sequence_id<=?", Integer.class, attempt.accountId, attempt.sequence) : 0;
         List<SessionBindingResponse> bound = bindingRows("where b.attempt_id=?", attempt.id);
         return new SessionBindingAttemptResponse(attempt.id, attempt.deviceId, attempt.enrollmentId, attempt.accountId,
-                attempt.status, position, "READY_FOR_LOGIN".equals(attempt.status) && !guard.quarantined(),
+                attempt.status, position, "READY_FOR_LOGIN".equals(attempt.status) && !guard.quarantined() && owns(attempt),
                 attempt.candidateSessionId, attempt.candidateDisplayName, attempt.candidatePlatform, attempt.expiresAt,
-                attempt.errorCode, guard.quarantined(), bound.isEmpty() ? null : bound.get(0));
+                attempt.errorCode, guard.quarantined(), bound.isEmpty() ? null : bound.get(0), guard.queueState(), guard.retryAt());
     }
 
     private SessionBindingAccountResponse accountStateUnlocked(UUID accountId) {
-        return jdbc.queryForObject("select * from session_binding_accounts where official_account_id=?", (rs,n) ->
-                new SessionBindingAccountResponse(accountId, rs.getBoolean("quarantined"), rs.getString("reason"), uuid(rs,"active_attempt_id")), accountId);
+        Guard guard = guard(accountId);
+        String state;
+        Instant retryAt = null;
+        if (guard.activeAttempt != null) {
+            String status = jdbc.queryForObject("select status from session_binding_attempts where id=?", String.class, guard.activeAttempt);
+            state = "PREPARING".equals(status) ? "PREPARING" : "ACTIVE";
+        } else if (future(guard.settleUntil)) { state = "SETTLING"; retryAt = guard.settleUntil; }
+        else if (guard.nextPrepareAt != null) { state = "RETRYING"; retryAt = guard.nextPrepareAt; }
+        else if (guard.quarantined) { state = "SETTLING"; retryAt = guard.settleUntil; }
+        else state = "IDLE";
+        return new SessionBindingAccountResponse(accountId, guard.quarantined, guard.reason, guard.activeAttempt, state, retryAt);
     }
+
+    private Guard guard(UUID accountId) {
+        return jdbc.queryForObject("select * from session_binding_accounts where official_account_id=?", (rs,n) ->
+                new Guard(uuid(rs,"active_attempt_id"),rs.getBoolean("quarantined"),rs.getString("reason"),rs.getLong("generation"),
+                        instant(rs,"settle_until"),instant(rs,"next_prepare_at"),rs.getInt("prepare_failures"),uuid(rs,"recovery_id"),instant(rs,"recovery_started_at")), accountId);
+    }
+
+    private boolean future(Instant instant) { return instant != null && instant.isAfter(clock.instant()); }
 
     private List<SessionBindingResponse> bindingRows(String where, Object... args) {
         return jdbc.query("select b.*,u.display_name,u.email from session_bindings b join users u on u.id=b.user_id " + where + " order by b.created_at desc,b.id", (rs,n) ->
@@ -434,7 +562,7 @@ public class SessionBindingService {
     }
 
     private Attempt attempt(ResultSet rs, int n) throws SQLException {
-        return new Attempt(uuid(rs,"id"), rs.getLong("sequence_id"), uuid(rs,"user_id"), uuid(rs,"device_id"), uuid(rs,"enrollment_id"), uuid(rs,"team_id"), rs.getLong("team_version"), uuid(rs,"official_account_id"), uuid(rs,"connection_revision"), rs.getString("status"), instant(rs,"expires_at"), uuid(rs,"operation_id"), instant(rs,"operation_started_at"), rs.getString("before_session_ids"), rs.getString("official_account_key"), rs.getString("official_user_key"), rs.getString("candidate_session_id"), rs.getString("candidate_display_name"), rs.getString("candidate_platform"), instant(rs,"candidate_fetched_at"), rs.getString("error_code"));
+        return new Attempt(uuid(rs,"id"), rs.getLong("sequence_id"), uuid(rs,"user_id"), uuid(rs,"device_id"), uuid(rs,"enrollment_id"), uuid(rs,"team_id"), rs.getLong("team_version"), uuid(rs,"official_account_id"), uuid(rs,"connection_revision"), rs.getString("status"), instant(rs,"expires_at"), uuid(rs,"operation_id"), instant(rs,"operation_started_at"), rs.getString("before_session_ids"), rs.getString("official_account_key"), rs.getString("official_user_key"), rs.getString("candidate_session_id"), rs.getString("candidate_display_name"), rs.getString("candidate_platform"), instant(rs,"candidate_fetched_at"), rs.getString("error_code"),rs.getLong("claim_generation"));
     }
 
     private static UUID uuid(ResultSet rs, String column) throws SQLException { return rs.getObject(column, UUID.class); }
@@ -450,8 +578,12 @@ public class SessionBindingService {
     private record UserContext(UUID teamId, String status) { }
     private record TeamContext(UUID accountId, long version) { }
     private record Work(Attempt attempt, UUID operation, String status) { }
+    private record Preparation(Work work, Recovery recovery) { }
+    private record Recovery(UUID accountId, UUID id, long generation, UUID revision, Instant startedAt) { }
+    private record Guard(UUID activeAttempt, boolean quarantined, String reason, long generation, Instant settleUntil,
+            Instant nextPrepareAt, int prepareFailures, UUID recoveryId, Instant recoveryStartedAt) { }
     private record Attempt(UUID id, long sequence, UUID userId, UUID deviceId, UUID enrollmentId, UUID teamId,
             long teamVersion, UUID accountId, UUID revision, String status, Instant expiresAt, UUID operationId,
             Instant operationStartedAt, String beforeSessionIds, String officialAccountKey, String officialUserKey,
-            String candidateSessionId, String candidateDisplayName, String candidatePlatform, Instant candidateFetchedAt, String errorCode) { }
+            String candidateSessionId, String candidateDisplayName, String candidatePlatform, Instant candidateFetchedAt, String errorCode, long claimGeneration) { }
 }

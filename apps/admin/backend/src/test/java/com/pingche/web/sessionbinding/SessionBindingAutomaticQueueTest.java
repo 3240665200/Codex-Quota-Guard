@@ -7,6 +7,7 @@ import static org.mockito.Mockito.*;
 
 import com.pingche.web.auth.DomainException;
 import com.pingche.web.officialsession.*;
+import com.zaxxer.hikari.HikariDataSource;
 import java.time.*;
 import java.util.List;
 import java.util.UUID;
@@ -22,7 +23,6 @@ import org.springframework.core.io.ClassPathResource;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
 import tools.jackson.databind.ObjectMapper;
 
@@ -34,11 +34,16 @@ class SessionBindingAutomaticQueueTest {
     private OfficialConnectionService official;
     private SessionBindingService service;
     private SessionBindingScheduler scheduler;
+    private HikariDataSource source;
     private UUID account=UUID.randomUUID(),team=UUID.randomUUID();
     private Owner first,second;
 
     @BeforeEach void setup() {
-        var source=new DriverManagerDataSource("jdbc:h2:mem:automatic-binding-"+UUID.randomUUID()+";MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1","sa","");
+        // Keep physical connections alive: H2's constant-set check constraints
+        // retain their DDL session's comparator. A pool also permits real races.
+        source=new HikariDataSource();
+        source.setJdbcUrl("jdbc:h2:mem:automatic-binding-"+UUID.randomUUID()+";MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE");
+        source.setUsername("sa");source.setPassword("");source.setMaximumPoolSize(8);source.setMinimumIdle(1);
         jdbc=new JdbcTemplate(source);
         jdbc.execute("create table official_accounts(id uuid primary key)");
         jdbc.execute("create table users(id uuid primary key,status varchar(16),team_id uuid,display_name varchar(120),email varchar(320))");
@@ -53,12 +58,12 @@ class SessionBindingAutomaticQueueTest {
                 new ClassPathResource("db/migration/V29__automate_session_binding_handover.sql")).execute(source);
         first=owner();second=owner();
         official=mock(OfficialConnectionService.class);
-        when(official.refresh(account)).thenAnswer(call -> snapshot(sessions.get()));
+        doAnswer(call -> snapshot(sessions.get())).when(official).refresh(account);
         Clock clock=mock(Clock.class);
         when(clock.instant()).thenAnswer(call -> now.get());
         service=new SessionBindingService(jdbc,official,clock,new ObjectMapper(),new DataSourceTransactionManager(source));
     }
-    @AfterEach void close() {if(scheduler!=null)scheduler.close();if(jdbc!=null)jdbc.execute("shutdown");}
+    @AfterEach void close() {if(scheduler!=null)scheduler.close();if(source!=null)source.close();}
 
     @Test void queueLastsAnHourAndTheThirtyMinuteLoginLeaseStartsAtFreshReady() {
         var queued=create(first);
@@ -135,7 +140,7 @@ class SessionBindingAutomaticQueueTest {
         service.advance(account);verify(official,times(1)).refresh(account);
         now.set(start.plusSeconds(5));service.advance(account);
         assertThat(service.get(first.user(),queued.id()).retryAt()).isEqualTo(start.plusSeconds(15));
-        when(official.refresh(account)).thenAnswer(call -> snapshot(sessions.get()));
+        doAnswer(call -> snapshot(sessions.get())).when(official).refresh(account);
         now.set(start.plusSeconds(15));service.advance(account);
         assertThat(service.get(first.user(),queued.id()).loginAllowed()).isTrue();
         assertThat(service.get(first.user(),queued.id()).errorCode()).isNull();
@@ -206,6 +211,59 @@ class SessionBindingAutomaticQueueTest {
         assertThatThrownBy(() -> service.advance(account)).isInstanceOf(DomainException.class);
         verify(official,never()).refresh(any());
         assertThat(jdbc.queryForObject("select status from session_binding_attempts where id=?",String.class,queued.id())).isEqualTo("QUEUED");
+    }
+
+    @Test void repeatedFreshBaselineFailuresNeverRetryFasterThanTheCappedBackoffOrGrantLogin() {
+        var queued=create(first);
+        when(official.refresh(account)).thenThrow(new IllegalStateException("synthetic-private-provider-body"));
+        for (int failure=0;failure<8;failure++) {
+            Instant attempted=now.get();
+            service.advance(account);
+            var retry=service.get(first.user(),queued.id());
+            assertThat(retry.loginAllowed()).isFalse();
+            long expected=Math.min(5L << Math.min(failure,4),60L);
+            assertThat(retry.retryAt()).isEqualTo(attempted.plusSeconds(expected));
+            assertThat(retry.errorCode()).isEqualTo("SESSION_BINDING_SNAPSHOT_UNAVAILABLE");
+            now.set(retry.retryAt());
+        }
+        assertThat(jdbc.queryForObject("select count(*) from session_bindings",Integer.class)).isZero();
+    }
+
+    @ParameterizedTest @ValueSource(strings={"PREPARING","DETECTING"})
+    void abandonedOperationLeaseRevokesItsTokenAndCannotHoldTheQueueForever(String status) {
+        var attempt=create(first);
+        if(status.equals("DETECTING"))service.advance(account);
+        UUID operation=UUID.randomUUID();
+        jdbc.update("update session_binding_accounts set active_attempt_id=? where official_account_id=?",attempt.id(),account);
+        jdbc.update("update session_binding_attempts set status=?,operation_id=?,operation_started_at=? where id=?",status,operation,start.atOffset(ZoneOffset.UTC),attempt.id());
+        now.set(start.plusSeconds(91));service.advance(account);
+        var released=service.get(first.user(),attempt.id());
+        assertThat(released.status()).isEqualTo(status.equals("PREPARING")?"QUEUED":"REJECTED");
+        assertThat(released.queueState()).isEqualTo(status.equals("PREPARING")?"RETRYING":"SETTLING");
+        assertThat(released.loginAllowed()).isFalse();
+        assertThat(jdbc.queryForObject("select operation_id from session_binding_attempts where id=?",UUID.class,attempt.id())).isNull();
+        assertThat(service.accountState(account).activeAttemptId()).isNull();
+    }
+
+    @Test void recoveryFailureKeepsTheGuardButRetriesWithoutManualAcknowledgement() {
+        var attempt=create(first);service.advance(account);service.cancel(first.user(),attempt.id());
+        when(official.refresh(account)).thenThrow(new IllegalStateException("synthetic-private-provider-body"));
+        now.set(start.plusSeconds(30));service.advance(account);
+        assertThat(service.accountState(account).quarantined()).isTrue();
+        assertThat(service.accountState(account).queueState()).isEqualTo("RETRYING");
+        assertThat(service.accountState(account).retryAt()).isEqualTo(start.plusSeconds(35));
+        doAnswer(call -> snapshot(sessions.get())).when(official).refresh(account);
+        now.set(start.plusSeconds(35));service.advance(account);
+        assertThat(service.accountState(account).quarantined()).isFalse();
+    }
+
+    @Test void disabledOwnerIsRemovedBeforeBackgroundGrantAndNextOwnerCanProgress() {
+        var old=create(first);var next=create(second);
+        jdbc.update("update users set status='DISABLED' where id=?",first.user());
+        service.advance(account);
+        assertThat(jdbc.queryForObject("select status from session_binding_attempts where id=?",String.class,old.id())).isEqualTo("REJECTED");
+        assertThat(service.get(second.user(),next.id()).loginAllowed()).isTrue();
+        verify(official,times(1)).refresh(account);
     }
 
     private Owner owner() {

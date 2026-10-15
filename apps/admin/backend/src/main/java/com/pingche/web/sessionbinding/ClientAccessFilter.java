@@ -32,6 +32,7 @@ public class ClientAccessFilter extends OncePerRequestFilter {
         String route = path.substring(ROOT.length());
         return switch (request.getMethod()) {
             case "GET" -> route.equals("/access") || route.equals("/login-assistance")
+                    || route.equals("/login-assistance/listeners/current") || route.equals("/login-assistance/events")
                     || route.matches("/login-assistance/listeners/" + RESOURCE_ID)
                     || route.equals("/session-bindings/current") || route.matches("/session-bindings/attempts/" + RESOURCE_ID);
             case "POST" -> route.equals("/meter/enroll") || route.equals("/usage/events")

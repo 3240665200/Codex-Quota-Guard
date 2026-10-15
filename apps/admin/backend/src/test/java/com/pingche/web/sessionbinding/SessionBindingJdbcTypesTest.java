@@ -45,7 +45,8 @@ class SessionBindingJdbcTypesTest {
             setup.execute("create table meter_devices(id uuid primary key,user_id uuid,status varchar(16),expires_at timestamp with time zone)");
             setup.execute("create table official_account_connections(official_account_id uuid primary key,requested_account_id varchar(160),status varchar(32),revision uuid)");
             setup.execute("create table official_session_logout_plans(official_account_id uuid,status varchar(32))");
-            new ResourceDatabasePopulator(new ClassPathResource("db/migration/V24__add_session_binding_queue.sql")).execute(source);
+            new ResourceDatabasePopulator(new ClassPathResource("db/migration/V24__add_session_binding_queue.sql"),
+                    new ClassPathResource("db/migration/V29__automate_session_binding_handover.sql")).execute(source);
             Instant now = Instant.parse("2026-10-15T01:00:00Z");
             UUID user = UUID.randomUUID(), account = UUID.randomUUID(), team = UUID.randomUUID(), device = UUID.randomUUID();
             setup.update("insert into official_accounts values (?)", account);
