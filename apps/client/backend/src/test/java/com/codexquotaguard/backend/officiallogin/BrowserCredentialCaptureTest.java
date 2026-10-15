@@ -41,6 +41,13 @@ class BrowserCredentialCaptureTest {
             """));
         assertThat(value).isEqualTo("__Secure-next-auth.session-token.0=synthetic-part");
     }
+    @Test void neverReadsValuesOfChallengeCookies() {
+        var challenge=org.mockito.Mockito.spy(mapper.readTree("{\"name\":\"cf_clearance\",\"domain\":\".chatgpt.com\",\"secure\":true}"));
+        org.mockito.Mockito.doThrow(new AssertionError("Challenge cookie value must not be read")).when(challenge).path("value");
+        var response=org.mockito.Mockito.mock(tools.jackson.databind.JsonNode.class);
+        org.mockito.Mockito.when(response.path("cookies")).thenReturn(mapper.createArrayNode().add(challenge));
+        assertThat(BrowserCredentialCapture.loginCookies(response)).isEmpty();
+    }
     private String request(String url,String method) { return "{\"method\":\"Network.requestWillBeSent\",\"params\":{\"requestId\":\"r1\",\"request\":{\"url\":\""+url+"\",\"method\":\""+method+"\",\"headers\":{\"authorization\":\"Bearer synthetic-token\",\"ChatGPT-Account-ID\":\"synthetic-account\"}}}}"; }
     private String response(int status) { return "{\"method\":\"Network.responseReceived\",\"params\":{\"requestId\":\"r1\",\"response\":{\"url\":\"https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27\",\"status\":"+status+",\"mimeType\":\"application/json\"}}}"; }
 }

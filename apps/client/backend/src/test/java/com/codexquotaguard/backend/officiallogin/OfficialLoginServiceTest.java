@@ -26,9 +26,11 @@ class OfficialLoginServiceTest {
 
     @BeforeEach void setup() {
         when(sessions.current()).thenReturn(user(owner,"ADMIN"));
+        when(sessions.localUser()).thenReturn(Optional.of(user(owner,"ADMIN")));
         when(sessions.localUserId()).thenReturn(Optional.of(owner));
         when(sessions.withAuthenticatedToken(any())).thenAnswer(inv -> ((Function<String,?>)inv.getArgument(0)).apply("synthetic-system-token"));
         when(gateway.claim(anyString(),eq(jobId),any())).thenReturn(job("WAITING_FOR_LOGIN",now.plusSeconds(600)));
+        when(gateway.get(anyString(),eq(jobId))).thenReturn(job("WAITING_FOR_LOGIN",now.plusSeconds(600)));
         when(gateway.complete(anyString(),eq(jobId),any())).thenReturn(job("COMPLETED",now.plusSeconds(600)));
         when(gateway.cancel(anyString(),eq(jobId))).thenReturn(job("CANCELLED",now.plusSeconds(600)));
         when(browser.open(OfficialLoginBrowser.Browser.EDGE)).thenReturn(browserSession);
@@ -42,7 +44,7 @@ class OfficialLoginServiceTest {
         assertThat(service.status().state()).isEqualTo("WAITING_FOR_LOGIN");
         verify(gateway,never()).complete(anyString(),any(),any());
         authorization.complete(new OfficialLoginBrowser.Authorization("Bearer synthetic-token","__Secure-next-auth.session-token=synthetic-cookie","synthetic-account"));
-        tasks.remove().run();
+        while(!tasks.isEmpty()) tasks.remove().run();
         assertThat(service.status().state()).isEqualTo("COMPLETED");
         verify(gateway).complete(eq("synthetic-system-token"),eq(jobId),argThat(value ->
             value.authorization().equals("Bearer synthetic-token") && value.requestedAccountId().equals("synthetic-account")
@@ -105,6 +107,38 @@ class OfficialLoginServiceTest {
         assertThat(service.status().state()).isEqualTo("FAILED");
         assertThat(service.status().errorCode()).isEqualTo("OFFICIAL_CHALLENGE_REQUIRED");
         verify(browserSession).close();
+    }
+
+    @Test void startAndStatusDoNotPerformNetworkOperationsOnTheUiThread() {
+        assertThat(service.start(jobId,OfficialLoginBrowser.Browser.EDGE).state()).isEqualTo("STARTING");
+        assertThat(service.status().state()).isEqualTo("STARTING");
+        verify(sessions,never()).current();
+        verifyNoInteractions(gateway,browser);
+    }
+
+    @Test void submissionAtTheLoginDeadlineGetsItsOwnBoundedSavingWindow() {
+        var moment=new java.util.concurrent.atomic.AtomicReference<>(now);
+        Clock moving=mock(Clock.class);when(moving.instant()).thenAnswer(call -> moment.get());
+        service=new OfficialLoginService(sessions,gateway,browser,moving,tasks::add);
+        service.start(jobId,OfficialLoginBrowser.Browser.EDGE);tasks.remove().run();
+        moment.set(now.plusSeconds(599));
+        when(gateway.complete(anyString(),eq(jobId),any())).thenAnswer(call -> {
+            moment.set(now.plusSeconds(601));service.poll();return job("COMPLETED",now.plusSeconds(719));
+        });
+        authorization.complete(new OfficialLoginBrowser.Authorization("Bearer synthetic-token",null,"synthetic-account"));tasks.remove().run();
+        assertThat(service.status().state()).isEqualTo("COMPLETED");
+    }
+
+    @Test void cannotCancelOnceCentralSavingHasStarted() {
+        service.start(jobId,OfficialLoginBrowser.Browser.EDGE);tasks.remove().run();
+        when(gateway.complete(anyString(),eq(jobId),any())).thenAnswer(call -> {
+            assertThatThrownBy(service::cancel).isInstanceOf(OfficialLoginException.class);
+            assertThat(service.status().state()).isEqualTo("SAVING");
+            return job("COMPLETED",now.plusSeconds(600));
+        });
+        authorization.complete(new OfficialLoginBrowser.Authorization("Bearer synthetic-token",null,"synthetic-account"));tasks.remove().run();
+        assertThat(service.status().state()).isEqualTo("COMPLETED");
+        verify(gateway,never()).cancel(anyString(),any());
     }
 
     private OfficialLoginGateway.Job job(String state, Instant expires) { return new OfficialLoginGateway.Job(jobId,account,"Synthetic account",state,expires,null,null); }

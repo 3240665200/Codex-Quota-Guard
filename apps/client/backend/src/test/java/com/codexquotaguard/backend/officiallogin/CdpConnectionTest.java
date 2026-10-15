@@ -28,6 +28,7 @@ class CdpConnectionTest {
         assertThat(result.join().path("ok").asBoolean()).isTrue();
         var waiting=cdp.send("Target.getTargets",Map.of(),null);cdp.close();
         assertThat(waiting.isCompletedExceptionally()).isTrue();
+        assertThat(cdp.termination().isDone()).isTrue();
         verify(socket).abort();
     }
 
