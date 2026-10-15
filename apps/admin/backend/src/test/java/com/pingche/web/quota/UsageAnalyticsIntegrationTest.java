@@ -9,6 +9,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.pingche.web.auth.AuthService;
+import com.pingche.web.sessionbinding.ClientBindingFixture;
 import com.pingche.web.team.Team;
 import com.pingche.web.team.TeamRepository;
 import com.pingche.web.user.User;
@@ -19,10 +20,12 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.AfterEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.HttpHeaders;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -38,6 +41,10 @@ class UsageAnalyticsIntegrationTest {
     @Autowired UsageModelPriceRepository prices;
     @Autowired UsageAnalyticsService analytics;
     @Autowired Clock clock;
+    @Autowired JdbcTemplate jdbc;
+
+    @AfterEach
+    void clearBindingPrerequisites() { ClientBindingFixture.clearBindings(jdbc); }
 
     @Test
     void importsCcSwitchPriceSnapshotAndLabelsManualOverrides() throws Exception {
@@ -91,11 +98,13 @@ class UsageAnalyticsIntegrationTest {
         assertThat(events.sumTokensSince(user.getId(), Instant.EPOCH, clock.instant(), Instant.EPOCH)).isEqualTo(1200);
         assertThat(events.sumTeamTokensSince(team.getId(), Instant.EPOCH, clock.instant(), Instant.EPOCH)).isEqualTo(1200);
         mvc.perform(get("/api/v1/client/usage/events?includeMetadata=true")
+                        .with(ClientBindingFixture.forUser(jdbc, user.getId()))
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + memberToken))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.items[0].inputTokens").doesNotExist())
                 .andExpect(jsonPath("$.items[0].estimatedCostUsd").doesNotExist())
                 .andExpect(jsonPath("$.items[0].model").value(model));
         mvc.perform(get("/api/v1/client/usage/events?includeTokenBreakdown=true")
+                        .with(ClientBindingFixture.forUser(jdbc, user.getId()))
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + memberToken))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.items[0].inputTokens").value(1000))
                 .andExpect(jsonPath("$.items[0].reasoningOutputTokens").value(150))
@@ -161,6 +170,7 @@ class UsageAnalyticsIntegrationTest {
         mvc.perform(get("/api/v1/client/usage/analytics")).andExpect(status().isUnauthorized());
         for (int days : new int[] {1, 7, 30}) {
             mvc.perform(get("/api/v1/client/usage/analytics").param("days", String.valueOf(days))
+                            .with(ClientBindingFixture.forUser(jdbc, first.user().id()))
                             .param("userId", second.user().id().toString())
                             .header(HttpHeaders.AUTHORIZATION, "Bearer " + first.accessToken()))
                     .andExpect(status().isOk()).andExpect(jsonPath("$.currency").value("USD"))
@@ -174,6 +184,7 @@ class UsageAnalyticsIntegrationTest {
         }
         for (String days : new String[] {"0", "2", "31", "abc"}) {
             mvc.perform(get("/api/v1/client/usage/analytics").param("days", days)
+                            .with(ClientBindingFixture.forUser(jdbc, first.user().id()))
                             .header(HttpHeaders.AUTHORIZATION, "Bearer " + first.accessToken()))
                     .andExpect(status().isBadRequest());
         }

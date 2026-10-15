@@ -12,17 +12,20 @@ import com.pingche.web.auth.AuthService;
 import com.pingche.web.auth.JwtService;
 import com.pingche.web.auth.RefreshSessionRepository;
 import com.pingche.web.team.TeamRepository;
+import com.pingche.web.sessionbinding.ClientBindingFixture;
 import com.pingche.web.user.User;
 import com.pingche.web.user.UserRepository;
 import java.time.Instant;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.AfterEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import tools.jackson.databind.ObjectMapper;
@@ -42,15 +45,20 @@ class OfficialAccountIntegrationTest {
     @Autowired private OfficialAccountRepository accounts;
     @Autowired private OfficialQuotaSnapshotRepository snapshots;
     @Autowired private ObjectMapper mapper;
+    @Autowired private JdbcTemplate jdbc;
 
     @BeforeEach
     void clean() {
+        ClientBindingFixture.clearBindings(jdbc);
         teams.deleteAll();
         accounts.deleteAll();
         snapshots.deleteAll();
         sessions.deleteAll();
         users.deleteAll();
     }
+
+    @AfterEach
+    void clearBindingPrerequisites() { ClientBindingFixture.clearBindings(jdbc); }
 
     @Test
     void adminRegistersReadOnlyAccountAndLinkedTeamTracksItsEstimate() throws Exception {
@@ -88,6 +96,7 @@ class OfficialAccountIntegrationTest {
                 .andExpect(status().isConflict());
 
         mvc.perform(put("/api/v1/client/official-quota")
+                        .header("X-Quota-Guard-Device-ID", ClientBindingFixture.bind(jdbc, reporter.user().id(), accountId))
                         .header(HttpHeaders.AUTHORIZATION, bearer(reporter.accessToken()))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""

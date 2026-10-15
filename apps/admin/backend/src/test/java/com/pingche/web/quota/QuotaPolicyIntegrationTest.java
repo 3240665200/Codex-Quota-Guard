@@ -18,6 +18,7 @@ import com.pingche.web.auth.AuthResponse;
 import com.pingche.web.auth.AuthService;
 import com.pingche.web.auth.JwtService;
 import com.pingche.web.auth.RefreshSessionRepository;
+import com.pingche.web.sessionbinding.ClientBindingFixture;
 import com.pingche.web.team.TeamRepository;
 import com.pingche.web.user.User;
 import com.pingche.web.user.UserRepository;
@@ -26,14 +27,18 @@ import java.time.Duration;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.AfterEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.test.web.servlet.ResultActions;
+import org.springframework.test.web.servlet.request.RequestPostProcessor;
 import tools.jackson.databind.ObjectMapper;
 
 @SpringBootTest
@@ -53,14 +58,19 @@ class QuotaPolicyIntegrationTest {
     @Autowired private TeamRepository teams;
     @Autowired private CodexUsageEventRepository events;
     @Autowired private ObjectMapper objectMapper;
+    @Autowired private JdbcTemplate jdbc;
 
     @BeforeEach
     void cleanDatabase() {
+        ClientBindingFixture.clearBindings(jdbc);
         events.deleteAll();
         refreshSessions.deleteAll();
         users.deleteAll();
         teams.deleteAll();
     }
+
+    @AfterEach
+    void clearBindingPrerequisites() { ClientBindingFixture.clearBindings(jdbc); }
 
     @Test
     void tokenLimitEndpointsRequireAdminAndCorsAllowsPut() throws Exception {
@@ -100,6 +110,7 @@ class QuotaPolicyIntegrationTest {
         AuthResponse memberSession = authService.login("member@example.com", PASSWORD);
 
         mvc.perform(post("/api/v1/client/codex/credential")
+                        .with(boundRequest())
                         .header(HttpHeaders.AUTHORIZATION, bearer(memberSession.accessToken())))
                 .andExpect(status().isNotFound());
 
@@ -162,11 +173,11 @@ class QuotaPolicyIntegrationTest {
         setTeamLimits(admin, teamId, 500, 1_000);
         joinTeam(admin, member.getId(), teamId);
 
-        mvc.perform(get(OVERVIEW)
+        mvc.perform(get(OVERVIEW).with(boundRequest())
                         .header(HttpHeaders.AUTHORIZATION, bearer(oldMemberSession.accessToken())))
                 .andExpect(status().isUnauthorized());
         AuthResponse memberSession = authService.login("member@example.com", PASSWORD);
-        mvc.perform(get(OVERVIEW)
+        mvc.perform(get(OVERVIEW).with(boundRequest())
                         .header(HttpHeaders.AUTHORIZATION, bearer(memberSession.accessToken())))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.codexAccount").doesNotExist())
@@ -182,17 +193,13 @@ class QuotaPolicyIntegrationTest {
                 .andExpect(jsonPath("$.allowed").value(true));
 
         String event = usageRequest(EVENT_ID, 120);
-        mvc.perform(post("/api/v1/client/usage/events")
-                        .header(HttpHeaders.AUTHORIZATION, bearer(memberSession.accessToken()))
-                        .contentType(MediaType.APPLICATION_JSON).content(event))
+        reportAndReadQuota(memberSession.accessToken(), event)
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.usage.fiveHourUsedTokens").value(120))
                 .andExpect(jsonPath("$.usage.measuredAt").exists())
                 .andExpect(jsonPath("$.usage.weeklyRemainingTokens").value(nullValue()))
                 .andExpect(jsonPath("$.teamQuota.weeklyRemainingTokens").value(880));
-        mvc.perform(post("/api/v1/client/usage/events")
-                        .header(HttpHeaders.AUTHORIZATION, bearer(memberSession.accessToken()))
-                        .contentType(MediaType.APPLICATION_JSON).content(event))
+        reportAndReadQuota(memberSession.accessToken(), event)
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.usage.fiveHourUsedTokens").value(120));
 
@@ -202,11 +209,11 @@ class QuotaPolicyIntegrationTest {
                         .content("{\"fiveHourTokenLimit\":100,\"weeklyTokenLimit\":null}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.fiveHourTokenLimit").value(100));
-        mvc.perform(get(OVERVIEW)
+        mvc.perform(get(OVERVIEW).with(boundRequest())
                         .header(HttpHeaders.AUTHORIZATION, bearer(memberSession.accessToken())))
                 .andExpect(status().isUnauthorized());
         AuthResponse afterOverride = authService.login("member@example.com", PASSWORD);
-        mvc.perform(get(OVERVIEW)
+        mvc.perform(get(OVERVIEW).with(boundRequest())
                         .header(HttpHeaders.AUTHORIZATION, bearer(afterOverride.accessToken())))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.policy.fiveHourSource").value("USER"))
@@ -214,10 +221,8 @@ class QuotaPolicyIntegrationTest {
                 .andExpect(jsonPath("$.usage.fiveHourRemainingTokens").value(0))
                 .andExpect(jsonPath("$.allowed").value(false))
                 .andExpect(jsonPath("$.blockReason").value("FIVE_HOUR_TOKEN_QUOTA_EXCEEDED"));
-        mvc.perform(post("/api/v1/client/usage/events")
-                        .header(HttpHeaders.AUTHORIZATION, bearer(afterOverride.accessToken()))
-                        .contentType(MediaType.APPLICATION_JSON).content(usageRequest(
-                                "codex-local-usage:v1:" + "b".repeat(64), 20)))
+        reportAndReadQuota(afterOverride.accessToken(), usageRequest(
+                                "codex-local-usage:v1:" + "b".repeat(64), 20))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.usage.fiveHourUsedTokens").value(140));
     }
@@ -248,16 +253,13 @@ class QuotaPolicyIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(usageRequest(EVENT_ID, 280)))
                 .andExpect(status().isOk());
-        mvc.perform(post("/api/v1/client/usage/events")
-                        .header(HttpHeaders.AUTHORIZATION, bearer(bobSession.accessToken()))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(usageRequest("codex-local-usage:v1:" + "b".repeat(64), 230)))
+        reportAndReadQuota(bobSession.accessToken(), usageRequest("codex-local-usage:v1:" + "b".repeat(64), 230))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.usage.fiveHourUsedTokens").value(230))
                 .andExpect(jsonPath("$.teamQuota.fiveHourUsedTokens").value(510))
                 .andExpect(jsonPath("$.teamQuota.fiveHourRemainingTokens").value(0))
                 .andExpect(jsonPath("$.blockReason").value("TEAM_FIVE_HOUR_TOKEN_QUOTA_EXCEEDED"));
-        mvc.perform(get(OVERVIEW)
+        mvc.perform(get(OVERVIEW).with(boundRequest())
                         .header(HttpHeaders.AUTHORIZATION, bearer(aliceSession.accessToken())))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.usage.fiveHourUsedTokens").value(280))
@@ -270,25 +272,19 @@ class QuotaPolicyIntegrationTest {
                 .andExpect(jsonPath("$.fiveHourUsedTokens").value(510))
                 .andExpect(jsonPath("$.weeklyRemainingTokens").value(490));
 
-        mvc.perform(post("/api/v1/client/usage/events")
-                        .header(HttpHeaders.AUTHORIZATION, bearer(bobSession.accessToken()))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
+        reportAndReadQuota(bobSession.accessToken(), """
                                 {"events":[{"eventId":"codex-local-usage:v1:%s",
                                  "occurredAt":"%s","totalTokens":900,
                                  "source":"TOKEN_USAGE_RECORD"}]}
-                                """.formatted("c".repeat(64), Instant.now().minus(Duration.ofDays(8)))))
+                                """.formatted("c".repeat(64), Instant.now().minus(Duration.ofDays(8))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.usage.weeklyUsedTokens").value(230))
                 .andExpect(jsonPath("$.teamQuota.weeklyUsedTokens").value(510));
-        mvc.perform(post("/api/v1/client/usage/events")
-                        .header(HttpHeaders.AUTHORIZATION, bearer(bobSession.accessToken()))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
+        reportAndReadQuota(bobSession.accessToken(), """
                                 {"events":[{"eventId":"codex-local-usage:v1:%s",
                                  "occurredAt":"%s","totalTokens":900,
                                  "source":"TOKEN_USAGE_RECORD"}]}
-                                """.formatted("d".repeat(64), Instant.now().plus(Duration.ofMinutes(2)))))
+                                """.formatted("d".repeat(64), Instant.now().plus(Duration.ofMinutes(2))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.usage.weeklyUsedTokens").value(230))
                 .andExpect(jsonPath("$.teamQuota.weeklyUsedTokens").value(510));
@@ -302,9 +298,13 @@ class QuotaPolicyIntegrationTest {
                         .header(HttpHeaders.AUTHORIZATION, bearer(admin)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.fiveHourUsedTokens").value(0));
+        int aliceBindings = jdbc.queryForObject("select count(*) from session_bindings where user_id=?", Integer.class, alice.getId());
+        org.assertj.core.api.Assertions.assertThat(aliceBindings).isPositive();
         mvc.perform(delete("/api/v1/admin/users/{id}", bob.getId())
                         .header(HttpHeaders.AUTHORIZATION, bearer(admin)))
                 .andExpect(status().isNoContent());
+        org.assertj.core.api.Assertions.assertThat(jdbc.queryForObject("select count(*) from session_bindings where user_id=?", Integer.class, alice.getId())).isEqualTo(aliceBindings);
+        org.assertj.core.api.Assertions.assertThat(jdbc.queryForObject("select count(*) from session_bindings where user_id=?", Integer.class, bob.getId())).isZero();
         mvc.perform(get("/api/v1/admin/teams/{id}/quota-overview", firstTeam)
                         .header(HttpHeaders.AUTHORIZATION, bearer(admin)))
                 .andExpect(status().isOk())
@@ -326,20 +326,14 @@ class QuotaPolicyIntegrationTest {
                         .content("{\"fiveHourTokenLimit\":300,\"weeklyTokenLimit\":600}"))
                 .andExpect(status().isOk());
         AuthResponse memberSession = authService.login("member@example.com", PASSWORD);
-        mvc.perform(post("/api/v1/client/usage/events")
-                        .header(HttpHeaders.AUTHORIZATION, bearer(memberSession.accessToken()))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(usageRequest(EVENT_ID, 120)))
+        reportAndReadQuota(memberSession.accessToken(), usageRequest(EVENT_ID, 120))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.usage.fiveHourUsedTokens").value(120))
                 .andExpect(jsonPath("$.teamQuota.fiveHourUsedTokens").value(120));
-        mvc.perform(post("/api/v1/client/usage/events")
-                        .header(HttpHeaders.AUTHORIZATION, bearer(memberSession.accessToken()))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
+        reportAndReadQuota(memberSession.accessToken(), """
                                 {"events":[{"eventId":"codex-local-usage:v1:%s",
                                  "occurredAt":"%s","totalTokens":40,"source":"TOKEN_USAGE_RECORD"}]}
-                                """.formatted("d".repeat(64), Instant.now().plusSeconds(120))))
+                                """.formatted("d".repeat(64), Instant.now().plusSeconds(120)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.usage.fiveHourUsedTokens").value(120));
 
@@ -361,7 +355,7 @@ class QuotaPolicyIntegrationTest {
         Instant personalResetAt = users.findById(member.getId()).orElseThrow().getQuotaResetAt();
         org.assertj.core.api.Assertions.assertThat(events.sumTokensSince(member.getId(),
                 personalResetAt, personalResetAt.plusSeconds(180), personalResetAt)).isZero();
-        mvc.perform(get(OVERVIEW)
+        mvc.perform(get(OVERVIEW).with(boundRequest())
                         .header(HttpHeaders.AUTHORIZATION, bearer(memberSession.accessToken())))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.usage.fiveHourUsedTokens").value(0))
@@ -372,9 +366,7 @@ class QuotaPolicyIntegrationTest {
                 {"events":[{"eventId":"codex-local-usage:v1:%s",
                  "occurredAt":"%s","totalTokens":50,"source":"TOKEN_USAGE_RECORD"}]}
                 """.formatted("e".repeat(64), Instant.now().minusSeconds(60));
-        mvc.perform(post("/api/v1/client/usage/events")
-                        .header(HttpHeaders.AUTHORIZATION, bearer(memberSession.accessToken()))
-                        .contentType(MediaType.APPLICATION_JSON).content(lateOldEvent))
+        reportAndReadQuota(memberSession.accessToken(), lateOldEvent)
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.usage.fiveHourUsedTokens").value(0))
                 .andExpect(jsonPath("$.teamQuota.fiveHourUsedTokens").value(170));
@@ -382,23 +374,18 @@ class QuotaPolicyIntegrationTest {
         mvc.perform(post("/api/v1/admin/teams/{id}/quota-reset", teamId)
                         .header(HttpHeaders.AUTHORIZATION, bearer(admin)))
                 .andExpect(status().isNoContent());
-        mvc.perform(get(OVERVIEW)
+        mvc.perform(get(OVERVIEW).with(boundRequest())
                         .header(HttpHeaders.AUTHORIZATION, bearer(memberSession.accessToken())))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.usage.fiveHourUsedTokens").value(0))
                 .andExpect(jsonPath("$.teamQuota.fiveHourUsedTokens").value(0))
                 .andExpect(jsonPath("$.teamQuota.fiveHourRemainingTokens").value(500));
-        mvc.perform(post("/api/v1/client/usage/events")
-                        .header(HttpHeaders.AUTHORIZATION, bearer(memberSession.accessToken()))
-                        .contentType(MediaType.APPLICATION_JSON).content(lateOldEvent))
+        reportAndReadQuota(memberSession.accessToken(), lateOldEvent)
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.teamQuota.fiveHourUsedTokens").value(0));
         org.assertj.core.api.Assertions.assertThat(events.count()).isEqualTo(3);
 
-        mvc.perform(post("/api/v1/client/usage/events")
-                        .header(HttpHeaders.AUTHORIZATION, bearer(memberSession.accessToken()))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(usageRequest("codex-local-usage:v1:" + "f".repeat(64), 20)))
+        reportAndReadQuota(memberSession.accessToken(), usageRequest("codex-local-usage:v1:" + "f".repeat(64), 20))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.usage.fiveHourUsedTokens").value(20))
                 .andExpect(jsonPath("$.teamQuota.fiveHourUsedTokens").value(20));
@@ -406,7 +393,7 @@ class QuotaPolicyIntegrationTest {
         mvc.perform(post("/api/v1/admin/teams/{id}/quota-reset", teamId)
                         .header(HttpHeaders.AUTHORIZATION, bearer(admin)))
                 .andExpect(status().isNoContent());
-        mvc.perform(get(OVERVIEW)
+        mvc.perform(get(OVERVIEW).with(boundRequest())
                         .header(HttpHeaders.AUTHORIZATION, bearer(memberSession.accessToken())))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.usage.fiveHourUsedTokens").value(20))
@@ -422,7 +409,7 @@ class QuotaPolicyIntegrationTest {
         joinTeam(admin, member.getId(), teamId);
 
         AuthResponse memberSession = authService.login("member@example.com", PASSWORD);
-        mvc.perform(get(OVERVIEW)
+        mvc.perform(get(OVERVIEW).with(boundRequest())
                         .header(HttpHeaders.AUTHORIZATION, bearer(memberSession.accessToken())))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.policy.fiveHourTokenLimit").value(nullValue()))
@@ -437,7 +424,7 @@ class QuotaPolicyIntegrationTest {
 
         setTeamLimits(admin, teamId, 500, 1_000);
         AuthResponse afterPolicy = authService.login("member@example.com", PASSWORD);
-        mvc.perform(get(OVERVIEW)
+        mvc.perform(get(OVERVIEW).with(boundRequest())
                         .header(HttpHeaders.AUTHORIZATION, bearer(afterPolicy.accessToken())))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.allowed").value(true));
@@ -460,7 +447,7 @@ class QuotaPolicyIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.totalTokenLimit").value(300));
         AuthResponse session = authService.login("member@example.com", PASSWORD);
-        mvc.perform(get(OVERVIEW)
+        mvc.perform(get(OVERVIEW).with(boundRequest())
                         .header(HttpHeaders.AUTHORIZATION, bearer(session.accessToken())))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.allowed").value(true))
@@ -469,10 +456,7 @@ class QuotaPolicyIntegrationTest {
                 .andExpect(jsonPath("$.teamQuota.fiveHourRemainingTokens").value(nullValue()))
                 .andExpect(jsonPath("$.teamQuota.totalRemainingTokens").value(300));
 
-        mvc.perform(post("/api/v1/client/usage/events")
-                        .header(HttpHeaders.AUTHORIZATION, bearer(session.accessToken()))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(usageRequest(EVENT_ID, 320)))
+        reportAndReadQuota(session.accessToken(), usageRequest(EVENT_ID, 320))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.usage.fiveHourUsedTokens").value(320))
                 .andExpect(jsonPath("$.usage.fiveHourRemainingTokens").value(nullValue()))
@@ -493,11 +477,11 @@ class QuotaPolicyIntegrationTest {
 
         setTeamLimits(admin, teamId, 200, 400);
 
-        mvc.perform(get(OVERVIEW)
+        mvc.perform(get(OVERVIEW).with(boundRequest())
                         .header(HttpHeaders.AUTHORIZATION, bearer(oldSession.accessToken())))
                 .andExpect(status().isUnauthorized());
         AuthResponse newSession = authService.login("member@example.com", PASSWORD);
-        mvc.perform(get(OVERVIEW)
+        mvc.perform(get(OVERVIEW).with(boundRequest())
                         .header(HttpHeaders.AUTHORIZATION, bearer(newSession.accessToken())))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.policy.fiveHourTokenLimit").value(nullValue()))
@@ -583,5 +567,20 @@ class QuotaPolicyIntegrationTest {
 
     private String bearer(String accessToken) {
         return "Bearer " + accessToken;
+    }
+
+    private RequestPostProcessor boundRequest() {
+        return request -> ClientBindingFixture.forUser(jdbc,
+                jwtService.parseUserId(request.getHeader(HttpHeaders.AUTHORIZATION).substring(7)))
+                .postProcessRequest(request);
+    }
+
+    private ResultActions reportAndReadQuota(String accessToken, String body) throws Exception {
+        mvc.perform(post("/api/v1/client/usage/events")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(accessToken))
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.acceptedEvents").value(1));
+        return mvc.perform(get(OVERVIEW).with(boundRequest())
+                .header(HttpHeaders.AUTHORIZATION, bearer(accessToken)));
     }
 }

@@ -9,15 +9,18 @@ import com.pingche.web.auth.AuthResponse;
 import com.pingche.web.auth.AuthService;
 import com.pingche.web.user.User;
 import com.pingche.web.user.UserRepository;
+import com.pingche.web.sessionbinding.ClientBindingFixture;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.AfterEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -30,6 +33,10 @@ class OfficialQuotaSnapshotIntegrationTest {
     @Autowired AuthService auth;
     @Autowired UserRepository users;
     @Autowired Clock clock;
+    @Autowired JdbcTemplate jdbc;
+
+    @AfterEach
+    void clearBindingPrerequisites() { ClientBindingFixture.clearBindings(jdbc); }
 
     @Test
     void clientReportsSafeOfficialQuotaAndOnlyAdminReadsAnotherUsersSnapshot() throws Exception {
@@ -46,6 +53,7 @@ class OfficialQuotaSnapshotIntegrationTest {
 
         Instant fetchedAt = clock.instant();
         mvc.perform(put("/api/v1/client/official-quota")
+                        .with(ClientBindingFixture.forUser(jdbc, memberUser.getId()))
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + member.accessToken())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""

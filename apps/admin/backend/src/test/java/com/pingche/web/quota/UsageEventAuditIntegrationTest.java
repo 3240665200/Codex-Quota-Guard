@@ -8,16 +8,19 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.pingche.web.auth.AuthResponse;
 import com.pingche.web.auth.AuthService;
+import com.pingche.web.sessionbinding.ClientBindingFixture;
 import com.pingche.web.user.User;
 import com.pingche.web.user.UserRepository;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.AfterEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.HttpHeaders;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -30,6 +33,10 @@ class UsageEventAuditIntegrationTest {
     @Autowired AuthService auth;
     @Autowired UserRepository users;
     @Autowired CodexUsageEventRepository events;
+    @Autowired JdbcTemplate jdbc;
+
+    @AfterEach
+    void clearBindingPrerequisites() { ClientBindingFixture.clearBindings(jdbc); }
 
     @Test
     void optionalMetadataSurvivesIngestionAndLegacyClientsKeepTheirOriginalResponseShape() throws Exception {
@@ -44,11 +51,13 @@ class UsageEventAuditIntegrationTest {
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + session.accessToken()))
                 .andExpect(status().isOk());
         mvc.perform(get("/api/v1/client/usage/events?includeMetadata=true")
+                        .with(ClientBindingFixture.forUser(jdbc, session.user().id()))
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + session.accessToken()))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.items[0].model").value("gpt-6.1-sol"))
                 .andExpect(jsonPath("$.items[0].reasoningEffort").value("max"))
                 .andExpect(jsonPath("$.items[0].totalTokens").value(42));
         mvc.perform(get("/api/v1/client/usage/events")
+                        .with(ClientBindingFixture.forUser(jdbc, session.user().id()))
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + session.accessToken()))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.items[0].model").doesNotExist())
                 .andExpect(jsonPath("$.items[0].reasoningEffort").doesNotExist())
@@ -58,6 +67,7 @@ class UsageEventAuditIntegrationTest {
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + session.accessToken()))
                 .andExpect(status().isOk());
         mvc.perform(get("/api/v1/client/usage/events?includeMetadata=true")
+                        .with(ClientBindingFixture.forUser(jdbc, session.user().id()))
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + session.accessToken()))
                 .andExpect(jsonPath("$.totalElements").value(1));
     }
@@ -80,6 +90,7 @@ class UsageEventAuditIntegrationTest {
                         now.minusSeconds(5), now, "TOKEN_USAGE_RECORD")));
 
         mvc.perform(get("/api/v1/client/usage/events?page=0&size=1&userId=" + other)
+                        .with(ClientBindingFixture.forUser(jdbc, self))
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + session.accessToken()))
                 .andExpect(status().isOk())
                 .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
@@ -88,11 +99,13 @@ class UsageEventAuditIntegrationTest {
                 .andExpect(jsonPath("$.items[0].source").value("CUMULATIVE_TOKEN_COUNT_FALLBACK"))
                 .andExpect(jsonPath("$.items[0].accessToken").doesNotExist());
         mvc.perform(get("/api/v1/client/usage/events?page=1&size=1")
+                        .with(ClientBindingFixture.forUser(jdbc, self))
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + session.accessToken()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.items[0].totalTokens").value(123));
         for (String query : List.of("page=-1", "size=0", "size=101")) {
             mvc.perform(get("/api/v1/client/usage/events?" + query)
+                            .with(ClientBindingFixture.forUser(jdbc, self))
                             .header(HttpHeaders.AUTHORIZATION, "Bearer " + session.accessToken()))
                     .andExpect(status().isBadRequest());
         }
