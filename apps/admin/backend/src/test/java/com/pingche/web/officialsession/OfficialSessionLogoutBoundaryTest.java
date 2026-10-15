@@ -134,6 +134,16 @@ class OfficialSessionLogoutBoundaryTest {
         verify(accounts, never()).delete(any());
     }
 
+    @ParameterizedTest @ValueSource(strings = {"WAITING_FOR_HELPER", "WAITING_FOR_LOGIN", "SAVING"})
+    void accountDeletionCannotCascadeIntoAnInFlightBrowserLogin(String state) {
+        var job = browser.create(ownerId, accountId, new BrowserLoginService.StartRequest(0L, null));
+        jdbc.update("update official_browser_login_jobs set state=? where id=?", state, job.id());
+        assertThatThrownBy(() -> accountService.delete(accountId)).isInstanceOfSatisfying(DomainException.class,
+                failure -> assertThat(failure.getCode()).isEqualTo("BROWSER_LOGIN_BUSY"));
+        verify(accounts).findByIdForUpdate(accountId);
+        verify(accounts, never()).delete(any());
+    }
+
     @ParameterizedTest @ValueSource(strings = {"ACCEPTED", "RESOLVED_UNKNOWN", "PREVIEW"})
     void inactivePlansAllowBrowserLogin(String state) {
         block(state);
