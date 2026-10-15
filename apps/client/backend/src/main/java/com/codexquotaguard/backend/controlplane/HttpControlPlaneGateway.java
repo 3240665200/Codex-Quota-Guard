@@ -220,6 +220,9 @@ final class HttpControlPlaneGateway implements ControlPlaneGateway {
     private <T> T sendBindingJson(HttpRequest request, Class<T> type) {
         // Bound these metadata responses as strictly as OTP responses. No remote error body is retained.
         HttpResponse<byte[]> response = sendMail(request);
+        // A binding-specific 403 can mean no eligible team/enrollment, while the
+        // product token remains valid. Only 401 proves this login needs renewal.
+        if (response.statusCode() == 403) throw ControlPlaneException.invalidRequest();
         ensureSuccess(response.statusCode());
         try { return mapper.readValue(response.body(), type); }
         catch (RuntimeException invalid) { throw ControlPlaneException.unavailable(); }
