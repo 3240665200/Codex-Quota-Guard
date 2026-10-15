@@ -1,92 +1,90 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ReactNode } from 'react';
 import BrowserLoginPanel from './BrowserLoginPanel';
-import type { OfficialBrowserLoginJob } from '../../services/officialBrowserLoginApi';
 
-const mocks = vi.hoisted(() => ({
-  startOfficialBrowserLogin: vi.fn(), getOfficialBrowserLogin: vi.fn(), cancelOfficialBrowserLogin: vi.fn(),
-}));
-vi.mock('../../services/officialBrowserLoginApi', () => mocks);
+const mocks = vi.hoisted(() => ({ startOfficialWebLogin: vi.fn(), getOfficialWebLogin: vi.fn(),
+  getOfficialWebLoginFrame: vi.fn(), sendOfficialWebLoginInput: vi.fn(),
+  completeOfficialWebLogin: vi.fn(), cancelOfficialWebLogin: vi.fn() }));
+vi.mock('../../services/officialWebLoginApi', () => mocks);
+vi.mock('antd', () => {
+  const Block = ({ children }: { children?: ReactNode }) => <div>{children}</div>;
+  return { Card: Block, Space: Block, Tag: Block, Typography: { Paragraph: Block, Text: Block },
+    Alert: ({ title, description }: { title: ReactNode; description?: ReactNode }) => <div role="alert">{title}{description}</div>,
+    Descriptions: ({ items }: { items: { key: string; label: string; children: ReactNode }[] }) => <dl>{items.map((item) => <div key={item.key}>{item.label}{item.children}</div>)}</dl>,
+    Button: ({ children, onClick, disabled }: { children: ReactNode; onClick?: () => void; disabled?: boolean }) => <button onClick={onClick} disabled={disabled}>{children}</button> };
+});
 
-const job: OfficialBrowserLoginJob = { id: 'job-1', officialAccountId: 'account-1', accountName: '研发账户',
-  state: 'WAITING_FOR_HELPER', expiresAt: '2026-10-15T02:00:00Z', errorCode: null, proxyNodeId: 'proxy-1' };
-
-function show(disabled = false) {
-  const onCompleted = vi.fn().mockResolvedValue(undefined);
-  const view = render(<BrowserLoginPanel accountId="account-1" version={4} proxyNodeId="proxy-1"
-    disabled={disabled} onResultChanged={onCompleted} />);
-  return { onCompleted, ...view };
+const job = { id: 'job-1', officialAccountId: 'account-1', accountName: '研发账户', state: 'WAITING_FOR_LOGIN',
+  expiresAt: '2099-10-15T02:00:00Z', errorCode: null, proxyNodeId: 'proxy-1', pageOrigin: 'https://auth.openai.com', readyToSave: false };
+const frame = { width: 1024, height: 768, jpegBase64: '/9j/AA==', pageOrigin: 'https://auth.openai.com', readyToSave: false, errorCode: null };
+function show(accountId = 'account-1') {
+  const onResultChanged = vi.fn().mockResolvedValue(undefined);
+  const view = render(<BrowserLoginPanel accountId={accountId} version={4} proxyNodeId="proxy-1" disabled={false} onResultChanged={onResultChanged} />);
+  return { onResultChanged, ...view };
 }
-
-describe('管理员官方网页登录', () => {
+async function start() {
+  fireEvent.click(screen.getByRole('button', { name: '开始官方网页登录' }));
+  await waitFor(() => expect(mocks.getOfficialWebLoginFrame).toHaveBeenCalledWith('job-1'));
+}
+describe('服务器官方网页登录', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.startOfficialBrowserLogin.mockResolvedValue(job);
-    mocks.getOfficialBrowserLogin.mockResolvedValue({ ...job, state: 'WAITING_FOR_LOGIN' });
-    mocks.cancelOfficialBrowserLogin.mockResolvedValue({ ...job, state: 'CANCELLED' });
+    mocks.startOfficialWebLogin.mockResolvedValue(job); mocks.getOfficialWebLogin.mockResolvedValue(job);
+    mocks.getOfficialWebLoginFrame.mockResolvedValue(frame); mocks.sendOfficialWebLoginInput.mockResolvedValue(undefined);
+    mocks.completeOfficialWebLogin.mockResolvedValue({ ...job, state: 'COMPLETED', readyToSave: false });
+    mocks.cancelOfficialWebLogin.mockResolvedValue({ ...job, state: 'CANCELLED', readyToSave: false });
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ clearRect: vi.fn(), drawImage: vi.fn() } as unknown as CanvasRenderingContext2D);
   });
   afterEach(() => { vi.useRealTimers(); });
-
-  it('creates a safe job and explains the real desktop helper workflow', async () => {
-    show();
-    fireEvent.click(screen.getByRole('button', { name: '开始官方网页登录' }));
-    await waitFor(() => expect(mocks.startOfficialBrowserLogin).toHaveBeenCalledWith('account-1', { version: 4, proxyNodeId: 'proxy-1' }));
-    expect(await screen.findByText('等待桌面助手')).toBeInTheDocument();
-    expect(screen.getByText(/使用同一个管理员账号登录桌面客户端/)).toBeInTheDocument();
-    expect(screen.getByText(/设置 → 官方登录助手/)).toBeInTheDocument();
-    expect(screen.getByText(/在打开的 Edge 或 Chrome 官方页面亲自完成登录/)).toBeInTheDocument();
-    expect(screen.getByText('job-1')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /打开客户端/ })).not.toBeInTheDocument();
+  it('uses a server browser and waits for explicit save even when a candidate exists', async () => {
+    mocks.getOfficialWebLoginFrame.mockResolvedValue({ ...frame, readyToSave: true });
+    const { onResultChanged } = show(); await start();
+    expect(mocks.startOfficialWebLogin).toHaveBeenCalledWith('account-1', { version: 4, proxyNodeId: 'proxy-1' });
+    expect(screen.getByText(/登录在服务器的独立浏览器中进行/)).toBeInTheDocument();
+    expect(screen.queryByText(/设置 → 官方登录助手/)).not.toBeInTheDocument();
+    expect(screen.getByLabelText('官方登录浏览器画面')).toBeInTheDocument();
+    expect(onResultChanged).not.toHaveBeenCalled(); expect(mocks.completeOfficialWebLogin).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '完成登录并保存' }));
+    await waitFor(() => expect(mocks.completeOfficialWebLogin).toHaveBeenCalledOnce());
+    expect(onResultChanged).toHaveBeenCalledOnce();
+    expect(screen.queryByLabelText('官方登录浏览器画面')).not.toBeInTheDocument();
   });
-
-  it('polls every three seconds and reloads the saved result exactly once on completion', async () => {
+  it('sends scaled click, bounded wheel, keyboard and Chinese paste without a retained input value', async () => {
+    show(); await start(); const canvas = screen.getByLabelText('官方登录浏览器画面');
+    vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({ left: 0, top: 0, width: 512, height: 384 } as DOMRect);
+    fireEvent.click(canvas, { clientX: 256, clientY: 192 });
+    fireEvent.wheel(canvas, { clientX: 128, clientY: 96, deltaY: 1500 });
+    fireEvent.keyDown(canvas, { key: 'Tab', shiftKey: true });
+    fireEvent.paste(canvas, { clipboardData: { getData: () => '中文邮箱' } });
+    await waitFor(() => expect(mocks.sendOfficialWebLoginInput).toHaveBeenCalledTimes(4));
+    expect(mocks.sendOfficialWebLoginInput.mock.calls.map((call) => call[1])).toEqual([
+      { type: 'CLICK', x: 512, y: 384 }, { type: 'WHEEL', x: 256, y: 192, deltaY: 1000 },
+      { type: 'KEY', key: 'Tab', shift: true }, { type: 'TEXT', text: '中文邮箱' },
+    ]);
+    expect(screen.queryByDisplayValue('中文邮箱')).not.toBeInTheDocument(); expect(sessionStorage.length).toBe(0);
+  });
+  it('clears the image and cancels its own job when unmounted, including a late start response', async () => {
+    const first = show(); await start(); first.unmount();
+    await waitFor(() => expect(mocks.cancelOfficialWebLogin).toHaveBeenCalledWith('job-1'));
+    let resolve!: (value: typeof job) => void;
+    mocks.startOfficialWebLogin.mockReturnValue(new Promise((done) => { resolve = done; }));
+    const second = show(); fireEvent.click(screen.getByRole('button', { name: '开始官方网页登录' })); second.unmount();
+    await act(async () => { resolve({ ...job, id: 'late-job' }); });
+    await waitFor(() => expect(mocks.cancelOfficialWebLogin).toHaveBeenCalledWith('late-job'));
+  });
+  it('does not replay ambiguous completion failures and clears the frame', async () => {
+    mocks.getOfficialWebLoginFrame.mockResolvedValue({ ...frame, readyToSave: true });
+    mocks.completeOfficialWebLogin.mockRejectedValue({ code: 'fixture-sensitive' });
+    show(); await start(); fireEvent.click(screen.getByRole('button', { name: '完成登录并保存' }));
+    await waitFor(() => expect(screen.queryByLabelText('官方登录浏览器画面')).not.toBeInTheDocument());
+    expect(mocks.completeOfficialWebLogin).toHaveBeenCalledOnce(); expect(screen.queryByText('fixture-sensitive')).not.toBeInTheDocument();
+  });
+  it('stops at local expiry without showing stale pixels', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    const { onCompleted } = show();
-    fireEvent.click(screen.getByRole('button', { name: '开始官方网页登录' }));
-    await act(async () => { await Promise.resolve(); });
-    expect(mocks.getOfficialBrowserLogin).not.toHaveBeenCalled();
-    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
-    expect(mocks.getOfficialBrowserLogin).toHaveBeenCalledWith('job-1');
-    expect(screen.getByText('等待完成官方登录')).toBeInTheDocument();
-    mocks.getOfficialBrowserLogin.mockResolvedValue({ ...job, state: 'COMPLETED' });
-    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
-    expect(screen.getByText('登录完成，授权已加密保存')).toBeInTheDocument();
-    expect(onCompleted).toHaveBeenCalledOnce();
-    await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
-    expect(mocks.getOfficialBrowserLogin).toHaveBeenCalledTimes(2);
-    expect(onCompleted).toHaveBeenCalledOnce();
-  });
-
-  it('cancels only the current task and explains that the browser login itself is unchanged', async () => {
-    show();
-    fireEvent.click(screen.getByRole('button', { name: '开始官方网页登录' }));
-    fireEvent.click(await screen.findByRole('button', { name: '取消登录任务' }));
-    await waitFor(() => expect(mocks.cancelOfficialBrowserLogin).toHaveBeenCalledWith('job-1'));
-    expect(await screen.findByText('登录任务已取消')).toBeInTheDocument();
-    expect(screen.getByText(/取消任务不会让已登录的官方浏览器退出/)).toBeInTheDocument();
-  });
-
-  it.each(['FAILED', 'EXPIRED'] as const)('shows %s safely and allows a fresh explicit attempt', async (state) => {
-    mocks.startOfficialBrowserLogin.mockResolvedValue({ ...job, state, errorCode: 'fixture-sensitive-error' });
-    show();
-    fireEvent.click(screen.getByRole('button', { name: '开始官方网页登录' }));
-    expect(await screen.findByText(state === 'FAILED' ? '官方网页登录未完成' : '登录任务已过期')).toBeInTheDocument();
-    expect(screen.queryByText('fixture-sensitive-error')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '重新开始官方网页登录' })).toBeEnabled();
-  });
-
-  it('disables task creation when transport, encryption, or proxy requirements block it', () => {
-    show(true);
-    expect(screen.getByRole('button', { name: '开始官方网页登录' })).toBeDisabled();
-  });
-
-  it('stops polling after unmount', async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    const { unmount } = show();
-    fireEvent.click(screen.getByRole('button', { name: '开始官方网页登录' }));
-    await act(async () => { await Promise.resolve(); });
-    unmount();
-    await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
-    expect(mocks.getOfficialBrowserLogin).not.toHaveBeenCalled();
+    mocks.startOfficialWebLogin.mockResolvedValue({ ...job, expiresAt: new Date(Date.now() + 1200).toISOString() });
+    show(); await start(); await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+    expect(screen.queryByLabelText('官方登录浏览器画面')).not.toBeInTheDocument();
+    expect(mocks.cancelOfficialWebLogin).toHaveBeenCalledWith('job-1');
   });
 });
