@@ -19,6 +19,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -124,6 +125,73 @@ public class OfficialSessionClient {
             throw failure("OFFICIAL_UNAVAILABLE");
         } catch (ExecutionException | TimeoutException ignored) { throw failure("OFFICIAL_UNAVAILABLE"); }
         finally { if (pending != null && !pending.isDone()) pending.cancel(true); }
+    }
+
+    OfficialSessionWriteResult logoutAll(OfficialSessionCredentials credentials, UUID proxyNodeId) {
+        // The official web client sends no requestBody for logout_all.
+        return write(credentials,proxyNodeId,"/accounts/logout_all",null);
+    }
+
+    OfficialSessionWriteResult revokeSession(OfficialSessionCredentials credentials, UUID proxyNodeId, String sessionId) {
+        if(sessionId==null || sessionId.isBlank() || sessionId.length()>512
+                || sessionId.chars().anyMatch(c -> c<32 || c==127)) {
+            return new OfficialSessionWriteResult("REJECTED","OFFICIAL_SESSION_INVALID");
+        }
+        return write(credentials,proxyNodeId,"/accounts/sessions/revoke",Map.of("session_id",sessionId));
+    }
+
+    private OfficialSessionWriteResult write(OfficialSessionCredentials credentials, UUID proxyNodeId,
+            String path, Map<String,String> payload) {
+        boolean dispatched=false;
+        CompletableFuture<HttpResponse<byte[]>> pending=null;
+        try {
+            credentials.validate();
+            try(ProxyLease lease=proxyNodeId==null?null:proxies.open(proxyNodeId)) {
+                HttpClient client=clients.apply(lease==null?DIRECT:lease.proxySelector());
+                var request=HttpRequest.newBuilder(URI.create("https://chatgpt.com/backend-api"+path))
+                        .timeout(Duration.ofSeconds(10)).header("Accept","application/json")
+                        .header("Content-Type","application/json").header("Authorization",credentials.authorization())
+                        .header("ChatGPT-Account-ID",credentials.requestedAccountId());
+                if(credentials.cookie()!=null && !credentials.cookie().isBlank())request.header("Cookie",credentials.cookie());
+                request.POST(payload==null?HttpRequest.BodyPublishers.noBody():HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(payload)));
+                dispatched=true;
+                // Deliberately no application retry, redirect, or credential refresh for mutations.
+                pending=client.sendAsync(request.build(),ignored -> new LimitedBodySubscriber());
+                HttpResponse<byte[]> response=pending.get(10,TimeUnit.SECONDS);
+                if(response.headers().firstValue("cf-mitigated").map(v -> "challenge".equalsIgnoreCase(v.trim())).orElse(false))
+                    return new OfficialSessionWriteResult("REJECTED","OFFICIAL_CHALLENGE_REQUIRED");
+                String rejection=switch(response.statusCode()) {
+                    case 400,404,405,409,422 -> "OFFICIAL_LOGOUT_REJECTED";
+                    case 401 -> "OFFICIAL_AUTH_REQUIRED";
+                    case 403 -> "OFFICIAL_ACCESS_BLOCKED";
+                    case 429 -> "OFFICIAL_RATE_LIMITED";
+                    default -> null;
+                };
+                if(rejection!=null)return new OfficialSessionWriteResult("REJECTED",rejection);
+                if(response.statusCode()!=200 && response.statusCode()!=202 && response.statusCode()!=204)return uncertainWrite();
+                byte[] body=response.body();
+                if(body==null || body.length>MAX_BODY)return uncertainWrite();
+                if(response.statusCode()==204 && body.length==0)return new OfficialSessionWriteResult("ACCEPTED",null);
+                String type=response.headers().firstValue("Content-Type").orElse("").toLowerCase(Locale.ROOT);
+                if(!type.startsWith("application/json") && !(body.length==0 && type.isEmpty()))return uncertainWrite();
+                if(body.length>0) {
+                    JsonNode result=mapper.readTree(body);
+                    if(result==null || (result.isBoolean() && !result.asBoolean())
+                            || (result.isObject() && ((result.has("error") && !result.get("error").isNull())
+                            || (result.has("success") && result.get("success").isBoolean() && !result.get("success").asBoolean())
+                            || (result.has("ok") && result.get("ok").isBoolean() && !result.get("ok").asBoolean()))))return uncertainWrite();
+                }
+                return new OfficialSessionWriteResult("ACCEPTED",null);
+            }
+        } catch(InterruptedException ignored) {
+            Thread.currentThread().interrupt();return uncertainWrite();
+        } catch(ExecutionException|TimeoutException|RuntimeException ignored) {
+            return dispatched?uncertainWrite():new OfficialSessionWriteResult("REJECTED","OFFICIAL_LOGOUT_NOT_SENT");
+        } finally { if(pending!=null && !pending.isDone())pending.cancel(true); }
+    }
+
+    private OfficialSessionWriteResult uncertainWrite() {
+        return new OfficialSessionWriteResult("UNKNOWN","OFFICIAL_LOGOUT_OUTCOME_UNKNOWN");
     }
 
     private OfficialSessions sessions(JsonNode payload) {

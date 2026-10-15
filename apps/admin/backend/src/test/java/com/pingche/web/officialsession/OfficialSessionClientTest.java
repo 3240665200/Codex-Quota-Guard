@@ -255,8 +255,9 @@ class OfficialSessionClientTest {
     void logoutDistinguishesRejectionFromUnknownEffectsAndDoesNotExposeBodies() {
         for (int status : new int[]{200,204,401,403,429,500,302}) {
             HttpClient http=mock(HttpClient.class);
+            HttpResponse<byte[]> upstream=response(status,status==204?"":"{\"success\":true,\"private\":\"secret-marker\"}");
             when(http.sendAsync(any(HttpRequest.class),any(HttpResponse.BodyHandler.class)))
-                    .thenReturn(CompletableFuture.completedFuture(response(status,status==204?"":"{\"success\":true,\"private\":\"secret-marker\"}")));
+                    .thenReturn(CompletableFuture.completedFuture(upstream));
             OfficialSessionWriteResult result=client(http).logoutAll(credentials(),null);
             assertThat(result.status()).isEqualTo(status==200||status==204?"ACCEPTED":status==401||status==403||status==429?"REJECTED":"UNKNOWN");
             assertThat(result.toString()).doesNotContain("secret-marker","synthetic-access","private-cookie");
@@ -264,7 +265,8 @@ class OfficialSessionClientTest {
         }
         for(String body : List.of("<html>private-token</html>","{\"success\":false}","{\"error\":\"private-token\"}")) {
             HttpClient http=mock(HttpClient.class);
-            when(http.sendAsync(any(HttpRequest.class),any(HttpResponse.BodyHandler.class))).thenReturn(CompletableFuture.completedFuture(response(200,body)));
+            HttpResponse<byte[]> upstream=response(200,body);
+            when(http.sendAsync(any(HttpRequest.class),any(HttpResponse.BodyHandler.class))).thenReturn(CompletableFuture.completedFuture(upstream));
             assertThat(client(http).logoutAll(credentials(),null).status()).isEqualTo("UNKNOWN");
             verify(http).sendAsync(any(HttpRequest.class),any(HttpResponse.BodyHandler.class));
         }
