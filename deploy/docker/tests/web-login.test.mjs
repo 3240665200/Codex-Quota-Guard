@@ -58,6 +58,24 @@ test('browser seccomp remains default-deny and permits namespace sandbox creatio
   }
 });
 
+test('browser sandbox chroot survives capability filtering without granting container capabilities', () => {
+  const profile = JSON.parse(read('chromium-seccomp.json'));
+  const rule = profile.syscalls.find((entry) => entry.names.includes('chroot')
+    && !entry.includes?.caps?.length && !entry.excludes?.caps?.length);
+  assert.ok(rule, 'Chromium user-namespace chroot must be available after cap_drop: ALL');
+  assert.deepEqual(rule.names, ['chroot']);
+  assert.equal(rule.action, 'SCMP_ACT_ALLOW');
+  assert.deepEqual(rule.args, []);
+  assert.equal(profile.defaultAction, 'SCMP_ACT_ERRNO');
+  assert.deepEqual(JSON.parse(read('registry/compose.yaml')).services.backend.cap_drop, ['ALL']);
+  assert.match(read('compose.yaml'), /cap_drop: \[ALL\]/);
+  for (const name of ['compose.web-login.yaml', 'registry/compose.web-login.yaml']) {
+    const overlay = read(name);
+    assert.match(overlay, /no-new-privileges:true/);
+    assert.doesNotMatch(overlay, /cap_add:|privileged:|SYS_CHROOT|SYS_ADMIN|unconfined|--no-sandbox/);
+  }
+});
+
 test('local preview opt-in requires an explicit validated browser path and does not leak backend env to web', () => {
   const preview = readFileSync(new URL('../../../scripts/windows/start-admin-preview.ps1', import.meta.url), 'utf8');
   const worker = readFileSync(new URL('../../../scripts/windows/preview-supervisor.ps1', import.meta.url), 'utf8');
