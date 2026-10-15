@@ -297,7 +297,7 @@ class OfficialSessionLogoutIntegrationTest {
         binding("bound");
         when(client.fetch(any(OfficialSessionCredentials.class), isNull())).thenReturn(snapshot(List.of(
                 device("bound", false, false), device("trusted", true, false), device("unselected", false, false),
-                device("current", false, true), device("unknown-current", false, null),
+                device("current", false, true), device("unknown-current", false, null), device(null, false, false),
                 device("duplicate", false, false), device("duplicate", false, false))));
         JsonNode plan = selectedPreview(List.of("bound", "trusted", "current", "unknown-current", "duplicate"));
         assertThat(plan.path("mode").asString()).isEqualTo("SELECTED");
@@ -393,6 +393,29 @@ class OfficialSessionLogoutIntegrationTest {
         assertThat(org.mockito.Mockito.mockingDetails(client).getInvocations()).allMatch(invocation -> invocation.getMethod().getName().equals("fetch"));
     }
 
+    @Test void selectedDomainFailureAfterOneCommittedPostReconcilesOnlyDurableAcceptedBinding() throws Exception {
+        binding("one"); binding("two");
+        when(client.fetch(any(OfficialSessionCredentials.class), isNull())).thenReturn(snapshot(List.of(device("one", false, false), device("two", false, false))));
+        connections.refresh(account.getId());
+        when(client.revokeSession(any(OfficialSessionCredentials.class), isNull(), eq("one"))).thenReturn(new OfficialSessionWriteResult("ACCEPTED", null));
+        String plan = selectedPreview(List.of("one", "two")).path("planId").asString();
+        java.util.concurrent.atomic.AtomicBoolean failOnce = new java.util.concurrent.atomic.AtomicBoolean(true);
+        when(clock.instant()).thenAnswer(call -> {
+            if ("official-session-logout".equals(Thread.currentThread().getName())) {
+                String journal = jdbc.queryForObject("select results_json from official_session_logout_plans where id=?", String.class, UUID.fromString(plan));
+                if (journal != null && journal.contains("ACCEPTED") && failOnce.compareAndSet(true, false))
+                    throw new com.pingche.web.auth.DomainException("OFFICIAL_LOGOUT_CONTEXT_CHANGED", "Synthetic interrupted dispatch", org.springframework.http.HttpStatus.CONFLICT);
+            }
+            return NOW;
+        });
+        confirm(admin, plan, true).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("UNKNOWN"));
+        assertBinding("one", "INVALIDATED"); assertBinding("two", "ACTIVE");
+        assertThat(jdbc.queryForObject("select status from official_account_connections where official_account_id=?", String.class, account.getId())).isEqualTo("UNVERIFIED");
+        acknowledge(admin, plan, true).andExpect(status().isOk());
+        verify(client, times(1)).revokeSession(any(OfficialSessionCredentials.class), isNull(), eq("one"));
+        verify(client, org.mockito.Mockito.never()).revokeSession(any(OfficialSessionCredentials.class), isNull(), eq("two"));
+    }
+
     @Test void selectedFinalLeaseCheckWithoutAPostPersistsNotAttemptedBeforeInvalidatingBindings() throws Exception {
         binding("s-one");
         String plan = selectedPreview(List.of("s-one")).path("planId").asString();
@@ -425,6 +448,38 @@ class OfficialSessionLogoutIntegrationTest {
             confirm(admin, plan, true).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("PARTIAL"))
                     .andExpect(jsonPath("$.results[1].status").value("NOT_ATTEMPTED"));
         }
+        verify(client, org.mockito.Mockito.never()).revokeSession(any(OfficialSessionCredentials.class), isNull(), eq("two"));
+    }
+
+    @Test void selectedAcknowledgementWaitsForPostAndLateFinalCannotInvalidateUnsentTargets() throws Exception {
+        binding("one"); binding("two");
+        UUID revision = jdbc.queryForObject("select revision from official_account_connections where official_account_id=?", UUID.class, account.getId());
+        when(client.fetch(any(OfficialSessionCredentials.class), isNull())).thenReturn(snapshot(List.of(device("one", false, false), device("two", false, false))));
+        CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
+        when(client.revokeSession(any(OfficialSessionCredentials.class), isNull(), eq("one"))).thenAnswer(call -> {
+            entered.countDown();
+            assertThat(release.await(10, TimeUnit.SECONDS)).isTrue();
+            return new OfficialSessionWriteResult("UNKNOWN", "OFFICIAL_LOGOUT_OUTCOME_UNKNOWN");
+        });
+        String plan = selectedPreview(List.of("one", "two")).path("planId").asString();
+        mvc.perform(post(url("confirm")).secure(true).header(HttpHeaders.AUTHORIZATION, token(admin)).contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("planId", plan, "acknowledgeLogoutRisk", true))))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("EXECUTING"));
+        assertThat(entered.await(10, TimeUnit.SECONDS)).isTrue();
+        now.set(NOW.plusSeconds(361));
+        CompletableFuture<Integer> acknowledgement = CompletableFuture.supplyAsync(() -> {
+            try { return acknowledge(otherAdmin, plan, true).andReturn().getResponse().getStatus(); }
+            catch (Exception failure) { throw new IllegalStateException(failure); }
+        });
+        Thread.sleep(50);
+        assertThat(acknowledgement.isDone()).isFalse();
+        release.countDown();
+        assertThat(acknowledgement.get(10, TimeUnit.SECONDS)).isEqualTo(200);
+        Thread.sleep(50);
+        assertThat(jdbc.queryForObject("select status from official_session_logout_plans where id=?", String.class, UUID.fromString(plan))).isEqualTo("RESOLVED_UNKNOWN");
+        assertBinding("one", "INVALIDATED"); assertBinding("two", "ACTIVE");
+        assertThat(jdbc.queryForObject("select revision from official_account_connections where official_account_id=?", UUID.class, account.getId())).isEqualTo(revision);
+        verify(client, times(1)).revokeSession(any(OfficialSessionCredentials.class), isNull(), eq("one"));
         verify(client, org.mockito.Mockito.never()).revokeSession(any(OfficialSessionCredentials.class), isNull(), eq("two"));
     }
 

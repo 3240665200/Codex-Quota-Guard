@@ -6,6 +6,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
+import java.util.List;
 import java.util.UUID;
 import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
@@ -35,7 +36,7 @@ public class OfficialSessionLogoutController {
     public ResponseEntity<OfficialSessionLogoutPreview> preview(@PathVariable UUID id, @Valid @RequestBody PreviewRequest body,
             Authentication auth, HttpServletRequest http) {
         check(http);
-        return result(service.preview((UUID) auth.getPrincipal(), id, body.mode()));
+        return result(service.preview((UUID) auth.getPrincipal(), id, body.mode(), body.sessionIds()));
     }
 
     @GetMapping("/current")
@@ -70,7 +71,7 @@ public class OfficialSessionLogoutController {
         if (!transport.isAllowed(http)) throw new DomainException("OFFICIAL_HTTPS_REQUIRED", "HTTPS is required for session logout", HttpStatus.BAD_REQUEST);
     }
     private <T> ResponseEntity<T> result(T value) { return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(value); }
-    public record PreviewRequest(@NotNull @Pattern(regexp = "ALL|UNBOUND") String mode) { }
+    public record PreviewRequest(@NotNull @Pattern(regexp = "ALL|UNBOUND|SELECTED") String mode, List<String> sessionIds) { }
     public record ConfirmRequest(@NotNull UUID planId, Boolean acknowledgeLogoutRisk) { }
     public record AcknowledgeRequest(Boolean acknowledgeUncertainOutcome) { }
 }
