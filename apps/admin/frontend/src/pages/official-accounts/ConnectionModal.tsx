@@ -16,6 +16,7 @@ import SessionLogoutPanel from './SessionLogoutPanel';
 import { SessionBindingResult, SessionBindingsTable } from './SessionBindings';
 import { listSessionBindings, releaseSessionBinding } from '../../services/sessionBindingsApi';
 import type { SessionBinding } from '../../services/sessionBindingsApi';
+import { sessionSelectionReason } from './sessionSelection';
 
 const statusLabels: Record<OfficialConnectionStatus, string> = {
   NOT_CONFIGURED: '未配置', UNVERIFIED: '待验证', CONNECTED: '已连接', AUTH_REQUIRED: '需要重新授权',
@@ -29,8 +30,9 @@ const dateText = (value: string | null | undefined) => {
 };
 const booleanText = (value: boolean | null | undefined) => value == null ? '未知' : value ? '是' : '否';
 
-function SessionSnapshot({ snapshot, officialAccountId, bindings }: {
+function SessionSnapshot({ snapshot, officialAccountId, bindings, selectedSessionIds, onSelectionChange, selectionDisabled }: {
   snapshot: OfficialAccountSnapshot; officialAccountId: string; bindings: SessionBinding[] | null;
+  selectedSessionIds: string[]; onSelectionChange: (ids: string[]) => void; selectionDisabled: boolean;
 }) {
   const identity = snapshot.account;
   const columns: TableColumnsType<OfficialSessionDevice> = [
@@ -48,6 +50,8 @@ function SessionSnapshot({ snapshot, officialAccountId, bindings }: {
     { title: '本系统绑定', render: (_, device) => bindings ? <SessionBindingResult
       officialAccountId={officialAccountId} sessionId={device.sessionId} bindings={bindings} />
       : <Typography.Text type="secondary">绑定结果暂不可用</Typography.Text> },
+    { title: '选择限制', render: (_, device) => <Typography.Text type="secondary">
+      {sessionSelectionReason(device, snapshot.sessions.devices) || '—'}</Typography.Text> },
   ];
   return <Space orientation="vertical" size={16} style={{ width: '100%' }}>
     <Card size="small" title="官方账户身份">
@@ -64,10 +68,18 @@ function SessionSnapshot({ snapshot, officialAccountId, bindings }: {
       ]} />
     </Card>
     <Typography.Text type="secondary">官方快照时间：{dateText(snapshot.fetchedAt)}。这是最近一次成功读取的快照，设备状态可能已变化。</Typography.Text>
+    <Typography.Text type="secondary">可勾选 1 至 100 个会话，再点击“登出选中会话”核对预览。已绑定和受信任设备允许明确选中；缺少或重复 ID、当前管理会话以及身份或信任状态未知项不能选择。</Typography.Text>
     {snapshot.sessions.showSessionManager === false ? <Alert type="info" showIcon
       title="官方当前未开放此账户的会话管理信息。" /> : null}
     <Table<OfficialSessionDevice> size="small" rowKey="renderId" columns={columns}
       dataSource={snapshot.sessions.devices} pagination={false} scroll={{ x: 820 }}
+      rowSelection={{ selectedRowKeys: snapshot.sessions.devices.filter((device) => device.sessionId
+        && selectedSessionIds.includes(device.sessionId)).map((device) => device.renderId),
+        onChange: (_, rows) => onSelectionChange(rows.filter((device) => !sessionSelectionReason(device, snapshot.sessions.devices))
+          .map((device) => device.sessionId!)),
+        getCheckboxProps: (device) => ({ disabled: selectionDisabled || Boolean(sessionSelectionReason(device, snapshot.sessions.devices)),
+          'aria-label': `选择登出 ${device.displayName || device.deviceModel || '未命名设备'}（Session ID：${device.sessionId || '未提供'}）` }),
+      }}
       locale={{ emptyText: '官方未返回设备会话' }}
       expandable={{ expandedRowRender: (device) => <Descriptions size="small" column={{ xs: 1, sm: 2 }} items={[
         { key: 'session', label: '官方 Session ID', children: shown(device.sessionId) },
@@ -90,6 +102,9 @@ export default function ConnectionModal({ account, onClose }: {
   const [config, setConfig] = useState<OfficialAccountConnection | null>(null);
   const [nodes, setNodes] = useState<ProxyNode[]>([]);
   const [snapshot, setSnapshot] = useState<OfficialAccountSnapshot | null>(null);
+  const [snapshotRevision, setSnapshotRevision] = useState(0);
+  const [sessionSelection, setSessionSelection] = useState<{ snapshot: OfficialAccountSnapshot | null; ids: string[] }>({ snapshot: null, ids: [] });
+  const [selectionNotice, setSelectionNotice] = useState('');
   const [bindings, setBindings] = useState<SessionBinding[] | null>(null);
   const [bindingNotice, setBindingNotice] = useState('');
   const [bindingRevision, setBindingRevision] = useState(0);
@@ -115,6 +130,21 @@ export default function ConnectionModal({ account, onClose }: {
   const selectedNode = Form.useWatch('proxyNodeId', form);
   const externallyLocked = loading || busy !== null || browserLoginActive || releaseBusy;
   const locked = externallyLocked || logoutBusy;
+  const selectedSessionIds = sessionSelection.snapshot === snapshot ? sessionSelection.ids : [];
+  const isCurrentLifetime = (lifetime: typeof releaseLifetime.current) => active.current && lifetime.active
+    && releaseLifetime.current === lifetime && currentAccountId.current === lifetime.accountId;
+
+  const updateSnapshot = (value: OfficialAccountSnapshot | null) => {
+    setSnapshot(value); setSnapshotRevision((revision) => revision + 1);
+    setSessionSelection({ snapshot: value, ids: [] }); setSelectionNotice('');
+  };
+  const selectSessions = (ids: string[]) => {
+    if (locked || !secure || !snapshot) return;
+    if (ids.length > 100) { setSelectionNotice('每次最多选择 100 个会话，请缩小选择范围。'); return; }
+    if (ids.some((id) => !snapshot.sessions.devices.some((device) => device.sessionId === id
+      && !sessionSelectionReason(device, snapshot.sessions.devices)))) return;
+    setSessionSelection({ snapshot, ids: [...ids] }); setSelectionNotice('');
+  };
 
   const clearSecrets = () => form.setFieldsValue({ authorization: '', cookie: '' });
   const stopParameterImport = () => {
@@ -124,6 +154,7 @@ export default function ConnectionModal({ account, onClose }: {
   };
   const close = () => {
     active.current = false; releaseLifetime.current.active = false;
+    setSessionSelection({ snapshot: null, ids: [] });
     setReleaseTarget(null); stopParameterImport(); clearSecrets(); form.resetFields(); onClose();
   };
 
@@ -165,7 +196,8 @@ export default function ConnectionModal({ account, onClose }: {
   useEffect(() => {
     active.current = true;
     const lifetime = { accountId: account.id, active: true, busy: false }; releaseLifetime.current = lifetime;
-    setLoading(true); setConfig(null); setSnapshot(null); setBindings(null);
+    setLoading(true); setConfig(null); updateSnapshot(null); setBindings(null);
+    setBusy(null); setBrowserLoginActive(false);
     setError(''); setSnapshotNotice(''); setBindingNotice(''); setLogoutBusy(false);
     setReleaseTarget(null); setReleaseAcknowledged(false); setReleaseBusy(false); setReleaseError(''); setBindingRevision(0);
     let cancelled = false;
@@ -180,7 +212,7 @@ export default function ConnectionModal({ account, onClose }: {
         } else setError(managedErrorMessage(connectionResult.reason, '官方授权配置读取失败，请关闭窗口后重试。'));
         if (nodesResult.status === 'fulfilled') setNodes(nodesResult.value);
         else setError(managedErrorMessage(nodesResult.reason, '代理节点列表读取失败，请关闭窗口后重试。'));
-        if (snapshotResult.status === 'fulfilled') setSnapshot(snapshotResult.value);
+        if (snapshotResult.status === 'fulfilled') updateSnapshot(snapshotResult.value);
         else setSnapshotNotice(managedErrorCode(snapshotResult.reason) === 'OFFICIAL_SNAPSHOT_UNAVAILABLE'
           ? '尚无官方会话快照，请手动刷新官方账户与会话。'
           : managedErrorMessage(snapshotResult.reason, '官方会话快照读取失败，可手动刷新后重试。'));
@@ -192,19 +224,21 @@ export default function ConnectionModal({ account, onClose }: {
   }, [account.id, form]);
 
   const reloadAfterBrowserLogin = async () => {
+    const lifetime = releaseLifetime.current;
+    if (!isCurrentLifetime(lifetime)) return;
     clearSecrets();
     const [connectionResult, snapshotResult, bindingsResult] = await Promise.allSettled([
-      getOfficialAccountConnection(account.id), getOfficialAccountSessions(account.id), listSessionBindings(account.id),
+      getOfficialAccountConnection(lifetime.accountId), getOfficialAccountSessions(lifetime.accountId), listSessionBindings(lifetime.accountId),
     ]);
-    if (!active.current) return;
+    if (!isCurrentLifetime(lifetime)) return;
     if (connectionResult.status === 'fulfilled') {
       const saved = connectionResult.value;
       setConfig(saved);
       form.setFieldsValue({ requestedAccountId: saved.requestedAccountId ?? '', proxyNodeId: saved.proxyNodeId, version: saved.version });
     } else setError(managedErrorMessage(connectionResult.reason, '授权已保存，但连接状态暂时无法读取，请关闭窗口后重新打开。'));
-    if (snapshotResult.status === 'fulfilled') { setSnapshot(snapshotResult.value); setSnapshotNotice(''); }
+    if (snapshotResult.status === 'fulfilled') { updateSnapshot(snapshotResult.value); setSnapshotNotice(''); }
     else {
-      setSnapshot(null);
+      updateSnapshot(null);
       setSnapshotNotice(managedErrorMessage(snapshotResult.reason, '授权已保存，尚无可用的官方会话快照，请手动刷新。'));
     }
     if (bindingsResult.status === 'fulfilled') { setBindings(bindingsResult.value); setBindingNotice(''); }
@@ -212,20 +246,21 @@ export default function ConnectionModal({ account, onClose }: {
   };
 
   const reloadAfterLogout = async (completedAccountId: string) => {
-    if (!active.current || currentAccountId.current !== completedAccountId) return;
+    const lifetime = releaseLifetime.current;
+    if (!isCurrentLifetime(lifetime) || lifetime.accountId !== completedAccountId) return;
     // Clear first: a failed safe read must never leave the pre-logout snapshot visible.
-    setSnapshot(null); setBindings(null); clearSecrets();
+    updateSnapshot(null); setBindings(null); clearSecrets();
     setSnapshotNotice('正在重新核对官方连接与会话状态，尚不能确认设备实际下线。');
     const [connectionResult, snapshotResult, bindingsResult] = await Promise.allSettled([
       getOfficialAccountConnection(completedAccountId), getOfficialAccountSessions(completedAccountId),
       listSessionBindings(completedAccountId),
     ]);
-    if (!active.current || currentAccountId.current !== completedAccountId) return;
+    if (!isCurrentLifetime(lifetime)) return;
     if (connectionResult.status === 'fulfilled') {
       const saved = connectionResult.value; setConfig(saved);
       form.setFieldsValue({ requestedAccountId: saved.requestedAccountId ?? '', proxyNodeId: saved.proxyNodeId, version: saved.version });
     } else { setConfig(null); setError(managedErrorMessage(connectionResult.reason, '登出操作后连接状态读取失败，请关闭窗口后重新打开。')); }
-    if (snapshotResult.status === 'fulfilled') { setSnapshot(snapshotResult.value); setSnapshotNotice(''); }
+    if (snapshotResult.status === 'fulfilled') { updateSnapshot(snapshotResult.value); setSnapshotNotice(''); }
     else setSnapshotNotice('登出操作后旧快照已清除，尚无当前会话快照；官方实际下线可能延迟，请在官网核对。');
     if (bindingsResult.status === 'fulfilled') { setBindings(bindingsResult.value); setBindingNotice(''); }
     else setBindingNotice(managedErrorMessage(bindingsResult.reason, '登出操作后绑定记录读取失败，请关闭窗口后重新打开。'));
@@ -244,13 +279,14 @@ export default function ConnectionModal({ account, onClose }: {
     if (!lifetime.active || lifetime.accountId !== account.id || lifetime.busy || locked || !secure
       || !releaseTarget || !releaseEligible || !releaseAcknowledged) return;
     const submitted = releaseTarget;
-    const isCurrent = () => lifetime.active && releaseLifetime.current === lifetime && currentAccountId.current === lifetime.accountId;
+    const isCurrent = () => isCurrentLifetime(lifetime);
     lifetime.busy = true; setReleaseBusy(true); setReleaseError('');
     try {
       await releaseSessionBinding(submitted.id, lifetime.accountId);
       if (!isCurrent()) return;
       // Clear first: the write succeeded even if the safe read cannot confirm current ownership.
       setBindings(null); setBindingNotice(''); setReleaseTarget(null); setReleaseAcknowledged(false);
+      setSessionSelection({ snapshot: null, ids: [] }); setSelectionNotice('');
       setBindingRevision((value) => value + 1);
       message.success('本系统会话绑定已解除');
       try {
@@ -270,9 +306,11 @@ export default function ConnectionModal({ account, onClose }: {
   };
 
   const save = async () => {
-    if (locked || !config?.encryptionReady || !secure) return;
+    const lifetime = releaseLifetime.current;
+    if (!isCurrentLifetime(lifetime) || locked || !config?.encryptionReady || !secure) return;
     let values: OfficialConnectionInput;
     try { values = await form.validateFields(); } catch { return; }
+    if (!isCurrentLifetime(lifetime)) return;
     const body: OfficialConnectionInput = {
       authorization: values.authorization.trim(), requestedAccountId: values.requestedAccountId.trim(),
       proxyNodeId: values.proxyNodeId || null, version: config.version,
@@ -280,48 +318,51 @@ export default function ConnectionModal({ account, onClose }: {
     };
     setBusy('save'); setError(''); clearSecrets();
     try {
-      const saved = await saveOfficialAccountConnection(account.id, body);
-      if (!active.current) return;
-      setConfig(saved); setSnapshot(null);
+      const saved = await saveOfficialAccountConnection(lifetime.accountId, body);
+      if (!isCurrentLifetime(lifetime)) return;
+      setConfig(saved); updateSnapshot(null);
       setSnapshotNotice('尚无官方会话快照，请手动刷新官方账户与会话。');
       message.success('官方授权已加密保存，等待手动验证');
     } catch (reason) {
-      if (active.current) setError(managedErrorMessage(reason, '官方授权保存失败，请检查配置后重新输入。'));
+      if (isCurrentLifetime(lifetime)) setError(managedErrorMessage(reason, '官方授权保存失败，请检查配置后重新输入。'));
     } finally {
       body.authorization = ''; delete body.cookie;
       values.authorization = ''; delete values.cookie;
-      if (active.current) { clearSecrets(); setBusy(null); }
+      if (isCurrentLifetime(lifetime)) { clearSecrets(); setBusy(null); }
     }
   };
 
   const refresh = async () => {
-    if (locked || !config?.configured || !secure) return;
+    const lifetime = releaseLifetime.current;
+    if (!isCurrentLifetime(lifetime) || locked || !config?.configured || !secure) return;
+    setSessionSelection({ snapshot: null, ids: [] }); setSnapshotRevision((revision) => revision + 1);
     setBusy('refresh'); setError('');
     try {
-      const result = await refreshOfficialAccountConnection(account.id);
-      if (active.current) { setConfig(result.connection); setSnapshot(result); setSnapshotNotice(''); }
+      const result = await refreshOfficialAccountConnection(lifetime.accountId);
+      if (isCurrentLifetime(lifetime)) { setConfig(result.connection); updateSnapshot(result); setSnapshotNotice(''); }
     } catch (reason) {
-      if (!active.current) return;
-      setSnapshot(null);
+      if (!isCurrentLifetime(lifetime)) return;
+      updateSnapshot(null);
       setSnapshotNotice('官方读取未成功，旧快照已清除；请检查授权和代理后手动刷新。');
       setError(managedErrorMessage(reason, '官方读取失败，请检查授权和代理后手动重试。'));
       // Reload safe status only; never retry the official upstream request automatically.
       try {
-        const saved = await getOfficialAccountConnection(account.id);
-        if (active.current) setConfig(saved);
+        const saved = await getOfficialAccountConnection(lifetime.accountId);
+        if (isCurrentLifetime(lifetime)) setConfig(saved);
       } catch { /* The primary refresh error already provides the actionable state. */ }
-    } finally { if (active.current) setBusy(null); }
+    } finally { if (isCurrentLifetime(lifetime)) setBusy(null); }
   };
 
   const remove = async () => {
-    if (locked || !secure) return;
+    const lifetime = releaseLifetime.current;
+    if (!isCurrentLifetime(lifetime) || locked || !secure) return;
     setBusy('delete'); setError(''); clearSecrets();
     try {
-      await deleteOfficialAccountConnection(account.id);
-      if (active.current) { message.success('保存的官方授权已删除'); close(); }
+      await deleteOfficialAccountConnection(lifetime.accountId);
+      if (isCurrentLifetime(lifetime)) { message.success('保存的官方授权已删除'); close(); }
     } catch (reason) {
-      if (active.current) setError(managedErrorMessage(reason, '官方授权删除失败，请稍后重试。'));
-    } finally { if (active.current) setBusy(null); }
+      if (isCurrentLifetime(lifetime)) setError(managedErrorMessage(reason, '官方授权删除失败，请稍后重试。'));
+    } finally { if (isCurrentLifetime(lifetime)) setBusy(null); }
   };
 
   const missingNode = config?.proxyNodeId && !nodes.some((node) => node.id === config.proxyNodeId);
@@ -362,7 +403,7 @@ export default function ConnectionModal({ account, onClose }: {
             </Form.Item>
             {nodeUnavailable ? <Alert type="warning" showIcon title="当前代理节点不可用，请明确选择其他节点或清空为直连，再重新保存授权。" /> : null}
             <Space orientation="vertical" size={16} style={{ width: '100%' }}>
-              <BrowserLoginPanel accountId={account.id} version={config?.version ?? 0} proxyNodeId={selectedNode || null}
+              <BrowserLoginPanel key={account.id} accountId={account.id} version={config?.version ?? 0} proxyNodeId={selectedNode || null}
                 disabled={loading || busy !== null || logoutBusy || releaseBusy || !secure || !config?.encryptionReady || Boolean(nodeUnavailable)}
                 onActiveChange={setBrowserLoginActive} onResultChanged={reloadAfterBrowserLogin} />
               <Collapse style={{ width: '100%' }} onChange={(keys) => { if (!keys.includes('manual')) clearSecrets(); }} items={[{
@@ -401,12 +442,16 @@ export default function ConnectionModal({ account, onClose }: {
             </Space>
           </Form>
           <Divider style={{ margin: '4px 0' }}>官方账户与设备会话</Divider>
-          {secure ? <SessionLogoutPanel key={account.id} accountId={account.id} contextVersion={`${config?.version ?? 'unavailable'}:${bindingRevision}`}
+          {secure ? <SessionLogoutPanel key={account.id} accountId={account.id}
+            contextVersion={JSON.stringify([config?.version ?? null, bindingRevision, snapshotRevision, selectedSessionIds])}
+            selectedSessionIds={selectedSessionIds}
             disabled={externallyLocked} allowPreview={Boolean(config?.configured)} onBusyChange={(value) => {
               if (active.current && currentAccountId.current === account.id) setLogoutBusy(value);
             }} onSettled={reloadAfterLogout} /> : null}
           {secure ? <SessionBindingQueue key={`${account.id}:${queueRevision}`} accountId={account.id} disabled={locked} /> : null}
-          {snapshot && !logoutBusy ? <SessionSnapshot snapshot={snapshot} officialAccountId={account.id} bindings={bindings} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
+          {selectionNotice ? <Alert type="warning" showIcon title={selectionNotice} /> : null}
+          {snapshot && !logoutBusy ? <SessionSnapshot snapshot={snapshot} officialAccountId={account.id} bindings={bindings}
+            selectedSessionIds={selectedSessionIds} onSelectionChange={selectSessions} selectionDisabled={locked || !secure} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
             description={logoutBusy ? '会话操作状态核对中，暂不显示旧快照。' : snapshotNotice || '尚无官方会话快照，请手动刷新官方账户与会话。'} />}
           {bindingNotice ? <Alert type="warning" showIcon title={bindingNotice} /> : null}
           {bindings && !logoutBusy ? <SessionBindingsTable bindings={bindings} disabled={locked || !secure} onRelease={selectRelease} /> : null}

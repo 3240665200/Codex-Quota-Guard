@@ -6,7 +6,7 @@ import { acknowledgeSessionLogoutUnknown, confirmSessionLogout, getSessionLogout
 import type { SessionLogoutDevice, SessionLogoutExclusionReason, SessionLogoutMode,
   SessionLogoutOperation, SessionLogoutPreview, SessionLogoutResult } from '../../services/sessionLogoutApi';
 
-const modeLabel: Record<SessionLogoutMode, string> = { ALL: '登出所有会话', UNBOUND: '登出所有未绑定会话' };
+const modeLabel: Record<SessionLogoutMode, string> = { ALL: '登出所有会话', UNBOUND: '登出所有未绑定会话', SELECTED: '登出选中会话' };
 const exclusionLabels: Record<SessionLogoutExclusionReason, string> = {
   MISSING_SESSION_ID: '缺少会话 ID', DUPLICATE_SESSION_ID: '会话 ID 重复', DUPLICATE_ROW_ID: '设备行 ID 重复',
   ACTIVE_BINDING: '已有有效绑定', TRUSTED_DEVICE: '受信任设备', TRUSTED_DEVICE_UNKNOWN: '受信任状态未知',
@@ -41,17 +41,19 @@ function failureText(failure: unknown) {
   if (code === 'OFFICIAL_LOGOUT_PLAN_FORBIDDEN') return '此预览属于其他管理员，请使用当前管理账户重新预览。';
   if (code === 'OFFICIAL_LOGOUT_SNAPSHOT_INCOMPLETE') return '后台未取得完整的新鲜会话，无法安全生成登出预览。';
   if (code === 'OFFICIAL_LOGOUT_ACK_REQUIRED') return '需要重新核对预览并明确确认风险。';
+  if (code === 'OFFICIAL_LOGOUT_SELECTION_INVALID') return '所选会话无效或已变化，请刷新会话后重新选择 1 至 100 个不同的有效会话。';
   if (code === 'OFFICIAL_LOGOUT_STILL_RUNNING') return '后台仍在处理或尚处于安全等待期，暂不能解除操作锁，请稍后手动刷新状态。';
   return managedErrorMessage(failure, '请求结果未知，请核对后重新预览；不会自动重试。');
 }
 
-export default function SessionLogoutPanel({ accountId, contextVersion, disabled = false, allowPreview = true, onBusyChange, onSettled }: {
+export default function SessionLogoutPanel({ accountId, contextVersion, selectedSessionIds = [], disabled = false, allowPreview = true, onBusyChange, onSettled }: {
   accountId: string; contextVersion?: number | string; disabled?: boolean; allowPreview?: boolean;
+  selectedSessionIds?: readonly string[];
   onBusyChange?: (busy: boolean) => void;
   onSettled?: (accountId: string) => void | Promise<void>;
 }) {
   const scope = accountId;
-  const [previewState, setPreviewState] = useState<{ scope: string; version?: number | string; value: SessionLogoutPreview } | null>(null);
+  const [previewState, setPreviewState] = useState<{ scope: string; version?: number | string; selection: string; value: SessionLogoutPreview } | null>(null);
   const [resultState, setResultState] = useState<{ scope: string; value: SessionLogoutResult } | null>(null);
   const [acknowledged, setAcknowledged] = useState(false);
   const [pending, setPending] = useState<SessionLogoutMode | 'confirm' | 'current' | 'acknowledge' | 'reload' | null>('current');
@@ -64,7 +66,9 @@ export default function SessionLogoutPanel({ accountId, contextVersion, disabled
   const busyCallback = useRef(onBusyChange); busyCallback.current = onBusyChange;
   const issued = useSyncExternalStore(subscribe, () => issuedAccounts.has(accountId), () => false);
   const operation = useSyncExternalStore(subscribe, () => operations.get(accountId) ?? null, () => null);
-  const plan = previewState?.scope === scope && previewState.version === contextVersion ? previewState.value : null;
+  const selectionKey = JSON.stringify(selectedSessionIds);
+  const plan = previewState?.scope === scope && previewState.version === contextVersion
+    && previewState.selection === selectionKey ? previewState.value : null;
   const result = resultState?.scope === scope ? resultState.value : null;
   const locked = disabled || !allowPreview || pending !== null || issued || !metadataReady || unresolved(operation);
 
@@ -98,7 +102,7 @@ export default function SessionLogoutPanel({ accountId, contextVersion, disabled
     return () => { lifetime.active = false; busyCallback.current?.(false); };
   }, [scope]);
 
-  useEffect(() => { setPreviewState(null); setAcknowledged(false); }, [contextVersion]);
+  useEffect(() => { setPreviewState(null); setAcknowledged(false); }, [contextVersion, selectionKey]);
   useEffect(() => { busyCallback.current?.(pending !== null || issued || unresolved(operation) || !metadataReady); },
     [pending, issued, operation, metadataReady]);
   useEffect(() => {
@@ -123,12 +127,14 @@ export default function SessionLogoutPanel({ accountId, contextVersion, disabled
 
   const readPreview = async (mode: SessionLogoutMode) => {
     const lifetime = lifetimeRef.current;
-    if (!lifetime?.active || lifetime.scope !== scope || lifetime.busy || locked || issuedAccounts.has(accountId)) return;
+    if (!lifetime?.active || lifetime.scope !== scope || lifetime.busy || locked || issuedAccounts.has(accountId)
+      || mode === 'SELECTED' && (!selectedSessionIds.length || selectedSessionIds.length > 100)) return;
     lifetime.busy = true; setPending(mode);
     setPreviewState(null); setResultState(null); setAcknowledged(false); setError(''); setRefreshNotice('');
     try {
-      const value = await previewSessionLogout(accountId, mode);
-      if (lifetime.active) setPreviewState({ scope, version: contextVersion, value });
+      const value = mode === 'SELECTED' ? await previewSessionLogout(accountId, mode, selectedSessionIds)
+        : await previewSessionLogout(accountId, mode);
+      if (lifetime.active) setPreviewState({ scope, version: contextVersion, selection: selectionKey, value });
     } catch (failure) {
       if (lifetime.active) setError(managedErrorCode(failure) ? failureText(failure)
         : managedErrorMessage(failure, '登出预览读取失败，请手动重新预览。'));
@@ -205,6 +211,8 @@ export default function SessionLogoutPanel({ accountId, contextVersion, disabled
       <Space wrap>
         <Button danger disabled={locked} loading={pending === 'ALL'} onClick={() => void readPreview('ALL')}>登出所有会话</Button>
         <Button danger disabled={locked} loading={pending === 'UNBOUND'} onClick={() => void readPreview('UNBOUND')}>登出所有未绑定会话</Button>
+        <Button danger disabled={locked || !selectedSessionIds.length || selectedSessionIds.length > 100}
+          loading={pending === 'SELECTED'} onClick={() => void readPreview('SELECTED')}>登出选中会话（{selectedSessionIds.length}）</Button>
       </Space>
       {issued ? <Alert type="warning" showIcon title="登出请求已发出，关闭窗口不会取消；请等待结果，不要重复操作。" /> : null}
       {unresolved(operation) ? <Space orientation="vertical" size={8} style={{ width: '100%' }}>
@@ -222,8 +230,15 @@ export default function SessionLogoutPanel({ accountId, contextVersion, disabled
       {plan ? <section aria-label="登出预览">
         <Space orientation="vertical" size={12} style={{ width: '100%' }}>
           {plan.mode === 'ALL' ? <Alert type="error" showIcon title="将登出全部官方会话"
-            description="包括已绑定、受信任及当前官方管理会话，可能使后台保存的官方授权失效并要求重新授权；会影响当前官方登录，但不会退出本系统管理账户。此操作终止登录，不主动解除设备信任。" /> : <Alert type="warning" showIcon title="仅登出后台新鲜核对的未绑定会话"
+            description="包括已绑定、受信任及当前官方管理会话，可能使后台保存的官方授权失效并要求重新授权；会影响当前官方登录，但不会退出本系统管理账户。此操作终止登录，不主动解除设备信任。" /> : plan.mode === 'SELECTED'
+            ? <Alert type="warning" showIcon title="仅登出本次明确选中的会话"
+              description="请逐项核对后台重新读取的选中目标；未选中的会话会保留，当前官方管理会话及状态不明确项会排除。" />
+            : <Alert type="warning" showIcon title="仅登出后台新鲜核对的未绑定会话"
             description="受信任、绑定状态不明、已绑定、缺少会话 ID 和当前官方管理会话均会保留；请逐项核对后台返回的设备和排除原因。" />}
+          {plan.mode === 'SELECTED' && plan.warnings.includes('SELECTED_BOUND_SESSION_ACCESS_REVOKED')
+            ? <Alert type="warning" showIcon title="选中目标包含已绑定会话，对应客户端需要重新绑定；完成前只能使用登录辅助。" /> : null}
+          {plan.mode === 'SELECTED' && plan.warnings.includes('TRUSTED_DEVICE_SESSION_ONLY')
+            ? <Typography.Text type="warning">选中目标包含受信任设备：本次只登出会话，不会解除设备信任。</Typography.Text> : null}
           <Descriptions size="small" column={1} items={[
             { key: 'count', label: '后台预览', children: `目标 ${plan.targets.length} 个，排除 ${plan.excluded.length} 个` },
             { key: 'expiry', label: '有效至', children: new Date(plan.expiresAt).toLocaleString('zh-CN') },

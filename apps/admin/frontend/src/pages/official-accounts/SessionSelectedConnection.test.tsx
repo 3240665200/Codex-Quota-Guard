@@ -111,6 +111,7 @@ describe('会话表手动勾选登出范围', () => {
     expect(within(dialog).queryByText('selected@example.test')).not.toBeInTheDocument();
     expect(within(dialog).queryByRole('checkbox', { name: /Session ID：session-1/ })).not.toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: '登出选中会话（0）' })).toBeDisabled();
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: '刷新官方账户与会话' })).toBeEnabled());
   });
 
 });

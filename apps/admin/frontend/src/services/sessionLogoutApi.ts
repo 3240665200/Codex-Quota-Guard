@@ -1,6 +1,6 @@
 import { request } from './api';
 
-export type SessionLogoutMode = 'ALL' | 'UNBOUND';
+export type SessionLogoutMode = 'ALL' | 'UNBOUND' | 'SELECTED';
 export type SessionLogoutExclusionReason = 'MISSING_SESSION_ID' | 'DUPLICATE_SESSION_ID' | 'DUPLICATE_ROW_ID'
   | 'ACTIVE_BINDING' | 'TRUSTED_DEVICE' | 'TRUSTED_DEVICE_UNKNOWN' | 'CURRENT_SESSION' | 'CURRENT_SESSION_UNKNOWN';
 export interface SessionLogoutDevice {
@@ -44,7 +44,7 @@ const device = (value: unknown): value is SessionLogoutDevice => record(value)
 const invalid = () => new Error('Invalid official session logout response');
 const base = (id: string) => `/api/v1/admin/official-accounts/${encodeURIComponent(id)}/session-logout`;
 const resultFields = (value: Record<string, unknown>) => typeof value.planId === 'string' && !!value.planId.trim()
-  && ['ALL', 'UNBOUND'].includes(value.mode as string)
+  && ['ALL', 'UNBOUND', 'SELECTED'].includes(value.mode as string)
   && typeof value.requiresReauthorization === 'boolean' && typeof value.message === 'string'
   && Array.isArray(value.results) && value.results.every((item) => record(item) && nullableString(item.sessionId)
     && ['ACCEPTED', 'FAILED', 'UNKNOWN', 'NOT_ATTEMPTED'].includes(item.status as string) && nullableString(item.errorCode));
@@ -54,9 +54,13 @@ function validateResult(value: unknown, planId: string, mode: SessionLogoutMode,
   return value as unknown as SessionLogoutResult;
 }
 
-export async function previewSessionLogout(accountId: string, mode: SessionLogoutMode): Promise<SessionLogoutPreview> {
+export async function previewSessionLogout(accountId: string, mode: SessionLogoutMode, sessionIds?: readonly string[]): Promise<SessionLogoutPreview> {
+  const selected = mode === 'SELECTED' ? [...(sessionIds ?? [])] : [];
+  if (mode === 'SELECTED' && (!Array.isArray(sessionIds) || !selected.length || selected.length > 100
+    || selected.some((id) => typeof id !== 'string' || !id.trim() || id.length > 512)
+    || new Set(selected).size !== selected.length) || mode !== 'SELECTED' && sessionIds?.length) throw invalid();
   const value = await request<unknown>(`${base(accountId)}/preview`, {
-    method: 'POST', cache: 'no-store', body: JSON.stringify({ mode }),
+    method: 'POST', cache: 'no-store', body: JSON.stringify({ mode, ...(mode === 'SELECTED' ? { sessionIds: selected } : {}) }),
   }, { retryAfterRefresh: false });
   if (!record(value) || typeof value.planId !== 'string' || !value.planId.trim()
     || value.officialAccountId !== accountId || value.mode !== mode
@@ -65,7 +69,17 @@ export async function previewSessionLogout(accountId: string, mode: SessionLogou
     || !Array.isArray(value.excluded) || !value.excluded.every((item) => record(item)
       && device(item.session) && typeof item.reason === 'string' && reasons.includes(item.reason))
     || !Array.isArray(value.warnings) || !value.warnings.every((item) => typeof item === 'string')) throw invalid();
-  return value as unknown as SessionLogoutPreview;
+  const preview = value as unknown as SessionLogoutPreview;
+  if (mode === 'SELECTED') {
+    const requested = new Set(selected);
+    const returned = [...preview.targets, ...preview.excluded.map((item) => item.session)];
+    const ids = returned.map((item) => item.sessionId);
+    const rowIds = returned.flatMap((item) => item.rowId ? [item.rowId] : []);
+    if (ids.length !== selected.length || new Set(ids).size !== ids.length
+      || ids.some((id) => id === null || !requested.has(id)) || new Set(rowIds).size !== rowIds.length
+      || preview.targets.some((item) => !item.rowId?.trim() || item.current !== false || item.trustedDevice === null)) throw invalid();
+  }
+  return preview;
 }
 
 export async function confirmSessionLogout(accountId: string, planId: string, mode: SessionLogoutMode): Promise<SessionLogoutResult> {
