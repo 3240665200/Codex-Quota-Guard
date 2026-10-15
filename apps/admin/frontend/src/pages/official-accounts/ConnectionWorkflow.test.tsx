@@ -16,9 +16,10 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../../services/api', () => mocks);
 vi.mock('../../services/sessionBindingsApi', () => ({ listSessionBindings: mocks.listSessionBindings,
   releaseSessionBinding: mocks.releaseSessionBinding }));
-vi.mock('../../services/officialBrowserLoginApi', () => ({
-  startOfficialBrowserLogin: mocks.startOfficialBrowserLogin, getOfficialBrowserLogin: mocks.getOfficialBrowserLogin,
-  cancelOfficialBrowserLogin: mocks.cancelOfficialBrowserLogin,
+vi.mock('../../services/officialWebLoginApi', () => ({
+  startOfficialWebLogin: mocks.startOfficialBrowserLogin, getOfficialWebLogin: mocks.getOfficialBrowserLogin,
+  cancelOfficialWebLogin: mocks.cancelOfficialBrowserLogin, getOfficialWebLoginFrame: vi.fn(),
+  sendOfficialWebLoginInput: vi.fn(), completeOfficialWebLogin: vi.fn(), WEB_LOGIN_KEYS: [],
 }));
 vi.mock('../../services/sessionLogoutApi', () => ({ getSessionLogoutCurrent: mocks.getSessionLogoutCurrent,
   previewSessionLogout: mocks.previewSessionLogout, confirmSessionLogout: mocks.confirmSessionLogout,
@@ -75,7 +76,10 @@ describe('官方网页登录与设备绑定入口', () => {
     mocks.confirmSessionLogout.mockResolvedValue({ planId: 'plan-1', mode: 'UNBOUND', status: 'ACCEPTED',
       requiresReauthorization: false, results: [{ sessionId: 'unbound-1', status: 'ACCEPTED', errorCode: null }], message: '' });
     mocks.startOfficialBrowserLogin.mockResolvedValue({ id: 'job-1', officialAccountId: 'account-1', accountName: '研发账户',
-      state: 'WAITING_FOR_HELPER', expiresAt: '2026-10-15T01:00:00Z', errorCode: null, proxyNodeId: null });
+      state: 'WAITING_FOR_HELPER', expiresAt: '2099-10-15T01:00:00Z', errorCode: null, proxyNodeId: null, pageOrigin: null, readyToSave: false });
+    mocks.getOfficialBrowserLogin.mockResolvedValue({ id: 'job-1', officialAccountId: 'account-1', accountName: '研发账户',
+      state: 'WAITING_FOR_HELPER', expiresAt: '2099-10-15T01:00:00Z', errorCode: null, proxyNodeId: null, pageOrigin: null, readyToSave: false });
+    mocks.cancelOfficialBrowserLogin.mockResolvedValue({ id: 'job-1', officialAccountId: 'account-1', state: 'CANCELLED' });
   });
 
   it('makes official login the primary path and keeps manual credentials in a closed advanced section', async () => {
@@ -95,7 +99,7 @@ describe('官方网页登录与设备绑定入口', () => {
     expect(within(dialog).getByText('用户确认的推断')).toBeInTheDocument();
   });
 
-  it('reloads safe connection, snapshot, and bindings after helper completion without another official refresh', async () => {
+  it('reloads safe connection, snapshot, and bindings after server login completion without another official refresh', async () => {
     mocks.startOfficialBrowserLogin.mockImplementation(async () => {
       mocks.getOfficialAccountConnection.mockResolvedValue({ ...connection, version: 6 });
       mocks.getOfficialAccountSessions.mockResolvedValue({ ...snapshot, account: { email: 'completed@example.test' } });

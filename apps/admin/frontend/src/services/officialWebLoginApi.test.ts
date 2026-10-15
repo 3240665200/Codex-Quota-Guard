@@ -23,4 +23,23 @@ describe('服务器网页登录 API', () => {
     call.mockResolvedValue({ width: 1024, height: 768, jpegBase64: '/9j/AA==', pageOrigin: 'https://auth.openai.com/?secret=x', readyToSave: false, errorCode: null });
     await expect(getOfficialWebLoginFrame('job/id')).rejects.toThrow();
   });
+  it('returns only documented frame fields and accepts a not-yet-loaded job origin', async () => {
+    const frame = { width: 1024, height: 768, jpegBase64: '/9j/AA==', pageOrigin: 'https://chatgpt.com', readyToSave: true, errorCode: null };
+    call.mockResolvedValue({ ...frame, authorization: 'fixture-hidden' });
+    expect(await getOfficialWebLoginFrame('job/id')).toEqual(frame);
+    call.mockResolvedValue({ ...job, pageOrigin: null }); expect(await getOfficialWebLogin('job/id')).toEqual({ ...job, pageOrigin: null });
+  });
+  it.each([null, {}, { ...job, id: 'another-job' }, { ...job, state: 'UNKNOWN' }, { ...job, expiresAt: 'invalid' },
+    { ...job, pageOrigin: 'https://outside.example' }, { ...job, pageOrigin: 'not a URL' }, { ...job, pageOrigin: 3 },
+    { ...job, readyToSave: 'yes' }])('rejects malformed or mismatched job metadata: %j', async (value) => {
+    call.mockResolvedValue(value); await expect(getOfficialWebLogin('job/id')).rejects.toThrow();
+  });
+  it('rejects a start response belonging to a different account', async () => {
+    call.mockResolvedValue({ ...job, officialAccountId: 'different-account' });
+    await expect(startOfficialWebLogin('account/id', { version: 1, proxyNodeId: null })).rejects.toThrow();
+  });
+  it.each([{ width: 2048 }, { jpegBase64: '' }, { jpegBase64: 'invalid frame!' }, { errorCode: undefined }])('rejects unsafe frame data: %j', async (invalid) => {
+    call.mockResolvedValue({ width: 1024, height: 768, jpegBase64: '/9j/AA==', pageOrigin: 'https://chatgpt.com', readyToSave: false, errorCode: null, ...invalid });
+    await expect(getOfficialWebLoginFrame('job/id')).rejects.toThrow();
+  });
 });

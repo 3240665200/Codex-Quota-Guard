@@ -1,7 +1,9 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { configure, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { App as AntApp } from 'antd';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import OfficialAccountsPage from './index';
+import { useState } from 'react';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import ConnectionModal from './ConnectionModal';
+import type { OfficialAccountResponse } from '../../services/api';
 
 const mocks = vi.hoisted(() => ({
   createOfficialAccount: vi.fn(), deleteOfficialAccount: vi.fn(), listOfficialAccounts: vi.fn(),
@@ -30,8 +32,13 @@ const snapshot = { connection: { ...connection, status: 'CONNECTED' },
       applications: ['ChatGPT', 'Codex'] },
   ] }, fetchedAt: '2026-10-14T00:01:00Z' };
 
+function WorkspaceFixture() {
+  const [open, setOpen] = useState(false);
+  return <><button onClick={() => setOpen(true)}>授权与会话 研发账户</button>{open ? <ConnectionModal
+    account={{ id: 'account-1', label: '研发账户' } as OfficialAccountResponse} onClose={() => setOpen(false)} /> : null}</>;
+}
 async function openConnection() {
-  render(<AntApp><OfficialAccountsPage /></AntApp>);
+  render(<AntApp><WorkspaceFixture /></AntApp>);
   fireEvent.click(await screen.findByRole('button', { name: '授权与会话 研发账户' }));
   const dialog = await screen.findByRole('dialog', { name: /授权与会话/ });
   await waitFor(() => expect(mocks.getOfficialAccountConnection).toHaveBeenCalledWith('account-1'));
@@ -41,6 +48,8 @@ async function openConnection() {
 }
 
 describe('官方账户授权与只读会话', () => {
+  beforeAll(() => configure({ defaultHidden: true }));
+  afterAll(() => configure({ defaultHidden: false }));
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.isSecureManagementContext.mockReturnValue(true);
@@ -70,6 +79,19 @@ describe('官方账户授权与只读会话', () => {
     expect(within(dialog).queryByRole('button', { name: /下线|退出会话|撤销设备/ })).not.toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: '登出所有会话' })).toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: '登出所有未绑定会话' })).toBeInTheDocument();
+    expect(mocks.refreshOfficialAccountConnection).not.toHaveBeenCalled();
+  });
+
+  it('embeds the session workspace as a page with all three safe logout controls and no authorization form', async () => {
+    render(<AntApp><ConnectionModal account={{ id: 'account-1', label: '研发账户' } as OfficialAccountResponse}
+      onClose={vi.fn()} view="sessions" inline /></AntApp>);
+    await screen.findByText('official@example.com');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('官方 Authorization')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '开始官方网页登录' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '登出所有会话' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '登出所有未绑定会话' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^登出选中会话/ })).toBeInTheDocument();
     expect(mocks.refreshOfficialAccountConnection).not.toHaveBeenCalled();
   });
 

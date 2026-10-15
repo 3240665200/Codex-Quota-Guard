@@ -38,7 +38,7 @@ describe('服务器官方网页登录', () => {
     mocks.cancelOfficialWebLogin.mockResolvedValue({ ...job, state: 'CANCELLED', readyToSave: false });
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ clearRect: vi.fn(), drawImage: vi.fn() } as unknown as CanvasRenderingContext2D);
   });
-  afterEach(() => { vi.useRealTimers(); });
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
   it('uses a server browser and waits for explicit save even when a candidate exists', async () => {
     mocks.getOfficialWebLoginFrame.mockResolvedValue({ ...frame, readyToSave: true });
     const { onResultChanged } = show(); await start();
@@ -123,5 +123,55 @@ describe('服务器官方网页登录', () => {
     show(); await start(); fireEvent(window, new Event('pagehide'));
     expect(screen.queryByLabelText('官方登录浏览器画面')).not.toBeInTheDocument();
     expect(mocks.cancelOfficialWebLogin).toHaveBeenCalledWith('job-1');
+  });
+  it('cancels explicitly and permits a new task without reusing the old job id', async () => {
+    show(); await start(); fireEvent.click(screen.getByRole('button', { name: '取消登录任务' }));
+    expect(await screen.findByText('登录任务已取消')).toBeInTheDocument();
+    mocks.startOfficialWebLogin.mockResolvedValue({ ...job, id: 'job-2' });
+    mocks.getOfficialWebLogin.mockResolvedValue({ ...job, id: 'job-2' });
+    fireEvent.click(screen.getByRole('button', { name: '重新开始官方网页登录' }));
+    await waitFor(() => expect(mocks.getOfficialWebLoginFrame).toHaveBeenCalledWith('job-2'));
+  });
+  it('hides a frame read failure and resumes only after an explicit status check', async () => {
+    mocks.getOfficialWebLoginFrame.mockRejectedValueOnce({ status: 503, message: 'fixture-private' });
+    show(); await start(); expect(screen.queryByLabelText('官方登录浏览器画面')).not.toBeInTheDocument();
+    expect(screen.queryByText('fixture-private')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '重新检查任务' }));
+    expect(await screen.findByLabelText('官方登录浏览器画面')).toBeInTheDocument();
+  });
+  it('supports transient Chinese composition and ignores unsupported modifier shortcuts', async () => {
+    show(); await start(); const input = screen.getByLabelText('向官方页面输入文字') as HTMLInputElement;
+    fireEvent.input(input, { target: { value: '中文临时' }, isComposing: true });
+    expect(mocks.sendOfficialWebLoginInput).not.toHaveBeenCalled();
+    fireEvent.compositionEnd(input); expect(input.value).toBe('');
+    fireEvent.input(input, { target: { value: 'x' }, isComposing: false });
+    const canvas = screen.getByLabelText('官方登录浏览器画面');
+    fireEvent.keyDown(canvas, { key: 'a', ctrlKey: true });
+    fireEvent.keyDown(canvas, { key: 'Enter', altKey: true });
+    fireEvent.keyDown(canvas, { key: 'F10' });
+    fireEvent.keyDown(canvas, { key: 'Escape' });
+    await waitFor(() => expect(mocks.sendOfficialWebLoginInput).toHaveBeenCalledTimes(3));
+    expect(mocks.sendOfficialWebLoginInput.mock.calls.map((call) => call[1])).toEqual([
+      { type: 'TEXT', text: '中文临时' }, { type: 'TEXT', text: 'x' }, { type: 'KEY', key: 'a', ctrl: true },
+    ]);
+  });
+  it('draws valid image frames and clears pixels when leaving', async () => {
+    vi.stubGlobal('Image', class {
+      onload: (() => void) | null = null; onerror: (() => void) | null = null;
+      set src(value: string) { if (value) queueMicrotask(() => this.onload?.()); }
+    });
+    const context = HTMLCanvasElement.prototype.getContext as ReturnType<typeof vi.fn>;
+    const view = show(); await start();
+    await waitFor(() => expect(context.mock.results.some((value) => value.value?.drawImage.mock.calls.length)).toBe(true));
+    view.unmount();
+    expect(context.mock.results.some((value) => value.value?.clearRect.mock.calls.length)).toBe(true);
+  });
+  it('shows a safe start failure and does not create a task while disabled', async () => {
+    mocks.startOfficialWebLogin.mockRejectedValue({ message: 'fixture-private' });
+    const view = show(); fireEvent.click(screen.getByRole('button', { name: '开始官方网页登录' }));
+    expect(await screen.findByText(/无法创建服务器网页登录任务/)).toBeInTheDocument();
+    expect(screen.queryByText('fixture-private')).not.toBeInTheDocument();
+    view.rerender(<BrowserLoginPanel accountId="account-1" version={4} proxyNodeId={null} disabled onResultChanged={vi.fn()} />);
+    expect(screen.getByRole('button', { name: '开始官方网页登录' })).toBeDisabled();
   });
 });
