@@ -73,7 +73,10 @@ const quota: QuotaOverview = {
 };
 let quotaResponse = quota;
 
-function renderDashboard(guardNotice?: string) {
+function renderDashboard(
+  guardNotice?: string,
+  currentSession: SystemSession = session,
+) {
   const currentImplementation = invokeMock.getMockImplementation()!;
   invokeMock.mockImplementation(async (command, args) =>
     command === "session_binding_current"
@@ -87,7 +90,7 @@ function renderDashboard(guardNotice?: string) {
     <I18nextProvider i18n={i18n}>
       <QueryClientProvider client={queryClient}>
         <Dashboard
-          session={session}
+          session={currentSession}
           onLogout={vi.fn()}
           guardNotice={guardNotice}
         />
@@ -97,6 +100,42 @@ function renderDashboard(guardNotice?: string) {
 }
 
 describe("Dashboard", () => {
+  it("does not show the administrator login helper to a regular system user", async () => {
+    renderDashboard();
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    await screen.findByRole("heading", { name: "启动设置" });
+    expect(screen.queryByRole("heading", { name: "官方登录助手" })).toBeNull();
+    expect(
+      invokeMock.mock.calls.some(
+        ([name]) => name === "official_login_helper_jobs",
+      ),
+    ).toBe(false);
+  });
+  it("shows the administrator helper in settings without starting a browser", async () => {
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (name, args) => {
+      if (name === "official_login_helper_jobs") return [];
+      if (name === "official_login_helper_status")
+        return {
+          jobId: null,
+          state: "IDLE",
+          errorCode: null,
+          accountName: null,
+        };
+      return original(name, args);
+    });
+    renderDashboard(undefined, {
+      ...session,
+      user: { ...session.user!, role: "ADMIN" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    await screen.findByRole("heading", { name: "官方登录助手" });
+    expect(
+      invokeMock.mock.calls.some(
+        ([name]) => name === "official_login_helper_start",
+      ),
+    ).toBe(false);
+  });
   it("keeps binding and login assistance identities separate when changing pages", async () => {
     const warnings = vi.spyOn(console, "error").mockImplementation(() => {});
     try {

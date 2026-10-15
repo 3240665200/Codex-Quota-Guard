@@ -14,6 +14,21 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 const native = vi.mocked(invoke);
 const id = "11111111-1111-4111-8111-111111111111";
 const deviceId = "22222222-2222-4222-8222-222222222222";
+const binding = {
+  id,
+  userId: id,
+  userDisplayName: "Alice",
+  userEmail: "alice@example.com",
+  deviceId,
+  enrollmentId: deviceId,
+  officialAccountId: id,
+  sessionId: "new-official-session",
+  status: "ACTIVE",
+  matchMethod: "SERIAL_LOGIN_DIFF",
+  verificationLevel: "USER_CONFIRMED_INFERENCE",
+  createdAt: "2026-10-15T10:00:00Z",
+  endedAt: null,
+};
 function attempt(status = "READY_FOR_LOGIN", extras = {}) {
   return {
     id,
@@ -59,6 +74,81 @@ async function begin() {
   await screen.findByRole("button", { name: "已完成登录，识别本设备" });
 }
 describe("本设备官方会话绑定", () => {
+  it("用户确认后才显示已保存，重新打开从中央恢复同一绑定", async () => {
+    let saved = false;
+    native.mockImplementation(async (name) => {
+      if (name === "session_binding_current")
+        return { attempt: null, binding: saved ? binding : null };
+      if (name === "session_binding_detect")
+        return attempt("AWAITING_CONFIRMATION", {
+          candidateSessionId: binding.sessionId,
+          candidateDisplayName: "本次官方登录",
+          candidatePlatform: "Windows",
+        });
+      if (name === "session_binding_confirm") {
+        saved = true;
+        return attempt("BOUND", { binding });
+      }
+      return attempt();
+    });
+    const first = render(<SessionBinding userId="user-a" />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "开始绑定本设备" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "已完成登录，识别本设备" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "确认绑定此会话" }),
+    );
+    await screen.findByText("本设备官方会话已绑定。");
+    expect(
+      native.mock.calls.find(
+        ([name]) => name === "session_binding_confirm",
+      )?.[1],
+    ).toEqual({ attemptId: id });
+    first.unmount();
+    render(<SessionBinding userId="user-a" />);
+    await screen.findByText("本设备官方会话已绑定。");
+    expect(screen.queryByRole("button", { name: "开始绑定本设备" })).toBeNull();
+  });
+  it("轮到排队用户后自动准备，但不会替用户发起官方登录或识别", async () => {
+    native.mockImplementation(async (name) =>
+      name === "session_binding_current"
+        ? { attempt: attempt("QUEUED", { queuePosition: 2 }), binding: null }
+        : attempt(),
+    );
+    render(<SessionBinding userId="user-a" />);
+    await screen.findByText(/正在排队/);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_100);
+    });
+    await screen.findByRole("button", { name: "已完成登录，识别本设备" });
+    expect(
+      native.mock.calls.some(([name]) => name === "session_binding_detect"),
+    ).toBe(false);
+  });
+  it("产品登录过期时立即清除已识别候选", async () => {
+    native.mockImplementation(async (name) => {
+      if (name === "session_binding_current")
+        return {
+          attempt: attempt("AWAITING_CONFIRMATION", {
+            candidateSessionId: "candidate",
+            candidateDisplayName: "过期前候选",
+          }),
+          binding: null,
+        };
+      throw "请先登录系统账户。";
+    });
+    render(<SessionBinding userId="user-a" />);
+    await screen.findByText("过期前候选");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_100);
+    });
+    await screen.findByText("请先登录系统账户。");
+    expect(screen.queryByText("过期前候选")).toBeNull();
+    expect(screen.queryByRole("button", { name: "确认绑定此会话" })).toBeNull();
+  });
   it("首次显示可见引导，排他准备完成后才允许用户识别", async () => {
     await begin();
     expect(screen.getByText(/官方 Codex 应用/)).toBeVisible();

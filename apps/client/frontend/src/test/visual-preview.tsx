@@ -346,6 +346,8 @@ mockIPC((command, payload) => {
     }
     case "system_current":
       return demoSession;
+    case "session_binding_current":
+      return { attempt: null, binding: null };
     case "server_config_get":
       return { url: "http://preview.example.invalid:8080" };
     case "status":
