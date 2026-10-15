@@ -20,7 +20,7 @@ docker compose --env-file .env -f compose.yaml -f compose.web-login.yaml -f comp
 
 先按下文配置 `TLS_CERT_DIRECTORY`、可信证书和 HTTPS `PUBLIC_ORIGIN`，保留所有现有数据库及加密密钥。可选目标增加 Chromium 和中文字体，后台内存上限 2 GiB、共享内存 256 MiB、临时目录 512 MiB，最多两个临时浏览器；建议整机至少 4 GiB 可用内存。后续启动或升级必须继续传入这三个配置；`deploy.sh up` 只读取基础 Compose，不会保留可选 overlay 的启用状态。
 
-`chromium-seccomp.json` 来自 Playwright v1.64.0，出处及 Apache-2.0 许可位于 `licenses/`。它保留默认拒绝策略，仅为命名空间沙箱放行相应调用，搭配非 root、capabilities 全部移除及 no-new-privileges。不要关闭浏览器沙箱、使用 privileged/SYS_ADMIN 或公开调试端口。宿主机需允许非特权用户命名空间；Docker/内核兼容仍需在目标服务器验证。
+`chromium-seccomp.json` 基于 Playwright v1.64.0 派生，出处、修改记录及 Apache-2.0 许可位于 `licenses/`。它保留默认拒绝策略，额外为 Chromium 子用户命名空间沙箱允许 `chroot` 系统调用，不授予容器 `CAP_SYS_CHROOT`；仍搭配非 root、capabilities 全部移除及 no-new-privileges。不要关闭浏览器沙箱、使用 privileged/SYS_ADMIN 或公开调试端口。宿主机需允许非特权用户命名空间；Docker/内核兼容仍需在目标服务器验证。
 
 Cookie 登录目前支持邮箱方式；外部 SSO 会明确提示不支持。官方验证码、人机验证仍由管理员本人完成，不能保证官方接受所有服务器网络。无论页面还是测试都不代替用户登录。新子菜单为“官方账户 → 账户管理 / 会话管理”。V28 扩展任务来源和管理员版本信息，不清除旧授权；部署重启会使未完成的服务器浏览器任务失效。
 

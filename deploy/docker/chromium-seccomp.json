@@ -51,6 +51,14 @@
 	],
 	"syscalls": [
 		{
+			"comment": "Allow Chromium to chroot inside its sandbox user namespace without container capabilities",
+			"names": ["chroot"],
+			"action": "SCMP_ACT_ALLOW",
+			"args": [],
+			"includes": {},
+			"excludes": {}
+		},
+		{
 			"comment": "Allow create user namespaces",
 			"names": [
 				"clone",

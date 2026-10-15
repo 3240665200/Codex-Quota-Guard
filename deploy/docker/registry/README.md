@@ -133,7 +133,7 @@ docker compose --project-name codex-quota-guard --env-file .env -f compose.yaml 
 
 仅需 HTTPS、不启用服务器浏览器时，从这三条命令中移除 `-f compose.web-login.yaml`。后续启动、升级、查看日志和停止应用都使用同样的组合；`start.sh` 只读取基础 `compose.yaml`，不会自动加载 overlay。`bash start.sh backup` 仍可备份同一项目的 PostgreSQL 与 `.env`，overlay 和证书需另外备份。
 
-浏览器模式保留非 root、`cap_drop: ALL`、只读根文件系统和 `no-new-privileges`，通过 `chromium-seccomp.json` 保持 Chromium 命名空间沙箱。不要添加 `--no-sandbox`、privileged、SYS_ADMIN 或公开 Chromium 调试端口。宿主机须允许非特权用户命名空间，兼容性需在目标服务器验证；后端限制 2 GiB 内存、256 MiB 共享内存、512 MiB 临时目录，建议整机至少 4 GiB 可用内存。配置文件出处与 Apache-2.0 许可保留在 `licenses/`。
+浏览器模式保留非 root、`cap_drop: ALL`、只读根文件系统和 `no-new-privileges`，通过 `chromium-seccomp.json` 保持 Chromium 命名空间沙箱。该配置基于 Playwright 派生，只增加子用户命名空间沙箱所需的 `chroot` 系统调用许可，不授予容器 `CAP_SYS_CHROOT`；出处、修改记录与 Apache-2.0 许可保留在 `licenses/`。不要添加 `--no-sandbox`、privileged、SYS_ADMIN 或公开 Chromium 调试端口。宿主机须允许非特权用户命名空间，兼容性需在目标服务器验证；后端限制 2 GiB 内存、256 MiB 共享内存、512 MiB 临时目录，建议整机至少 4 GiB 可用内存。
 
 除已有明确的回环调试策略外，服务器浏览器和敏感官方会话操作必须通过 HTTPS。它们不会为普通局域网 HTTP 打开例外。管理员仍须本人完成官方验证码或人机验证；当前邮箱登录支持不代表支持外部 SSO，也不能保证官方接受服务器网络。重启会令未完成的浏览器任务失效。
 
