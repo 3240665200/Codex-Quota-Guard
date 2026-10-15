@@ -34,4 +34,17 @@ class PrivateBrowserProfileTest {
         assertThat(command).anyMatch(value -> value.startsWith("--user-data-dir="));
         assertThat(command.toString()).doesNotContain("--headless","--user-agent","AutomationControlled","synthetic-token","--proxy-server");
     }
+
+    @Test void waitsForACompleteOwnedDebuggerFileInsteadOfFailingOnItsCreationInstant() throws Exception {
+        try(var profile=PrivateBrowserProfile.create(temporary)) {
+            Files.writeString(profile.path().resolve("DevToolsActivePort"),"");
+            var uri=CdpOfficialLoginBrowser.awaitDebugger(profile,() -> true,() -> 0L,() -> {
+                try { Files.writeString(profile.path().resolve("DevToolsActivePort"),"12345\n/devtools/browser/synthetic-id\n"); }
+                catch(java.io.IOException failure) { throw new java.io.UncheckedIOException(failure); }
+            });
+            assertThat(uri.toString()).isEqualTo("ws://127.0.0.1:12345/devtools/browser/synthetic-id");
+            assertThatThrownBy(() -> CdpOfficialLoginBrowser.awaitDebugger(profile,() -> false,() -> 0L,() -> {}))
+                    .isInstanceOf(OfficialLoginException.class);
+        }
+    }
 }
