@@ -10,6 +10,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod audit;
+mod outbox;
 use audit::{AuditKind, AuditLog};
 #[cfg(windows)]
 mod ccswitch_guard;
@@ -1421,17 +1422,28 @@ impl MeterRuntime {
         if credential.device_id != self.config.device_id {
             return Err("METER_CREDENTIAL_INVALID".into());
         }
-        let reported = scan_report_and_commit_guarded(
-            &self.config.codex_home,
-            &state_path,
-            &previous.unwrap(),
-            || self.guard.ensure_allowed(),
-            |events| {
-                self.guard.ensure_allowed()?;
-                send_events(&self.client, &self.config, &credential, events)
-            },
-            |state| self.guard.with_allowed(|| save_state(&state_path, state)),
-        )?;
+        // Capture before any network IO so source log rotation and service
+        // restarts cannot erase unacknowledged usage. The journal is bound to
+        // the paired device, origin and Windows profile's Codex directory.
+        let mut outbox = outbox::Outbox::capture(&self.config, &previous.unwrap(), || {
+            self.guard.ensure_allowed()
+        })?;
+        if outbox.pending.iter().any(|event| !reportable_at(event, Utc::now())) {
+            // The server accepts only recent events. Retain older/future
+            // records for an operator; never alter timestamps or discard them.
+            return Err("METER_EVENT_OUTSIDE_REPORT_WINDOW".into());
+        }
+        let mut reported_events = Vec::new();
+        while !outbox.pending.is_empty() {
+            self.guard.ensure_allowed()?;
+            let count = outbox.pending.len().min(100);
+            let batch = &outbox.pending[..count];
+            send_events(&self.client, &self.config, &credential, batch)?;
+            reported_events.extend_from_slice(batch);
+            self.guard.with_allowed(|| outbox.acknowledge(&self.config, count))?;
+        }
+        self.guard.with_allowed(|| save_state(&state_path, outbox.scan_state()))?;
+        let reported = ScanOutcome { events: reported_events, next_state: outbox.scan_state().clone() };
         if !reported.events.is_empty() {
             self.last_report_epoch_seconds = Some(epoch_seconds());
             let guard = self.guard.snapshot();
