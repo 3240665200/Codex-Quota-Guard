@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.awaitility.Awaitility.await;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -40,6 +41,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.NullAndEmptySource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
@@ -127,6 +131,39 @@ class MailAssistanceIntegrationTest {
         assertThat(connection.polled.get()).isFalse(); assertThat(connection.closed.get()).isTrue();
         mvc.perform(delete(configUrl()).header(HttpHeaders.AUTHORIZATION, token(admin))).andExpect(status().isNoContent());
         assertThat(mailboxes.findById(account.getId())).isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"MAIL_DNS_FAILED", "MAIL_HOST_BLOCKED", "MAIL_AUTH_FAILED", "MAIL_TLS_FAILED",
+            "MAIL_CONNECTION_TIMEOUT", "MAIL_FOLDER_FAILED"})
+    void listenerPreservesSafeConnectionFailureCategoryAndReleasesMailboxForRetry(String code) throws Exception {
+        configure();
+        when(transport.open(any())).thenThrow(new DomainException(code, "private-provider-credential-details", HttpStatus.BAD_GATEWAY));
+        MailListenerResponse started = service.start(owner.getId());
+        awaitState(started.id(), MailListener.State.FAILED);
+        var response = mvc.perform(get("/api/v1/client/login-assistance/listeners/" + started.id())
+                        .header(HttpHeaders.AUTHORIZATION, token(owner)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.errorCode").value(code))
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
+                .andReturn().getResponse().getContentAsString();
+        assertThat(response).doesNotContain("private-provider-credential-details", "synthetic-password");
+        assertThat(listeners.findById(started.id()).orElseThrow().activeAccountId).isNull();
+        doAnswer(invocation -> new FakeConnection()).when(transport).open(any());
+        MailListenerResponse retry = service.start(owner.getId());
+        assertThat(retry.id()).isNotEqualTo(started.id());
+        awaitState(retry.id(), MailListener.State.LISTENING);
+    }
+
+    @ParameterizedTest
+    @NullAndEmptySource
+    @ValueSource(strings = {"MAIL_UPSTREAM_PRIVATE_TEXT", "unexpected-private-provider-code"})
+    void listenerMasksUnknownFailureCodesWithoutLeavingMailboxBusy(String code) throws Exception {
+        configure();
+        when(transport.open(any())).thenThrow(new DomainException(code, "private-provider-credential-details", HttpStatus.BAD_GATEWAY));
+        MailListenerResponse started = service.start(owner.getId());
+        awaitState(started.id(), MailListener.State.FAILED);
+        assertThat(service.poll(owner.getId(), started.id()).errorCode()).isEqualTo("MAIL_CONNECTION_FAILED");
+        assertThat(listeners.findById(started.id()).orElseThrow().activeAccountId).isNull();
     }
 
     @Test
