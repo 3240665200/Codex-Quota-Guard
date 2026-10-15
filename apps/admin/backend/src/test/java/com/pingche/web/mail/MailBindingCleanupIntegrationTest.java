@@ -9,6 +9,10 @@ import com.pingche.web.auth.DomainException;
 import com.pingche.web.meter.MeterDevice;
 import com.pingche.web.meter.MeterDeviceRepository;
 import com.pingche.web.officialsession.OfficialConnectionService;
+import com.pingche.web.officialsession.OfficialAccountInfo;
+import com.pingche.web.officialsession.OfficialConnectionRefreshResponse;
+import com.pingche.web.officialsession.OfficialSessionInfo;
+import com.pingche.web.officialsession.OfficialSessions;
 import com.pingche.web.quota.OfficialAccount;
 import com.pingche.web.quota.OfficialAccountRepository;
 import com.pingche.web.sessionbinding.SessionBindingService;
@@ -119,6 +123,23 @@ class MailBindingCleanupIntegrationTest {
         bindings.cancel(other.getId(), queued);
         assertThat(mail.poll(owner.getId(), listener.id()).state()).isEqualTo(MailListener.State.LISTENING);
         assertThat(opened.get(0).closed).isFalse();
+    }
+
+    @Test void automaticBindingSuccessReleasesTheOwnersMailListener() {
+        UUID attempt = claimed("READY_FOR_LOGIN");
+        MailListenerResponse listener = start(owner);
+        AtomicReference<Instant> time = new AtomicReference<>(NOW);
+        when(clock.instant()).thenAnswer(call -> time.get());
+        when(official.refresh(accountId)).thenAnswer(call -> new OfficialConnectionRefreshResponse(null,
+                new OfficialAccountInfo("synthetic-user", null, null, "synthetic-" + accountId, "Synthetic", "plus", "owner", false, true),
+                new OfficialSessions(List.of(new OfficialSessionInfo("new-session", "new-session", "Windows", "Synthetic", null, null, null, false, false, NOW, NOW, null, null, null, List.of("Codex"))), true), time.get()));
+        bindings.advance(accountId);
+        time.set(NOW.plusSeconds(10));bindings.advance(accountId);
+        assertThat(bindings.get(owner.getId(), attempt).status()).isEqualTo("BOUND");
+        assertThat(listeners.findById(listener.id()).orElseThrow().state).isEqualTo(MailListener.State.CANCELLED);
+        assertThat(mail.current(owner.getId()).listener()).isNull();
+        await().atMost(Duration.ofSeconds(5)).untilTrue(opened.get(0).closed);
+        assertThat(bindings.accountState(accountId).activeAttemptId()).isNull();
     }
 
     @Test void endingAnOwnerClaimDoesNotCancelAnotherOwnersMailboxListener() {

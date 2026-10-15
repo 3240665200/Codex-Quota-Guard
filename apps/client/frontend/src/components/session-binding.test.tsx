@@ -41,7 +41,7 @@ const binding = {
   sessionId: "new-official-session",
   status: "ACTIVE",
   matchMethod: "SERIAL_LOGIN_DIFF",
-  verificationLevel: "USER_CONFIRMED_INFERENCE",
+  verificationLevel: "AUTOMATIC_SERIAL_INFERENCE",
   createdAt: "2026-10-15T10:00:00Z",
   endedAt: null,
 };
@@ -89,42 +89,29 @@ async function begin() {
   fireEvent.click(
     await screen.findByRole("button", { name: "开始绑定本设备" }),
   );
-  await screen.findByRole("button", { name: "已完成登录，识别本设备" });
+  await screen.findByText(/后台会自动检测并完成绑定/);
 }
 describe("本设备官方会话绑定", () => {
-  it("用户确认后才显示已保存，重新打开从中央恢复同一绑定", async () => {
+  it("后台自动绑定后通过推送恢复结果，重新打开仍显示同一绑定", async () => {
     let saved = false;
     native.mockImplementation(async (name) => {
       if (name === "session_binding_current")
-        return { attempt: null, binding: saved ? binding : null };
-      if (name === "session_binding_detect")
-        return attempt("AWAITING_CONFIRMATION", {
-          candidateSessionId: binding.sessionId,
-          candidateDisplayName: "本次官方登录",
-          candidatePlatform: "Windows",
-        });
-      if (name === "session_binding_confirm") {
-        saved = true;
-        return attempt("BOUND", { binding });
-      }
+        return { attempt: saved ? attempt("BOUND", { binding }) : null, binding: saved ? binding : null };
       return attempt();
     });
     const first = render(<SessionBinding userId="user-a" />);
     fireEvent.click(
       await screen.findByRole("button", { name: "开始绑定本设备" }),
     );
-    fireEvent.click(
-      await screen.findByRole("button", { name: "已完成登录，识别本设备" }),
-    );
-    fireEvent.click(
-      await screen.findByRole("button", { name: "确认绑定此会话" }),
-    );
+    await screen.findByText(/后台会自动检测并完成绑定/);
+    saved = true;
+    await changed();
     await screen.findByText("本设备官方会话已绑定。");
     expect(
-      native.mock.calls.find(
-        ([name]) => name === "session_binding_confirm",
-      )?.[1],
-    ).toEqual({ attemptId: id });
+      native.mock.calls.some(
+        ([name]) => name === "session_binding_confirm" || name === "session_binding_detect",
+      ),
+    ).toBe(false);
     first.unmount();
     render(<SessionBinding userId="user-a" />);
     await screen.findByText("本设备官方会话已绑定。");
@@ -146,7 +133,7 @@ describe("本设备官方会话绑定", () => {
     await screen.findByText(/正在排队/);
     ready = true;
     await changed();
-    await screen.findByRole("button", { name: "已完成登录，识别本设备" });
+    await screen.findByText(/后台会自动检测并完成绑定/);
     expect(
       native.mock.calls.some(([name]) => name === "session_binding_detect"),
     ).toBe(false);
@@ -172,9 +159,10 @@ describe("本设备官方会话绑定", () => {
     expect(screen.queryByText("过期前候选")).toBeNull();
     expect(screen.queryByRole("button", { name: "确认绑定此会话" })).toBeNull();
   });
-  it("首次显示可见引导，排他准备完成后才允许用户识别", async () => {
+  it("首次显示自动识别引导，准备后无需点击检测或确认", async () => {
     await begin();
     expect(screen.getByText(/官方 Codex 应用/)).toBeVisible();
+    expect(screen.queryByRole("button", { name: /已完成登录|确认绑定/ })).toBeNull();
     expect(
       native.mock.calls.some(([name]) => name === "session_binding_prepare"),
     ).toBe(false);
@@ -197,26 +185,22 @@ describe("本设备官方会话绑定", () => {
       screen.queryByRole("button", { name: "已完成登录，识别本设备" }),
     ).toBeNull();
   });
-  it("显示唯一候选并要求确认，不会收到候选就自动绑定", async () => {
+  it("唯一候选显示后台复核状态，不提供手动确认按钮", async () => {
     native.mockImplementation(async (name) => {
       if (name === "session_binding_current")
-        return { attempt: null, binding: null };
-      if (name === "session_binding_detect")
-        return attempt("AWAITING_CONFIRMATION", {
+        return { attempt: attempt("AWAITING_CONFIRMATION", {
           candidateSessionId: "official-session-1",
           candidateDisplayName: "Alice 的电脑",
           candidatePlatform: "Windows",
-        });
+        }), binding: null };
       return attempt();
     });
-    await begin();
-    fireEvent.click(
-      screen.getByRole("button", { name: "已完成登录，识别本设备" }),
-    );
+    render(<SessionBinding userId="user-a" />);
     await screen.findByText("Alice 的电脑");
     expect(
-      screen.getByRole("button", { name: "确认绑定此会话" }),
-    ).toBeVisible();
+      screen.queryByRole("button", { name: "确认绑定此会话" }),
+    ).toBeNull();
+    expect(screen.getByText(/后台正在复核/)).toBeVisible();
     expect(
       native.mock.calls.some(([name]) => name === "session_binding_confirm"),
     ).toBe(false);
@@ -279,7 +263,7 @@ describe("本设备官方会话绑定", () => {
       native.mock.calls.some(([name]) => name === "session_binding_start"),
     ).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "重新申请绑定" }));
-    await screen.findByRole("button", { name: "已完成登录，识别本设备" });
+    await screen.findByText(/后台会自动检测并完成绑定/);
     expect(
       native.mock.calls.filter(([name]) => name === "session_binding_start"),
     ).toHaveLength(1);
@@ -329,7 +313,7 @@ describe("本设备官方会话绑定", () => {
     fireEvent.click(
       await screen.findByRole("button", { name: "重试申请绑定" }),
     );
-    await screen.findByRole("button", { name: "已完成登录，识别本设备" });
+    await screen.findByText(/后台会自动检测并完成绑定/);
     expect(starts).toBe(2);
   });
   it("重新检查失败保留已知终态，但不会自动重建任务", async () => {
@@ -397,7 +381,7 @@ describe("本设备官方会话绑定", () => {
       native.mock.calls.some(([name]) => name === "session_binding_cancel"),
     ).toBe(false);
   });
-  it("本地倒计时结束禁用确认，等待服务器核对而非伪造过期", async () => {
+  it("本地倒计时结束等待服务器核对而非伪造过期或保存绑定", async () => {
     native.mockImplementation(async () => ({
       attempt: attempt("AWAITING_CONFIRMATION", {
         candidateSessionId: "session",
@@ -411,11 +395,7 @@ describe("本设备官方会话绑定", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_100);
     });
-    await waitFor(() =>
-      expect(
-        screen.getByRole("button", { name: "确认绑定此会话" }),
-      ).toBeDisabled(),
-    );
+    expect(screen.queryByRole("button", { name: "确认绑定此会话" })).toBeNull();
     expect(screen.getByText(/正在核对服务器到期状态/)).toBeVisible();
     expect(
       screen.queryByRole("button", { name: /重新申请绑定|开始绑定本设备/ }),

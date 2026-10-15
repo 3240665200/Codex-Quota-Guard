@@ -77,6 +77,125 @@ class SessionBindingAutomaticQueueTest {
         assertThat(ready.queueState()).isEqualTo("ACTIVE");
     }
 
+    @Test void backgroundChecksKeepWaitingWithoutNewSessionsAndRespectTheTenSecondOfficialLimit() {
+        var attempt=create(first);service.advance(account);
+        for(int second=0;second<30;second++) {
+            now.set(start.plusSeconds(second));service.advance(account);
+            assertThat(service.get(first.user(),attempt.id()).status()).isEqualTo("READY_FOR_LOGIN");
+            assertThat(service.accountState(account).activeAttemptId()).isEqualTo(attempt.id());
+        }
+        verify(official,times(3)).refresh(account);
+        assertThat(jdbc.queryForObject("select count(*) from session_bindings",Integer.class)).isZero();
+    }
+
+    @Test void uniqueNewSessionIsRevalidatedThenAutomaticallyBoundAndTheNextOwnerProgresses() {
+        var attempt=create(first);service.advance(account);var queued=create(second);
+        sessions.set(List.of("existing","new-session"));
+        now.set(start.plusSeconds(10));service.advance(account);
+        assertThat(service.get(first.user(),attempt.id()).status()).isEqualTo("AWAITING_CONFIRMATION");
+        assertThat(service.current(first.user(),first.device(),first.device()).binding()).isNull();
+        service.advance(account);verify(official,times(2)).refresh(account);
+        now.set(start.plusSeconds(20));service.advance(account);
+        var bound=service.get(first.user(),attempt.id());
+        assertThat(bound.status()).isEqualTo("BOUND");
+        assertThat(bound.binding().sessionId()).isEqualTo("new-session");
+        assertThat(bound.binding().verificationLevel()).isEqualTo("AUTOMATIC_SERIAL_INFERENCE");
+        assertThat(service.accountState(account).activeAttemptId()).isNull();
+        service.advance(account);
+        assertThat(service.get(second.user(),queued.id()).loginAllowed()).isTrue();
+        assertThat(jdbc.queryForObject("select before_session_ids from session_binding_attempts where id=?",String.class,queued.id())).contains("new-session");
+    }
+
+    @Test void ambiguousBackgroundDetectionReleasesTheClaimWithoutBinding() {
+        var attempt=create(first);service.advance(account);
+        sessions.set(List.of("existing","one","two"));
+        now.set(start.plusSeconds(10));service.advance(account);
+        var rejected=service.get(first.user(),attempt.id());
+        assertThat(rejected.status()).isEqualTo("REJECTED");
+        assertThat(rejected.errorCode()).isEqualTo("SESSION_BINDING_AMBIGUOUS");
+        assertThat(rejected.binding()).isNull();
+        assertThat(service.accountState(account).activeAttemptId()).isNull();
+        assertThat(rejected.queueState()).isEqualTo("SETTLING");
+    }
+
+    @Test void aNewNonCodexSessionCannotBeAutomaticallyAttributedToTheDevice() {
+        var attempt=create(first);service.advance(account);
+        when(official.refresh(account)).thenAnswer(call -> new OfficialConnectionRefreshResponse(null,
+                snapshot(List.of()).account(),new OfficialSessions(List.of(new OfficialSessionInfo("web","web","web","Web",null,null,null,false,false,start,start,null,null,null,List.of("ChatGPT"))),true),now.get()));
+        now.set(start.plusSeconds(10));service.advance(account);
+        assertThat(service.get(first.user(),attempt.id()).status()).isEqualTo("REJECTED");
+        assertThat(service.get(first.user(),attempt.id()).errorCode()).isEqualTo("SESSION_BINDING_INVALID_CANDIDATE");
+        assertThat(jdbc.queryForObject("select count(*) from session_bindings",Integer.class)).isZero();
+    }
+
+    @ParameterizedTest @ValueSource(strings={"missing","different","multiple"})
+    void automaticRevalidationNeverBindsAChangedCandidate(String change) {
+        var attempt=create(first);service.advance(account);
+        sessions.set(List.of("existing","candidate"));now.set(start.plusSeconds(10));service.advance(account);
+        sessions.set(change.equals("missing")?List.of("existing"):change.equals("different")?List.of("existing","other"):List.of("existing","candidate","other"));
+        now.set(start.plusSeconds(20));service.advance(account);
+        assertThat(service.get(first.user(),attempt.id()).status()).isEqualTo("REJECTED");
+        assertThat(jdbc.queryForObject("select count(*) from session_bindings",Integer.class)).isZero();
+        assertThat(service.accountState(account).activeAttemptId()).isNull();
+    }
+
+    @Test void backgroundSnapshotFailureRetriesWithCappedBackoffAndPreservesTheOriginalDeadline() {
+        var attempt=create(first);service.advance(account);
+        when(official.refresh(account)).thenThrow(new IllegalStateException("synthetic-private-provider-body"));
+        now.set(start.plusSeconds(10));
+        for(int failure=0;failure<7;failure++) {
+            Instant checked=now.get();service.advance(account);
+            var waiting=service.get(first.user(),attempt.id());
+            assertThat(waiting.status()).isEqualTo("READY_FOR_LOGIN");
+            assertThat(waiting.expiresAt()).isEqualTo(start.plusSeconds(1800));
+            Instant retry=jdbc.queryForObject("select next_prepare_at from session_binding_accounts where official_account_id=?",OffsetDateTime.class,account).toInstant();
+            assertThat(retry).isEqualTo(checked.plusSeconds(Math.min(10L << Math.min(failure,4),60L)));
+            service.advance(account);verify(official,times(failure+2)).refresh(account);
+            now.set(retry);
+        }
+        now.set(start.plusSeconds(1800));service.advance(account);
+        assertThat(service.get(first.user(),attempt.id()).status()).isEqualTo("EXPIRED");
+        assertThat(service.accountState(account).activeAttemptId()).isNull();
+    }
+
+    @Test void backgroundIdentityFailureIsTerminalAndDoesNotRetryAsAnOutage() {
+        var attempt=create(first);service.advance(account);
+        when(official.refresh(account)).thenAnswer(call -> new OfficialConnectionRefreshResponse(null,
+                new OfficialAccountInfo("another-user",null,null,"synthetic-account","Synthetic","plus","owner",false,true),snapshot(List.of("existing","candidate")).sessions(),now.get()));
+        now.set(start.plusSeconds(10));service.advance(account);
+        assertThat(service.get(first.user(),attempt.id()).errorCode()).isEqualTo("SESSION_BINDING_IDENTITY_CHANGED");
+        assertThat(service.get(first.user(),attempt.id()).status()).isEqualTo("REJECTED");
+    }
+
+    @Test void separateInstancesCannotDuplicateTheActiveBackgroundCheck() throws Exception {
+        var attempt=create(first);service.advance(account);
+        var other=new SessionBindingService(jdbc,official,Clock.fixed(start.plusSeconds(10),ZoneOffset.UTC),new ObjectMapper(),new DataSourceTransactionManager(source));
+        CountDownLatch entered=new CountDownLatch(1),release=new CountDownLatch(1);
+        when(official.refresh(account)).thenAnswer(call -> {entered.countDown();if(!release.await(5,TimeUnit.SECONDS))throw new IllegalStateException("synthetic timeout");return snapshot(List.of("existing","candidate"));});
+        now.set(start.plusSeconds(10));var running=CompletableFuture.runAsync(() -> service.advance(account));
+        try {
+            assertThat(entered.await(3,TimeUnit.SECONDS)).isTrue();other.advance(account);
+            verify(official,times(2)).refresh(account);
+        } finally {release.countDown();}
+        running.get(5,TimeUnit.SECONDS);
+        assertThat(service.get(first.user(),attempt.id()).status()).isEqualTo("AWAITING_CONFIRMATION");
+    }
+
+    @Test void aCancelledBackgroundResponseCannotBindOrOverwriteTheNextClaim() throws Exception {
+        var attempt=create(first);service.advance(account);
+        sessions.set(List.of("existing","candidate"));now.set(start.plusSeconds(10));service.advance(account);
+        CountDownLatch entered=new CountDownLatch(1),release=new CountDownLatch(1);
+        when(official.refresh(account)).thenAnswer(call -> {entered.countDown();if(!release.await(5,TimeUnit.SECONDS))throw new IllegalStateException("synthetic timeout");return snapshot(List.of("existing","candidate"));});
+        now.set(start.plusSeconds(20));var running=CompletableFuture.runAsync(() -> service.advance(account));
+        try {
+            assertThat(entered.await(3,TimeUnit.SECONDS)).isTrue();service.cancel(first.user(),attempt.id());
+        } finally {release.countDown();}
+        running.get(5,TimeUnit.SECONDS);
+        assertThat(service.get(first.user(),attempt.id()).status()).isEqualTo("CANCELLED");
+        assertThat(jdbc.queryForObject("select count(*) from session_bindings",Integer.class)).isZero();
+        assertThat(service.accountState(account).activeAttemptId()).isNull();
+    }
+
     @Test void cancellationRevokesTheClaimThenSettlesBeforeGrantingTheNextFreshBaseline() {
         var old=create(first);service.advance(account);
         var next=create(second);
