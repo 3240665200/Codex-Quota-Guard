@@ -18,7 +18,8 @@ const operations = new Map<string, SessionLogoutOperation>();
 const listeners = new Set<() => void>();
 const subscribe = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; };
 const notify = () => listeners.forEach((listener) => listener());
-type Lifetime = { active: boolean; busy: boolean; scope: string; settled: Set<string> };
+type Lifetime = { active: boolean; busy: boolean; scope: string; settled: Set<string>;
+  settle?: (accountId: string) => void | Promise<void> };
 const unresolved = (value: SessionLogoutOperation | undefined | null) => value?.status === 'EXECUTING' || value?.status === 'UNKNOWN';
 const storeOperation = (accountId: string, operation: SessionLogoutOperation | null) => {
   if (operation) operations.set(accountId, operation); else operations.delete(accountId);
@@ -44,8 +45,8 @@ function failureText(failure: unknown) {
   return managedErrorMessage(failure, '请求结果未知，请核对后重新预览；不会自动重试。');
 }
 
-export default function SessionLogoutPanel({ accountId, contextVersion, disabled = false, onBusyChange, onSettled }: {
-  accountId: string; contextVersion?: number; disabled?: boolean;
+export default function SessionLogoutPanel({ accountId, contextVersion, disabled = false, allowPreview = true, onBusyChange, onSettled }: {
+  accountId: string; contextVersion?: number; disabled?: boolean; allowPreview?: boolean;
   onBusyChange?: (busy: boolean) => void;
   onSettled?: (accountId: string) => void | Promise<void>;
 }) {
@@ -61,35 +62,34 @@ export default function SessionLogoutPanel({ accountId, contextVersion, disabled
   const [refreshNotice, setRefreshNotice] = useState('');
   const lifetimeRef = useRef<Lifetime | null>(null);
   const busyCallback = useRef(onBusyChange); busyCallback.current = onBusyChange;
-  const settleCallback = useRef(onSettled); settleCallback.current = onSettled;
   const issued = useSyncExternalStore(subscribe, () => issuedAccounts.has(accountId), () => false);
   const operation = useSyncExternalStore(subscribe, () => operations.get(accountId) ?? null, () => null);
   const plan = previewState?.scope === scope && previewState.version === contextVersion ? previewState.value : null;
   const result = resultState?.scope === scope ? resultState.value : null;
-  const locked = disabled || pending !== null || issued || !metadataReady || unresolved(operation);
+  const locked = disabled || !allowPreview || pending !== null || issued || !metadataReady || unresolved(operation);
 
   const settleTerminal = async (lifetime: Lifetime, value: SessionLogoutResult) => {
     if (value.status === 'EXECUTING' || lifetime.settled.has(value.planId)) return;
     lifetime.settled.add(value.planId);
-    try { await settleCallback.current?.(lifetime.scope); }
+    try { await lifetime.settle?.(lifetime.scope); }
     catch { if (lifetime.active) setRefreshNotice('操作状态已更新，但状态重读未完成；旧快照不可作为当前状态，请关闭后重新打开。'); }
   };
-  const readCurrent = async (lifetime: Lifetime) => {
+  const readCurrent = async (lifetime: Lifetime, expectedPlanId?: string) => {
     try {
       const { operation: value } = await getSessionLogoutCurrent(lifetime.scope);
       storeOperation(lifetime.scope, value);
       if (lifetime.active) {
         setMetadataReady(true);
-        if (value) setResultState({ scope: lifetime.scope, value });
+        if (value && (!expectedPlanId || value.planId === expectedPlanId)) setResultState({ scope: lifetime.scope, value });
       }
-      if (value) await settleTerminal(lifetime, value);
+      if (value && (!expectedPlanId || value.planId === expectedPlanId)) await settleTerminal(lifetime, value);
     } catch {
       if (lifetime.active) { setMetadataReady(false); setRefreshNotice('无法核对后台登出操作锁，请手动刷新状态；确认前不会开放登出操作。'); }
     }
   };
 
   useEffect(() => {
-    const lifetime = { active: true, busy: true, scope, settled: new Set<string>() }; lifetimeRef.current = lifetime;
+    const lifetime = { active: true, busy: true, scope, settled: new Set<string>(), settle: onSettled }; lifetimeRef.current = lifetime;
     setPreviewState(null); setResultState(null); setAcknowledged(false); setPending('current');
     setExpired(false); setError(''); setRefreshNotice(''); setMetadataReady(false); setManualVerification(false);
     void readCurrent(lifetime).finally(() => {
@@ -107,7 +107,7 @@ export default function SessionLogoutPanel({ accountId, contextVersion, disabled
     const timer = window.setTimeout(() => {
       if (!lifetime.active || lifetime.busy) return;
       lifetime.busy = true; setPending('current');
-      void readCurrent(lifetime).finally(() => { if (lifetime.active) { lifetime.busy = false; setPending(null); } });
+      void readCurrent(lifetime, operation.planId).finally(() => { if (lifetime.active) { lifetime.busy = false; setPending(null); } });
     }, 2_000);
     return () => window.clearTimeout(timer);
   }, [operation, metadataReady, pending]);
@@ -157,7 +157,7 @@ export default function SessionLogoutPanel({ accountId, contextVersion, disabled
         requiresReauthorization: submitted.mode === 'ALL', results: [], message: '', canAcknowledge: false, canAcknowledgeAt: null });
       if (lifetime.active) setError(failureText(failure));
     } finally {
-      await readCurrent(lifetime);
+      await readCurrent(lifetime, submitted.planId);
       // Even a lost confirmation response may already have changed official state.
       if (!lifetime.settled.has(submitted.planId) && operations.get(accountId)?.status !== 'EXECUTING') {
         await settleTerminal(lifetime, { planId: submitted.planId, mode: submitted.mode, status: 'UNKNOWN',
@@ -188,7 +188,7 @@ export default function SessionLogoutPanel({ accountId, contextVersion, disabled
       await settleTerminal(lifetime, value);
     } catch (failure) { if (lifetime.active) setError(failureText(failure)); }
     finally {
-      await readCurrent(lifetime); issuedAccounts.delete(accountId); notify();
+      await readCurrent(lifetime, submitted.planId); issuedAccounts.delete(accountId); notify();
       if (lifetime.active) { lifetime.busy = false; setPending(null); }
     }
   };
@@ -216,7 +216,7 @@ export default function SessionLogoutPanel({ accountId, contextVersion, disabled
             onChange={(event) => setManualVerification(event.target.checked)}>我已在官网人工核对结果，理解解除锁不会撤销或重试官方请求</Checkbox>
           <Button danger disabled={disabled || pending !== null || issued || !manualVerification}
             loading={pending === 'acknowledge'} onClick={() => void acknowledgeUnknown()}>已在官网核对结果，解除本地操作锁</Button>
-        </> : <Typography.Text type="secondary">仅原操作管理员可在后台允许后确认未知结果。{operation?.canAcknowledgeAt
+        </> : <Typography.Text type="secondary">后台尚未允许确认未知结果，请等待安全核对时间后刷新状态。{operation?.canAcknowledgeAt
           ? `可再次核对时间：${new Date(operation.canAcknowledgeAt).toLocaleString('zh-CN')}。` : ''}</Typography.Text>}
       </Space> : null}
       {plan ? <section aria-label="登出预览">

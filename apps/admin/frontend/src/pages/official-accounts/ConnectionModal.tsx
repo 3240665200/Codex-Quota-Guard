@@ -12,6 +12,7 @@ import type { OfficialAccountConnection, OfficialAccountResponse, OfficialAccoun
 import { LOCAL_PREVIEW_PARAMETER_MAX_BYTES, parseLocalPreviewParameters } from './localPreviewParameters';
 import BrowserLoginPanel from './BrowserLoginPanel';
 import SessionBindingQueue from './SessionBindingQueue';
+import SessionLogoutPanel from './SessionLogoutPanel';
 import { SessionBindingResult, SessionBindingsTable } from './SessionBindings';
 import { listSessionBindings } from '../../services/sessionBindingsApi';
 import type { SessionBinding } from '../../services/sessionBindingsApi';
@@ -92,18 +93,22 @@ export default function ConnectionModal({ account, onClose }: {
   const [bindings, setBindings] = useState<SessionBinding[] | null>(null);
   const [bindingNotice, setBindingNotice] = useState('');
   const [browserLoginActive, setBrowserLoginActive] = useState(false);
+  const [logoutBusy, setLogoutBusy] = useState(false);
+  const [queueRevision, setQueueRevision] = useState(0);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<'save' | 'refresh' | 'delete' | 'import' | null>(null);
   const [error, setError] = useState('');
   const [snapshotNotice, setSnapshotNotice] = useState('');
   const active = useRef(true);
+  const currentAccountId = useRef(account.id); currentAccountId.current = account.id;
   const parameterFileInput = useRef<HTMLInputElement>(null);
   const parameterFileReader = useRef<FileReader | null>(null);
   const secure = isSecureManagementContext();
   const localPreview = typeof window !== 'undefined' && window.location.protocol === 'http:'
     && ['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname);
   const selectedNode = Form.useWatch('proxyNodeId', form);
-  const locked = loading || busy !== null || browserLoginActive;
+  const externallyLocked = loading || busy !== null || browserLoginActive;
+  const locked = externallyLocked || logoutBusy;
 
   const clearSecrets = () => form.setFieldsValue({ authorization: '', cookie: '' });
   const stopParameterImport = () => {
@@ -150,6 +155,8 @@ export default function ConnectionModal({ account, onClose }: {
 
   useEffect(() => {
     active.current = true;
+    setLoading(true); setConfig(null); setSnapshot(null); setBindings(null);
+    setError(''); setSnapshotNotice(''); setBindingNotice(''); setLogoutBusy(false);
     let cancelled = false;
     void Promise.allSettled([getOfficialAccountConnection(account.id), listProxyNodes(), getOfficialAccountSessions(account.id), listSessionBindings(account.id)])
       .then(([connectionResult, nodesResult, snapshotResult, bindingsResult]) => {
@@ -191,6 +198,27 @@ export default function ConnectionModal({ account, onClose }: {
     }
     if (bindingsResult.status === 'fulfilled') { setBindings(bindingsResult.value); setBindingNotice(''); }
     else { setBindings(null); setBindingNotice(managedErrorMessage(bindingsResult.reason, '绑定结果暂时无法读取，请关闭窗口后重试。')); }
+  };
+
+  const reloadAfterLogout = async (completedAccountId: string) => {
+    if (!active.current || currentAccountId.current !== completedAccountId) return;
+    // Clear first: a failed safe read must never leave the pre-logout snapshot visible.
+    setSnapshot(null); setBindings(null); clearSecrets();
+    setSnapshotNotice('正在重新核对官方连接与会话状态，尚不能确认设备实际下线。');
+    const [connectionResult, snapshotResult, bindingsResult] = await Promise.allSettled([
+      getOfficialAccountConnection(completedAccountId), getOfficialAccountSessions(completedAccountId),
+      listSessionBindings(completedAccountId),
+    ]);
+    if (!active.current || currentAccountId.current !== completedAccountId) return;
+    if (connectionResult.status === 'fulfilled') {
+      const saved = connectionResult.value; setConfig(saved);
+      form.setFieldsValue({ requestedAccountId: saved.requestedAccountId ?? '', proxyNodeId: saved.proxyNodeId, version: saved.version });
+    } else { setConfig(null); setError(managedErrorMessage(connectionResult.reason, '登出操作后连接状态读取失败，请关闭窗口后重新打开。')); }
+    if (snapshotResult.status === 'fulfilled') { setSnapshot(snapshotResult.value); setSnapshotNotice(''); }
+    else setSnapshotNotice('登出操作后旧快照已清除，尚无当前会话快照；官方实际下线可能延迟，请在官网核对。');
+    if (bindingsResult.status === 'fulfilled') { setBindings(bindingsResult.value); setBindingNotice(''); }
+    else setBindingNotice(managedErrorMessage(bindingsResult.reason, '登出操作后绑定记录读取失败，请关闭窗口后重新打开。'));
+    setQueueRevision((value) => value + 1);
   };
 
   const save = async () => {
@@ -287,7 +315,7 @@ export default function ConnectionModal({ account, onClose }: {
             {nodeUnavailable ? <Alert type="warning" showIcon title="当前代理节点不可用，请明确选择其他节点或清空为直连，再重新保存授权。" /> : null}
             <Space orientation="vertical" size={16} style={{ width: '100%' }}>
               <BrowserLoginPanel accountId={account.id} version={config?.version ?? 0} proxyNodeId={selectedNode || null}
-                disabled={loading || busy !== null || !secure || !config?.encryptionReady || Boolean(nodeUnavailable)}
+                disabled={loading || busy !== null || logoutBusy || !secure || !config?.encryptionReady || Boolean(nodeUnavailable)}
                 onActiveChange={setBrowserLoginActive} onResultChanged={reloadAfterBrowserLogin} />
               <Collapse style={{ width: '100%' }} onChange={(keys) => { if (!keys.includes('manual')) clearSecrets(); }} items={[{
                 key: 'manual', label: '高级：手动导入授权', children: <Space orientation="vertical" size={16} style={{ width: '100%' }}>
@@ -325,11 +353,15 @@ export default function ConnectionModal({ account, onClose }: {
             </Space>
           </Form>
           <Divider style={{ margin: '4px 0' }}>官方账户与设备会话</Divider>
-          {secure ? <SessionBindingQueue accountId={account.id} disabled={locked} /> : null}
-          {snapshot ? <SessionSnapshot snapshot={snapshot} officialAccountId={account.id} bindings={bindings} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description={snapshotNotice || '尚无官方会话快照，请手动刷新官方账户与会话。'} />}
+          {secure ? <SessionLogoutPanel key={account.id} accountId={account.id} contextVersion={config?.version}
+            disabled={externallyLocked} allowPreview={Boolean(config?.configured)} onBusyChange={(value) => {
+              if (active.current && currentAccountId.current === account.id) setLogoutBusy(value);
+            }} onSettled={reloadAfterLogout} /> : null}
+          {secure ? <SessionBindingQueue key={`${account.id}:${queueRevision}`} accountId={account.id} disabled={locked} /> : null}
+          {snapshot && !logoutBusy ? <SessionSnapshot snapshot={snapshot} officialAccountId={account.id} bindings={bindings} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description={logoutBusy ? '会话操作状态核对中，暂不显示旧快照。' : snapshotNotice || '尚无官方会话快照，请手动刷新官方账户与会话。'} />}
           {bindingNotice ? <Alert type="warning" showIcon title={bindingNotice} /> : null}
-          {bindings ? <SessionBindingsTable bindings={bindings} /> : null}
+          {bindings && !logoutBusy ? <SessionBindingsTable bindings={bindings} /> : null}
         </Space>
       </Spin>
     </Space>

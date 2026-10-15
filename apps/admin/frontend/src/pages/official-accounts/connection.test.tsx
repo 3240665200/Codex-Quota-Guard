@@ -8,10 +8,11 @@ const mocks = vi.hoisted(() => ({
   updateOfficialAccount: vi.fn(), getOfficialAccountConnection: vi.fn(), saveOfficialAccountConnection: vi.fn(),
   deleteOfficialAccountConnection: vi.fn(), refreshOfficialAccountConnection: vi.fn(),
   getOfficialAccountSessions: vi.fn(), listProxyNodes: vi.fn(), isSecureManagementContext: vi.fn(),
+  getSessionLogoutCurrent: vi.fn(),
 }));
 vi.mock('../../services/api', () => mocks);
 vi.mock('../../services/sessionBindingsApi', () => ({ listSessionBindings: vi.fn().mockResolvedValue([]) }));
-vi.mock('../../services/sessionLogoutApi', () => ({ getSessionLogoutCurrent: vi.fn().mockResolvedValue({ operation: null }),
+vi.mock('../../services/sessionLogoutApi', () => ({ getSessionLogoutCurrent: mocks.getSessionLogoutCurrent,
   previewSessionLogout: vi.fn(), confirmSessionLogout: vi.fn(), acknowledgeSessionLogoutUnknown: vi.fn() }));
 
 const connection = { configured: true, encryptionReady: true, status: 'UNVERIFIED',
@@ -43,6 +44,7 @@ describe('官方账户授权与只读会话', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.isSecureManagementContext.mockReturnValue(true);
+    mocks.getSessionLogoutCurrent.mockResolvedValue({ operation: null });
     mocks.listOfficialAccounts.mockResolvedValue([{ id: 'account-1', label: '研发账户',
       estimatedTotalTokens: 1000000, reporterEmail: null, quota: null,
       createdAt: '2026-10-14T00:00:00Z', updatedAt: '2026-10-14T00:00:00Z', version: 0 }]);
@@ -59,7 +61,7 @@ describe('官方账户授权与只读会话', () => {
 
   it('shows safe snapshots and explicit logout preview controls without an automatic official refresh', async () => {
     const dialog = await openConnection();
-    expect(await within(dialog).findByText('official@example.com')).toBeInTheDocument();
+    await waitFor(() => expect(dialog).toHaveTextContent('official@example.com'));
     expect(within(dialog).getByText('办公电脑')).toBeInTheDocument();
     expect(within(dialog).getByText('Windows 浏览器')).toBeInTheDocument();
     expect(within(dialog).getByText('ChatGPT、Codex')).toBeInTheDocument();

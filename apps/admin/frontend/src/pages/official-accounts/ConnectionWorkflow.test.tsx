@@ -147,7 +147,7 @@ describe('官方网页登录与设备绑定入口', () => {
     expect(within(dialog).getByRole('button', { name: '刷新官方账户与会话' })).toBeDisabled();
     expect(within(dialog).getByRole('button', { name: '删除保存的授权' })).toBeDisabled();
     expect(within(dialog).getByRole('button', { name: '开始官方网页登录' })).toBeDisabled();
-    expect(within(dialog).getByRole('button', { name: '关闭' })).toBeEnabled();
+    expect(within(dialog).getByRole('button', { name: /^关\s*闭$/ })).toBeEnabled();
   });
 
   it('does not write an old logout completion into another selected account', async () => {
