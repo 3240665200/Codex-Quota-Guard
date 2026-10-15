@@ -256,6 +256,139 @@ export interface MailboxConnectionTest {
   message: string;
 }
 
+export type OfficialConnectionStatus = 'NOT_CONFIGURED' | 'UNVERIFIED' | 'CONNECTED'
+  | 'AUTH_REQUIRED' | 'ACCESS_BLOCKED' | 'RATE_LIMITED' | 'UNAVAILABLE' | 'INVALID_RESPONSE';
+
+export interface OfficialAccountConnection {
+  configured: boolean;
+  encryptionReady: boolean;
+  status: OfficialConnectionStatus;
+  requestedAccountId: string | null;
+  proxyNodeId: string | null;
+  hasAuthorization: boolean;
+  hasCookie: boolean;
+  importedAt: string | null;
+  lastAttemptAt: string | null;
+  lastSuccessAt: string | null;
+  lastErrorCode: string | null;
+  version: number;
+}
+
+export interface OfficialConnectionInput {
+  authorization: string;
+  cookie?: string;
+  requestedAccountId: string;
+  proxyNodeId: string | null;
+  version: number;
+}
+
+export interface OfficialIdentity {
+  userId: string | null;
+  email: string | null;
+  userName: string | null;
+  accountId: string | null;
+  accountName: string | null;
+  planType: string | null;
+  accountUserRole: string | null;
+  deactivated: boolean | null;
+  activeSubscription: boolean | null;
+}
+
+export interface OfficialSessionDevice {
+  renderId: string;
+  sessionId: string | null;
+  platform: string | null;
+  displayName: string | null;
+  deviceModel: string | null;
+  humanReadableDescription: string | null;
+  osVersion: string | null;
+  currentDevice: boolean | null;
+  trustedDevice: boolean | null;
+  lastSignedInAt: string | null;
+  sessionCreatedAt: string | null;
+  city: string | null;
+  regionCode: string | null;
+  country: string | null;
+  applications: string[];
+}
+
+export interface OfficialAccountSnapshot {
+  connection: OfficialAccountConnection;
+  account: OfficialIdentity;
+  sessions: { showSessionManager: boolean | null; devices: OfficialSessionDevice[] };
+  fetchedAt: string;
+}
+
+export type ProxyProtocol = 'HTTP' | 'HTTPS' | 'SOCKS5' | 'VLESS' | 'VMESS' | 'TROJAN' | 'SHADOWSOCKS';
+export interface ProxyNode {
+  id: string;
+  label: string;
+  protocol: ProxyProtocol;
+  host: string;
+  port: number;
+  enabled: boolean;
+  hasCredentials: boolean;
+  createdAt: string;
+  updatedAt: string;
+  version: number;
+}
+export interface ProxyNodeInput { label: string; uri?: string; enabled: boolean; version?: number }
+export type ProxyImportInput = { content: string; subscriptionUrl?: never } | { subscriptionUrl: string; content?: never };
+export interface ProxyConnectionTest { connected: boolean; httpStatus: number | null; status: string }
+
+export function isSecureManagementContext(): boolean {
+  if (typeof window === 'undefined') return false;
+  const { protocol, hostname } = window.location;
+  return protocol === 'https:' || (protocol === 'http:'
+    && ['localhost', '127.0.0.1', '[::1]'].includes(hostname));
+}
+
+export function getOfficialAccountConnection(id: string): Promise<OfficialAccountConnection> {
+  return request(`/api/v1/admin/official-accounts/${encodeURIComponent(id)}/connection`);
+}
+
+export function saveOfficialAccountConnection(id: string, body: OfficialConnectionInput): Promise<OfficialAccountConnection> {
+  return request(`/api/v1/admin/official-accounts/${encodeURIComponent(id)}/connection`, {
+    method: 'PUT', body: JSON.stringify(body),
+  });
+}
+
+export function deleteOfficialAccountConnection(id: string): Promise<void> {
+  return request(`/api/v1/admin/official-accounts/${encodeURIComponent(id)}/connection`, { method: 'DELETE' });
+}
+
+export function getOfficialAccountSessions(id: string): Promise<OfficialAccountSnapshot> {
+  return request(`/api/v1/admin/official-accounts/${encodeURIComponent(id)}/sessions`);
+}
+
+export function refreshOfficialAccountConnection(id: string): Promise<OfficialAccountSnapshot> {
+  return request(`/api/v1/admin/official-accounts/${encodeURIComponent(id)}/connection/refresh`, { method: 'POST' });
+}
+
+export function listProxyNodes(): Promise<ProxyNode[]> {
+  return request('/api/v1/admin/proxy-nodes');
+}
+
+export function createProxyNode(body: ProxyNodeInput & { uri: string }): Promise<ProxyNode> {
+  return request('/api/v1/admin/proxy-nodes', { method: 'POST', body: JSON.stringify(body) });
+}
+
+export function updateProxyNode(id: string, body: ProxyNodeInput): Promise<ProxyNode> {
+  return request(`/api/v1/admin/proxy-nodes/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(body) });
+}
+
+export function deleteProxyNode(id: string): Promise<void> {
+  return request(`/api/v1/admin/proxy-nodes/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+export function importProxyNodes(body: ProxyImportInput): Promise<{ nodes: ProxyNode[]; importedCount: number }> {
+  return request('/api/v1/admin/proxy-nodes/import', { method: 'POST', body: JSON.stringify(body) });
+}
+
+export function testProxyNode(id: string): Promise<ProxyConnectionTest> {
+  return request(`/api/v1/admin/proxy-nodes/${encodeURIComponent(id)}/test`, { method: 'POST' });
+}
+
 export interface MeterDeviceStatus {
   deviceId: string;
   status: 'ACTIVE' | 'REVOKED';

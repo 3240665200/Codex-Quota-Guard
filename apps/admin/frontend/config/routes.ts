@@ -48,6 +48,13 @@ export default [
   },
   {
     access: 'canAdmin',
+    component: './proxy-nodes',
+    icon: 'global',
+    name: '代理节点',
+    path: '/proxy-nodes',
+  },
+  {
+    access: 'canAdmin',
     component: './quotas',
     icon: 'fund',
     name: '额度查看',
