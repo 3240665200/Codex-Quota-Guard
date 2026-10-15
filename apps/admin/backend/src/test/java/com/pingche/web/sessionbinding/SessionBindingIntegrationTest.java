@@ -59,6 +59,7 @@ class SessionBindingIntegrationTest {
     private final AtomicReference<Instant> now = new AtomicReference<>(NOW);
     private User user;
     private UUID accountId;
+    private String accountKey;
     private UUID enrollmentId;
     private UUID deviceId;
 
@@ -66,6 +67,7 @@ class SessionBindingIntegrationTest {
         now.set(NOW);
         when(clock.instant()).thenAnswer(call -> now.get());
         accountId = accounts.saveAndFlush(new OfficialAccount("Binding " + UUID.randomUUID(), 1000, null, NOW)).getId();
+        accountKey = "account-" + accountId;
         Team team = new Team("Binding " + UUID.randomUUID(), "", Team.Status.ACTIVE, 100, 100, NOW);
         team.updateTokenLimits(null, null, null, accountId, NOW);
         team = teams.saveAndFlush(team);
@@ -76,7 +78,7 @@ class SessionBindingIntegrationTest {
         deviceId = UUID.randomUUID();
         devices.saveAndFlush(new MeterDevice(enrollmentId, user.getId(), UUID.randomUUID().toString().replace("-", "").repeat(2), NOW, NOW.plusSeconds(3600)));
         jdbc.update("insert into official_account_connections (official_account_id,requested_account_id,authorization_cipher,bound_account_id,bound_user_id,status,revision,imported_at,version) values (?,?,?,?,?,?,?,?,0)",
-                accountId, "account-key", "synthetic-no-secret", "account-key", "official-user", "CONNECTED", UUID.randomUUID(), NOW);
+                accountId, accountKey, "synthetic-no-secret", accountKey, "official-user", "CONNECTED", UUID.randomUUID(), NOW);
         when(official.refresh(accountId)).thenAnswer(call -> snapshot(List.of("existing"), true, "official-user"));
     }
 
@@ -261,7 +263,7 @@ class SessionBindingIntegrationTest {
     }
 
     private SessionBindingAttemptResponse create() { return service.create(user.getId(), deviceId, enrollmentId, null); }
-    private OfficialAccountInfo identity(String userKey) { return new OfficialAccountInfo(userKey, "synthetic@example.com", "Synthetic", "account-key", "Synthetic", "plus", "owner", false, true); }
+    private OfficialAccountInfo identity(String userKey) { return new OfficialAccountInfo(userKey, "synthetic@example.com", "Synthetic", accountKey, "Synthetic", "plus", "owner", false, true); }
     private OfficialConnectionRefreshResponse snapshot(List<String> ids, boolean complete, String userKey) {
         return new OfficialConnectionRefreshResponse(null, identity(userKey), new OfficialSessions(ids.stream().map(id -> session(id, "Codex")).toList(), complete), now.get());
     }
