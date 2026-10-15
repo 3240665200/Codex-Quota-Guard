@@ -10,7 +10,7 @@
 
 ## 管理员操作流程
 
-1. 使用 HTTPS 登录本系统管理后台。
+1. 通过 HTTP 或 HTTPS 登录本系统管理后台，推荐 HTTPS。允许 HTTP 的部署不因远程地址禁用功能；HTTP 页面会提示密码、授权与浏览器输入可能明文传输。
 2. 如需代理，在“代理节点”添加节点或导入订阅内容／HTTPS 订阅链接。
 3. 在“官方账户 → 账户管理 → 授权与会话”选择访问代理，发起服务器网页登录。无需安装或打开 Quota Guard 桌面客户端。
 4. 管理网页显示服务器独立浏览器的画面。管理员亲自在官方页面输入账号、密码和验证码，支持鼠标、滚动、键盘及中文粘贴。当前版本支持官方邮箱登录；外部 Google、Microsoft、Apple 等 SSO 跳转会明确提示暂不支持，不会放开任意网站。官方人机验证仍由用户处理，不能保证所有账号或服务器网络都能通过。
@@ -49,9 +49,9 @@ MANAGED_PROXY_MAX_PROCESSES=4
 MANAGED_PROXY_ALLOW_PRIVATE_NODES=false
 ```
 
-新装 `deploy.sh init` 会生成独立密钥。已有安装的 `.env` 不会被覆盖：管理员需分别生成并补充两个新密钥，例如分别运行 `openssl rand -base64 32`，将结果保存在受限 `.env`，不要公开输出。已有密钥不能重新生成，否则原密文无法解密。数据库与密钥必须一同备份，密钥备份应另行加密保管。
+新装 `deploy.sh init` 会生成独立密钥。已有安装的 `.env` 不会被覆盖：仅在从未配置对应密钥且数据库中没有对应密文时，才分别运行 `openssl rand -base64 32` 补充缺失项，将结果保存在受限 `.env`，不要公开输出。已有密钥不能重新生成，否则原密文无法解密；原值丢失时应恢复匹配的备份。数据库与密钥必须一同备份，密钥备份应另行加密保管。
 
-缺少密钥时只禁用相应可选功能，不影响原有用户／额度业务。授权、登录 Cookie、官方快照和代理配置均加密保存；页面/API 不回显秘密。普通用户无权访问管理接口。
+缺少密钥时相应功能不可用；缺少官方会话密钥还会阻止建立官方连接及新绑定，不能用健康检查通过判断额度业务完整可用。授权、登录 Cookie、官方快照和代理配置均加密保存；页面/API 不回显秘密。普通用户无权访问管理接口。HTTP 支持不改变这些鉴权和存储规则。
 
 服务器浏览器还需显式启用并配置已安装的 Chromium/Chrome/Edge 可执行文件：
 
@@ -63,16 +63,25 @@ WEB_LOGIN_BROWSER_HEADLESS=true
 
 默认不开启。每次任务使用独立临时目录，绝不读取服务器上已有的日常浏览器 profile；浏览器子进程不继承数据库密码、JWT 或加密密钥。`HEADLESS=true` 表示不显示服务器原生窗口，画面仍由管理网页显示，不表示自动完成登录。多副本部署还需单独设计任务亲和与集群容量，本版按单后台进程提供服务。
 
-## Docker 与 HTTPS
+## Docker、HTTP 与 HTTPS
 
 源代码 Dockerfile 为 linux/amd64 固定下载上游 sing-box 1.13.14，校验官方发布的 SHA-256，并随镜像保留其 LICENSE。上游源码与许可：
 
 - <https://github.com/SagerNet/sing-box/tree/v1.13.14>
 - <https://github.com/SagerNet/sing-box/blob/v1.13.14/LICENSE>
 
-没有更改现有已发布镜像版本，也没有推送或发布新镜像。使用新代码需重新构建。
+服务器 `0.3.19` 为本次待发布目标，基础后端/网页标签为 `0.3.19`，浏览器后端为 `0.3.19-browser`，配套源码标签为 `server-v0.3.19`。已有 `0.3.18` 标签保持不变；本次不更新桌面，数据库仍为 V30，无新增迁移。镜像拉取部署见[registry 说明](../deploy/docker/registry/README.md)，下列 `--build` 命令用于源码部署。
 
-默认 HTTP 部署仍可使用原有功能，但不能导入新的管理凭据。可使用新增 TLS 入口配置（需要 Compose 2.24.4+）：
+传输策略由现有 `app.require-https` 统一控制。基础 Compose 设置 `APP_REQUIRE_HTTPS=false`，允许 HTTP 和 HTTPS 的官方授权导入、会话操作、代理节点管理和服务器网页登录，不再限于 localhost；HTTP 前端仅提示风险，不禁用操作。**HTTP 会明文传输本系统密码、官方授权及浏览器输入，推荐 HTTPS。** 官方上游、代理订阅与邮箱各自原有的 TLS 校验要求不变。
+
+HTTP 服务器浏览器仍需 Chromium 镜像/构建目标和全部沙箱参数，在 `deploy/docker` 下执行（Compose 2.24.4+）：
+
+```sh
+docker compose --env-file .env -f compose.yaml -f compose.web-login.yaml config --quiet
+docker compose --env-file .env -f compose.yaml -f compose.web-login.yaml up -d --build --wait
+```
+
+保留 `.env` 的 `PUBLIC_ORIGIN=http://服务器IP:8080`。HTTP 模式不需要 TLS 证书。若选择强制 HTTPS，可使用 TLS 入口配置：
 
 1. 准备可信证书 `fullchain.pem` 与 `privkey.pem`。证书必须匹配访问域名或 IP，并让容器的非 root Nginx 用户能够只读访问；不要把私钥加入仓库。
 2. `.env` 增加 `TLS_CERT_DIRECTORY=/绝对证书目录`，并把 `PUBLIC_ORIGIN` 改为证书对应的 `https://域名`。
@@ -83,9 +92,9 @@ docker compose --env-file .env -f compose.yaml -f compose.https.yaml config --qu
 docker compose --env-file .env -f compose.yaml -f compose.https.yaml up -d --build --wait
 ```
 
-只开放网站端口，后台和数据库不直接暴露公网。TLS 入口会覆盖转发头，后端只应接受受控反代流量，不能信任客户端自行填写的 `X-Forwarded-Proto`。使用其他反代时，请按同样原则配置，不能通过伪造请求头绕过 HTTPS 限制。
+HTTPS overlay 将 `APP_REQUIRE_HTTPS=true` 设为只接受 HTTPS，并把 HTTP 业务入口重定向到 HTTPS。只开放网站端口，后台和数据库不直接暴露公网。TLS 入口覆盖转发头，后端只接受受控反代流量，不能信任客户端自行填写的 `X-Forwarded-Proto`。使用其他反代时按同样原则配置，不通过伪造请求头绕过 HTTPS 策略。
 
-源码部署要启用服务器浏览器，增加 `-f compose.web-login.yaml`；该可选构建目标包含 Chromium 与中文字体，使用非 root 用户和附带的 Chromium user-namespace seccomp 配置，不使用 `privileged`、`SYS_ADMIN`、`--no-sandbox`。需要宿主内核允许非特权用户命名空间，无法启动时应检查环境，不关闭沙箱。详见[浏览器部署](../deploy/docker/README.md#服务器网页登录可选)。已发布旧 Docker 镜像不包含此功能，本次未发布新镜像。
+HTTPS 源码部署同时启用服务器浏览器时，在上述命令中增加 `-f compose.web-login.yaml`（放在 `config` 或 `up` 前）。浏览器目标包含 Chromium 与中文字体，HTTP 和 HTTPS 都使用非 root、`cap_drop: ALL`、`no-new-privileges`、只读根文件系统及附带的 Chromium user-namespace seccomp 配置，不使用 `privileged`、`SYS_ADMIN`、`--no-sandbox`。需要宿主内核允许非特权用户命名空间；无法启动时检查环境，不关闭沙箱或公开 CDP 端口。详见[浏览器部署](../deploy/docker/README.md#服务器网页登录可选)。普通后端镜像不含浏览器。
 
 ## 本机测试服务的生命周期
 
@@ -155,7 +164,7 @@ Windows 本机预览由 `scripts/windows/start-admin-preview.ps1` 启动。启�
 
 ## 0.3.14 手动验收
 
-1. 后台升级并应用 V24–V27，保留原加密密钥；本机调试可继续使用显式开启的 loopback HTTP，远程传递授权必须 HTTPS。客户端至少使用 0.3.14，旧客户端没有设备门禁请求头；新增管理员解绑和选中登出不需要重新打包该客户端。
+1. 保留原加密密钥；本节记录 0.3.14 的 V24–V27 功能验收，当前 0.3.19 后台已包含 V30。当前基础部署允许远程 HTTP 与 HTTPS，推荐 HTTPS；启用 HTTPS overlay 的部署仍强制 HTTPS。客户端至少使用 0.3.14，旧客户端没有设备门禁请求头；新增管理员解绑和选中登出不需要重新打包该客户端。
 2. 管理员发起官方网页登录，在新版桌面助手完成登录，检查后台真实账户身份和会话。
 3. 给测试用户配置团队、官方账户与有效设备登记。用测试用户登录桌面，确认只有“登录辅助”可用；申请绑定并等待“可登录”。
 4. 在官方 Codex 完成本次登录，回客户端点识别，核对唯一候选后确认。后台应显示对应用户、设备 UUID 和 Session ID；门禁重新验证通过后开放其他菜单。

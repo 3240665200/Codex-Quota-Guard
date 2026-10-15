@@ -1,17 +1,17 @@
 # Docker Hub 拉取部署
 
-服务器版本 `0.3.18` 已发布，源码标签为 `server-v0.3.18`，面向 **Linux amd64 / x86_64**。普通后端和网页的 `latest` 与 `0.3.18` 摘要一致；生产部署仍建议使用下面的固定版本。
+本次服务器发布目标为 `0.3.19`，源码标签为 `server-v0.3.19`，面向 **Linux amd64 / x86_64**。以下下载命令在对应标签和镜像发布完成后使用；生产部署建议固定版本。
 
 | 组件 | 镜像 |
 | --- | --- |
-| 普通后端，不含 Chromium | `minjm/codex-quota-guard-backend:0.3.18` |
-| 管理网页 | `minjm/codex-quota-guard-web:0.3.18` |
-| 可选服务器网页登录后端 | `minjm/codex-quota-guard-backend:0.3.18-browser` |
+| 普通后端，不含 Chromium | `minjm/codex-quota-guard-backend:0.3.19` |
+| 管理网页 | `minjm/codex-quota-guard-web:0.3.19` |
+| 可选服务器网页登录后端 | `minjm/codex-quota-guard-backend:0.3.19-browser` |
 | 数据库 | 官方 `postgres:17-alpine` |
 
 镜像仓库：[后端](https://hub.docker.com/r/minjm/codex-quota-guard-backend) · [管理网页](https://hub.docker.com/r/minjm/codex-quota-guard-web)。服务器不需要源码、Java、Node.js 或 Maven；需要 Docker Engine、Compose **v2.24.4+**、Bash、OpenSSL，以及访问 Docker Hub 的网络。下载配置另外需要 `curl`。这不是 Windows 容器或 ARM 镜像。
 
-保留既有 `0.3.11` 镜像，不覆盖该标签。不要依赖 `latest` 判断版本或自动升级；数据库变化后，保留旧镜像也不表示可以直接切回。
+保留既有 `0.3.18`、`0.3.18-browser` 和 `0.3.11` 镜像，不覆盖旧标签。不要依赖 `latest` 判断版本或自动升级；数据库变化后，保留旧镜像也不表示可以直接切回。
 
 ## 首次部署
 
@@ -22,7 +22,7 @@
   set -e
   mkdir codex-quota-guard-server
   cd codex-quota-guard-server
-  qg_base="https://raw.githubusercontent.com/3240665200/Codex-Quota-Guard/server-v0.3.18/deploy/docker"
+  qg_base="https://raw.githubusercontent.com/3240665200/Codex-Quota-Guard/server-v0.3.19/deploy/docker"
   curl -fSL --fail-early --remote-name-all \
     "$qg_base/registry/compose.yaml" \
     "$qg_base/registry/start.sh" \
@@ -32,7 +32,7 @@
 )
 ```
 
-下载地址固定到与 `0.3.18` 镜像配套的 `server-v0.3.18` 服务器源码标签，与 Windows 安装包版本独立。已有同名目录时下载步骤会停止，不覆盖已有部署。
+下载地址固定到与 `0.3.19` 镜像配套的 `server-v0.3.19` 服务器源码标签，与 Windows 安装包版本独立。已有同名目录时下载步骤会停止，不覆盖已有部署。
 
 进入包含 `start.sh` 的目录（上述下载方式为 `cd codex-quota-guard-server`），替换服务器 IP 和管理员邮箱后执行：
 
@@ -43,13 +43,19 @@ bash start.sh up
 
 初始化提示设置管理员密码，生成独立数据库密码、JWT、邮箱、官方会话及代理加密密钥，保存在权限受限的 `.env`；已有 `.env` 不会被覆盖或自动补字段。启动自动拉取固定镜像并等待健康检查，不在服务器编译。初始化入口只接受 HTTP 地址；需要 HTTPS 时，先初始化，再按下文配置证书与 `PUBLIC_ORIGIN`，最后用组合命令启动。
 
-管理网页和桌面端使用同一个中央服务地址。普通 IP + HTTP 部署仍可用于可信网络的基础管理；正式环境请使用 HTTPS。**官方连接、会话与服务器浏览器等敏感操作要求 HTTPS**，普通 HTTP 入口不会因此获得这些能力。数据库、Java 内部端口和 Chromium 调试端口都不单独公开。
+管理网页和桌面端使用同一个中央服务地址。基础 Compose 设置 `APP_REQUIRE_HTTPS=false`，允许 HTTP 和 HTTPS，包括官方授权导入、会话管理与服务器网页登录，不再仅限 localhost。HTTP 页面只提示风险，不因协议禁用功能；**HTTP 会明文传输系统密码、授权及浏览器输入，推荐使用 HTTPS**。服务器到官方站点的 TLS 校验、鉴权、密钥加密和沙箱规则不变。数据库、Java 内部端口和 Chromium 调试端口都不单独公开。
 
 桌面端应为支持设备标识的 **0.3.14 或更高版本，建议 0.3.18**。本次发布范围为源码与服务器镜像，0.3.18 Windows 本地测试安装包尚未作为新的 GitHub Release 上传；请先准备配套客户端再升级服务器，不能假定既有公开安装包兼容新绑定流程。
 
+## 从 0.3.18 升级
+
+`0.3.19` 调整管理入口的传输策略，**没有新增数据库迁移**，不更新桌面客户端。升级前停止应用并备份数据库与原 `.env`，保留项目名、数据库卷、全部密钥和自定义配置。后端、网页同时改为 `0.3.19`；启用服务器浏览器时同步更新 registry overlay 至 `0.3.19-browser`。不要覆盖原 `.env` 或重新执行 `init`。
+
+继续使用 HTTP 时，保留基础 Compose 的 `APP_REQUIRE_HTTPS=false`；浏览器只需基础配置加 browser overlay。继续强制 HTTPS 时，保留 `compose.https.yaml`，其 `APP_REQUIRE_HTTPS=true` 与 HTTP→HTTPS 重定向保持生效。启动命令见下一节；升级后验收管理员登录、官方管理入口和客户端访问核验。
+
 ## 从 0.3.11 或更早版本升级
 
-`0.3.18` 包含自动绑定与交接、取得名额后 30 分钟登录期限、至少间隔 10 秒的官方会话监测、官方账户与会话管理，以及区分系统用户退出和官方会话退出的管理操作。从 `0.3.11` 升级会执行 **V22–V30 数据库迁移**。
+`0.3.19` 包含此前的自动绑定与交接、取得名额后 30 分钟登录期限、至少间隔 10 秒的官方会话监测、官方账户与会话管理，以及区分系统用户退出和官方会话退出的管理操作。从 `0.3.11` 升级会执行 **V22–V30 数据库迁移**。
 
 **V29 要求所有旧应用写入进程先停止，禁止新旧队列 writer 混跑。** 迁移增加代际校验字段，旧程序不会检查它们。按以下顺序在原部署目录操作：
 
@@ -69,8 +75,8 @@ bash start.sh backup
 普通部署的两个镜像改为：
 
 ```text
-minjm/codex-quota-guard-backend:0.3.18
-minjm/codex-quota-guard-web:0.3.18
+minjm/codex-quota-guard-backend:0.3.19
+minjm/codex-quota-guard-web:0.3.19
 ```
 
 旧 Compose 的 `services.backend.environment` 合并下列映射（若文件为 JSON，使用等价的 JSON 键值格式）：
@@ -96,14 +102,14 @@ bash start.sh up
 
 ## HTTPS 与服务器网页登录（可选）
 
-普通后端镜像来自 `runtime` 目标，**不含 Chromium**。服务器网页登录使用独立的 `0.3.18-browser` 镜像及本目录的 `compose.web-login.yaml`；不要使用上一层包含 `build.target` 的源码部署 overlay。
+普通后端镜像来自 `runtime` 目标，**不含 Chromium**。服务器网页登录使用独立的 `0.3.19-browser` 镜像及本目录的 `compose.web-login.yaml`；不要使用上一层包含 `build.target` 的源码部署 overlay。HTTP 与 HTTPS 均需这套浏览器镜像和安全参数，HTTPS overlay 是可选的传输策略。
 
 在部署目录取得以下附加文件，与基础 `compose.yaml` 放在同一层：
 
 ```bash
 (
   set -e
-  qg_base="https://raw.githubusercontent.com/3240665200/Codex-Quota-Guard/server-v0.3.18/deploy/docker"
+  qg_base="https://raw.githubusercontent.com/3240665200/Codex-Quota-Guard/server-v0.3.19/deploy/docker"
   curl -fSL --fail-early --remote-name-all \
     "$qg_base/registry/compose.web-login.yaml" \
     "$qg_base/chromium-seccomp.json" \
@@ -115,7 +121,15 @@ bash start.sh up
 )
 ```
 
-准备可由容器内非 root 网页进程读取的可信 TLS 证书，目录内包含 `fullchain.pem` 和 `privkey.pem`。证书目录通过只读挂载提供，不放进镜像或 Git。使用安全编辑器在原 `.env` 中设置：
+HTTP 浏览器模式保留 `.env` 中的 `PUBLIC_ORIGIN=http://服务器IP:8080`，不需要证书或 `TLS_CERT_DIRECTORY`，执行：
+
+```bash
+docker compose --project-name codex-quota-guard --env-file .env -f compose.yaml -f compose.web-login.yaml config --quiet
+docker compose --project-name codex-quota-guard --env-file .env -f compose.yaml -f compose.web-login.yaml up -d --no-build --pull always --wait --wait-timeout 240
+docker compose --project-name codex-quota-guard --env-file .env -f compose.yaml -f compose.web-login.yaml ps
+```
+
+推荐的 HTTPS 模式另外准备可由容器内非 root 网页进程读取的可信 TLS 证书，目录内包含 `fullchain.pem` 和 `privkey.pem`。证书目录通过只读挂载提供，不放进镜像或 Git。使用安全编辑器在原 `.env` 中设置：
 
 ```dotenv
 PUBLIC_ORIGIN=https://quota.example.com
@@ -123,7 +137,7 @@ TLS_CERT_DIRECTORY=/etc/codex-quota-guard/tls
 HTTPS_BIND=0.0.0.0
 ```
 
-域名需解析到服务器并放行 443；`TLS_CERT_DIRECTORY` 必须是实际存在的绝对路径。此 HTTPS overlay 在容器内终止 TLS、覆盖可信转发头，并开启后端 HTTPS 要求；HTTP 业务入口重定向 HTTPS。不要只修改 `APP_REQUIRE_HTTPS` 而不配置可信反向代理链。
+域名需解析到服务器并放行 443；`TLS_CERT_DIRECTORY` 必须是实际存在的绝对路径。此 HTTPS overlay 在容器内终止 TLS、覆盖可信转发头，并将 `APP_REQUIRE_HTTPS=true` 设为只接受 HTTPS；HTTP 业务入口重定向 HTTPS。不要只修改该值而不配置可信反向代理链。
 
 ```bash
 docker compose --project-name codex-quota-guard --env-file .env -f compose.yaml -f compose.web-login.yaml -f compose.https.yaml config --quiet
@@ -135,7 +149,7 @@ docker compose --project-name codex-quota-guard --env-file .env -f compose.yaml 
 
 浏览器模式保留非 root、`cap_drop: ALL`、只读根文件系统和 `no-new-privileges`，通过 `chromium-seccomp.json` 保持 Chromium 命名空间沙箱。该配置基于 Playwright 派生，只增加子用户命名空间沙箱所需的 `chroot` 系统调用许可，不授予容器 `CAP_SYS_CHROOT`；出处、修改记录与 Apache-2.0 许可保留在 `licenses/`。不要添加 `--no-sandbox`、privileged、SYS_ADMIN 或公开 Chromium 调试端口。宿主机须允许非特权用户命名空间，兼容性需在目标服务器验证；后端限制 2 GiB 内存、256 MiB 共享内存、512 MiB 临时目录，建议整机至少 4 GiB 可用内存。
 
-除已有明确的回环调试策略外，服务器浏览器和敏感官方会话操作必须通过 HTTPS。它们不会为普通局域网 HTTP 打开例外。管理员仍须本人完成官方验证码或人机验证；当前邮箱登录支持不代表支持外部 SSO，也不能保证官方接受服务器网络。重启会令未完成的浏览器任务失效。
+传输策略与浏览器隔离独立：允许 HTTP 不会关闭沙箱、上游 TLS 校验或管理员权限检查。HTTP 风险提示不会额外阻止操作，管理员仍须本人完成官方验证码或人机验证；当前邮箱登录支持不代表支持外部 SSO，也不能保证官方接受服务器网络。重启会令未完成的浏览器任务失效。
 
 ## 日常操作
 

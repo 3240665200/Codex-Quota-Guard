@@ -25,11 +25,11 @@
 
 ---
 
-Codex Quota Guard 由桌面客户端、中央 Java 服务和 Web 管理后台组成。用户在**官方 Codex 应用或 CLI 自行登录**，桌面端不替换本机 `auth.json`。管理员可在 HTTPS 后台配置官方账户连接，按授权加密保存限定凭据；可选的服务器浏览器登录仍由管理员本人完成验证。Windows 统计程序从本机可读取的 Codex 会话日志采集 Token 事件，上报中央服务；管理员在后台配置团队与个人额度、查看用量和设备状态。
+Codex Quota Guard 由桌面客户端、中央 Java 服务和 Web 管理后台组成。用户在**官方 Codex 应用或 CLI 自行登录**，桌面端不替换本机 `auth.json`。管理员可在后台配置官方账户连接，按授权加密保存限定凭据；可选的服务器浏览器登录仍由管理员本人完成验证。HTTP 与 HTTPS 都可用，推荐 HTTPS 保护密码、授权与浏览器输入。Windows 统计程序从本机可读取的 Codex 会话日志采集 Token 事件，上报中央服务；管理员在后台配置团队与个人额度、查看用量和设备状态。
 
-本次源码版本为 **0.3.18**。桌面端修复重复 BOUND 通知导致的访问核验重置，并共享登录辅助 SSE 订阅以减少切页时的连接重建；前端 230 项模拟测试通过。首次真实访问请求失败的底层原因仍待复测，不能据此认定网络或服务问题全部修复。详见[0.3.18 桌面测试说明](./docs/releases/v0.3.18.md)。
+桌面源码版本保持 **0.3.18**。桌面端修复重复 BOUND 通知导致的访问核验重置，并共享登录辅助 SSE 订阅以减少切页时的连接重建；前端 230 项模拟测试通过。首次真实访问请求失败的底层原因仍待复测，不能据此认定网络或服务问题全部修复。详见[0.3.18 桌面测试说明](./docs/releases/v0.3.18.md)。
 
-当前服务器版本为 `0.3.18`，包含自动绑定交接、取得名额后 30 分钟登录期限、至少间隔 10 秒的官方会话监测、官方账户/会话管理及独立的系统用户退出流程。**本次已同步源码与服务器镜像，未新增 Windows 安装包 Release**；本地 0.3.18 测试包不等于已公开发布，页面顶部下载链接仍指向既有公开安装包。新服务器的桌面端须支持设备标识（0.3.14+，建议 0.3.18），升级前应先准备配套客户端。
+本次服务器发布目标为 `0.3.19`：官方授权、会话管理与服务器网页登录在允许 HTTP 的部署中可直接使用，HTTP 页面保留风险提示；HTTPS 模式仍可强制加密传输。自动绑定、30 分钟登录期限、至少间隔 10 秒的会话监测和退出流程保持不变。**本次只更新服务器，不更新桌面或新增 Windows 安装包 Release**；本地 0.3.18 测试包不等于已公开发布，页面顶部下载链接仍指向既有公开安装包。桌面端须支持设备标识（0.3.14+，建议 0.3.18）。
 
 客户端保留「登录辅助」：管理员可为团队关联的官方账户配置自有邮箱和最多两个精确发件地址，用户点击监听后领取一封新到登录邮件中的验证码。邮箱授权只在中央服务加密保存，官方登录仍由用户完成；详见[邮箱配置与使用说明](./docs/architecture/login-assistance.md)。
 
@@ -40,7 +40,7 @@ Codex Quota Guard 由桌面客户端、中央 Java 服务和 Web 管理后台组
 | 📊 **额度看板** | 桌面端查看官方账户返回的额度窗口百分比，以及本系统单独配置的个人、团队 Token 额度。管理后台可查看已上报的官方额度摘要。 |
 | 🧮 **用量与费用** | 查看输入、输出、缓存、思考 Token、模型名称、思考等级、趋势和逐笔流水；按可配置的模型单价估算 USD。 |
 | 👥 **团队管理** | 在团队页面搜索并批量选择成员，加入、移出或跨团队转移；管理个人/团队额度及累计总额，支持额度重置、设备状态查看和系统账户强制下线。 |
-| 🔗 **账户与绑定** | 管理官方账户连接和会话，自动排队、识别绑定与交接，取得名额后有 30 分钟完成登录；系统用户退出与官方会话退出分别确认，敏感官方操作要求 HTTPS。 |
+| 🔗 **账户与绑定** | 管理官方账户连接和会话，自动排队、识别绑定与交接，取得名额后有 30 分钟完成登录；系统用户退出与官方会话退出分别确认，支持 HTTP 与 HTTPS，推荐 HTTPS。 |
 | 🛠️ **常驻统计与诊断** | Windows Rust 统计程序独立于桌面窗口运行，增量上报用量与心跳；桌面端可查看消耗流水和运行诊断。 |
 | 🎨 **独立工作区** | v0.3.0 桌面端采用可收起侧栏，分开查看额度、统计、流水与诊断；支持浅色、深色、跟随系统，流水明细在弹窗中展开。 |
 
@@ -71,16 +71,16 @@ Codex Quota Guard 由桌面客户端、中央 Java 服务和 Web 管理后台组
 - [后端 · minjm/codex-quota-guard-backend](https://hub.docker.com/r/minjm/codex-quota-guard-backend)
 - [管理网页 · minjm/codex-quota-guard-web](https://hub.docker.com/r/minjm/codex-quota-guard-web)
 
-后端和网页 `0.3.18` 已发布，两个仓库的 `latest` 指向同一版本；可选浏览器后端为 `0.3.18-browser`，Docker Hub 保留既有 `0.3.11` 标签。支持 **Linux amd64 / x86_64**，部署配置固定版本，数据库使用官方 `postgres:17-alpine`。普通后端不含 Chromium；服务器网页登录需专用镜像、HTTPS 和沙箱配置，详见[可选部署说明](./deploy/docker/registry/README.md#https-与服务器网页登录可选)。Windows 桌面客户端和 Rust 统计服务仍安装在用户电脑，不放进服务器容器。镜像摘要和实际验证范围见[服务器发布记录](./docs/releases/server-v0.3.18.md)。
+本次目标为后端和网页 `0.3.19`，可选浏览器后端为 `0.3.19-browser`；保留既有 `0.3.18`、`0.3.18-browser` 和 `0.3.11` 标签。支持 **Linux amd64 / x86_64**，部署配置固定版本，数据库使用官方 `postgres:17-alpine`。普通后端不含 Chromium；HTTP 与 HTTPS 服务器网页登录都需要专用镜像和沙箱配置，HTTPS overlay 可选，详见[部署说明](./deploy/docker/registry/README.md#https-与服务器网页登录可选)。Windows 桌面客户端和 Rust 统计服务仍安装在用户电脑，不放进服务器容器。上次版本的摘要与验证范围见[0.3.18 发布记录](./docs/releases/server-v0.3.18.md)。
 
-服务器准备好 **Docker Engine、Docker Compose v2.24.4+、Bash、curl 和 OpenSSL** 后，替换下面的服务器 IP 和管理员邮箱执行首次部署；配置固定从 `server-v0.3.18` 源码标签下载：
+服务器准备好 **Docker Engine、Docker Compose v2.24.4+、Bash、curl 和 OpenSSL** 后，在 `server-v0.3.19` 标签和对应镜像发布完成后，替换下面的服务器 IP 和管理员邮箱执行首次部署：
 
 ```bash
 (
   set -e
   mkdir codex-quota-guard-server
   cd codex-quota-guard-server
-  qg_base="https://raw.githubusercontent.com/3240665200/Codex-Quota-Guard/server-v0.3.18/deploy/docker"
+  qg_base="https://raw.githubusercontent.com/3240665200/Codex-Quota-Guard/server-v0.3.19/deploy/docker"
   curl -fSL --fail-early --remote-name-all \
     "$qg_base/registry/compose.yaml" \
     "$qg_base/registry/start.sh" \
@@ -92,14 +92,14 @@ Codex Quota Guard 由桌面客户端、中央 Java 服务和 Web 管理后台组
 )
 ```
 
-以上下载地址固定到本次镜像对应的 `server-v0.3.18` 服务器源码标签，只下载 5 个小文件，不下载整个项目；已有同名目录时会停止，避免覆盖旧部署。初始化会提示设置管理员密码，自动生成并保存独立密钥到 `.env`。启动后，**管理网页和桌面客户端都使用 `http://服务器IP:8080`**。基础管理仍支持可信网络 IP + HTTP；官方连接、会话与服务器浏览器等敏感操作要求 HTTPS。按需放行服务器入口端口，不要单独开放数据库端口。
+以上下载地址固定到 `server-v0.3.19` 服务器源码标签，只下载 5 个小文件，不下载整个项目；已有同名目录时会停止，避免覆盖旧部署。初始化会提示设置管理员密码，自动生成并保存独立密钥到 `.env`。启动后，**管理网页和桌面客户端都使用 `http://服务器IP:8080`**。基础 Compose 的 `APP_REQUIRE_HTTPS=false` 允许 HTTP 和 HTTPS 官方管理操作；启用浏览器还需相应 overlay，启用 HTTPS overlay 后则强制 HTTPS。按需放行网站入口端口，不要单独开放数据库、后端或浏览器调试端口。
 
 > [!WARNING]
-> HTTP 不加密，只用于可信网络；公网正式使用请增加 HTTPS 反向代理。新部署不会带入原电脑的用户和流水，需要另行迁移数据库。升级前先备份，保留原 `.env` 和数据库卷，**不要执行 `docker compose down -v`**。`latest` 后续可能变化，生产部署建议固定版本。
+> HTTP 会明文传输密码、系统令牌、官方授权及浏览器输入，推荐使用 HTTPS。允许 HTTP 不改变上游官方 TLS 校验、鉴权或密钥加密。新部署不会带入原电脑的用户和流水，需要另行迁移数据库。升级前先备份，保留原 `.env` 和数据库卷，**不要执行 `docker compose down -v`**。`latest` 后续可能变化，生产部署建议固定版本。
 
 进入 `codex-quota-guard-server` 目录后，可用 `bash start.sh status` 查看状态、`bash start.sh logs backend` 查看日志、`bash start.sh backup` 备份、`bash start.sh stop` 停止并保留数据。
 
-从 `0.3.11` 升级会执行 **V22–V30** 迁移；**必须在 V29 前停止所有旧应用写入进程**，保留 PostgreSQL 运行以备份数据库与原 `.env`。同时更新后端和网页镜像，并合并官方会话/代理密钥映射；不要重新初始化、替换已有密钥或删除数据库卷。迁移后不能假定只换旧镜像即可安全回退，完整步骤见[升级说明](./deploy/docker/registry/README.md#从-0311-或更早版本升级)。
+从 `0.3.18` 升级到 `0.3.19` **没有新增数据库迁移**，桌面无需更新；备份后同时更新后端和网页，并保留所选 HTTP/HTTPS 配置，详见[升级步骤](./deploy/docker/registry/README.md#从-0318-升级)。从 `0.3.11` 升级仍会执行 **V22–V30**；必须在 V29 前停止所有旧应用写入进程，保留 PostgreSQL 运行以备份数据库与原 `.env`，并合并密钥映射。不要重新初始化、替换已有密钥或删除数据库卷；跨迁移回退不能只换旧镜像，见[旧版本升级说明](./deploy/docker/registry/README.md#从-0311-或更早版本升级)。
 
 详细说明：[Docker Hub 拉取部署](./deploy/docker/registry/README.md) · [离线镜像部署](./deploy/docker/offline/README.md) · [从源码构建镜像](./deploy/docker/README.md)。
 
@@ -108,7 +108,7 @@ Codex Quota Guard 由桌面客户端、中央 Java 服务和 Web 管理后台组
 桌面安装包面向 **Windows x64**，包含本地 Java 运行时、WebView2 离线安装器和 Rust 统计程序；用户电脑**不需要**安装 Java、Maven、Node.js、pnpm 或 Rust。0.3.18 目前有本地测试包，本次未上传新的安装包 Release。
 
 1. 部署中央 Java API、PostgreSQL 和管理后台。Linux 服务器推荐使用上面的 [Docker 镜像部署](#docker-服务器部署)，默认支持 IP + HTTP；管理员创建系统用户、团队并设置额度。手动部署见[管理端后端文档](./apps/admin/backend/README.md)。
-2. 安装与服务器配套的桌面版本；0.3.18 服务器要求桌面 0.3.14+，建议使用经验证的 0.3.18 包。[GitHub Releases](https://github.com/3240665200/Codex-Quota-Guard/releases/latest) 仍提供既有公开安装包，请核对版本，不能将该链接视为 0.3.18 安装包已发布。在登录页的“服务器设置”中保存中央服务地址，例如 `https://your-server.example.com`；可信局域网基础管理可临时使用 `http://<服务器 IP>:8080`。保存后从**系统托盘菜单退出客户端**，不要只关闭窗口。`0.0.0.0` 是监听地址，不能作为其他电脑的连接地址。
+2. 安装与服务器配套的桌面版本；服务器 0.3.19 继续使用桌面 0.3.14+，建议使用经验证的 0.3.18 包。[GitHub Releases](https://github.com/3240665200/Codex-Quota-Guard/releases/latest) 仍提供既有公开安装包，请核对版本，不能将该链接视为 0.3.18 安装包已发布。在登录页的“服务器设置”中保存中央服务地址，例如 `https://your-server.example.com` 或 `http://<服务器 IP>:8080`。保存后从**系统托盘菜单退出客户端**，不要只关闭窗口。`0.0.0.0` 是监听地址，不能作为其他电脑的连接地址。
 3. 以**管理员身份运行安装后的桌面程序**，让客户端安装、升级并启动 `CodexQuotaGuardMeter` Windows 服务；然后登录 Quota Guard **系统账户**完成设备配对。0.2.20 起每次启动都要求管理员权限，启动检查页也可保存服务器地址并重试。
 4. 在客户端「登录辅助」申请绑定，按引导取得登录名额后，在该电脑的**官方 Codex 应用或 CLI** 中自行登录对应官方账户。等待中央后台自动识别并保存绑定，当前访问核验允许后再查看官方额度、个人/团队用量、逐笔流水和统计程序状态；绑定记录保存不等于访问核验已通过。
 
