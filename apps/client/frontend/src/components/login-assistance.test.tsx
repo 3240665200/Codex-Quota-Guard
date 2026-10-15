@@ -71,6 +71,9 @@ function calls(command: string) {
   return invokeMock.mock.calls.filter(([name]) => name === command);
 }
 function renderDashboard() {
+  const currentImplementation = invokeMock.getMockImplementation()!;
+  invokeMock.mockImplementation(async (command, args) => command === "session_binding_current"
+    ? { attempt: null, binding: null } : currentImplementation(command, args));
   const client = new QueryClient({
     defaultOptions: {
       queries: { retry: false, gcTime: 0, refetchOnWindowFocus: false },

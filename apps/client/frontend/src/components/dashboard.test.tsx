@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { I18nextProvider } from "react-i18next";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -68,6 +68,9 @@ const quota: QuotaOverview = {
 let quotaResponse = quota;
 
 function renderDashboard(guardNotice?: string) {
+  const currentImplementation = invokeMock.getMockImplementation()!;
+  invokeMock.mockImplementation(async (command, args) => command === "session_binding_current"
+    ? { attempt: null, binding: null } : currentImplementation(command, args));
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -85,6 +88,16 @@ function renderDashboard(guardNotice?: string) {
 }
 
 describe("Dashboard", () => {
+  it("keeps binding and login assistance identities separate when changing pages", async () => {
+    const warnings = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      renderDashboard();
+      await screen.findByRole("heading", { name: "个人 Token" });
+      fireEvent.click(screen.getByRole("button", { name: "登录辅助" }));
+      await screen.findByRole("heading", { name: "监听登录邮件" });
+      expect(warnings.mock.calls.flat().join(" ")).not.toContain("same key");
+    } finally { warnings.mockRestore(); }
+  });
   beforeEach(() => {
     quotaResponse = quota;
     invokeMock.mockImplementation(async (command) => {
