@@ -27,6 +27,28 @@ test('browser overlay preserves privilege boundaries and publishes no browser co
   assert.doesNotMatch(compose, /ports:|privileged:|SYS_ADMIN|unconfined|ipc: host|network_mode: host/);
 });
 
+test('registry browser deployment selects the opt-in image without requiring server-side builds', () => {
+  const base = JSON.parse(read('registry/compose.yaml'));
+  const overlay = read('registry/compose.web-login.yaml');
+  assert.equal(base.services.backend.image, 'minjm/codex-quota-guard-backend:0.3.18');
+  assert.equal(base.services.web.image, 'minjm/codex-quota-guard-web:0.3.18');
+  assert.equal(base.services.backend.platform, 'linux/amd64');
+  assert.equal(base.services.web.platform, 'linux/amd64');
+  assert.deepEqual(base.services.backend.cap_drop, ['ALL']);
+  assert.equal(base.services.backend.read_only, true);
+  assert.equal(base.services.backend.ports, undefined);
+  assert.match(overlay, /image: minjm\/codex-quota-guard-backend:0\.3\.18-browser/);
+  assert.match(overlay, /WEB_LOGIN_BROWSER_ENABLED: "true"/);
+  assert.match(overlay, /WEB_LOGIN_BROWSER_EXECUTABLE: \/usr\/lib\/chromium\/chrome/);
+  assert.match(overlay, /WEB_LOGIN_BROWSER_HEADLESS: "true"/);
+  assert.match(overlay, /-XX:MaxRAMPercentage=40/);
+  assert.match(overlay, /mem_limit: 2g/);
+  assert.match(overlay, /shm_size: 256mb/);
+  assert.match(overlay, /tmpfs: !override\s+- \/tmp:rw,noexec,nosuid,size=512m/);
+  assert.match(overlay, /security_opt: !override\s+- no-new-privileges:true\s+- seccomp=\.\/chromium-seccomp.json/);
+  assert.doesNotMatch(overlay, /build:|ports:|privileged:|SYS_ADMIN|unconfined|ipc: host|network_mode: host|--no-sandbox/);
+});
+
 test('browser seccomp remains default-deny and permits namespace sandbox creation', () => {
   const profile = JSON.parse(read('chromium-seccomp.json'));
   assert.equal(profile.defaultAction, 'SCMP_ACT_ERRNO');
