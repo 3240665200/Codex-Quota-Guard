@@ -8,6 +8,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 
 import com.pingche.web.auth.DomainException;
 import com.pingche.web.auth.JwtService;
@@ -40,6 +41,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.transaction.PlatformTransactionManager;
+import tools.jackson.databind.ObjectMapper;
 
 @SpringBootTest(properties = "spring.datasource.url=jdbc:h2:mem:session-binding;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1")
 @AutoConfigureMockMvc
@@ -54,6 +57,8 @@ class SessionBindingIntegrationTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired MockMvc mvc;
     @Autowired JwtService jwt;
+    @Autowired PlatformTransactionManager transactionManager;
+    @Autowired ObjectMapper json;
     @MockitoBean OfficialConnectionService official;
     @MockitoBean Clock clock;
     private final AtomicReference<Instant> now = new AtomicReference<>(NOW);
@@ -245,7 +250,8 @@ class SessionBindingIntegrationTest {
         });
         CompletableFuture<SessionBindingAttemptResponse> pending = CompletableFuture.supplyAsync(() -> service.prepare(user.getId(), attempt.id()));
         assertThat(entered.await(10, TimeUnit.SECONDS)).isTrue();
-        assertThat(service.prepare(user.getId(), attempt.id()).status()).isEqualTo("PREPARING");
+        SessionBindingService secondInstance = new SessionBindingService(jdbc, official, clock, json, transactionManager);
+        assertThat(secondInstance.prepare(user.getId(), attempt.id()).status()).isEqualTo("PREPARING");
         service.cancel(user.getId(), attempt.id());
         finish.countDown();
         assertThat(pending.get(10, TimeUnit.SECONDS).status()).isEqualTo("CANCELLED");
@@ -260,6 +266,115 @@ class SessionBindingIntegrationTest {
                 .contentType(MediaType.APPLICATION_JSON).content("{\"deviceId\":\"" + deviceId + "\",\"enrollmentId\":\"" + enrollmentId + "\",\"userId\":\"" + UUID.randomUUID() + "\"}"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("QUEUED"));
         mvc.perform(get("/api/v1/admin/session-bindings").secure(true).header(HttpHeaders.AUTHORIZATION, token)).andExpect(status().isForbidden());
+    }
+
+    @Test void everyClientEndpointUsesHttpsNoStoreAndRoundTripsConfirmationAndRelease() throws Exception {
+        var attempt = create();
+        String prefix = "/api/v1/client/session-bindings";
+        String token = "Bearer " + jwt.create(user.getId(), user.getRole().name(), user.getSessionVersion());
+        mvc.perform(get(prefix + "/attempts/{id}", attempt.id()).header(HttpHeaders.AUTHORIZATION, token))
+                .andExpect(status().isBadRequest()).andExpect(header().string("Cache-Control", "no-store"));
+        mvc.perform(get(prefix + "/attempts/{id}", attempt.id()).secure(true).header(HttpHeaders.AUTHORIZATION, token))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.loginAllowed").value(false));
+        mvc.perform(post(prefix + "/attempts/{id}/prepare", attempt.id()).secure(true).header(HttpHeaders.AUTHORIZATION, token))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.loginAllowed").value(true));
+        when(official.refresh(accountId)).thenAnswer(call -> snapshot(List.of("existing", "http-candidate"), true, "official-user"));
+        mvc.perform(post(prefix + "/attempts/{id}/detect", attempt.id()).secure(true).header(HttpHeaders.AUTHORIZATION, token))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("AWAITING_CONFIRMATION"));
+        mvc.perform(post(prefix + "/attempts/{id}/confirm", attempt.id()).secure(true).header(HttpHeaders.AUTHORIZATION, token)
+                .contentType(MediaType.APPLICATION_JSON).content("{\"sessionId\":\"http-candidate\"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.binding.status").value("ACTIVE"));
+        mvc.perform(get(prefix + "/current").secure(true).header(HttpHeaders.AUTHORIZATION, token)
+                .param("deviceId", deviceId.toString()).param("enrollmentId", enrollmentId.toString()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.binding.sessionId").value("http-candidate"));
+        UUID bindingId = service.current(user.getId(), deviceId, enrollmentId).binding().id();
+        mvc.perform(post(prefix + "/bindings/{id}/release", bindingId).secure(true).header(HttpHeaders.AUTHORIZATION, token))
+                .andExpect(status().isNoContent());
+        var queued = create();
+        mvc.perform(post(prefix + "/attempts/{id}/cancel", queued.id()).secure(true).header(HttpHeaders.AUTHORIZATION, token))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("CANCELLED"));
+    }
+
+    @Test void administratorHistoryAndExplicitRecoveryEndpointsAreAvailable() throws Exception {
+        User admin = users.saveAndFlush(User.bootstrapAdministrator(UUID.randomUUID() + "@example.com", "unused", "Admin"));
+        String token = "Bearer " + jwt.create(admin.getId(), admin.getRole().name(), admin.getSessionVersion());
+        var attempt = create();
+        service.prepare(user.getId(), attempt.id());
+        service.cancel(user.getId(), attempt.id());
+        mvc.perform(get("/api/v1/admin/session-bindings").secure(true).header(HttpHeaders.AUTHORIZATION, token)
+                .param("officialAccountId", accountId.toString())).andExpect(status().isOk());
+        mvc.perform(get("/api/v1/admin/session-bindings/accounts/{id}", accountId).secure(true).header(HttpHeaders.AUTHORIZATION, token))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.quarantined").value(true));
+        mvc.perform(post("/api/v1/admin/session-bindings/accounts/{id}/recover", accountId).secure(true).header(HttpHeaders.AUTHORIZATION, token)
+                .contentType(MediaType.APPLICATION_JSON).content("{\"acknowledgeLateLoginRisk\":true}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.quarantined").value(false));
+    }
+
+    @Test void missingSessionIdsDuplicateIdsAndStaleSnapshotCannotGrantLogin() {
+        for (List<String> ids : List.of(java.util.Arrays.asList("existing", null), List.of("existing", "existing"))) {
+            var attempt = create();
+            when(official.refresh(accountId)).thenAnswer(call -> snapshot(ids, true, "official-user"));
+            assertThat(service.prepare(user.getId(), attempt.id()).errorCode()).isEqualTo("SESSION_BINDING_SNAPSHOT_INCOMPLETE");
+        }
+        var stale = create();
+        when(official.refresh(accountId)).thenAnswer(call -> new OfficialConnectionRefreshResponse(null, identity("official-user"), new OfficialSessions(List.of(), true), NOW.minusSeconds(30)));
+        assertThat(service.prepare(user.getId(), stale.id()).loginAllowed()).isFalse();
+    }
+
+    @Test void duplicateLocalOfficialIdentityCannotBypassSerialQueue() {
+        UUID duplicate = accounts.saveAndFlush(new OfficialAccount("Duplicate " + UUID.randomUUID(), 1000, null, NOW)).getId();
+        jdbc.update("insert into official_account_connections (official_account_id,requested_account_id,authorization_cipher,status,revision,imported_at,version) values (?,?,?,?,?,?,0)",
+                duplicate, accountKey, "synthetic-no-secret", "UNVERIFIED", UUID.randomUUID(), NOW);
+        assertThatThrownBy(this::create).isInstanceOf(DomainException.class)
+                .extracting(failure -> ((DomainException) failure).getCode()).isEqualTo("SESSION_BINDING_DUPLICATE_OFFICIAL_IDENTITY");
+    }
+
+    @Test void switchingTeamCannotResurrectOldReadyAttemptThroughCurrentEndpoint() {
+        var attempt = create();
+        service.prepare(user.getId(), attempt.id());
+        Team other = teams.saveAndFlush(new Team("Other team " + UUID.randomUUID(), "", Team.Status.ACTIVE, 100, 100, NOW));
+        other.updateTokenLimits(null, null, null, accountId, NOW);
+        teams.saveAndFlush(other);
+        jdbc.update("update users set team_id=? where id=?", other.getId(), user.getId());
+        var restored = service.current(user.getId(), deviceId, enrollmentId);
+        assertThat(restored.attempt().status()).isEqualTo("REJECTED");
+        assertThat(restored.attempt().loginAllowed()).isFalse();
+    }
+
+    @Test void failedRecoveryKeepsAccountQuarantinedAndCannotClearAnotherActiveTask() {
+        var attempt = create();
+        service.prepare(user.getId(), attempt.id());
+        assertThatThrownBy(() -> service.recover(accountId, true)).isInstanceOf(DomainException.class);
+        service.cancel(user.getId(), attempt.id());
+        when(official.refresh(accountId)).thenThrow(new IllegalStateException("synthetic network failure"));
+        assertThatThrownBy(() -> service.recover(accountId, true)).isInstanceOf(DomainException.class);
+        assertThat(service.accountState(accountId).quarantined()).isTrue();
+        assertThat(service.accountState(accountId).reason()).isEqualTo("SESSION_BINDING_RECOVERY_FAILED");
+    }
+
+    @Test void historicalTaskDoesNotPreventTeamDeletionAndThenBecomesUnusable() {
+        var attempt = create();
+        UUID teamId = user.getTeamId();
+        teams.deleteById(teamId);
+        teams.flush();
+        assertThat(service.get(user.getId(), attempt.id()).status()).isEqualTo("REJECTED");
+        assertThat(jdbc.queryForObject("select team_id from session_binding_attempts where id=?", UUID.class, attempt.id())).isEqualTo(teamId);
+    }
+
+    @Test void deletingLoginOwnerCannotDropTheFenceForALateOfficialLogin() {
+        var first = create();
+        service.prepare(user.getId(), first.id());
+        User next = new User(UUID.randomUUID()+"@example.com", "unused", "Next user");
+        next.updateQuotaPolicy(user.getTeamId(), null, null, NOW);
+        next = users.saveAndFlush(next);
+        UUID enrollment = UUID.randomUUID();
+        devices.saveAndFlush(new MeterDevice(enrollment, next.getId(), UUID.randomUUID().toString().replace("-", "").repeat(2), NOW, NOW.plusSeconds(3600)));
+        var queued = service.create(next.getId(), UUID.randomUUID(), enrollment, null);
+        users.deleteById(user.getId());
+        users.flush();
+        var prepared = service.prepare(next.getId(), queued.id());
+        assertThat(prepared.loginAllowed()).isFalse();
+        assertThat(prepared.quarantined()).isTrue();
     }
 
     private SessionBindingAttemptResponse create() { return service.create(user.getId(), deviceId, enrollmentId, null); }
