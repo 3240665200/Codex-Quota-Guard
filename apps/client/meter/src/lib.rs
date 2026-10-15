@@ -2589,6 +2589,40 @@ mod tests {
     }
 
     #[test]
+    fn rejected_record_is_retained_without_blocking_valid_records_in_the_same_batch() {
+        let root = TestDir::new();
+        let (url, receiver) = mock_meter_http(vec![(400, "{}".into()), (400, "{}".into()), (200, "{}".into()), (200, "{}".into())]);
+        let config = MeterConfig {
+            server_url: url, codex_home: root.path().join(".codex"),
+            pairing_inbox: root.path().join("pairing.json"), state_dir: root.path().join("state"),
+            status_file: root.path().join("status.json"), device_id: uuid::Uuid::new_v4(), owner_user_sid: None,
+        };
+        fs::create_dir_all(config.codex_home.join("sessions")).unwrap();
+        fs::write(config.codex_home.join("sessions/run.jsonl"), record("reject", 41) + &record("accept", 99)).unwrap();
+        save_state(&config.state_dir.join("scan-state.json"), &ScanState::default()).unwrap();
+        save_credential(&config.state_dir, &MeterCredential {
+            device_id: config.device_id, device_token: "A".repeat(43),
+            user_id: Some(uuid::Uuid::from_u128(1)), owner_verified: true,
+        }).unwrap();
+        let mut runtime = MeterRuntime::new_for_test(config.clone()).unwrap();
+        let status = runtime.tick();
+        let requests = receiver.join().unwrap();
+        assert_eq!(requests.len(), 4, "a rejected bulk request must isolate invalid records and continue");
+        assert_eq!(status.error_code.as_deref(), Some("METER_REPORT_REJECTED"));
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(config.state_dir.join("usage-outbox.json")).unwrap()).unwrap();
+        assert_eq!(saved["quarantined"][0]["events"][0]["totalTokens"], 41);
+        assert_eq!(saved["pending"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn full_server_history_window_is_reportable() {
+        let now = Utc::now();
+        let event = parse_direct_record(record_at("near-expiry", 42,
+            &(now - TimeDelta::hours(29 * 24 + 12)).to_rfc3339()).trim().as_bytes()).unwrap();
+        assert!(reportable_at(&event, now));
+    }
+
+    #[test]
     fn runtime_keeps_a_local_history_of_start_baseline_and_unpaired_state() {
         let root = TestDir::new();
         let config = MeterConfig {
