@@ -131,11 +131,12 @@ public class AdminUserLogoutService {
     public Result result(UUID owner, UUID user, UUID id) {
         Plan plan = owned(owner, user, id, false);
         if ("PREVIEW".equals(plan.status)) throw conflict("USER_LOGOUT_PLAN_CONSUMED");
-        List<AccountResult> accounts = plan.preview.accounts().stream().map(account -> accountResult(owner, plan, account)).toList();
+        List<Observation> observed = plan.preview.accounts().stream().map(account -> accountResult(owner, plan, account)).toList();
+        List<AccountResult> accounts = observed.stream().map(Observation::result).toList();
         String status;
-        if ("DISPATCHING".equals(plan.status)) status = plan.startedAt.plusSeconds(300).isAfter(clock.instant()) ? "EXECUTING" : "UNKNOWN";
+        if (observed.stream().anyMatch(Observation::submissionPending)) status = "EXECUTING";
         else if (accounts.stream().anyMatch(account -> "EXECUTING".equals(account.status()))) status = "EXECUTING";
-        else if (accounts.stream().anyMatch(account -> Set.of("UNKNOWN", "RESOLVED_UNKNOWN").contains(account.status()))) status = "UNKNOWN";
+        else if (accounts.stream().anyMatch(account -> "UNKNOWN".equals(account.status()))) status = "UNKNOWN";
         else if ("REVOKED".equals(plan.systemStatus) && accounts.stream().allMatch(account -> "ACCEPTED".equals(account.status()))) status = "ACCEPTED";
         else status = "REVOKED".equals(plan.systemStatus) ? "PARTIAL" : "FAILED";
         return new Result(id, user, SCOPE, status, plan.systemStatus, accounts,
@@ -144,31 +145,48 @@ public class AdminUserLogoutService {
 
     public CurrentResponse current(UUID owner, UUID user) {
         // No provider requests, writes, or retries. Keep unresolved operations ahead of history.
-        List<UUID> ids = jdbc.query("""
-                select p.id from admin_user_logout_plans p
-                where p.owner_id=? and p.user_id=? and p.status<>'PREVIEW'
-                order by case when p.status='DISPATCHING' or exists (
-                    select 1 from admin_user_logout_accounts a left join official_session_logout_plans o on o.id=a.official_plan_id
-                    where a.plan_id=p.id and (o.status in ('EXECUTING','UNKNOWN','RESOLVED_UNKNOWN')
-                      or (a.dispatch_status='UNKNOWN' and (o.id is null or o.status in ('PREVIEW','INVALIDATED')))))
-                    then 0 else 1 end,p.started_at desc,p.id desc limit 1
-                """, (rs, n) -> rs.getObject(1, UUID.class), owner, user);
-        return new CurrentResponse(ids.isEmpty() ? null : result(owner, user, ids.get(0)));
+        List<UUID> ids = jdbc.query("select id from admin_user_logout_plans where owner_id=? and user_id=? and status<>'PREVIEW' order by started_at desc,id desc",
+                (rs, n) -> rs.getObject(1, UUID.class), owner, user);
+        Result latest = null;
+        for (UUID id : ids) {
+            Result observed = result(owner, user, id);
+            if (latest == null) latest = observed;
+            if (Set.of("EXECUTING", "UNKNOWN").contains(observed.status())) return new CurrentResponse(observed);
+        }
+        return new CurrentResponse(latest);
     }
 
-    private AccountResult accountResult(UUID owner, Plan plan, AccountPreview account) {
+    private Observation accountResult(UUID owner, Plan plan, AccountPreview account) {
         Dispatch state = jdbc.queryForObject("select dispatch_status,error_code from admin_user_logout_accounts where plan_id=? and official_account_id=?",
                 (rs, n) -> new Dispatch(rs.getString(1), rs.getString(2)), plan.preview.planId(), account.officialAccountId());
-        if (Set.of("PENDING", "NOT_ATTEMPTED").contains(state.status))
-            return projected(account, "NOT_ATTEMPTED", false, List.of(), state.error, "NOT_ATTEMPTED");
+        if (!"READY".equals(account.status()))
+            return new Observation(projected(account, "NOT_ATTEMPTED", false, List.of(), state.error, "NOT_ATTEMPTED"), false);
         try {
             OfficialSessionLogoutResult result = official.result(owner, account.officialAccountId(), account.planId());
             String status = "ACCEPTED".equals(result.status()) && !account.excluded().isEmpty() ? "PARTIAL" : result.status();
-            return projected(account, status, result.requiresReauthorization(), result.results(), null,
-                    "EXECUTING".equals(result.status()) || "FAILED".equals(result.status()) ? "NOT_ATTEMPTED" : "UNKNOWN");
+            return new Observation(projected(account, status, result.requiresReauthorization(), result.results(), null,
+                    "EXECUTING".equals(result.status()) || "FAILED".equals(result.status()) ? "NOT_ATTEMPTED" : "UNKNOWN"), false);
+        } catch (DomainException failure) {
+            if ("OFFICIAL_LOGOUT_PLAN_CONSUMED".equals(failure.getCode())) {
+                List<ChildState> children = jdbc.query("select status,expires_at from official_session_logout_plans where id=? and owner_id=? and official_account_id=?",
+                        (rs, n) -> new ChildState(rs.getString(1), rs.getTimestamp(2).toInstant()), account.planId(), owner, account.officialAccountId());
+                if (!children.isEmpty() && Set.of("PREVIEW", "INVALIDATED").contains(children.get(0).status)) {
+                    ChildState child = children.get(0);
+                    // The child's expiry is the same durable gate checked by official.confirm.
+                    // Once expired, a paused parent cannot turn this unsent item into a late POST.
+                    boolean pending = "DISPATCHING".equals(plan.status) && Set.of("PENDING", "DISPATCHING").contains(state.status)
+                            && "PREVIEW".equals(child.status) && child.expiresAt.isAfter(clock.instant());
+                    return new Observation(projected(account, "NOT_ATTEMPTED", false, List.of(), state.error, "NOT_ATTEMPTED"), pending);
+                }
+            }
+            return unavailableResult(account);
         } catch (RuntimeException failure) {
-            return projected(account, "UNKNOWN", false, List.of(), "USER_LOGOUT_RESULT_UNAVAILABLE", "UNKNOWN");
+            return unavailableResult(account);
         }
+    }
+
+    private Observation unavailableResult(AccountPreview account) {
+        return new Observation(projected(account, "UNKNOWN", false, List.of(), "USER_LOGOUT_RESULT_UNAVAILABLE", "UNKNOWN"), false);
     }
 
     private AccountResult projected(AccountPreview account, String status, boolean reauthorization,
@@ -229,6 +247,8 @@ public class AdminUserLogoutService {
     private record ScopeBinding(UUID id, UUID account, String session, UUID revision, UUID currentRevision, String label) { }
     private record Plan(UUID owner, String status, String fingerprint, Preview preview, String systemStatus, Instant startedAt) { }
     private record Dispatch(String status, String error) { }
+    private record ChildState(String status, Instant expiresAt) { }
+    private record Observation(AccountResult result, boolean submissionPending) { }
 
     public record Preview(UUID planId, UUID userId, String scope, Instant expiresAt, List<AccountPreview> accounts, List<String> warnings) { }
     public record AccountPreview(UUID officialAccountId, String displayName, UUID planId, String status, List<String> sessionIds,
