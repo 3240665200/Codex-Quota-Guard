@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import UsersPage from './index';
 import { generateRandomPassword } from './generatePassword';
 import {
+  forceLogoutUser,
   getSession,
   getUserOfficialQuota,
   getUserMeterDevices,
@@ -192,6 +193,30 @@ describe('用户额度策略配置', () => {
     expect(navigate).toHaveBeenCalledWith(`/quotas/users/${user.id}`);
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     navigate.mockRestore();
+  });
+
+  it('splits product-only and all-bound-account logout into two distinct actions', async () => {
+    vi.mocked(getSession).mockReturnValue({ accessToken: 'admin-token', user: { ...user, id: 'admin-1', role: 'ADMIN' } });
+    renderPage();
+    await screen.findByText('张三');
+    fireEvent.click(screen.getByRole('button', { name: '管理 zhangsan@example.com' }));
+    expect(await screen.findByRole('menuitem', { name: /强制下线系统账户/ })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: /强制下线所有账户/ })).toBeInTheDocument();
+    expect(forceLogoutUser).not.toHaveBeenCalled();
+  });
+
+  it('requires product-only confirmation and explains that official sessions are untouched', async () => {
+    vi.mocked(getSession).mockReturnValue({ accessToken: 'admin-token', user: { ...user, id: 'admin-1', role: 'ADMIN' } });
+    vi.mocked(forceLogoutUser).mockResolvedValue(undefined);
+    renderPage();
+    await screen.findByText('张三');
+    fireEvent.click(screen.getByRole('button', { name: '管理 zhangsan@example.com' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: /强制下线系统账户/ }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText(/不会登出官方会话/)).toBeInTheDocument();
+    expect(forceLogoutUser).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认下线系统账户' }));
+    await waitFor(() => expect(forceLogoutUser).toHaveBeenCalledExactlyOnceWith(user.id));
   });
 
   it('generates, copies, and saves a new password only from the edit dialog', async () => {
