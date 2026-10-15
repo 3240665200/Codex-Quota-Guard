@@ -86,4 +86,19 @@ describe('官方网页登录与设备绑定入口', () => {
     expect(within(dialog).queryByText('暂无当前绑定')).not.toBeInTheDocument();
     expect(within(dialog).queryByText('fixture-private-upstream')).not.toBeInTheDocument();
   });
+
+  it('clears an old snapshot when helper authorization was saved but official verification failed', async () => {
+    mocks.startOfficialBrowserLogin.mockImplementation(async () => {
+      mocks.getOfficialAccountConnection.mockResolvedValue({ ...connection, version: 6, status: 'ACCESS_BLOCKED',
+        lastErrorCode: 'OFFICIAL_CHALLENGE_REQUIRED' });
+      mocks.getOfficialAccountSessions.mockRejectedValue({ code: 'OFFICIAL_SNAPSHOT_UNAVAILABLE' });
+      return { id: 'job-1', officialAccountId: 'account-1', accountName: '研发账户', state: 'FAILED',
+        expiresAt: '2026-10-15T01:00:00Z', errorCode: 'OFFICIAL_CHALLENGE_REQUIRED', proxyNodeId: null };
+    });
+    const dialog = await show();
+    fireEvent.click(within(dialog).getByRole('button', { name: '开始官方网页登录' }));
+    await waitFor(() => expect(mocks.getOfficialAccountConnection).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(within(dialog).queryByText('official@example.test')).not.toBeInTheDocument());
+    expect(mocks.refreshOfficialAccountConnection).not.toHaveBeenCalled();
+  });
 });
