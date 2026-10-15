@@ -1,5 +1,5 @@
-import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
 import { SessionBindingResult, SessionBindingsTable } from './SessionBindings';
 import type { SessionBinding } from '../../services/sessionBindingsApi';
 
@@ -56,5 +56,23 @@ describe('官方设备会话绑定结果', () => {
   it('explains when no device has completed binding', () => {
     render(<SessionBindingsTable bindings={[]} />);
     expect(screen.getByText('尚无设备会话绑定记录')).toBeInTheDocument();
+  });
+
+  it('offers unbind only for active history and passes its exact record for confirmation', () => {
+    const onRelease = vi.fn();
+    render(<SessionBindingsTable bindings={[binding, { ...binding, id: 'ended', status: 'ENDED' },
+      { ...binding, id: 'invalid', status: 'INVALIDATED' }]} onRelease={onRelease} />);
+    const buttons = screen.getAllByRole('button', { name: '解绑会话' });
+    expect(buttons).toHaveLength(1);
+    fireEvent.click(buttons[0]);
+    expect(onRelease).toHaveBeenCalledWith(binding);
+  });
+
+  it('does not allow unbind when management actions are locked', () => {
+    const onRelease = vi.fn();
+    render(<SessionBindingsTable bindings={[binding]} disabled onRelease={onRelease} />);
+    expect(screen.getByRole('button', { name: '解绑会话' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: '解绑会话' }));
+    expect(onRelease).not.toHaveBeenCalled();
   });
 });
