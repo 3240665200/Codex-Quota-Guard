@@ -293,6 +293,60 @@ class AdminUserLogoutIntegrationTest {
         assertThat(users.findById(member.getId()).orElseThrow().getSessionVersion()).isEqualTo(1);
     }
 
+    @Test void existingChildSubmissionIsReadWithoutClaimingItWasNotAttempted() throws Exception {
+        binding(member, account, "owned", "ACTIVE");
+        JsonNode preview = preview();
+        String plan = preview.path("planId").asString();
+        UUID child = UUID.fromString(preview.path("accounts").get(0).path("planId").asString());
+        // Simulate a durable child journal committed through the original official API.
+        // No worker or real upstream request is started by this test.
+        jdbc.update("update official_session_logout_plans set status='EXECUTING',started_at=?,lease_until=?,results_json=? where id=?",
+                at(NOW), at(NOW.plusSeconds(300)), json.writeValueAsString(List.of(new OfficialSessionLogoutResult.Item("owned", "UNKNOWN", "OFFICIAL_LOGOUT_OUTCOME_UNKNOWN"))), child);
+        confirm(admin, plan, true).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("EXECUTING"))
+                .andExpect(jsonPath("$.accounts[0].status").value("EXECUTING"))
+                .andExpect(jsonPath("$.accounts[0].results[0].status").value("UNKNOWN"));
+        read(plan).andExpect(status().isOk()).andExpect(jsonPath("$.accounts[0].status").value("EXECUTING"));
+        verify(client, never()).revokeSession(any(), any(), anyString());
+    }
+
+    @Test void everyNewRouteRejectsRemotePlainHttpBeforeAnyAction() throws Exception {
+        UUID plan = UUID.randomUUID();
+        var calls = List.of(post(url("preview")), post(url("confirm")).contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("planId", plan, "acknowledgeLogoutRisk", true))),
+                get(url("current")), get(url(plan.toString())));
+        for (var call : calls) mvc.perform(call.header(HttpHeaders.AUTHORIZATION, token(admin)).with(request -> {
+                    request.setRemoteAddr("203.0.113.9");
+                    request.setServerName("admin.example.test");
+                    return request;
+                })).andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value("OFFICIAL_HTTPS_REQUIRED"));
+        verify(client, never()).fetch(any(), any());
+        assertThat(users.findById(member.getId()).orElseThrow().getSessionVersion()).isZero();
+    }
+
+    @Test void staleActiveBindingCannotClaimSessionOwnershipAfterAuthorizationReplacement() throws Exception {
+        UUID binding = binding(member, account, "owned", "ACTIVE");
+        jdbc.update("update session_bindings set connection_revision=? where id=?", UUID.randomUUID(), binding);
+        JsonNode preview = preview();
+        assertThat(preview.toString()).contains("USER_LOGOUT_BINDING_STALE", "NOT_ATTEMPTED");
+        confirm(admin, preview.path("planId").asString(), true).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("PARTIAL"));
+        verify(client, never()).fetch(any(), any());
+        verify(client, never()).revokeSession(any(), any(), anyString());
+    }
+
+    @Test void interruptedSubmissionCanBeReadAfterExpiryButNeverResumed() throws Exception {
+        binding(member, account, "owned", "ACTIVE");
+        String plan = preview().path("planId").asString();
+        jdbc.update("update admin_user_logout_plans set status='DISPATCHING',system_status='REVOKED',started_at=? where id=?", at(NOW), UUID.fromString(plan));
+        read(plan).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("EXECUTING"))
+                .andExpect(jsonPath("$.accounts[0].status").value("NOT_ATTEMPTED"));
+        now.set(NOW.plusSeconds(301));
+        read(plan).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("UNKNOWN"));
+        mvc.perform(get(url("current")).secure(true).header(HttpHeaders.AUTHORIZATION, token(admin)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.operation.planId").value(plan));
+        confirm(admin, plan, true).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("USER_LOGOUT_PLAN_CONSUMED"));
+        verify(client, never()).revokeSession(any(), any(), anyString());
+    }
+
     private OfficialAccount account(String key) {
         OfficialAccount value = accounts.saveAndFlush(new OfficialAccount("Account " + key, 1000, null, NOW));
         connections.save(value.getId(), new OfficialConnectionRequest("Bearer synthetic-" + key, null, key, null, 0L));
