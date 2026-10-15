@@ -8,6 +8,8 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Clock;
 import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
@@ -61,7 +63,7 @@ public class SessionBindingService {
             }
             UUID id = UUID.randomUUID();
             jdbc.update("insert into session_binding_attempts (id,user_id,device_id,enrollment_id,team_id,team_version,official_account_id,connection_revision,status,created_at,expires_at) values (?,?,?,?,?,?,?,?,?,?,?)",
-                    id, userId, deviceId, enrollmentId, current.teamId, current.teamVersion, accountId, current.revision, "QUEUED", clock.instant(), clock.instant().plusSeconds(1800));
+                    id, userId, deviceId, enrollmentId, current.teamId, current.teamVersion, accountId, current.revision, "QUEUED", at(clock.instant()), at(clock.instant().plusSeconds(1800)));
             return response(load(id));
         });
     }
@@ -91,8 +93,8 @@ public class SessionBindingService {
             if (!id.equals(head)) return null;
             if (!valid(attempt)) { terminate(attempt, "REJECTED", "SESSION_BINDING_CONTEXT_CHANGED"); return null; }
             UUID operation = UUID.randomUUID();
-            jdbc.update("update session_binding_accounts set active_attempt_id=?,updated_at=? where official_account_id=?", id, clock.instant(), attempt.accountId);
-            jdbc.update("update session_binding_attempts set status='PREPARING',operation_id=?,operation_started_at=?,expires_at=? where id=?", operation, clock.instant(), clock.instant().plusSeconds(600), id);
+            jdbc.update("update session_binding_accounts set active_attempt_id=?,updated_at=? where official_account_id=?", id, at(clock.instant()), attempt.accountId);
+            jdbc.update("update session_binding_attempts set status='PREPARING',operation_id=?,operation_started_at=?,expires_at=? where id=?", operation, at(clock.instant()), at(clock.instant().plusSeconds(600)), id);
             return new Work(load(id), operation, "PREPARING");
         });
         if (work == null) return get(userId, id);
@@ -153,9 +155,9 @@ public class SessionBindingService {
                 }
                 jdbc.update("insert into session_bindings (id,attempt_id,user_id,device_id,enrollment_id,team_id,team_version,official_account_id,connection_revision,session_id,active_device_id,active_session_id,status,match_method,verification_level,created_at) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         UUID.randomUUID(), id, userId, attempt.deviceId, attempt.enrollmentId, attempt.teamId, attempt.teamVersion,
-                        attempt.accountId, attempt.revision, sessionId, attempt.deviceId, sessionId, "ACTIVE", "SERIAL_LOGIN_DIFF", "USER_CONFIRMED_INFERENCE", clock.instant());
+                        attempt.accountId, attempt.revision, sessionId, attempt.deviceId, sessionId, "ACTIVE", "SERIAL_LOGIN_DIFF", "USER_CONFIRMED_INFERENCE", at(clock.instant()));
                 jdbc.update("update session_binding_attempts set status='BOUND' where id=?", id);
-                jdbc.update("update session_binding_accounts set active_attempt_id=null,updated_at=? where official_account_id=? and active_attempt_id=?", clock.instant(), attempt.accountId, id);
+                jdbc.update("update session_binding_accounts set active_attempt_id=null,updated_at=? where official_account_id=? and active_attempt_id=?", at(clock.instant()), attempt.accountId, id);
                 return response(load(id));
             });
         } catch (DataIntegrityViolationException conflict) {
@@ -180,7 +182,7 @@ public class SessionBindingService {
         if (found.isEmpty()) throw forbidden();
         transaction(() -> {
             lockAccount(found.get(0).officialAccountId());
-            jdbc.update("update session_bindings set status='ENDED',active_device_id=null,active_session_id=null,ended_at=? where id=? and user_id=? and status='ACTIVE'", clock.instant(), bindingId, userId);
+            jdbc.update("update session_bindings set status='ENDED',active_device_id=null,active_session_id=null,ended_at=? where id=? and user_id=? and status='ACTIVE'", at(clock.instant()), bindingId, userId);
             return null;
         });
     }
@@ -203,7 +205,7 @@ public class SessionBindingService {
             lockAccount(accountId);
             sweep(accountId);
             if (accountStateUnlocked(accountId).activeAttemptId() != null) throw error("SESSION_BINDING_ACCOUNT_BUSY");
-            jdbc.update("update session_binding_accounts set quarantined=true,reason='SESSION_BINDING_RECOVERY_IN_PROGRESS',recovery_id=?,recovery_started_at=?,updated_at=? where official_account_id=?", recovery, clock.instant(), clock.instant(), accountId);
+            jdbc.update("update session_binding_accounts set quarantined=true,reason='SESSION_BINDING_RECOVERY_IN_PROGRESS',recovery_id=?,recovery_started_at=?,updated_at=? where official_account_id=?", recovery, at(clock.instant()), at(clock.instant()), accountId);
             return connectionRevision(accountId);
         });
         try {
@@ -214,13 +216,13 @@ public class SessionBindingService {
                 lockAccount(accountId);
                 UUID actualRecovery = jdbc.queryForObject("select recovery_id from session_binding_accounts where official_account_id=?", UUID.class, accountId);
                 if (!recovery.equals(actualRecovery) || !revision.equals(connectionRevision(accountId))) throw error("SESSION_BINDING_CONTEXT_CHANGED");
-                jdbc.update("update session_binding_accounts set quarantined=false,reason=null,recovery_id=null,recovery_started_at=null,updated_at=? where official_account_id=?", clock.instant(), accountId);
+                jdbc.update("update session_binding_accounts set quarantined=false,reason=null,recovery_id=null,recovery_started_at=null,updated_at=? where official_account_id=?", at(clock.instant()), accountId);
                 return accountStateUnlocked(accountId);
             });
         } catch (RuntimeException failure) {
             transaction(() -> {
                 lockAccount(accountId);
-                jdbc.update("update session_binding_accounts set reason='SESSION_BINDING_RECOVERY_FAILED',recovery_id=null,recovery_started_at=null,updated_at=? where official_account_id=? and recovery_id=?", clock.instant(), accountId, recovery);
+                jdbc.update("update session_binding_accounts set reason='SESSION_BINDING_RECOVERY_FAILED',recovery_id=null,recovery_started_at=null,updated_at=? where official_account_id=? and recovery_id=?", at(clock.instant()), accountId, recovery);
                 return null;
             });
             if (failure instanceof DomainException domain) throw domain;
@@ -230,7 +232,7 @@ public class SessionBindingService {
 
     private Work reserveAfter(Attempt attempt) {
         UUID operation = UUID.randomUUID();
-        jdbc.update("update session_binding_attempts set status='DETECTING',operation_id=?,operation_started_at=? where id=?", operation, clock.instant(), attempt.id);
+        jdbc.update("update session_binding_attempts set status='DETECTING',operation_id=?,operation_started_at=? where id=?", operation, at(clock.instant()), attempt.id);
         return new Work(load(attempt.id), operation, "DETECTING");
     }
 
@@ -274,7 +276,7 @@ public class SessionBindingService {
         } else {
             OfficialSessionInfo candidate = candidates.get(0);
             jdbc.update("update session_binding_attempts set status='AWAITING_CONFIRMATION',candidate_session_id=?,candidate_display_name=?,candidate_platform=?,candidate_fetched_at=?,operation_id=null,operation_started_at=null where id=?",
-                    candidate.sessionId(), truncate(candidate.displayName(), 1000), truncate(candidate.platform(), 320), snapshot.fetchedAt(), attempt.id);
+                    candidate.sessionId(), truncate(candidate.displayName(), 1000), truncate(candidate.platform(), 320), at(snapshot.fetchedAt()), attempt.id);
         }
         return response(load(attempt.id));
     }
@@ -312,14 +314,14 @@ public class SessionBindingService {
     private void lockAccount(UUID accountId) {
         if (jdbc.query("select id from official_accounts where id=? for update", (rs,n) -> uuid(rs,"id"), accountId).isEmpty()) throw forbidden();
         if (jdbc.queryForObject("select count(*) from session_binding_accounts where official_account_id=?", Integer.class, accountId) == 0)
-            jdbc.update("insert into session_binding_accounts (official_account_id,quarantined,updated_at) values (?,false,?)", accountId, clock.instant());
+            jdbc.update("insert into session_binding_accounts (official_account_id,quarantined,updated_at) values (?,false,?)", accountId, at(clock.instant()));
     }
 
     private void sweep(UUID accountId) {
         UUID active = accountStateUnlocked(accountId).activeAttemptId();
         if (active != null && jdbc.queryForObject("select count(*) from session_binding_attempts where id=? and official_account_id=? and status in ('PREPARING','READY_FOR_LOGIN','DETECTING','AWAITING_CONFIRMATION')", Integer.class, active, accountId) == 0) {
             // Cascading deletion of a user must not erase the late-login fence.
-            jdbc.update("update session_binding_accounts set quarantined=true,reason='SESSION_BINDING_ORPHANED_ATTEMPT',active_attempt_id=null,updated_at=? where official_account_id=?", clock.instant(), accountId);
+            jdbc.update("update session_binding_accounts set quarantined=true,reason='SESSION_BINDING_ORPHANED_ATTEMPT',active_attempt_id=null,updated_at=? where official_account_id=?", at(clock.instant()), accountId);
         }
         List<Attempt> pending = jdbc.query("select * from session_binding_attempts where official_account_id=? and status in " + PENDING + " order by sequence_id", this::attempt, accountId);
         for (Attempt attempt : pending) {
@@ -341,7 +343,7 @@ public class SessionBindingService {
                 (rs,n) -> new UserContext(uuid(rs,"team_id"), rs.getString("status")), userId);
         if (users.isEmpty() || !"ACTIVE".equals(users.get(0).status) || users.get(0).teamId == null) throw forbidden();
         if (jdbc.query("select id from meter_devices where id=? and user_id=? and status='ACTIVE' and expires_at>?" + suffix,
-                (rs,n) -> uuid(rs,"id"), enrollmentId, userId, clock.instant()).isEmpty()) throw forbidden();
+                (rs,n) -> uuid(rs,"id"), enrollmentId, userId, at(clock.instant())).isEmpty()) throw forbidden();
         List<TeamContext> teams = jdbc.query("select official_account_id,version from teams where id=? and status='ACTIVE'" + suffix,
                 (rs,n) -> new TeamContext(uuid(rs,"official_account_id"), rs.getLong("version")), users.get(0).teamId);
         if (teams.isEmpty() || teams.get(0).accountId == null || (expectedAccount != null && !expectedAccount.equals(teams.get(0).accountId))) throw forbidden();
@@ -359,14 +361,14 @@ public class SessionBindingService {
     private void terminate(Attempt attempt, String status, String code) {
         boolean risky = Set.of("READY_FOR_LOGIN", "DETECTING", "AWAITING_CONFIRMATION").contains(attempt.status);
         jdbc.update("update session_binding_attempts set status=?,error_code=?,operation_id=null,operation_started_at=null where id=?", status, code, attempt.id);
-        if (risky) jdbc.update("update session_binding_accounts set quarantined=true,reason=?,updated_at=? where official_account_id=?", code, clock.instant(), attempt.accountId);
-        jdbc.update("update session_binding_accounts set active_attempt_id=null,updated_at=? where official_account_id=? and active_attempt_id=?", clock.instant(), attempt.accountId, attempt.id);
+        if (risky) jdbc.update("update session_binding_accounts set quarantined=true,reason=?,updated_at=? where official_account_id=?", code, at(clock.instant()), attempt.accountId);
+        jdbc.update("update session_binding_accounts set active_attempt_id=null,updated_at=? where official_account_id=? and active_attempt_id=?", at(clock.instant()), attempt.accountId, attempt.id);
     }
 
     private void invalidateBindings(UUID accountId) {
         List<Attempt> bound = jdbc.query("select a.* from session_binding_attempts a join session_bindings b on b.attempt_id=a.id where b.official_account_id=? and b.status='ACTIVE'", this::attempt, accountId);
         for (Attempt attempt : bound) if (!valid(attempt)) {
-            jdbc.update("update session_bindings set status='INVALIDATED',active_device_id=null,active_session_id=null,ended_at=? where attempt_id=? and status='ACTIVE'", clock.instant(), attempt.id);
+            jdbc.update("update session_bindings set status='INVALIDATED',active_device_id=null,active_session_id=null,ended_at=? where attempt_id=? and status='ACTIVE'", at(clock.instant()), attempt.id);
             jdbc.update("update session_binding_attempts set status='REJECTED',error_code='SESSION_BINDING_CONTEXT_CHANGED' where id=? and status='BOUND'", attempt.id);
         }
     }
@@ -408,6 +410,7 @@ public class SessionBindingService {
     }
 
     private static UUID uuid(ResultSet rs, String column) throws SQLException { return rs.getObject(column, UUID.class); }
+    private static OffsetDateTime at(Instant value) { return value.atOffset(ZoneOffset.UTC); }
     private static Instant instant(ResultSet rs, String column) throws SQLException { var stamp = rs.getTimestamp(column); return stamp == null ? null : stamp.toInstant(); }
     private static boolean pending(String state) { return Set.of("QUEUED","PREPARING","READY_FOR_LOGIN","DETECTING","AWAITING_CONFIRMATION").contains(state); }
     private static String truncate(String text, int length) { return text == null ? null : text.substring(0, Math.min(text.length(), length)); }
