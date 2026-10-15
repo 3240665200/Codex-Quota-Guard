@@ -37,9 +37,10 @@ class SessionBindingGatewayTest {
         var requestPath = new AtomicReference<String>();
         var requestBody = new AtomicReference<String>();
         var authorization = new AtomicReference<String>();
+        var queueVersion = new AtomicReference<String>();
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/api/v1/client/session-bindings", exchange -> {
-            assertThat(exchange.getRequestHeaders().getFirst("X-CQG-Queue-Version")).isEqualTo("2");
+            queueVersion.set(exchange.getRequestHeaders().getFirst("X-CQG-Queue-Version"));
             requestPath.set(exchange.getRequestURI().toString());
             requestBody.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
             authorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
@@ -60,6 +61,7 @@ class SessionBindingGatewayTest {
         try {
             var gateway = new HttpControlPlaneGateway("http://127.0.0.1:" + server.getAddress().getPort(), new ObjectMapper());
             assertThat(gateway.sessionBindingCurrent("native-access", device, device).binding()).isNull();
+            assertThat(queueVersion.get()).isEqualTo("2");
             assertThat(requestPath.get()).isEqualTo("/api/v1/client/session-bindings/current?deviceId=" + device + "&enrollmentId=" + device);
             var attempt=gateway.startSessionBinding("native-access", device, device);
             assertThat(attempt.status()).isEqualTo("QUEUED");

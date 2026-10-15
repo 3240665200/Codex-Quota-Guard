@@ -13,7 +13,7 @@ class AssistanceRealtimeGatewayTest {
     @Test void closesAnInputStreamThatCompletesAtTheHeadersTimeoutBoundary() {
         AtomicBoolean closed=new AtomicBoolean();
         var body=new ByteArrayInputStream(new byte[0]) {@Override public void close(){closed.set(true);}};
-        var response=org.mockito.Mockito.<java.net.http.HttpResponse<java.io.InputStream>>mock(java.net.http.HttpResponse.class);
+        java.net.http.HttpResponse<java.io.InputStream> response=org.mockito.Mockito.mock(java.net.http.HttpResponse.class);
         org.mockito.Mockito.when(response.body()).thenReturn(body);
         var pending=new java.util.concurrent.CompletableFuture<java.net.http.HttpResponse<java.io.InputStream>>() {
             @Override public java.net.http.HttpResponse<java.io.InputStream> get(long timeout,java.util.concurrent.TimeUnit unit)
