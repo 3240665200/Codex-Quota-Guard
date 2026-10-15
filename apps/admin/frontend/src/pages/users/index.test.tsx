@@ -245,6 +245,23 @@ describe('用户额度策略配置', () => {
     expect(forceLogoutUser).not.toHaveBeenCalled();
   });
 
+  it('keeps a generated password available for manual copy when HTTP has no Clipboard API', async () => {
+    const password = 'SyntheticPassword_HTTP_2026';
+    vi.mocked(generateRandomPassword).mockReturnValue(password);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+    renderPage();
+    await screen.findByText('张三');
+    fireEvent.click(screen.getByRole('button', { name: '管理 zhangsan@example.com' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: /编辑/ }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: '生成随机密码' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: '复制密码' }));
+    expect(await screen.findByText('复制失败，请显示密码后手动复制')).toBeInTheDocument();
+    expect(within(dialog).getByLabelText('密码')).toHaveValue(password);
+    expect(within(dialog).getByLabelText('密码')).toHaveAttribute('type', 'text');
+    expect(updateUser).not.toHaveBeenCalled();
+  });
+
   it('generates, copies, and saves a new password only from the edit dialog', async () => {
     const password = 'TestPassword_2026_ABCDEF';
     const writeText = vi.fn().mockResolvedValue(undefined);

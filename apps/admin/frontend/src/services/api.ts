@@ -343,6 +343,11 @@ export function isSecureManagementContext(): boolean {
     && ['localhost', '127.0.0.1', '[::1]'].includes(hostname));
 }
 
+export function isSupportedManagementContext(): boolean {
+  if (typeof window === 'undefined') return false;
+  return window.location.protocol === 'https:' || window.location.protocol === 'http:';
+}
+
 export function getOfficialAccountConnection(id: string): Promise<OfficialAccountConnection> {
   return request(`/api/v1/admin/official-accounts/${encodeURIComponent(id)}/connection`);
 }

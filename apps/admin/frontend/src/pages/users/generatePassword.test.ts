@@ -5,7 +5,7 @@ import { generateRandomPassword } from './generatePassword';
 afterEach(() => vi.unstubAllGlobals());
 
 describe('generateRandomPassword', () => {
-  it('uses Web Crypto to produce a 24-character password from an unbiased alphabet', () => {
+  it('uses Web Crypto on HTTP without depending on secure-context-only randomUUID', () => {
     const getRandomValues = vi.fn((bytes: Uint8Array) => {
       bytes.forEach((_, index) => {
         bytes[index] = index;
@@ -13,7 +13,9 @@ describe('generateRandomPassword', () => {
       return bytes;
     });
     vi.stubGlobal('crypto', { getRandomValues });
+    vi.stubGlobal('isSecureContext', false);
 
+    expect(globalThis.crypto.randomUUID).toBeUndefined();
     expect(generateRandomPassword()).toBe('ABCDEFGHIJKLMNOPQRSTUVWX');
     expect(getRandomValues).toHaveBeenCalledOnce();
   });

@@ -4,8 +4,9 @@ import type { TableColumnsType } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import type { ChangeEvent, ReactNode } from 'react';
 import { managedErrorCode, managedErrorMessage } from '../../components/managedErrors';
+import ManagementTransportNotice from '../../components/ManagementTransportNotice';
 import { deleteOfficialAccountConnection, getOfficialAccountConnection, getOfficialAccountSessions,
-  isSecureManagementContext, listProxyNodes, refreshOfficialAccountConnection,
+  isSupportedManagementContext, listProxyNodes, refreshOfficialAccountConnection,
   saveOfficialAccountConnection } from '../../services/api';
 import type { OfficialAccountConnection, OfficialAccountResponse, OfficialAccountSnapshot,
   OfficialConnectionInput, OfficialConnectionStatus, OfficialSessionDevice, ProxyNode } from '../../services/api';
@@ -132,7 +133,7 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
   const releaseLifetime = useRef({ accountId: account.id, active: true, busy: false });
   const parameterFileInput = useRef<HTMLInputElement>(null);
   const parameterFileReader = useRef<FileReader | null>(null);
-  const secure = isSecureManagementContext();
+  const supported = isSupportedManagementContext();
   const localPreview = typeof window !== 'undefined' && window.location.protocol === 'http:'
     && ['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname);
   const selectedNode = Form.useWatch('proxyNodeId', form);
@@ -147,7 +148,7 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
     setSessionSelection({ snapshot: value, ids: [] }); setSelectionNotice('');
   };
   const selectSessions = (ids: string[]) => {
-    if (locked || !secure || !snapshot) return;
+    if (locked || !supported || !snapshot) return;
     if (ids.length > 100) { setSelectionNotice('每次最多选择 100 个会话，请缩小选择范围。'); return; }
     if (ids.some((id) => !snapshot.sessions.devices.some((device) => device.sessionId === id
       && !sessionSelectionReason(device, snapshot.sessions.devices)))) return;
@@ -169,7 +170,7 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
   const importParameters = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.currentTarget.files?.[0];
     event.currentTarget.value = '';
-    if (!file || locked || !localPreview || !secure || !config?.encryptionReady) return;
+    if (!file || locked || !localPreview || !supported || !config?.encryptionReady) return;
     if (!file.name.toLowerCase().endsWith('.txt') || file.size > LOCAL_PREVIEW_PARAMETER_MAX_BYTES) {
       setError('请选择不超过 64 KiB 的本机 .txt 参数文件。');
       return;
@@ -279,12 +280,12 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
     && bindings?.some((binding) => binding.id === releaseTarget.id && binding.status === 'ACTIVE'
       && binding.officialAccountId === account.id && binding.sessionId === releaseTarget.sessionId);
   const selectRelease = (binding: SessionBinding) => {
-    if (locked || !secure || !active.current || binding.status !== 'ACTIVE' || binding.officialAccountId !== account.id) return;
+    if (locked || !supported || !active.current || binding.status !== 'ACTIVE' || binding.officialAccountId !== account.id) return;
     setReleaseTarget(binding); setReleaseAcknowledged(false); setReleaseError('');
   };
   const release = async () => {
     const lifetime = releaseLifetime.current;
-    if (!lifetime.active || lifetime.accountId !== account.id || lifetime.busy || locked || !secure
+    if (!lifetime.active || lifetime.accountId !== account.id || lifetime.busy || locked || !supported
       || !releaseTarget || !releaseEligible || !releaseAcknowledged) return;
     const submitted = releaseTarget;
     const isCurrent = () => isCurrentLifetime(lifetime);
@@ -315,7 +316,7 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
 
   const save = async () => {
     const lifetime = releaseLifetime.current;
-    if (!isCurrentLifetime(lifetime) || locked || !config?.encryptionReady || !secure) return;
+    if (!isCurrentLifetime(lifetime) || locked || !config?.encryptionReady || !supported) return;
     let values: OfficialConnectionInput;
     try { values = await form.validateFields(); } catch { return; }
     if (!isCurrentLifetime(lifetime)) return;
@@ -342,7 +343,7 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
 
   const refresh = async () => {
     const lifetime = releaseLifetime.current;
-    if (!isCurrentLifetime(lifetime) || locked || !config?.configured || !secure) return;
+    if (!isCurrentLifetime(lifetime) || locked || !config?.configured || !supported) return;
     setSessionSelection({ snapshot: null, ids: [] }); setSnapshotRevision((revision) => revision + 1);
     setBusy('refresh'); setError('');
     try {
@@ -363,7 +364,7 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
 
   const remove = async () => {
     const lifetime = releaseLifetime.current;
-    if (!isCurrentLifetime(lifetime) || locked || !secure) return;
+    if (!isCurrentLifetime(lifetime) || locked || !supported) return;
     setBusy('delete'); setError(''); clearSecrets();
     try {
       await deleteOfficialAccountConnection(lifetime.accountId);
@@ -380,15 +381,13 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
       {config?.configured && view !== 'sessions' ? <Popconfirm title="删除保存的官方授权？"
         description="同时清除后台保存的官方会话快照，不会使官方设备下线，也不影响账户登记和邮箱配置。"
         okText="确认删除" cancelText="取消" onConfirm={() => void remove()}>
-        <Button danger disabled={locked || !secure} loading={busy === 'delete'}>删除保存的授权</Button>
+        <Button danger disabled={locked || !supported} loading={busy === 'delete'}>删除保存的授权</Button>
       </Popconfirm> : null}
-      <Button disabled={locked || !secure || !config?.configured} loading={busy === 'refresh'} onClick={() => void refresh()}>刷新官方账户与会话</Button>
+      <Button disabled={locked || !supported || !config?.configured} loading={busy === 'refresh'} onClick={() => void refresh()}>刷新官方账户与会话</Button>
       {!inline ? <Button onClick={close}>关闭</Button> : null}
     </Space>}>
     <Space orientation="vertical" size={16} style={{ width: '100%' }}>
-      {!secure ? <Alert type="warning" showIcon title="请通过 HTTPS 打开管理后台后管理官方授权与会话；HTTP 仅允许本机调试。" /> : null}
-      {secure && window.location.protocol === 'http:' ? <Alert type="warning" showIcon
-        title="当前为本机 HTTP 调试模式；生产环境仍需 HTTPS。" /> : null}
+      <ManagementTransportNotice supported={supported} />
       {config && !config.encryptionReady ? <Alert type="warning" showIcon title="服务端缺少官方授权加密密钥，暂时不能保存授权。" /> : null}
       {error ? <Alert type="error" showIcon title="官方账户操作未完成" description={error} /> : null}
       <Spin spinning={loading}>
@@ -401,7 +400,7 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
             { key: 'success', label: '最近成功', children: dateText(config.lastSuccessAt) },
           ]} /> : null}
           {config?.lastErrorCode ? <Alert type="warning" showIcon title={managedErrorMessage({ code: config.lastErrorCode }, '最近一次官方读取未成功，请检查授权和代理配置。')} /> : null}
-          {view !== 'sessions' ? <Form form={form} layout="vertical" preserve={false} disabled={locked || !secure || !config?.encryptionReady}>
+          {view !== 'sessions' ? <Form form={form} layout="vertical" preserve={false} disabled={locked || !supported || !config?.encryptionReady}>
             <Form.Item name="proxyNodeId" label="访问代理节点" extra="服务器登录浏览器与后台读取官方账户均使用此节点或直连；不会失败回退或自动切换出口。">
               <Select virtual={false} allowClear placeholder="直连（不使用代理）" options={[
                 ...nodes.map((node) => ({ value: node.id, label: `${node.label} · ${node.protocol}${node.enabled ? '' : '（已停用）'}`, disabled: !node.enabled })),
@@ -411,7 +410,7 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
             {nodeUnavailable ? <Alert type="warning" showIcon title="当前代理节点不可用，请明确选择其他节点或清空为直连，再重新保存授权。" /> : null}
             <Space orientation="vertical" size={16} style={{ width: '100%' }}>
               <BrowserLoginPanel key={account.id} accountId={account.id} version={config?.version ?? 0} proxyNodeId={selectedNode || null}
-                disabled={loading || busy !== null || logoutBusy || releaseBusy || !secure || !config?.encryptionReady || Boolean(nodeUnavailable)}
+                disabled={loading || busy !== null || logoutBusy || releaseBusy || !supported || !config?.encryptionReady || Boolean(nodeUnavailable)}
                 onActiveChange={setBrowserLoginActive} onResultChanged={reloadAfterBrowserLogin} />
               <Collapse style={{ width: '100%' }} onChange={(keys) => { if (!keys.includes('manual')) clearSecrets(); }} items={[{
                 key: 'manual', label: '高级：手动导入授权', children: <Space orientation="vertical" size={16} style={{ width: '100%' }}>
@@ -423,7 +422,7 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
               <input ref={parameterFileInput} id="local-preview-parameters-file" type="file" accept=".txt,text/plain"
                 aria-label="本机参数文件" aria-describedby="local-preview-parameters-description" hidden
                 onChange={importParameters} />
-              <Button disabled={locked || !secure || !config?.encryptionReady} loading={busy === 'import'}
+              <Button disabled={locked || !supported || !config?.encryptionReady} loading={busy === 'import'}
                 aria-controls="local-preview-parameters-file" aria-describedby="local-preview-parameters-description"
                 onClick={() => parameterFileInput.current?.click()}>从本机参数文件填入</Button>
             </Space>} /> : null}
@@ -442,7 +441,7 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
             <Form.Item name="cookie" label="官方 Cookie（可选）" extra="仅接受你自己的 __Secure-next-auth.session-token（含 .0、.1 等数字分块）登录 Cookie；不接受其他 Cookie。官方拒绝访问时仍会显示失败状态，不保证导入后可连接。">
               <Input.Password autoComplete="new-password" maxLength={32768} />
             </Form.Item>
-                  <Button disabled={locked || !secure || !config?.encryptionReady || Boolean(nodeUnavailable)}
+                  <Button disabled={locked || !supported || !config?.encryptionReady || Boolean(nodeUnavailable)}
                     loading={busy === 'save'} onClick={() => void save()}>保存授权</Button>
                 </Space>,
               }]} />
@@ -450,19 +449,19 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
           </Form> : null}
           {view !== 'authorization' ? <>
           <Divider style={{ margin: '4px 0' }}>官方账户与设备会话</Divider>
-          {secure ? <SessionLogoutPanel key={account.id} accountId={account.id}
+          {supported ? <SessionLogoutPanel key={account.id} accountId={account.id}
             contextVersion={JSON.stringify([config?.version ?? null, bindingRevision, snapshotRevision, selectedSessionIds])}
             selectedSessionIds={selectedSessionIds}
             disabled={externallyLocked} allowPreview={Boolean(config?.configured)} onBusyChange={(value) => {
               if (active.current && currentAccountId.current === account.id) setLogoutBusy(value);
             }} onSettled={reloadAfterLogout} /> : null}
-          {secure ? <SessionBindingQueue key={`${account.id}:${queueRevision}`} accountId={account.id} disabled={locked} /> : null}
+          {supported ? <SessionBindingQueue key={`${account.id}:${queueRevision}`} accountId={account.id} disabled={locked} /> : null}
           {selectionNotice ? <Alert type="warning" showIcon title={selectionNotice} /> : null}
           {snapshot && !logoutBusy ? <SessionSnapshot snapshot={snapshot} officialAccountId={account.id} bindings={bindings}
-            selectedSessionIds={selectedSessionIds} onSelectionChange={selectSessions} selectionDisabled={locked || !secure} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
+            selectedSessionIds={selectedSessionIds} onSelectionChange={selectSessions} selectionDisabled={locked || !supported} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
             description={logoutBusy ? '会话操作状态核对中，暂不显示旧快照。' : snapshotNotice || '尚无官方会话快照，请手动刷新官方账户与会话。'} />}
           {bindingNotice ? <Alert type="warning" showIcon title={bindingNotice} /> : null}
-          {bindings && !logoutBusy ? <SessionBindingsTable bindings={bindings} disabled={locked || !secure} onRelease={selectRelease} /> : null}
+          {bindings && !logoutBusy ? <SessionBindingsTable bindings={bindings} disabled={locked || !supported} onRelease={selectRelease} /> : null}
           </> : null}
         </Space>
       </Spin>
@@ -471,7 +470,7 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
     <Modal open={Boolean(releaseTarget && releaseTarget.officialAccountId === account.id)} title="解绑会话确认"
       okText="确认解绑" cancelText="取消" destroyOnHidden
       onCancel={() => { if (!releaseBusy) setReleaseTarget(null); }} onOk={() => void release()}
-      confirmLoading={releaseBusy} okButtonProps={{ danger: true, disabled: locked || !secure || !releaseEligible || !releaseAcknowledged }}
+      confirmLoading={releaseBusy} okButtonProps={{ danger: true, disabled: locked || !supported || !releaseEligible || !releaseAcknowledged }}
       cancelButtonProps={{ disabled: releaseBusy }} closable={!releaseBusy} mask={{ closable: !releaseBusy }}>
       {releaseTarget ? <Space orientation="vertical" size={12} style={{ width: '100%' }}>
         <Descriptions size="small" column={1} items={[
@@ -485,7 +484,7 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
         <Alert type="warning" showIcon title="仅解除本系统的设备会话绑定，不会登出官方会话。"
           description="解绑后，该客户端只能使用登录辅助；不会删除历史记录，也不会停止统计。" />
         {releaseError ? <Alert type="error" showIcon title={releaseError} /> : null}
-        <Checkbox checked={releaseAcknowledged} disabled={releaseBusy || locked || !secure || !releaseEligible}
+        <Checkbox checked={releaseAcknowledged} disabled={releaseBusy || locked || !supported || !releaseEligible}
           onChange={(event) => setReleaseAcknowledged(event.target.checked)}>我已了解解绑影响，确认解除此会话绑定</Checkbox>
       </Space> : null}
     </Modal>

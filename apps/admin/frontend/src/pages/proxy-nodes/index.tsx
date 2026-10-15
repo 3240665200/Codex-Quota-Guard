@@ -4,7 +4,8 @@ import { Alert, App as AntApp, Button, Form, Input, Modal, Popconfirm, Space, Sw
 import type { TableColumnsType } from 'antd';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { managedErrorMessage } from '../../components/managedErrors';
-import { createProxyNode, deleteProxyNode, importProxyNodes, isSecureManagementContext,
+import ManagementTransportNotice from '../../components/ManagementTransportNotice';
+import { createProxyNode, deleteProxyNode, importProxyNodes, isSupportedManagementContext,
   listProxyNodes, testProxyNode, updateProxyNode } from '../../services/api';
 import type { ProxyConnectionTest, ProxyImportInput, ProxyNode, ProxyNodeInput } from '../../services/api';
 
@@ -32,7 +33,7 @@ export default function ProxyNodesPage() {
   const [importError, setImportError] = useState('');
   const [testResult, setTestResult] = useState<{ label: string; result: ProxyConnectionTest } | null>(null);
   const active = useRef(true);
-  const secure = isSecureManagementContext();
+  const supported = isSupportedManagementContext();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -57,7 +58,7 @@ export default function ProxyNodesPage() {
   };
 
   const save = async () => {
-    if (!secure || saving) return;
+    if (!supported || saving) return;
     let values: ProxyNodeInput;
     try { values = await form.validateFields(); } catch { return; }
     const uri = values.uri?.trim();
@@ -78,7 +79,7 @@ export default function ProxyNodesPage() {
   };
 
   const importNodes = async () => {
-    if (!secure || importing) return;
+    if (!supported || importing) return;
     const values = importForm.getFieldsValue();
     const content = values.content?.trim();
     const subscriptionUrl = values.subscriptionUrl?.trim();
@@ -108,6 +109,7 @@ export default function ProxyNodesPage() {
   };
 
   const remove = async (node: ProxyNode) => {
+    if (!supported) return;
     try {
       await deleteProxyNode(node.id);
       if (active.current) { message.success('代理节点已删除'); await load(); }
@@ -116,6 +118,7 @@ export default function ProxyNodesPage() {
     }
   };
   const test = async (node: ProxyNode) => {
+    if (!supported) return;
     setTesting(node.id); setTestResult(null); setError('');
     try {
       const result = await testProxyNode(node.id);
@@ -132,12 +135,12 @@ export default function ProxyNodesPage() {
     { title: '状态', render: (_, node) => <Tag color={node.enabled ? 'success' : 'default'}>{node.enabled ? '启用' : '停用'}</Tag> },
     { title: '节点授权', render: (_, node) => node.hasCredentials ? '已加密保存' : '无需授权' },
     { title: '操作', width: 200, render: (_, node) => <Space size={0}>
-      <Button type="link" aria-label={`测试 ${node.label}`} disabled={!node.enabled || testing !== null}
+      <Button type="link" aria-label={`测试 ${node.label}`} disabled={!supported || !node.enabled || testing !== null}
         loading={testing === node.id} onClick={() => void test(node)}>测试</Button>
-      <Button type="text" aria-label={`编辑 ${node.label}`} icon={<EditOutlined />} disabled={!secure || saving || importing} onClick={() => edit(node)} />
+      <Button type="text" aria-label={`编辑 ${node.label}`} icon={<EditOutlined />} disabled={!supported || saving || importing} onClick={() => edit(node)} />
       <Popconfirm title={`删除「${node.label}」？`} description="正在被官方账户使用的节点不可删除。"
         okText="确认删除" cancelText="取消" onConfirm={() => void remove(node)}>
-        <Button type="text" aria-label={`删除 ${node.label}`} danger icon={<DeleteOutlined />} />
+        <Button type="text" aria-label={`删除 ${node.label}`} danger icon={<DeleteOutlined />} disabled={!supported} />
       </Popconfirm>
     </Space> },
   ];
@@ -145,13 +148,11 @@ export default function ProxyNodesPage() {
   return <PageContainer title="代理节点" content="管理官方账户访问出口。支持 HTTP、HTTPS、SOCKS5、VLESS、VMess、Trojan、SS 链接；节点和订阅中的授权信息由后台加密保存。"
     extra={<Space wrap>
       <Button icon={<ReloadOutlined />} loading={loading} onClick={() => void load()}>刷新</Button>
-      <Button disabled={!secure || saving || importing} onClick={() => { importForm.resetFields(); setImportError(''); setImportOpen(true); }}>导入节点 / 订阅</Button>
-      <Button type="primary" aria-label="添加代理节点" icon={<PlusOutlined />} disabled={!secure || saving || importing} onClick={() => edit(null)}>添加代理节点</Button>
+      <Button disabled={!supported || saving || importing} onClick={() => { importForm.resetFields(); setImportError(''); setImportOpen(true); }}>导入节点 / 订阅</Button>
+      <Button type="primary" aria-label="添加代理节点" icon={<PlusOutlined />} disabled={!supported || saving || importing} onClick={() => edit(null)}>添加代理节点</Button>
     </Space>}>
     <Space orientation="vertical" size={16} style={{ width: '100%' }}>
-      {!secure ? <Alert type="warning" showIcon title="请通过 HTTPS 打开管理后台后输入和保存节点或订阅；HTTP 仅允许本机调试。" /> : null}
-      {secure && window.location.protocol === 'http:' ? <Alert type="warning" showIcon
-        title="当前为本机 HTTP 调试模式；生产环境仍需 HTTPS。" /> : null}
+      <ManagementTransportNotice supported={supported} />
       {error ? <Alert type="error" showIcon title="代理节点操作未完成" description={error} /> : null}
       {testResult ? <Alert showIcon type={testResult.result.status === 'CONNECTED' ? 'success' : 'warning'}
         title={`${testResult.label}：${testDescription(testResult.result)}`}
@@ -163,7 +164,7 @@ export default function ProxyNodesPage() {
     <Modal open={open} title={editing ? '编辑代理节点' : '添加代理节点'} destroyOnHidden
       closable={!saving} mask={{ closable: !saving }} keyboard={!saving} cancelButtonProps={{ disabled: saving }}
       onCancel={() => { if (!saving) closeEdit(); }} onOk={() => void save()} okText="保存" cancelText="取消"
-      okButtonProps={{ loading: saving, disabled: !secure }}>
+      okButtonProps={{ loading: saving, disabled: !supported }}>
       {formError ? <Alert type="error" showIcon title={formError} /> : null}
       <Form form={form} layout="vertical" preserve={false} disabled={saving}>
         <Form.Item name="label" label="节点名称" rules={[{ required: true, whitespace: true, message: '请输入节点名称' }]}>
@@ -180,7 +181,7 @@ export default function ProxyNodesPage() {
     <Modal open={importOpen} title="导入代理节点" width={720} destroyOnHidden
       closable={!importing} mask={{ closable: !importing }} keyboard={!importing} cancelButtonProps={{ disabled: importing }}
       onCancel={() => { if (!importing) closeImport(); }} onOk={() => void importNodes()} okText="导入" cancelText="取消"
-      okButtonProps={{ loading: importing, disabled: !secure }}>
+      okButtonProps={{ loading: importing, disabled: !supported }}>
       <Space orientation="vertical" size={16} style={{ width: '100%' }}>
         <Alert type="info" showIcon title="填写一种导入来源"
           description="支持每行一个 URI、Base64 编码的 URI 订阅内容，或提供这些内容的 HTTPS 订阅地址。本轮不支持 Clash YAML 或 sing-box JSON。导入后不保存订阅地址、不自动刷新。" />
