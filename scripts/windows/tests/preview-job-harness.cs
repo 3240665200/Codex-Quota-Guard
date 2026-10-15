@@ -48,5 +48,10 @@ public sealed class PreviewSyntheticJob : IDisposable {
         } catch { CloseHandle(job); throw; } finally { Marshal.FreeHGlobal(data); }
     }
     public void CloseJob() { if(inner!=IntPtr.Zero){CloseHandle(inner);inner=IntPtr.Zero;} if(outer!=IntPtr.Zero){CloseHandle(outer);outer=IntPtr.Zero;} }
+    public bool Contains(int id) {
+        using(var child=System.Diagnostics.Process.GetProcessById(id)) {
+            bool member; if(!IsProcessInJob(child.Handle,outer,out member)) throw new Win32Exception(Marshal.GetLastWin32Error()); return member;
+        }
+    }
     public void Dispose() { CloseJob(); if(process!=IntPtr.Zero){ if(WaitForSingleObject(process,5000)!=0){TerminateProcess(process,99);WaitForSingleObject(process,5000);} CloseHandle(process);process=IntPtr.Zero;} }
 }

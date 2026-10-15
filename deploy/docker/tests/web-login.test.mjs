@@ -38,10 +38,13 @@ test('browser seccomp remains default-deny and permits namespace sandbox creatio
 
 test('local preview opt-in requires an explicit validated browser path and does not leak backend env to web', () => {
   const preview = readFileSync(new URL('../../../scripts/windows/start-admin-preview.ps1', import.meta.url), 'utf8');
+  const worker = readFileSync(new URL('../../../scripts/windows/preview-supervisor.ps1', import.meta.url), 'utf8');
   assert.match(preview, /\[switch\]\$EnableWebLogin/);
   assert.match(preview, /\[string\]\$BrowserExecutable/);
-  assert.match(preview, /WEB_LOGIN_BROWSER_ENABLED/);
-  assert.match(preview, /WEB_LOGIN_BROWSER_EXECUTABLE/);
-  assert.match(preview, /\$runtimeKeys \+ \$featureKeys \+ \$browserKeys/);
-  assert.match(preview, /WEB_LOGIN_BROWSER_HEADLESS = 'true'/);
+  assert.match(preview, /Assert-PreviewPath \$BrowserExecutable/);
+  assert.match(worker, /WEB_LOGIN_BROWSER_ENABLED/);
+  assert.match(worker, /WEB_LOGIN_BROWSER_EXECUTABLE/);
+  assert.match(worker, /\$uiEnvironment=Get-PreviewBaseEnvironment/);
+  assert.match(worker, /\$apiEnvironment\['WEB_LOGIN_BROWSER_HEADLESS'\]='true'/);
+  assert.doesNotMatch(worker, /\$env:|\$previous\['NODE_OPTIONS'\]/);
 });

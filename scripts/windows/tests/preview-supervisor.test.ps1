@@ -46,7 +46,7 @@ try {
     Request-PreviewStop $second|Out-Null;$null=Wait-Phase $second @('EXITED','FAILED')
     Write-Output 'PASS existing synthetic DPAPI feature keys preserved'
     $early=New-SyntheticRun 'exit-mvn.cmd';$null=Start-SyntheticRun $early;$failure=Wait-Phase $early @('FAILED')
-    Assert-Case ($failure.ErrorCode -eq 'PREVIEW_CHILD_EXITED') 'Early child exit was not reported.'
+    Assert-Case ($failure.ErrorCode -eq 'PREVIEW_BACKEND_EXITED') 'Early child exit was not reported.'
     Write-Output 'PASS early child exit fails startup'
     $timeout=New-SyntheticRun 'wait.cmd' 'wait.cmd' 1;$null=Start-SyntheticRun $timeout;$failure=Wait-Phase $timeout @('FAILED')
     Assert-Case ($failure.ErrorCode -eq 'PREVIEW_STARTUP_TIMEOUT') 'Missing listeners did not time out safely.'

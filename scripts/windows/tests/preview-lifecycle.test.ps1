@@ -21,7 +21,7 @@ function Invoke-SyntheticCase([string]$Name,[string]$Mode,[bool]$AllowBreakaway,
         while(!(Test-Path -LiteralPath $identityPath) -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 50}
         Assert-Preview (Test-Path -LiteralPath $identityPath) 'Synthetic controller did not publish an identity.'
         $identity=Get-Content -LiteralPath $identityPath -Raw | ConvertFrom-Json
-        Assert-Preview ([bool]$identity.Pid) 'Detached worker should be created when breakaway is allowed.'
+        Assert-Preview ([bool]$identity.Pid) ('Detached worker should be created: '+$identity.SafeCode)
         $child=[Diagnostics.Process]::GetProcessById([int]$identity.Pid)
         $null=$child.Handle
         Assert-Preview ($child.StartTime.ToUniversalTime().Ticks -eq ([DateTime]$identity.CreatedUtc).ToUniversalTime().Ticks) 'Synthetic child creation time mismatch.'
@@ -31,6 +31,7 @@ function Invoke-SyntheticCase([string]$Name,[string]$Mode,[bool]$AllowBreakaway,
             Assert-Preview (Test-Path -LiteralPath $readyPath) 'Independent worker handshake is missing.'
             $ready=Get-Content -LiteralPath $readyPath -Raw | ConvertFrom-Json
             Assert-Preview ($ready.DpapiVerified -and $ready.Independent) 'Independent worker did not verify same-user DPAPI and Job identity.'
+            Assert-Preview (!$controller.Contains($child.Id)) 'WMI worker still belongs to the synthetic caller Job.'
         }
         $controller.CloseJob()
         if($Survive) { Start-Sleep -Milliseconds 350; Assert-Preview (!$child.HasExited) 'Detached worker died with its former KillOnClose Job.' }
