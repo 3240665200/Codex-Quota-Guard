@@ -1,4 +1,5 @@
-# Source deployment opt-in; combine with compose.https.yaml for non-loopback use.
+# Source browser opt-in for HTTP or HTTPS. Add compose.https.yaml for HTTPS-only ingress.
+# HTTP transmits passwords and authorization data without transport encryption.
 # Never publish Chromium's internal control port. The existing admin API owns access.
 services:
   backend:

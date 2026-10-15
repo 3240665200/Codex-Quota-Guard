@@ -39,7 +39,8 @@ services:
     environment:
       SPRING_PROFILES_ACTIVE: prod
       # Direct Spring property override: REQUIRE_HTTPS alone cannot override prod.
-      # This deployment explicitly supports IP + HTTP on a trusted network.
+      # false accepts HTTP and HTTPS, including management credentials.
+      # HTTP is unencrypted; compose.https.yaml enables HTTPS-only ingress.
       APP_REQUIRE_HTTPS: "false"
       DATABASE_URL: jdbc:postgresql://postgres:5432/quota_guard
       DATABASE_USERNAME: quota_guard
@@ -47,7 +48,7 @@ services:
       JWT_SECRET: ${JWT_SECRET:?JWT secret is required}
       JWT_ISSUER: ${JWT_ISSUER:-codex-quota-guard}
       MAIL_ASSISTANCE_ENCRYPTION_KEY: ${MAIL_ASSISTANCE_ENCRYPTION_KEY:?Preserve the mailbox encryption key}
-      # Optional on old installations: missing keys disable only these features.
+      # Preserve existing keys. Missing official-session keys also prevent new bindings.
       OFFICIAL_SESSION_ENCRYPTION_KEY: ${OFFICIAL_SESSION_ENCRYPTION_KEY:-}
       MANAGED_PROXY_ENCRYPTION_KEY: ${MANAGED_PROXY_ENCRYPTION_KEY:-}
       MANAGED_PROXY_MAX_PROCESSES: ${MANAGED_PROXY_MAX_PROCESSES:-4}

@@ -69,7 +69,7 @@
       "tmpfs": [
         "/tmp:rw,noexec,nosuid,size=128m"
       ],
-      "image": "minjm/codex-quota-guard-backend:0.3.18",
+      "image": "minjm/codex-quota-guard-backend:0.3.19",
       "platform": "linux/amd64",
       "pull_policy": "missing"
     },
@@ -165,7 +165,7 @@
       "tmpfs": [
         "/tmp:rw,noexec,nosuid,size=64m"
       ],
-      "image": "minjm/codex-quota-guard-web:0.3.18",
+      "image": "minjm/codex-quota-guard-web:0.3.19",
       "platform": "linux/amd64",
       "pull_policy": "missing"
     }

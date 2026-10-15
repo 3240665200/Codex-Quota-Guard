@@ -1,8 +1,9 @@
-# Registry deployment opt-in; combine with compose.https.yaml for non-loopback use.
+# Registry browser opt-in for HTTP or HTTPS. Add compose.https.yaml for HTTPS-only ingress.
+# HTTP transmits passwords and authorization data without transport encryption.
 # Place chromium-seccomp.json beside the base compose.yaml. No source build is needed.
 services:
   backend:
-    image: minjm/codex-quota-guard-backend:0.3.18-browser
+    image: minjm/codex-quota-guard-backend:0.3.19-browser
     environment:
       WEB_LOGIN_BROWSER_ENABLED: "true"
       WEB_LOGIN_BROWSER_EXECUTABLE: /usr/lib/chromium/chrome
