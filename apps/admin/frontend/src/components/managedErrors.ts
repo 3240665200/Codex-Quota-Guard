@@ -1,3 +1,5 @@
+const transportPolicyMessage = '当前请求不符合服务器的传输配置。请使用 HTTPS，或由管理员确认 HTTP 部署的 APP_REQUIRE_HTTPS=false 已生效。';
+
 const messages: Record<string, string> = {
   BROWSER_LOGIN_BUSY: '此账户已有进行中的官方网页登录任务，请先完成或取消该任务。',
   BROWSER_LOGIN_RUNTIME_UNAVAILABLE: '服务器登录浏览器尚未就绪，请检查浏览器服务后重试。',
@@ -17,7 +19,7 @@ const messages: Record<string, string> = {
   BROWSER_LOGIN_SAVING: '授权正在加密保存，请等待结果后再操作。',
   BROWSER_LOGIN_EXPIRED: '登录任务已过期，请重新开始并在有效期内完成登录。',
   OFFICIAL_CREDENTIALS_INVALID: '授权格式不正确，请检查 Bearer 值和允许的官方会话 Cookie。',
-  OFFICIAL_HTTPS_REQUIRED: '请通过 HTTPS 打开管理后台后管理官方授权与会话。',
+  OFFICIAL_HTTPS_REQUIRED: transportPolicyMessage,
   OFFICIAL_ENCRYPTION_UNAVAILABLE: '服务端尚未配置官方授权加密密钥。',
   OFFICIAL_AUTH_REQUIRED: '官方授权已失效，请在官方网页重新登录后导入授权。',
   OFFICIAL_CHALLENGE_REQUIRED: '官方返回了 Cloudflare 浏览器验证页面，当前后台 HTTP 连接无法读取账户或会话。这不等于授权填写错误；仅复制 Token/Cookie 不能完成该验证，当前尚未连接成功。',
@@ -50,7 +52,8 @@ const messages: Record<string, string> = {
   PROXY_KERNEL_UNAVAILABLE: '服务端代理内核尚未就绪，暂时无法使用该节点。',
   PROXY_CAPACITY_EXCEEDED: '代理服务当前容量已满，请稍后重试。',
   PROXY_CONNECTION_FAILED: '无法通过此代理建立连接，请检查节点服务。',
-  PROXY_HTTPS_REQUIRED: '请通过 HTTPS 打开管理后台后保存节点或订阅。',
+  PROXY_HTTPS_REQUIRED: transportPolicyMessage,
+  SESSION_BINDING_HTTPS_REQUIRED: transportPolicyMessage,
 };
 
 export function managedErrorCode(error: unknown): string | undefined {
