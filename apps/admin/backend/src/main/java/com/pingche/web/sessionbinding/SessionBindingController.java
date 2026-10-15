@@ -60,7 +60,7 @@ public class SessionBindingController {
         requireTransport(http); service.release(user(auth), id); return ResponseEntity.noContent().cacheControl(CacheControl.noStore()).build();
     }
     private UUID user(Authentication authentication) { return (UUID) authentication.getPrincipal(); }
-    private void requireTransport(HttpServletRequest request) { if (!transport.isAllowed(request)) throw new DomainException("SESSION_BINDING_HTTPS_REQUIRED", "HTTPS is required for device session binding", HttpStatus.BAD_REQUEST); }
+    private void requireTransport(HttpServletRequest request) { if (!transport.isAllowed(request)) throw new DomainException("SESSION_BINDING_HTTPS_REQUIRED", "Request transport is not permitted by the server configuration", HttpStatus.BAD_REQUEST); }
     private <T> ResponseEntity<T> response(T value) { return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(value); }
     private boolean queueMetadata(HttpServletRequest http) { return "2".equals(http.getHeader("X-CQG-Queue-Version")); }
     private ResponseEntity<?> attemptResponse(SessionBindingAttemptResponse attempt, HttpServletRequest http) {
