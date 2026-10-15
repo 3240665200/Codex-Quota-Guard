@@ -404,6 +404,24 @@ class AdminUserLogoutIntegrationTest {
         verify(client, times(1)).revokeSession(any(), isNull(), eq("owned"));
     }
 
+    @Test void missingSubmittedJournalRemainsUnknownAndNeverTriggersRetry() throws Exception {
+        binding(member, account, "owned", "ACTIVE");
+        JsonNode preview = preview();
+        String plan = preview.path("planId").asString();
+        confirm(admin, plan, true).andExpect(status().isOk());
+        assertThat(awaitResult(plan).path("status").asString()).isEqualTo("ACCEPTED");
+        jdbc.update("delete from official_session_logout_plans where id=?", UUID.fromString(preview.path("accounts").get(0).path("planId").asString()));
+        read(plan).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("UNKNOWN"))
+                .andExpect(jsonPath("$.accounts[0].results[0].status").value("UNKNOWN"))
+                .andExpect(jsonPath("$.accounts[0].errorCode").value("USER_LOGOUT_RESULT_UNAVAILABLE"));
+        now.set(NOW.plusSeconds(1));
+        String newer = preview().path("planId").asString();
+        confirm(admin, newer, true).andExpect(status().isOk());
+        mvc.perform(get(url("current")).secure(true).header(HttpHeaders.AUTHORIZATION, token(admin)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.operation.planId").value(plan));
+        verify(client, times(1)).revokeSession(any(), isNull(), eq("owned"));
+    }
+
     private OfficialAccount account(String key) {
         OfficialAccount value = accounts.saveAndFlush(new OfficialAccount("Account " + key, 1000, null, NOW));
         connections.save(value.getId(), new OfficialConnectionRequest("Bearer synthetic-" + key, null, key, null, 0L));
