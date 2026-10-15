@@ -17,6 +17,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.pingche.web.auth.DomainException;
 import com.pingche.web.auth.JwtService;
 import com.pingche.web.auth.RefreshSessionRepository;
+import com.pingche.web.auth.SystemLogoutEvent;
 import com.pingche.web.quota.OfficialAccount;
 import com.pingche.web.quota.OfficialAccountRepository;
 import com.pingche.web.team.Team;
@@ -286,6 +287,80 @@ class MailAssistanceIntegrationTest {
     }
 
     @Test
+    void currentRestoresOnlyTheOwnerListenerWithoutOpeningAnotherConnectionOrResettingItsCursor() throws Exception {
+        configure();
+        assertThat(service.current(owner.getId()).listener()).isNull();
+        FakeConnection connection = new FakeConnection();
+        when(transport.open(any())).thenReturn(connection);
+        MailListenerResponse started = service.start(owner.getId());
+        awaitState(started.id(), MailListener.State.LISTENING);
+        MailListener before = listeners.findById(started.id()).orElseThrow();
+        assertThat(before.expiresAt).isEqualTo(NOW.plusSeconds(600));
+        for (int refresh = 0; refresh < 3; refresh++) {
+            mvc.perform(get("/api/v1/client/login-assistance/listeners/current")
+                            .header(HttpHeaders.AUTHORIZATION, token(owner)))
+                    .andExpect(status().isOk()).andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
+                    .andExpect(jsonPath("$.listener.id").value(started.id().toString()))
+                    .andExpect(jsonPath("$.listener.state").value("LISTENING"));
+        }
+        assertThat(service.current(other.getId()).listener()).isNull();
+        MailListener after = listeners.findById(started.id()).orElseThrow();
+        assertThat(after.uidValidity).isEqualTo(before.uidValidity);
+        assertThat(after.nextUid).isEqualTo(before.nextUid);
+        assertThat(after.expiresAt).isEqualTo(before.expiresAt);
+        assertThat(after.listeningAt).isEqualTo(before.listeningAt);
+        org.mockito.Mockito.verify(transport, org.mockito.Mockito.times(1)).open(any());
+        assertThat(connection.closed).isFalse();
+        service.cancel(owner.getId(), started.id());
+        assertThat(service.current(owner.getId()).listener()).isNull();
+    }
+
+    @Test
+    void currentRestoresUnexpiredReceivedCodeButNeverAnotherUsersCodeOrExpiredResult() throws Exception {
+        configure();
+        when(transport.open(any())).thenReturn(codeConnection(100, 10));
+        MailListenerResponse started = service.start(owner.getId());
+        awaitState(started.id(), MailListener.State.RECEIVED);
+        assertThat(service.current(owner.getId()).listener().code()).isEqualTo("123456");
+        mvc.perform(get("/api/v1/client/login-assistance/listeners/current")
+                        .header(HttpHeaders.AUTHORIZATION, token(other)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.listener").isEmpty());
+        now.set(NOW.plusSeconds(60));
+        assertThat(service.current(owner.getId()).listener()).isNull();
+        assertThat(listeners.findById(started.id()).orElseThrow().codeCipher).isNull();
+    }
+
+    @Test
+    void currentChecksCurrentMembershipAndConfigurationRevisionBeforeRestoring() {
+        configure();
+        MailListenerResponse started = service.start(owner.getId());
+        awaitState(started.id(), MailListener.State.LISTENING);
+        owner.clearTeam(NOW); users.saveAndFlush(owner);
+        assertThat(service.current(owner.getId()).listener()).isNull();
+        assertThat(listeners.findById(started.id()).orElseThrow().state).isEqualTo(MailListener.State.FAILED);
+        owner.updateQuotaPolicy(team.getId(), null, null, NOW); users.saveAndFlush(owner);
+        MailListenerResponse changed = service.start(owner.getId());
+        awaitState(changed.id(), MailListener.State.LISTENING);
+        MailboxConfig config = mailboxes.findById(account.getId()).orElseThrow();
+        config.revision = UUID.randomUUID(); mailboxes.saveAndFlush(config);
+        assertThat(service.current(owner.getId()).listener()).isNull();
+        assertThat(listeners.findById(changed.id()).orElseThrow().state).isEqualTo(MailListener.State.FAILED);
+    }
+
+    @Test
+    void systemLogoutStopsOwnedListenerAndDoesNotAffectAnotherOwner() {
+        configure();
+        MailListenerResponse started = service.start(owner.getId());
+        awaitState(started.id(), MailListener.State.LISTENING);
+        service.systemLogout(new SystemLogoutEvent(other.getId()));
+        assertThat(service.current(owner.getId()).listener().id()).isEqualTo(started.id());
+        service.systemLogout(new SystemLogoutEvent(owner.getId()));
+        assertThat(service.current(owner.getId()).listener()).isNull();
+        assertThat(listeners.findById(started.id()).orElseThrow().state).isEqualTo(MailListener.State.CANCELLED);
+        assertThat(listeners.findById(started.id()).orElseThrow().activeAccountId).isNull();
+    }
+
+    @Test
     void acceptsNewUidReceivedBetweenBaselineAndListeningStatePublication() {
         configure();
         FakeConnection connection = new FakeConnection(() -> now.set(NOW.plusSeconds(2)));
@@ -328,11 +403,11 @@ class MailAssistanceIntegrationTest {
     @Test
     void leaseTimeoutAndResultExpiryReleaseSlotAndClearCiphertext() {
         configure(); MailListenerResponse active = service.start(owner.getId()); awaitState(active.id(), MailListener.State.LISTENING);
-        now.set(NOW.plusSeconds(181));
+        now.set(NOW.plusSeconds(601));
         assertThat(service.poll(owner.getId(), active.id()).state()).isEqualTo(MailListener.State.TIMED_OUT);
         when(transport.open(any())).thenReturn(codeConnection(100, 10));
         MailListenerResponse received = service.start(owner.getId()); awaitState(received.id(), MailListener.State.RECEIVED);
-        now.set(NOW.plusSeconds(242));
+        now.set(NOW.plusSeconds(662));
         MailListenerResponse expired = service.poll(owner.getId(), received.id());
         assertThat(expired.state()).isEqualTo(MailListener.State.TIMED_OUT); assertThat(expired.errorCode()).isEqualTo("CODE_EXPIRED");
         assertThat(expired.code()).isNull(); assertThat(expired.receivedAt()).isNull();
