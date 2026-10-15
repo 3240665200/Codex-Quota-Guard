@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { managedErrorMessage } from '../../components/managedErrors';
 import { isSecureManagementContext } from '../../services/api';
 import { confirmUserLogoutAll, getUserLogoutAllCurrent, getUserLogoutAllResult, previewUserLogoutAll } from '../../services/userLogoutApi';
-import type { UserLogoutPreview, UserLogoutResult } from '../../services/userLogoutApi';
+import type { UserLogoutAccountStatus, UserLogoutPreview, UserLogoutResult } from '../../services/userLogoutApi';
 
 type Lifetime = { active: boolean; busy: boolean; userId: string };
 const unresolved = (result: UserLogoutResult | null) => result?.status === 'EXECUTING' || result?.status === 'UNKNOWN';
@@ -16,6 +16,11 @@ const exclusionLabel: Record<string, string> = {
 const outcomeTitle: Record<UserLogoutResult['status'], string> = {
   EXECUTING: '后台正在执行，请勿重复提交', ACCEPTED: '请求已处理，官方下线生效可能延迟',
   PARTIAL: '部分官方会话未完成', FAILED: '下线请求未完成', UNKNOWN: '存在结果未知的官方请求，请先核对',
+};
+const accountStatusLabel: Record<UserLogoutAccountStatus, string> = {
+  EXECUTING: '执行中', ACCEPTED: '官方已接受请求', PARTIAL: '部分未完成', FAILED: '未完成',
+  UNKNOWN: '结果未知，请核对', NOT_ATTEMPTED: '未尝试',
+  RESOLVED_UNKNOWN: '结果仍未知，已人工解除操作锁',
 };
 
 export default function UserLogoutDialog({ user, onClose }: {
@@ -158,7 +163,7 @@ export default function UserLogoutDialog({ user, onClose }: {
         <Alert showIcon type={visibleResult.status === 'ACCEPTED' ? 'info' : 'warning'} title={outcomeTitle[visibleResult.status]}
           description={`官方会话：已接受 ${count('ACCEPTED')} 个，失败 ${count('FAILED')} 个，结果未知 ${count('UNKNOWN')} 个，未尝试 ${count('NOT_ATTEMPTED')} 个。官方已接受不代表设备立即下线。`} />
         {visibleResult.accounts.map((account) => <div key={account.officialAccountId}>
-          <Typography.Text strong>{account.displayName}</Typography.Text>：{account.status}
+          <Typography.Text strong>{account.displayName}</Typography.Text>：<Typography.Text>{accountStatusLabel[account.status]}</Typography.Text>
           {account.errorCode ? <Typography.Text type="warning">（{account.errorCode}）</Typography.Text> : null}
           {account.requiresReauthorization ? <Typography.Paragraph type="warning">此官方账户需要重新授权。</Typography.Paragraph> : null}
         </div>)}

@@ -236,7 +236,7 @@ describe('用户额度策略配置', () => {
     // rc-component uses the same "test-id" for every modal title in tests;
     // the page's force-rendered hidden modals therefore obscure the accessible name.
     const title = await screen.findByText(`强制下线所有账户 · ${user.email}`);
-    const dialog = title.closest('[role="dialog"]')!;
+    const dialog = title.closest<HTMLElement>('[role="dialog"]')!;
     await waitFor(() => expect(title).toBeVisible());
     expect(dialog).toBeVisible();
     expect(within(dialog).getByRole('button', { name: '确认下线所有账户' })).toBeDisabled();
