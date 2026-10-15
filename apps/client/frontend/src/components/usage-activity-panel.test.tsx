@@ -508,6 +508,29 @@ describe("UsageActivityPanel", () => {
     await userEvent.click(screen.getByRole("tab", { name: "运行诊断" }));
     expect(screen.getByText(/设备授权已失效/)).toBeVisible();
   });
+  it.each([
+    ["METER_OUTBOX_READ_FAILED", /待传用量无法读取.*权限.*不要删除/],
+    ["METER_OUTBOX_WRITE_FAILED", /待传用量无法保存.*磁盘空间.*不要删除/],
+    ["METER_OUTBOX_INVALID", /待传队列格式异常.*管理员.*保留/],
+    ["METER_OUTBOX_TOO_LARGE", /待传队列已达容量上限.*管理员.*保留/],
+    ["METER_OUTBOX_IDENTITY_MISMATCH", /设备、服务器或本地目录不一致.*暂停.*管理员/],
+    ["METER_OUTBOX_OWNER_MISMATCH", /配对账户发生变化.*隔离保留.*后续有效用量.*管理员/],
+    ["METER_OUTBOX_OWNER_UNKNOWN", /无法确认归属.*隔离保留.*后续有效用量.*管理员/],
+    ["METER_PAIRING_OWNER_MISMATCH", /授权账户与待传用量归属不一致.*暂停.*管理员/],
+    ["METER_RENEWAL_INVALID", /设备续期结果未通过校验.*保留.*版本.*管理员/],
+    ["METER_EVENT_OUTSIDE_REPORT_WINDOW", /超过后台接收时间范围.*保留.*后续有效用量.*管理员/],
+    ["METER_PAIRING_EXPIRED", /设备授权已失效.*撤销.*停用.*管理员/],
+    ["METER_REPORT_REJECTED", /拒绝的用量已隔离保留.*后续有效用量.*管理员/],
+  ])("explains retained meter failure %s with a safe recovery action", (code, message) => {
+    render(view("user-a", {
+      ...status,
+      fallback: { ...status.fallback, issues: [], errorCode: null },
+      service: { ...status.service, state: "ERROR", errorCode: code as string },
+    }, vi.fn(), "diagnostics"));
+    expect(screen.getByText(message as RegExp)).toBeVisible();
+    expect(screen.queryByText(new RegExp(`诊断码：${code}`))).not.toBeInTheDocument();
+    expect(screen.queryByText(/deviceToken|refresh_token|原始日志内容/)).not.toBeInTheDocument();
+  });
   it("shows accepted token rows and uses the service report time instead of the empty fallback", async () => {
     render(view());
     await userEvent.click(screen.getByRole("tab", { name: "消耗流水" }));
