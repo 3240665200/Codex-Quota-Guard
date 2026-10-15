@@ -34,7 +34,7 @@ function message(attempt: SessionBindingAttempt | null) {
     case "AWAITING_CONFIRMATION":
       return "已找到一个新增官方会话，后台正在复核，完成后会自动保存绑定。";
     case "BOUND":
-      return "本设备官方会话已绑定。";
+      return "本设备官方会话绑定记录已保存。";
     case "CANCELLED":
       return "本次绑定已取消，可以重新申请排队。新申请不会继续上次任务。";
     case "EXPIRED":
@@ -70,7 +70,7 @@ export function SessionBinding({
   onBound,
 }: {
   userId: string;
-  onBound?: () => void;
+  onBound?: (bindingId: string | null) => void;
 }) {
   const [attempt, setAttempt] = useState<SessionBindingAttempt | null>(null);
   const [binding, setBinding] = useState<Binding | null>(null);
@@ -132,7 +132,9 @@ export function SessionBinding({
       setNow(Date.now());
       setError(null);
       if (!previouslyBound && result.attempt?.status === "BOUND")
-        onBoundRef.current?.();
+        onBoundRef.current?.(
+          result.binding?.id ?? result.attempt.binding?.id ?? null,
+        );
     } catch (failure) {
       if (!current()) return;
       const text = getApiErrorMessage(failure);
@@ -194,7 +196,8 @@ export function SessionBinding({
       setNeedsServerCheck(false);
       setNow(Date.now());
       if (result.binding) setBinding(result.binding);
-      if (result.status === "BOUND") onBoundRef.current?.();
+      if (result.status === "BOUND")
+        onBoundRef.current?.(result.binding?.id ?? null);
     } catch (failure) {
       if (current()) {
         const text = getApiErrorMessage(failure);
@@ -234,7 +237,7 @@ export function SessionBinding({
           <h2 className="text-base font-semibold">本设备官方会话绑定</h2>
           <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
             {bound
-              ? "已保存本设备与系统账户的官方会话映射，重新打开客户端可继续查看。"
+              ? "已保存本设备与系统账户的官方会话映射；其他菜单仍以实时权限核验结果为准。"
               : "申请登录名额 → 在官方 Codex 登录 → 后台自动识别并保存绑定。"}
           </p>
         </div>
@@ -247,7 +250,7 @@ export function SessionBinding({
         <>
           <p role="status" className="mt-4 text-sm leading-relaxed">
             {bound
-              ? "本设备官方会话已绑定。"
+              ? "本设备官方会话绑定记录已保存。"
               : deadlineReached
                 ? "倒计时已结束，正在核对服务器到期状态，请等待后台返回结果。"
                 : message(attempt)}

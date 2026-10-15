@@ -30,6 +30,7 @@ import { ClientSettings } from "@/components/client-settings";
 import { LoginAssistance } from "@/components/login-assistance";
 import { SessionBinding } from "@/components/session-binding";
 import { OfficialLoginHelper } from "@/components/official-login-helper";
+import { subscribeToAssistanceEvents } from "@/lib/assistance-events";
 import {
   api,
   bindingGateEvent,
@@ -554,6 +555,12 @@ type WorkspaceId = (typeof workspaces)[number]["id"];
 export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  // Keep the shared invalidation stream alive for this signed-in dashboard;
+  // navigating away from the assistance cards must not reopen the native SSE.
+  useEffect(
+    () => subscribeToAssistanceEvents(session.user!.id, () => {}),
+    [session.user!.id],
+  );
   const [accessEpoch, setAccessEpoch] = useState(0);
   const [checkingReturn, setCheckingReturn] = useState(false);
   const [now, setNow] = useState(Date.now);
@@ -579,6 +586,12 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
     now - accessQuery.dataUpdatedAt < 10_000;
   const blockingReturn = bindingAllowed && checkingReturn;
   const { refetch: refetchAccess } = accessQuery;
+  const handleBound = (bindingId: string | null) => {
+    // Restoring the already-authorized record is not a new binding or a revocation.
+    if (bindingAllowed && bindingId === accessQuery.data.bindingId) return;
+    // A completion is only a hint: the central access result still decides access.
+    void refetchAccess({ cancelRefetch: false });
+  };
   useEffect(() => {
     let disposed = false;
     let returnCheck = 0;
@@ -1022,12 +1035,17 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
                 <AlertTitle>
                   {accessQuery.isFetching
                     ? "正在核对本设备绑定"
-                    : "请先绑定本设备"}
+                    : accessQuery.isError
+                      ? "绑定状态核验失败"
+                      : "请先绑定本设备"}
                 </AlertTitle>
                 <AlertDescription>
                   {accessQuery.isError
-                    ? "无法确认有效绑定，其他菜单暂不可用。请检查后台连接后重新核对。"
+                    ? "无法确认有效绑定，其他菜单暂不可用。已保存的绑定记录不代表当前访问权限已核验通过，请检查连接后重新核对。"
                     : "完成本设备官方会话绑定后，中央后台确认有效才会开放其他菜单。"}
+                  {accessQuery.isError ? (
+                    <p>{getApiErrorMessage(accessQuery.error)}</p>
+                  ) : null}
                   <Button
                     variant="outline"
                     size="sm"
@@ -1052,7 +1070,7 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
               <SessionBinding
                 key={`binding:${session.user!.id}`}
                 userId={session.user!.id}
-                onBound={recheckAccess}
+                onBound={handleBound}
               />
             ) : null}
             {bindingAllowed && requestError ? (

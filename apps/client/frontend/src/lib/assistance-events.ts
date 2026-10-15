@@ -105,6 +105,12 @@ export function subscribeToAssistanceEvents(
     if (stopped) return;
     stopped = true;
     current.handlers.delete(handler);
-    if (current.handlers.size === 0) dispose(current);
+    if (current.handlers.size === 0) {
+      // StrictMode may remount this same owner in the same effect turn. Let it
+      // reuse the channel; switching users still disposes the old owner above.
+      queueMicrotask(() => {
+        if (current.active && current.handlers.size === 0) dispose(current);
+      });
+    }
   };
 }
