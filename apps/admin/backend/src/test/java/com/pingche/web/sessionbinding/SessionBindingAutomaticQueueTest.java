@@ -183,10 +183,10 @@ class SessionBindingAutomaticQueueTest {
         assertThat(waiting.expiresAt()).isEqualTo(start.plusSeconds(1800));
         assertThat(service.current(first.user(),first.device(),first.device()).attempt().id()).isEqualTo(attempt.id());
         assertThat(service.accountState(account).activeAttemptId()).isEqualTo(attempt.id());
-        when(official.refresh(account)).thenAnswer(call -> {
+        doAnswer(call -> {
             jdbc.update("update official_account_connections set status='CONNECTED' where official_account_id=?",account);
             return snapshot(sessions.get());
-        });
+        }).when(official).refresh(account);
         now.set(start.plusSeconds(30));service.advance(account);
         assertThat(service.get(first.user(),attempt.id()).status()).isEqualTo("BOUND");
         assertThat(service.get(first.user(),attempt.id()).binding().sessionId()).isEqualTo("candidate");

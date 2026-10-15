@@ -90,7 +90,7 @@ public class SessionBindingService {
 
     public SessionBindingCurrentResponse current(UUID userId, UUID deviceId, UUID enrollmentId) {
         if (deviceId == null || !deviceId.equals(enrollmentId)) throw forbidden();
-        context(userId, enrollmentId, null, false);
+        context(userId, enrollmentId, null, false, true);
         List<Attempt> attempts = jdbc.query("select * from session_binding_attempts where user_id=? and device_id=? order by sequence_id desc limit 1", this::attempt, userId, deviceId);
         // The user's current team may differ from the account of an older task.
         // Always validate that task under its own account lock before exposing it.
@@ -546,12 +546,16 @@ public class SessionBindingService {
 
     private boolean valid(Attempt attempt) {
         try {
-            Context context = context(attempt.userId, attempt.enrollmentId, attempt.accountId, true);
+            Context context = context(attempt.userId, attempt.enrollmentId, attempt.accountId, true, true);
             return attempt.teamId.equals(context.teamId) && attempt.teamVersion == context.teamVersion && attempt.revision.equals(context.revision);
         } catch (DomainException failure) { return false; }
     }
 
     private Context context(UUID userId, UUID enrollmentId, UUID expectedAccount, boolean lock) {
+        return context(userId, enrollmentId, expectedAccount, lock, false);
+    }
+
+    private Context context(UUID userId, UUID enrollmentId, UUID expectedAccount, boolean lock, boolean allowTransientFailure) {
         String suffix = lock ? " for update" : "";
         List<UserContext> users = jdbc.query("select id,team_id,status from users where id=?" + suffix,
                 (rs,n) -> new UserContext(uuid(rs,"team_id"), rs.getString("status")), userId);
@@ -562,7 +566,10 @@ public class SessionBindingService {
                 (rs,n) -> new TeamContext(uuid(rs,"official_account_id"), rs.getLong("version")), users.get(0).teamId);
         if (teams.isEmpty() || teams.get(0).accountId == null || (expectedAccount != null && !expectedAccount.equals(teams.get(0).accountId))) throw forbidden();
         UUID accountId = teams.get(0).accountId;
-        List<UUID> revisions = jdbc.query("select revision from official_account_connections where official_account_id=? and status in ('CONNECTED','UNVERIFIED')" + suffix,
+        // A transient refresh failure retains credentials and revision. Preserve
+        // existing claims while retrying; a grant/bind still requires fresh I/O.
+        String connectionStates = allowTransientFailure ? "('CONNECTED','UNVERIFIED','UNAVAILABLE','RATE_LIMITED')" : "('CONNECTED','UNVERIFIED')";
+        List<UUID> revisions = jdbc.query("select revision from official_account_connections where official_account_id=? and status in " + connectionStates + suffix,
                 (rs,n) -> uuid(rs,"revision"), accountId);
         if (revisions.isEmpty()) throw error("SESSION_BINDING_CONNECTION_UNAVAILABLE");
         // A duplicated local account record must never create a second queue for
