@@ -190,6 +190,30 @@ public class SessionBindingService {
         });
     }
 
+    /** Ends one local relationship without changing the upstream session or enrollment. */
+    public void releaseForAdministrator(UUID bindingId, UUID accountId) {
+        transaction(() -> {
+            // Validate and lock the exact account/binding pair before checking
+            // the fence shared with official logout operations.
+            List<UUID> matchingAccounts = jdbc.query("select id from official_accounts where id=? and exists (select 1 from session_bindings where id=? and official_account_id=?) for update",
+                    (rs, n) -> uuid(rs, "id"), accountId, bindingId, accountId);
+            if (matchingAccounts.isEmpty()) throw bindingNotFound();
+            lockAccount(accountId);
+            List<UUID> attempts = jdbc.query("select attempt_id from session_bindings where id=? and official_account_id=?",
+                    (rs, n) -> uuid(rs, "attempt_id"), bindingId, accountId);
+            if (attempts.isEmpty()) throw bindingNotFound();
+            int ended = jdbc.update("update session_bindings set status='ENDED',active_device_id=null,active_session_id=null,ended_at=? where id=? and official_account_id=? and status='ACTIVE'",
+                    at(clock.instant()), bindingId, accountId);
+            if (ended > 0) {
+                // Older clients also use BOUND to restore the bound screen. Retain the
+                // historical binding while preventing that attempt from granting it.
+                jdbc.update("update session_binding_attempts set status='REJECTED',error_code='SESSION_BINDING_RELEASED' where id=? and official_account_id=? and status='BOUND'",
+                        attempts.get(0), accountId);
+            }
+            return null;
+        });
+    }
+
     public List<SessionBindingResponse> bindings(UUID accountId) {
         List<UUID> ids = accountId == null ? jdbc.query("select id from official_accounts order by id", (rs,n) -> uuid(rs,"id")) : List.of(accountId);
         for (UUID id : ids) transaction(() -> { lockAccount(id); sweep(id); invalidateBindings(id); return null; });
@@ -419,6 +443,7 @@ public class SessionBindingService {
     private static boolean pending(String state) { return Set.of("QUEUED","PREPARING","READY_FOR_LOGIN","DETECTING","AWAITING_CONFIRMATION").contains(state); }
     private static String truncate(String text, int length) { return text == null ? null : text.substring(0, Math.min(text.length(), length)); }
     private DomainException forbidden() { return new DomainException("SESSION_BINDING_FORBIDDEN", "Session binding is unavailable for this user, enrollment or account", HttpStatus.FORBIDDEN); }
+    private DomainException bindingNotFound() { return new DomainException("SESSION_BINDING_NOT_FOUND", "Session binding was not found for this account", HttpStatus.NOT_FOUND); }
     private DomainException error(String code) { return new DomainException(code, "Session binding could not be safely completed", HttpStatus.CONFLICT); }
     private <T> T transaction(Supplier<T> work) { return tx.execute(ignored -> work.get()); }
     private record Context(UUID accountId, UUID teamId, long teamVersion, UUID revision) { }

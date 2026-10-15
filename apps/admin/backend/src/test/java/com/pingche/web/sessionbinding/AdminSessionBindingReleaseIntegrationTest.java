@@ -127,12 +127,13 @@ class AdminSessionBindingReleaseIntegrationTest {
         release(bindingId, accountId);
         UUID nextBinding = UUID.randomUUID();
         UUID nextAttempt = UUID.randomUUID();
-        jdbc.update("insert into session_binding_attempts (id,user_id,device_id,enrollment_id,team_id,team_version,official_account_id,connection_revision,status,created_at,expires_at) select ?,user_id,device_id,enrollment_id,team_id,team_version,official_account_id,connection_revision,status,created_at,expires_at from session_binding_attempts where id=?", nextAttempt, attemptId);
+        jdbc.update("insert into session_binding_attempts (id,user_id,device_id,enrollment_id,team_id,team_version,official_account_id,connection_revision,status,created_at,expires_at) select ?,user_id,device_id,enrollment_id,team_id,team_version,official_account_id,connection_revision,'BOUND',created_at,expires_at from session_binding_attempts where id=?", nextAttempt, attemptId);
         jdbc.update("insert into session_bindings (id,attempt_id,user_id,device_id,enrollment_id,team_id,team_version,official_account_id,connection_revision,session_id,active_device_id,active_session_id,status,match_method,verification_level,created_at) select ?,?,user_id,device_id,enrollment_id,team_id,team_version,official_account_id,connection_revision,session_id,device_id,session_id,'ACTIVE',match_method,verification_level,created_at from session_bindings where id=?", nextBinding, nextAttempt, bindingId);
         when(clock.instant()).thenReturn(NOW.plusSeconds(30));
         release(bindingId, accountId);
         assertThat(jdbc.queryForObject("select ended_at from session_bindings where id=?", java.sql.Timestamp.class, bindingId).toInstant()).isEqualTo(NOW);
         assertThat(jdbc.queryForObject("select status from session_bindings where id=?", String.class, nextBinding)).isEqualTo("ACTIVE");
+        assertThat(jdbc.queryForObject("select status from session_binding_attempts where id=?", String.class, nextAttempt)).isEqualTo("BOUND");
         verifyNoInteractions(official, officialSessions);
     }
 
