@@ -4,10 +4,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import UserLogoutDialog from './UserLogoutDialog';
 import { confirmUserLogoutAll, getUserLogoutAllCurrent, getUserLogoutAllResult, previewUserLogoutAll } from '../../services/userLogoutApi';
 import type { UserLogoutPreview, UserLogoutResult } from '../../services/userLogoutApi';
+import { isSecureManagementContext } from '../../services/api';
 
 vi.mock('../../services/userLogoutApi', () => ({
   confirmUserLogoutAll: vi.fn(), getUserLogoutAllCurrent: vi.fn(), getUserLogoutAllResult: vi.fn(), previewUserLogoutAll: vi.fn(),
 }));
+vi.mock('../../services/api', () => ({ isSecureManagementContext: vi.fn() }));
 const user = { id: 'user-1', email: 'synthetic@example.test' };
 const preview = (): UserLogoutPreview => ({
   planId: 'plan-1', userId: user.id, scope: 'ALL_ACCOUNTS', expiresAt: '2099-01-01T00:00:00Z', warnings: [],
@@ -27,6 +29,7 @@ function show(onClose = vi.fn()) { return render(<AntApp><UserLogoutDialog user=
 describe('user-scoped all-account logout confirmation', () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    vi.mocked(isSecureManagementContext).mockReturnValue(true);
     vi.mocked(getUserLogoutAllCurrent).mockResolvedValue({ operation: null });
     vi.mocked(previewUserLogoutAll).mockResolvedValue(preview());
     vi.mocked(confirmUserLogoutAll).mockResolvedValue(result());
@@ -39,7 +42,7 @@ describe('user-scoped all-account logout confirmation', () => {
     expect(screen.getByText(/仅处理该用户当前绑定的官方会话/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '确认下线所有账户' })).toBeDisabled();
     expect(confirmUserLogoutAll).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: '关闭' }));
+    fireEvent.click(screen.getByRole('button', { name: /关\s*闭/ }));
     expect(close).toHaveBeenCalledOnce();
     expect(confirmUserLogoutAll).not.toHaveBeenCalled();
   });
@@ -112,6 +115,15 @@ describe('user-scoped all-account logout confirmation', () => {
     view.unmount();
     await act(async () => pending.resolve(preview()));
     expect(screen.queryByText('Synthetic device')).not.toBeInTheDocument();
+    expect(confirmUserLogoutAll).not.toHaveBeenCalled();
+  });
+
+  it('blocks all requests on an insecure remote management page', async () => {
+    vi.mocked(isSecureManagementContext).mockReturnValue(false);
+    show();
+    expect(await screen.findByText(/仅允许 HTTPS 或本机 HTTP 调试/)).toBeInTheDocument();
+    expect(getUserLogoutAllCurrent).not.toHaveBeenCalled();
+    expect(previewUserLogoutAll).not.toHaveBeenCalled();
     expect(confirmUserLogoutAll).not.toHaveBeenCalled();
   });
 });

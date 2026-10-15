@@ -57,6 +57,7 @@ import type {
   UserUpdate,
 } from '../../services/api';
 import { generateRandomPassword } from './generatePassword';
+import UserLogoutDialog from './UserLogoutDialog';
 
 const PAGE_SIZE = 20;
 const MAX_TOKEN_LIMIT = 1_000_000_000_000;
@@ -129,6 +130,7 @@ export default function UsersPage() {
   const [teamsLoading, setTeamsLoading] = useState(true);
   const [loading, setLoading] = useState(true);
   const [mutatingId, setMutatingId] = useState<string | null>(null);
+  const [logoutAllUser, setLogoutAllUser] = useState<UserResponse | null>(null);
   const [page, setPage] = useState(0);
   const [passwordVisible, setPasswordVisible] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -294,13 +296,13 @@ export default function UsersPage() {
       setMutatingId(user.id);
       modal.confirm({
         cancelText: '取消',
-        content: `这会立即使 ${user.email} 的全部登录失效。`,
-        okText: '强制下线',
+        content: `这会使 ${user.email} 的全部系统登录失效，不会登出官方会话，也不会停止统计程序上报。`,
+        okText: '确认下线系统账户',
         onCancel: () => setMutatingId(null),
         onOk: async () => {
           try {
             await forceLogoutUser(user.id);
-            message.success('该用户已强制下线');
+            message.success('该用户的系统账户已强制下线，官方会话未变更');
           } catch (requestError) {
             message.error(getErrorMessage(requestError));
             throw requestError;
@@ -308,7 +310,7 @@ export default function UsersPage() {
             setMutatingId(null);
           }
         },
-        title: '强制下线用户？',
+        title: '强制下线系统账户？',
       });
     },
     [message, modal],
@@ -567,8 +569,16 @@ export default function UsersPage() {
                     disabled: self,
                     icon: <PoweroffOutlined />,
                     key: 'offline',
-                    label: '强制下线',
+                    label: '强制下线系统账户',
                     onClick: () => confirmForceLogout(user),
+                  },
+                  {
+                    danger: true,
+                    disabled: self,
+                    icon: <PoweroffOutlined />,
+                    key: 'offline-all',
+                    label: '强制下线所有账户',
+                    onClick: () => setLogoutAllUser(user),
                   },
                   { type: 'divider' },
                   {
@@ -891,6 +901,7 @@ export default function UsersPage() {
         />
       </Modal>
 
+      {logoutAllUser ? <UserLogoutDialog key={logoutAllUser.id} user={logoutAllUser} onClose={() => setLogoutAllUser(null)} /> : null}
     </PageContainer>
   );
 }

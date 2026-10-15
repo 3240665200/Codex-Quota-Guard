@@ -72,4 +72,12 @@ describe('user-scoped logout transport', () => {
     await expect(getUserLogoutAllCurrent('user/1')).resolves.toEqual({ operation: null });
     expect((await previewUserLogoutAll('user/1')).accounts).toEqual([]);
   });
+
+  it('retains an oversized excluded account as not attempted instead of hiding the whole preview', async () => {
+    const value = preview();
+    value.accounts[0] = { ...value.accounts[0], status: 'NOT_ATTEMPTED',
+      sessionIds: Array.from({ length: 101 }, (_, index) => `session-${index}`), targets: [], excluded: [] };
+    vi.mocked(request).mockResolvedValue(value);
+    expect((await previewUserLogoutAll('user/1')).accounts[0].sessionIds).toHaveLength(101);
+  });
 });
