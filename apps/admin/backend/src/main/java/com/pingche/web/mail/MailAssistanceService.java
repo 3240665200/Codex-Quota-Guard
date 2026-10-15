@@ -177,7 +177,7 @@ public class MailAssistanceService implements DisposableBean {
             case "MAIL_DNS_FAILED" -> "无法解析邮箱服务器，请检查代理与 DNS 网络。（MAIL_DNS_FAILED）";
             case "MAIL_HOST_BLOCKED" -> "邮箱服务器未解析到允许的公网地址，请检查主机与代理设置。（MAIL_HOST_BLOCKED）";
             case "MAIL_AUTH_FAILED" -> "邮箱认证未通过，请检查完整邮箱地址、客户端授权码、IMAP 开关及服务商安全设置。（MAIL_AUTH_FAILED）";
-            case "MAIL_TLS_FAILED" -> "邮箱服务器的 TLS 证书验证失败，请检查代理与证书设置。（MAIL_TLS_FAILED）";
+            case "MAIL_TLS_FAILED" -> "邮箱服务器的 TLS 加密连接失败，请检查代理、网络与证书设置。（MAIL_TLS_FAILED）";
             case "MAIL_CONNECTION_TIMEOUT" -> "连接邮箱超时，请稍后重试并检查代理网络。（MAIL_CONNECTION_TIMEOUT）";
             case "MAIL_FOLDER_FAILED" -> "已登录邮箱，但无法打开邮件文件夹，请确认 INBOX 存在且允许访问。（MAIL_FOLDER_FAILED）";
             case "MAIL_CURSOR_UNAVAILABLE" -> "邮箱未提供可靠的新邮件游标，暂时无法安全监听新邮件。（MAIL_CURSOR_UNAVAILABLE）";
