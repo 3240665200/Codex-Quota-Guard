@@ -167,6 +167,42 @@ class SessionBindingAutomaticQueueTest {
         assertThat(service.get(first.user(),attempt.id()).status()).isEqualTo("REJECTED");
     }
 
+    @ParameterizedTest @ValueSource(strings={"UNAVAILABLE","RATE_LIMITED"})
+    void transientOfficialConnectionStatusPreservesTheClaimAndCandidateUntilAHealthyRevalidation(String status) {
+        var attempt=create(first);service.advance(account);
+        sessions.set(List.of("existing","candidate"));now.set(start.plusSeconds(10));service.advance(account);
+        when(official.refresh(account)).thenAnswer(call -> {
+            // Mirror OfficialConnectionService.fail, including its persisted state change.
+            jdbc.update("update official_account_connections set status=? where official_account_id=?",status,account);
+            throw new DomainException(status.equals("RATE_LIMITED")?"OFFICIAL_RATE_LIMITED":"OFFICIAL_UNAVAILABLE","synthetic-private-body",HttpStatus.BAD_GATEWAY);
+        });
+        now.set(start.plusSeconds(20));service.advance(account);
+        var waiting=service.get(first.user(),attempt.id());
+        assertThat(waiting.status()).isEqualTo("AWAITING_CONFIRMATION");
+        assertThat(waiting.candidateSessionId()).isEqualTo("candidate");
+        assertThat(waiting.expiresAt()).isEqualTo(start.plusSeconds(1800));
+        assertThat(service.current(first.user(),first.device(),first.device()).attempt().id()).isEqualTo(attempt.id());
+        assertThat(service.accountState(account).activeAttemptId()).isEqualTo(attempt.id());
+        when(official.refresh(account)).thenAnswer(call -> {
+            jdbc.update("update official_account_connections set status='CONNECTED' where official_account_id=?",account);
+            return snapshot(sessions.get());
+        });
+        now.set(start.plusSeconds(30));service.advance(account);
+        assertThat(service.get(first.user(),attempt.id()).status()).isEqualTo("BOUND");
+        assertThat(service.get(first.user(),attempt.id()).binding().sessionId()).isEqualTo("candidate");
+    }
+
+    @ParameterizedTest @ValueSource(strings={"AUTH_REQUIRED","ACCESS_BLOCKED","INVALID_RESPONSE"})
+    void nonTransientConnectionStateRevokesAutomaticBindingEvenWithAUniqueCandidate(String status) {
+        var attempt=create(first);service.advance(account);
+        sessions.set(List.of("existing","candidate"));now.set(start.plusSeconds(10));service.advance(account);
+        jdbc.update("update official_account_connections set status=? where official_account_id=?",status,account);
+        now.set(start.plusSeconds(20));service.advance(account);
+        assertThat(service.get(first.user(),attempt.id()).status()).isEqualTo("REJECTED");
+        assertThat(jdbc.queryForObject("select count(*) from session_bindings",Integer.class)).isZero();
+        verify(official,times(2)).refresh(account);
+    }
+
     @Test void separateInstancesCannotDuplicateTheActiveBackgroundCheck() throws Exception {
         var attempt=create(first);service.advance(account);
         var other=new SessionBindingService(jdbc,official,Clock.fixed(start.plusSeconds(10),ZoneOffset.UTC),new ObjectMapper(),new DataSourceTransactionManager(source));
