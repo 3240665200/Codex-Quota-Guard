@@ -70,7 +70,7 @@ WEB_LOGIN_BROWSER_HEADLESS=true
 - <https://github.com/SagerNet/sing-box/tree/v1.13.14>
 - <https://github.com/SagerNet/sing-box/blob/v1.13.14/LICENSE>
 
-服务器 `0.3.19` 为本次待发布目标，基础后端/网页标签为 `0.3.19`，浏览器后端为 `0.3.19-browser`，配套源码标签为 `server-v0.3.19`。已有 `0.3.18` 标签保持不变；本次不更新桌面，数据库仍为 V30，无新增迁移。镜像拉取部署见[registry 说明](../deploy/docker/registry/README.md)，下列 `--build` 命令用于源码部署。
+服务器 `0.3.19` 已发布，基础后端/网页标签为 `0.3.19`，浏览器后端为 `0.3.19-browser`，配套源码标签为 `server-v0.3.19`。已有 `0.3.18` 标签保持不变；本次不更新桌面，数据库仍为 V30，无新增迁移。镜像拉取部署见[registry 说明](../deploy/docker/registry/README.md)，下列 `--build` 命令用于源码部署。
 
 传输策略由现有 `app.require-https` 统一控制。基础 Compose 设置 `APP_REQUIRE_HTTPS=false`，允许 HTTP 和 HTTPS 的官方授权导入、会话操作、代理节点管理和服务器网页登录，不再限于 localhost；HTTP 前端仅提示风险，不禁用操作。**HTTP 会明文传输本系统密码、官方授权及浏览器输入，推荐 HTTPS。** 官方上游、代理订阅与邮箱各自原有的 TLS 校验要求不变。
 

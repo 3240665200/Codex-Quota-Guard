@@ -29,7 +29,7 @@ Codex Quota Guard 由桌面客户端、中央 Java 服务和 Web 管理后台组
 
 桌面源码版本保持 **0.3.18**。桌面端修复重复 BOUND 通知导致的访问核验重置，并共享登录辅助 SSE 订阅以减少切页时的连接重建；前端 230 项模拟测试通过。首次真实访问请求失败的底层原因仍待复测，不能据此认定网络或服务问题全部修复。详见[0.3.18 桌面测试说明](./docs/releases/v0.3.18.md)。
 
-本次服务器发布目标为 `0.3.19`：官方授权、会话管理与服务器网页登录在允许 HTTP 的部署中可直接使用，HTTP 页面保留风险提示；HTTPS 模式仍可强制加密传输。自动绑定、30 分钟登录期限、至少间隔 10 秒的会话监测和退出流程保持不变。**本次只更新服务器，不更新桌面或新增 Windows 安装包 Release**；本地 0.3.18 测试包不等于已公开发布，页面顶部下载链接仍指向既有公开安装包。桌面端须支持设备标识（0.3.14+，建议 0.3.18）。
+当前服务器版本为 `0.3.19`：官方授权、会话管理与服务器网页登录在允许 HTTP 的部署中可直接使用，HTTP 页面保留风险提示；HTTPS 模式仍可强制加密传输。自动绑定、30 分钟登录期限、至少间隔 10 秒的会话监测和退出流程保持不变。**本次只更新服务器，不更新桌面或新增 Windows 安装包 Release**；本地 0.3.18 测试包不等于已公开发布，页面顶部下载链接仍指向既有公开安装包。桌面端须支持设备标识（0.3.14+，建议 0.3.18）。
 
 客户端保留「登录辅助」：管理员可为团队关联的官方账户配置自有邮箱和最多两个精确发件地址，用户点击监听后领取一封新到登录邮件中的验证码。邮箱授权只在中央服务加密保存，官方登录仍由用户完成；详见[邮箱配置与使用说明](./docs/architecture/login-assistance.md)。
 
@@ -71,9 +71,9 @@ Codex Quota Guard 由桌面客户端、中央 Java 服务和 Web 管理后台组
 - [后端 · minjm/codex-quota-guard-backend](https://hub.docker.com/r/minjm/codex-quota-guard-backend)
 - [管理网页 · minjm/codex-quota-guard-web](https://hub.docker.com/r/minjm/codex-quota-guard-web)
 
-本次目标为后端和网页 `0.3.19`，可选浏览器后端为 `0.3.19-browser`；保留既有 `0.3.18`、`0.3.18-browser` 和 `0.3.11` 标签。支持 **Linux amd64 / x86_64**，部署配置固定版本，数据库使用官方 `postgres:17-alpine`。普通后端不含 Chromium；HTTP 与 HTTPS 服务器网页登录都需要专用镜像和沙箱配置，HTTPS overlay 可选，详见[部署说明](./deploy/docker/registry/README.md#https-与服务器网页登录可选)。Windows 桌面客户端和 Rust 统计服务仍安装在用户电脑，不放进服务器容器。上次版本的摘要与验证范围见[0.3.18 发布记录](./docs/releases/server-v0.3.18.md)。
+后端和网页 `0.3.19` 已发布，两个仓库的 `latest` 指向同一版本；可选浏览器后端为 `0.3.19-browser`，保留既有 `0.3.18`、`0.3.18-browser` 和 `0.3.11` 标签。支持 **Linux amd64 / x86_64**，部署配置固定版本，数据库使用官方 `postgres:17-alpine`。普通后端不含 Chromium；HTTP 与 HTTPS 服务器网页登录都需要专用镜像和沙箱配置，HTTPS overlay 可选，详见[部署说明](./deploy/docker/registry/README.md#https-与服务器网页登录可选)。Windows 桌面客户端和 Rust 统计服务仍安装在用户电脑，不放进服务器容器。摘要与验证范围见[0.3.19 发布记录](./docs/releases/server-v0.3.19.md)。
 
-服务器准备好 **Docker Engine、Docker Compose v2.24.4+、Bash、curl 和 OpenSSL** 后，在 `server-v0.3.19` 标签和对应镜像发布完成后，替换下面的服务器 IP 和管理员邮箱执行首次部署：
+服务器准备好 **Docker Engine、Docker Compose v2.24.4+、Bash、curl 和 OpenSSL** 后，替换下面的服务器 IP 和管理员邮箱执行首次部署；配置固定从 `server-v0.3.19` 标签下载：
 
 ```bash
 (

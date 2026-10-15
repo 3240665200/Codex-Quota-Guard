@@ -4,7 +4,7 @@
 
 桌面程序、本地 Java 和 Rust 统计服务仍安装在用户电脑，**不在服务器容器内运行**。
 
-本次服务器发布目标为 Linux amd64 的后端/网页 `0.3.19` 和可选后端 `0.3.19-browser`，源码标签为 `server-v0.3.19`；旧 `0.3.18` 镜像保持可用。只想拉取镜像时使用[registry 部署说明](./registry/README.md)，本页的 `--build` 命令用于源码部署。桌面源码版本仍为 `0.3.18`，配套桌面端需 0.3.14+（建议 0.3.18）；本次不更新桌面或新增安装包 Release。
+Linux amd64 的后端/网页 `0.3.19` 和可选后端 `0.3.19-browser` 已发布，源码标签为 `server-v0.3.19`；旧 `0.3.18` 镜像保持可用。只想拉取镜像时使用[registry 部署说明](./registry/README.md)，本页的 `--build` 命令用于源码部署。桌面源码版本仍为 `0.3.18`，配套桌面端需 0.3.14+（建议 0.3.18）；本次不更新桌面或新增安装包 Release。
 
 ## 服务器网页登录（可选）
 
@@ -24,7 +24,7 @@ docker compose --env-file .env -f compose.yaml -f compose.web-login.yaml up -d -
 
 Cookie 登录目前支持邮箱方式；外部 SSO 会明确提示不支持。官方验证码、人机验证仍由管理员本人完成，不能保证官方接受所有服务器网络。无论页面还是测试都不代替用户登录。新子菜单为“官方账户 → 账户管理 / 会话管理”。V28 扩展任务来源和管理员版本信息，不清除旧授权；部署重启会使未完成的服务器浏览器任务失效。
 
-普通 `runtime` 镜像不含 Chromium，不能仅通过增加环境变量获得浏览器。拉取部署使用本次目标 `0.3.19-browser` 及 [registry 专用 overlay](./registry/compose.web-login.yaml)，其中不包含 `build` 配置。基础 `APP_REQUIRE_HTTPS=false` 允许 HTTP 和 HTTPS 官方管理操作，不限 localhost；HTTPS overlay 设置为 `true` 时仍只接受 HTTPS。页面提示 HTTP 风险但不因协议禁用操作；上游官方 TLS 校验、密钥加密、鉴权及沙箱不变。
+普通 `runtime` 镜像不含 Chromium，不能仅通过增加环境变量获得浏览器。拉取部署使用已发布的 `0.3.19-browser` 及 [registry 专用 overlay](./registry/compose.web-login.yaml)，其中不包含 `build` 配置。基础 `APP_REQUIRE_HTTPS=false` 允许 HTTP 和 HTTPS 官方管理操作，不限 localhost；HTTPS overlay 设置为 `true` 时仍只接受 HTTPS。页面提示 HTTP 风险但不因协议禁用操作；上游官方 TLS 校验、密钥加密、鉴权及沙箱不变。
 
 ## 1. 准备服务器
 
