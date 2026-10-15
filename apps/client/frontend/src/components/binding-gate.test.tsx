@@ -297,6 +297,29 @@ describe("device binding access gate", () => {
       );
     },
   );
+  it("immediately discards an expired workspace when returning after timer suspension", async () => {
+    access = { allowed: true, bindingId, reason: null };
+    show();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "设置" })).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    await screen.findByRole("heading", { name: "启动设置" });
+    const original = mock.getMockImplementation()!;
+    mock.mockImplementation(async (command, args) =>
+      command === "system_access"
+        ? new Promise(() => {})
+        : original(command, args),
+    );
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 11_000);
+    try {
+      act(() => window.dispatchEvent(new Event("focus")));
+      expect(screen.queryByRole("heading", { name: "启动设置" })).toBeNull();
+      expect(screen.getByRole("button", { name: "设置" })).toBeDisabled();
+    } finally {
+      clock.mockRestore();
+    }
+  });
   it("expires a previously valid permission when the periodic check hangs", async () => {
     access = { allowed: true, bindingId, reason: null };
     show();
