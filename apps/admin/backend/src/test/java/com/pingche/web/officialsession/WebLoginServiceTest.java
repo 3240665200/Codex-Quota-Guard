@@ -174,6 +174,13 @@ class WebLoginServiceTest {
         verify(browser,never()).open(any(),any());
     }
 
+    @Test void expiredDesktopReservationDoesNotBlockTheServerBrowser() {
+        var previous=desktop.create(owner,account,new BrowserLoginService.StartRequest(0L,null));
+        now.set(now.get().plusSeconds(601));
+        assertThat(create().state()).isEqualTo("WAITING_FOR_LOGIN");
+        assertThat(desktop.get(owner,previous.id()).state()).isEqualTo("EXPIRED");
+    }
+
     @Test void invalidInputAndFrameRateLimitsDoNotReachTheBrowser() {
         var job=create();
         assertThatThrownBy(() -> service.input(owner,job.id(),new ManagedLoginBrowser.Input("TEXT",null,null,null,null,"x".repeat(2049),false,false)))
