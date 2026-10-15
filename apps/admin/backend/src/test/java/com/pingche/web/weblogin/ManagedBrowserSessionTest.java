@@ -52,19 +52,44 @@ class ManagedBrowserSessionTest {
         assertThat(cleanup.get()).isEqualTo(1);
     }
 
+    @Test
+    void changedCookiesInvalidateCapturedAuthorizationUntilANewSuccessfulRead() {
+        FakeCdp cdp = new FakeCdp();
+        var session = new ChromiumManagedLoginBrowser.OwnedSession(cdp, json, () -> {}, () -> 0L);
+        session.initialize();
+        successfulRead(session, "Bearer first");
+        assertThat(session.capture().authorization()).isEqualTo("Bearer first");
+        cdp.cookie = "second-cookie";
+        assertThat(session.capture()).isNull();
+        assertThat(session.frame().readyToSave()).isFalse();
+        successfulRead(session, "Bearer second");
+        assertThat(session.capture().authorization()).isEqualTo("Bearer second");
+        session.input(new ManagedLoginBrowser.Input("OPEN_SESSIONS", null, null, null, null, null, false, false));
+        assertThat(session.capture()).isNull();
+        session.close();
+    }
+
+    private void successfulRead(ChromiumManagedLoginBrowser.OwnedSession session, String authorization) {
+        String url = "https://chatgpt.com/backend-api/accounts/sessions";
+        session.accept(event("Network.requestWillBeSent", "owned", Map.of("requestId", "r", "request", Map.of("method", "GET", "url", url,
+                "headers", Map.of("Authorization", authorization, "Chatgpt-Account-Id", "synthetic-account")))));
+        session.accept(event("Network.responseReceived", "owned", Map.of("requestId", "r", "response", Map.of("status", 200, "mimeType", "application/json", "url", url))));
+    }
+
     private String event(String method, String session, Map<String, ?> params) {
         return json.writeValueAsString(Map.of("method", method, "sessionId", session, "params", params));
     }
     private final class FakeCdp implements BrowserCdp {
         final List<String> methods = new ArrayList<>();
         final CompletableFuture<Void> termination = new CompletableFuture<>();
-        String image = "/9j/2Q=="; boolean closed;
+        String image = "/9j/2Q=="; String cookie = "first-cookie"; boolean closed;
         @Override public CompletableFuture<JsonNode> send(String method, Map<String, ?> params, String session) {
             methods.add(method);
             Object response = switch (method) {
                 case "Target.getTargets" -> Map.of("targetInfos", List.of(Map.of("type", "page", "url", "about:blank", "targetId", "target")));
                 case "Target.attachToTarget" -> Map.of("sessionId", "owned");
                 case "Page.captureScreenshot" -> Map.of("data", image);
+                case "Network.getCookies" -> Map.of("cookies", List.of(Map.of("name", "__Secure-next-auth.session-token", "domain", "chatgpt.com", "secure", true, "value", cookie)));
                 default -> Map.of();
             };
             return CompletableFuture.completedFuture(json.valueToTree(response));

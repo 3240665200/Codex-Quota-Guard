@@ -17,6 +17,26 @@ import tools.jackson.databind.ObjectMapper;
 
 class SingBoxProcessRunnerTest {
     @Test
+    void browserLeaseHasItsOwnTenMinuteLifetimeAndFixedLoginTargets() {
+        FakeProcess legacy = new FakeProcess();
+        FakeProcess browser = new FakeProcess();
+        var queue = new java.util.ArrayDeque<Process>(java.util.List.of(legacy, browser));
+        SingBoxProcessRunner runner = new SingBoxProcessRunner("synthetic-kernel", 2, 100, 30,
+                executable -> queue.remove(), port -> true);
+        try {
+            runner.open(port -> new ObjectMapper().createObjectNode());
+            ProxyLease lease = runner.open(port -> new ObjectMapper().createObjectNode(), ManagedProxyGateway.Purpose.BROWSER_LOGIN);
+            assertThat(lease.proxySelector().select(URI.create("https://auth.openai.com/log-in"))).hasSize(1);
+            assertThatThrownBy(() -> lease.proxySelector().select(URI.create("https://accounts.google.com"))).isInstanceOf(IllegalArgumentException.class);
+            await().atMost(Duration.ofSeconds(2)).until(() -> !legacy.alive);
+            assertThat(browser.alive).isTrue();
+            assertThat(lease.isAlive()).isTrue();
+            browser.destroy();
+            assertThat(lease.isAlive()).isFalse();
+            lease.close();
+        } finally { runner.destroy(); }
+    }
+    @Test
     void sendsConfigurationOnlyOverStdinRestrictsProxyAndReleasesCapacityOnClose() {
         FakeProcess process = new FakeProcess();
         SingBoxProcessRunner runner = new SingBoxProcessRunner("synthetic-kernel", 1, 100, 10_000,

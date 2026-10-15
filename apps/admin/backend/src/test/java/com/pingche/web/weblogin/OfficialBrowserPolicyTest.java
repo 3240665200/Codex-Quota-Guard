@@ -53,4 +53,20 @@ class OfficialBrowserPolicyTest {
         assertThat(new ManagedLoginBrowser.Credentials("synthetic-cookie", "Bearer synthetic-token", "synthetic-account").toString())
                 .doesNotContain("synthetic-cookie", "synthetic-token", "synthetic-account");
     }
+
+    @Test
+    void childEnvironmentDoesNotInheritServerSecretsAndHomeBelongsToThePrivateProfile() {
+        var env = ChromiumManagedLoginBrowser.browserEnvironment(java.util.Map.of("DATABASE_PASSWORD", "secret", "JWT_SECRET", "secret",
+                "OFFICIAL_SESSION_ENCRYPTION_KEY", "secret", "SystemRoot", "C:\\Windows", "LANG", "en_US.UTF-8", "DISPLAY", ":99"), Path.of("profile"), true);
+        assertThat(env).doesNotContainKeys("DATABASE_PASSWORD", "JWT_SECRET", "OFFICIAL_SESSION_ENCRYPTION_KEY", "DISPLAY");
+        assertThat(env.get("HOME")).isEqualTo(Path.of("profile").toAbsolutePath().normalize().toString());
+        assertThat(env.get("SystemRoot")).isEqualTo("C:\\Windows");
+    }
+
+    @Test
+    void onlyAParameterlessFixedSessionsNavigationCanBeRequested() {
+        BrowserInputPolicy.validate(new ManagedLoginBrowser.Input("OPEN_SESSIONS", null, null, null, null, null, false, false));
+        assertThatThrownBy(() -> BrowserInputPolicy.validate(new ManagedLoginBrowser.Input("OPEN_SESSIONS", null, null, null, null,
+                "https://evil.test", false, false))).isInstanceOf(IllegalArgumentException.class);
+    }
 }
