@@ -120,6 +120,111 @@ class SessionBindingIntegrationTest {
         assertThat(create().id()).isEqualTo(first.id());
     }
 
+    @Test void cancellingQueuedAttemptAllowsSameOwnerDeviceToStartANewAttempt() {
+        var first = create();
+        var cancelled = service.cancel(user.getId(), first.id());
+        assertThat(cancelled.status()).isEqualTo("CANCELLED");
+        assertThat(cancelled.quarantined()).isFalse();
+        assertThat(cancelled.loginAllowed()).isFalse();
+        assertThat(service.accountState(accountId).activeAttemptId()).isNull();
+        var retry = create();
+        assertThat(retry.id()).isNotEqualTo(first.id());
+        assertThat(retry.status()).isEqualTo("QUEUED");
+        assertThat(create().id()).isEqualTo(retry.id());
+        assertThat(service.prepare(user.getId(), retry.id()).loginAllowed()).isTrue();
+        assertThat(service.prepare(user.getId(), first.id()).status()).isEqualTo("CANCELLED");
+        assertThat(service.current(user.getId(), deviceId, enrollmentId).attempt().id()).isEqualTo(retry.id());
+    }
+
+    @Test void cancellingPreparingAllowsSafeRetryAndLateOldBaselineCannotOverwriteIt() throws Exception {
+        var first = create();
+        CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
+        var refreshes = new java.util.concurrent.atomic.AtomicInteger();
+        when(official.refresh(accountId)).thenAnswer(call -> {
+            if (refreshes.incrementAndGet() == 1) {
+                entered.countDown();
+                if (!release.await(10, TimeUnit.SECONDS)) throw new IllegalStateException("synthetic refresh timeout");
+                return snapshot(List.of("existing"), true, "official-user");
+            }
+            return snapshot(List.of("existing", "fresh-baseline-only"), true, "official-user");
+        });
+        var old = CompletableFuture.supplyAsync(() -> service.prepare(user.getId(), first.id()));
+        UUID retryId;
+        try {
+            assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(service.get(user.getId(), first.id()).status()).isEqualTo("PREPARING");
+            assertThat(service.cancel(user.getId(), first.id()).quarantined()).isFalse();
+            var retry = create();
+            retryId = retry.id();
+            assertThat(retryId).isNotEqualTo(first.id());
+            assertThat(service.prepare(user.getId(), retryId).status()).isEqualTo("READY_FOR_LOGIN");
+        } finally { release.countDown(); }
+        var late = old.get(5, TimeUnit.SECONDS);
+        assertThat(late.status()).isEqualTo("CANCELLED");
+        assertThat(late.loginAllowed()).isFalse();
+        assertThat(late.quarantined()).isFalse();
+        assertThat(service.accountState(accountId).activeAttemptId()).isEqualTo(retryId);
+        assertThat(jdbc.queryForObject("select before_session_ids from session_binding_attempts where id=?", String.class, retryId))
+                .contains("fresh-baseline-only");
+        assertThat(jdbc.queryForObject("select before_session_ids from session_binding_attempts where id=?", String.class, first.id())).isNull();
+    }
+
+    @Test void cancelledReadyAttemptRequiresAdminRecoveryAndRetryBaselineExcludesLateOldSession() {
+        var first = create();
+        service.prepare(user.getId(), first.id());
+        assertThat(service.cancel(user.getId(), first.id()).quarantined()).isTrue();
+        var current = service.current(user.getId(), deviceId, enrollmentId).attempt();
+        assertThat(current.id()).isEqualTo(first.id());
+        assertThat(current.status()).isEqualTo("CANCELLED");
+        assertThat(current.quarantined()).isTrue();
+        var retry = create();
+        assertThat(retry.id()).isNotEqualTo(first.id());
+        assertThat(service.prepare(user.getId(), retry.id()).loginAllowed()).isFalse();
+        assertThat(service.get(user.getId(), retry.id()).quarantined()).isTrue();
+        assertThat(service.accountState(accountId).reason()).isEqualTo("SESSION_BINDING_CANCELLED");
+        assertThatThrownBy(() -> service.recover(accountId, false)).isInstanceOf(DomainException.class);
+        when(official.refresh(accountId)).thenAnswer(call -> snapshot(List.of("existing", "late-cancelled-session"), true, "official-user"));
+        assertThat(service.recover(accountId, true).quarantined()).isFalse();
+        assertThat(service.get(user.getId(), first.id()).status()).isEqualTo("CANCELLED");
+        assertThat(service.get(user.getId(), first.id()).quarantined()).isFalse();
+        assertThat(service.prepare(user.getId(), retry.id()).loginAllowed()).isTrue();
+        when(official.refresh(accountId)).thenAnswer(call -> snapshot(List.of("existing", "late-cancelled-session", "new-retry-session"), true, "official-user"));
+        var candidate = service.detect(user.getId(), retry.id());
+        assertThat(candidate.candidateSessionId()).isEqualTo("new-retry-session");
+        service.cancel(user.getId(), first.id());
+        assertThat(service.get(user.getId(), retry.id()).status()).isEqualTo("AWAITING_CONFIRMATION");
+        assertThat(service.accountState(accountId).quarantined()).isFalse();
+    }
+
+    @Test void cancellingDetectingRetainsQuarantineAndFencesTheLateCandidate() throws Exception {
+        var first = create();
+        service.prepare(user.getId(), first.id());
+        CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
+        when(official.refresh(accountId)).thenAnswer(call -> {
+            entered.countDown();
+            if (!release.await(10, TimeUnit.SECONDS)) throw new IllegalStateException("synthetic refresh timeout");
+            return snapshot(List.of("existing", "late-candidate"), true, "official-user");
+        });
+        var old = CompletableFuture.supplyAsync(() -> service.detect(user.getId(), first.id()));
+        try {
+            assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(service.get(user.getId(), first.id()).status()).isEqualTo("DETECTING");
+            assertThat(service.cancel(user.getId(), first.id()).quarantined()).isTrue();
+            var retry = create();
+            var blocked = service.prepare(user.getId(), retry.id());
+            assertThat(blocked.status()).isEqualTo("QUEUED");
+            assertThat(blocked.quarantined()).isTrue();
+            assertThat(blocked.loginAllowed()).isFalse();
+        } finally { release.countDown(); }
+        var late = old.get(5, TimeUnit.SECONDS);
+        assertThat(late.status()).isEqualTo("CANCELLED");
+        assertThat(late.candidateSessionId()).isNull();
+        assertThat(late.loginAllowed()).isFalse();
+        assertThat(service.accountState(accountId).quarantined()).isTrue();
+        assertThat(service.accountState(accountId).activeAttemptId()).isNull();
+        assertThat(service.confirm(user.getId(), first.id(), "late-candidate").binding()).isNull();
+    }
+
     @Test void failedBeforeNeverGrantsLoginAndDoesNotNeedRiskRecovery() {
         var attempt = create();
         when(official.refresh(accountId)).thenThrow(new DomainException("OFFICIAL_UNAVAILABLE", "unavailable", HttpStatus.BAD_GATEWAY));
