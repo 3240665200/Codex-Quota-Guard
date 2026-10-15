@@ -9,6 +9,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.pingche.web.auth.AuthResponse;
 import com.pingche.web.auth.AuthService;
 import com.pingche.web.meter.MeterDeviceService;
+import com.pingche.web.meter.MeterDeviceRepository;
 import com.pingche.web.user.User;
 import com.pingche.web.user.UserRepository;
 import java.time.Instant;
@@ -34,6 +35,47 @@ class MeterDeviceIntegrationTest {
     @Autowired ObjectMapper json;
     @Autowired UserRepository users;
     @Autowired MeterDeviceService devices;
+    @Autowired MeterDeviceRepository meterRepository;
+
+    @Test
+    void expiredDeviceRenewsIndependentlyButRevokedOrDisabledDevicesCannotRenew() throws Exception {
+        String email = "meter-renew-" + UUID.randomUUID() + "@example.com";
+        AuthResponse session = auth.register(email, "test-password-with-sufficient-length", "Meter renew");
+        UUID userId = users.findByEmail(email).orElseThrow().getId();
+        UUID deviceId = UUID.randomUUID();
+        var pairing = devices.enroll(userId, deviceId);
+        var stored = meterRepository.findById(deviceId).orElseThrow();
+        stored.rotate(stored.getTokenHash(), Instant.now().minusSeconds(1));
+        meterRepository.saveAndFlush(stored);
+        // A closed/revoked desktop session must not remove the independent device grant.
+        auth.logout(userId, session.refreshToken());
+        mvc.perform(post("/api/v1/meter/heartbeat")
+                        .header("X-Quota-Guard-Meter", pairing.deviceToken()))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(post("/api/v1/meter/credential/renew")
+                        .header("X-Quota-Guard-Meter", pairing.deviceToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.deviceId").value(deviceId.toString()))
+                .andExpect(jsonPath("$.expiresAt").isString())
+                .andExpect(jsonPath("$.deviceToken").doesNotExist());
+        mvc.perform(post("/api/v1/meter/heartbeat")
+                        .header("X-Quota-Guard-Meter", pairing.deviceToken()))
+                .andExpect(status().isOk());
+        assertThat(meterRepository.findById(deviceId).orElseThrow().getExpiresAt())
+                .isAfter(Instant.now().plusSeconds(29 * 86400));
+        User user = users.findById(userId).orElseThrow();
+        user.updateAdministration(User.Status.DISABLED, user.getRole());
+        users.saveAndFlush(user);
+        mvc.perform(post("/api/v1/meter/credential/renew")
+                        .header("X-Quota-Guard-Meter", pairing.deviceToken()))
+                .andExpect(status().isUnauthorized());
+        user.updateAdministration(User.Status.ACTIVE, user.getRole());
+        users.saveAndFlush(user);
+        devices.revoke(userId, deviceId);
+        mvc.perform(post("/api/v1/meter/credential/renew")
+                        .header("X-Quota-Guard-Meter", pairing.deviceToken()))
+                .andExpect(status().isUnauthorized());
+    }
 
     @Test
     void pairedMeterCanHeartbeatAndReportUsageWithoutAnOpenDesktopSession() throws Exception {
@@ -75,7 +117,8 @@ class MeterDeviceIntegrationTest {
                                 "source":"TOKEN_USAGE_RECORD"}]}
                                 """.formatted("a".repeat(64), Instant.now())))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.usage.fiveHourUsedTokens").value(120));
+                .andExpect(jsonPath("$.acceptedEvents").value(1))
+                .andExpect(jsonPath("$.usage").doesNotExist());
         mvc.perform(get("/api/v1/client/quota/overview")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + session.accessToken()))
                 .andExpect(status().isOk())
