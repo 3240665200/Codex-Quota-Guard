@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   getOfficialAccountSessions: vi.fn(), listProxyNodes: vi.fn(), isSecureManagementContext: vi.fn(),
 }));
 vi.mock('../../services/api', () => mocks);
+vi.mock('../../services/sessionBindingsApi', () => ({ listSessionBindings: vi.fn().mockResolvedValue([]) }));
 
 const connection = { configured: true, encryptionReady: true, status: 'UNVERIFIED',
   requestedAccountId: 'official-workspace', proxyNodeId: 'proxy-1', hasAuthorization: true, hasCookie: true,
@@ -18,7 +19,7 @@ const snapshot = { connection: { ...connection, status: 'CONNECTED' },
   account: { userId: 'official-user', email: 'official@example.com', userName: '官方用户',
     accountId: 'official-workspace', accountName: '官方工作区', planType: 'team',
     accountUserRole: 'owner', deactivated: false, activeSubscription: true },
-  sessions: { showSessionManager: true, fetchedAt: '2026-10-14T00:01:00Z', devices: [
+  sessions: { showSessionManager: true, devices: [
     { renderId: 'render-1', sessionId: 'session-fixture', platform: 'web', displayName: '办公电脑',
       deviceModel: 'Fixture PC', humanReadableDescription: 'Windows 浏览器', osVersion: 'Windows 11',
       currentDevice: true, trustedDevice: true, lastSignedInAt: '2026-10-13T00:00:00Z',
@@ -31,6 +32,8 @@ async function openConnection() {
   fireEvent.click(await screen.findByRole('button', { name: '授权与会话 研发账户' }));
   const dialog = await screen.findByRole('dialog', { name: /授权与会话/ });
   await waitFor(() => expect(mocks.getOfficialAccountConnection).toHaveBeenCalledWith('account-1'));
+  fireEvent.click(within(dialog).getByRole('button', { name: '高级：手动导入授权' }));
+  await within(dialog).findByLabelText('官方 Authorization');
   return dialog;
 }
 
@@ -136,6 +139,7 @@ describe('官方账户授权与只读会话', () => {
     fireEvent.click(screen.getByRole('button', { name: '授权与会话 研发账户' }));
     dialog = await screen.findByRole('dialog', { name: /授权与会话/ });
     await within(dialog).findByText('official@example.com');
+    fireEvent.click(within(dialog).getByRole('button', { name: '高级：手动导入授权' }));
     expect(within(dialog).getByLabelText('官方 Authorization')).toHaveValue('');
     fireEvent.click(within(dialog).getByRole('button', { name: '删除保存的授权' }));
     expect(mocks.deleteOfficialAccountConnection).not.toHaveBeenCalled();
