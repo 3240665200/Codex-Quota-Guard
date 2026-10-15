@@ -2242,6 +2242,88 @@ mod tests {
     }
 
     #[test]
+    fn synthetic_meter_worker() {
+        let Some(path) = std::env::var_os("QUOTA_GUARD_SYNTHETIC_METER_CONFIG") else {
+            return;
+        };
+        let path = PathBuf::from(path);
+        assert!(path.starts_with(std::env::temp_dir()));
+        let config: MeterConfig = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert!(config.server_url.starts_with("http://127.0.0.1:"));
+        assert!(config.state_dir.starts_with(std::env::temp_dir()));
+        // The child runs only the real accounting loop, with a harmless guard.
+        let mut runtime = MeterRuntime::new_for_test(config).unwrap();
+        runtime.tick();
+        runtime.shutdown().unwrap();
+    }
+
+    fn run_synthetic_worker(config_path: &Path) {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::synthetic_meter_worker", "--nocapture"])
+            .env("QUOTA_GUARD_SYNTHETIC_METER_CONFIG", config_path)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "synthetic meter child failed");
+    }
+
+    #[test]
+    fn independent_process_preserves_offline_usage_after_log_deletion_and_restart() {
+        let root = TestDir::new();
+        let sessions = root.path().join(".codex/sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        let log = sessions.join("synthetic.jsonl");
+        fs::write(&log, record("baseline", 1)).unwrap();
+        let reserved = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = reserved.local_addr().unwrap();
+        let config = MeterConfig {
+            server_url: format!("http://{address}"),
+            codex_home: root.path().join(".codex"),
+            pairing_inbox: root.path().join("pairing.json"),
+            state_dir: root.path().join("state"),
+            status_file: root.path().join("status.json"),
+            device_id: uuid::Uuid::new_v4(),
+            owner_user_sid: None,
+        };
+        save_state(&config.state_dir.join("scan-state.json"),
+            &baseline_codex_home(&config.codex_home).unwrap()).unwrap();
+        save_credential(&config.state_dir, &MeterCredential {
+            device_id: config.device_id, device_token: "A".repeat(43),
+        }).unwrap();
+        let config_path = root.path().join("synthetic-config.json");
+        fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+        fs::write(&log, record("baseline", 1) + &record("offline", 42)).unwrap();
+        drop(reserved);
+        run_synthetic_worker(&config_path);
+        let outbox = config.state_dir.join("usage-outbox.json");
+        assert!(outbox.is_file(), "offline usage must be durably copied before upload");
+        fs::remove_file(&log).unwrap();
+
+        let listener = TcpListener::bind(address).unwrap();
+        let receiver = thread::spawn(move || {
+            let mut uploads = Vec::new();
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let request = read_http_request(&mut stream);
+                assert!(!String::from_utf8_lossy(&request).to_ascii_lowercase().contains("authorization:"));
+                if request.starts_with(b"POST /api/v1/meter/usage/events ") {
+                    let end = request.windows(4).position(|value| value == b"\r\n\r\n").unwrap() + 4;
+                    uploads.push(serde_json::from_slice::<serde_json::Value>(&request[end..]).unwrap());
+                }
+                stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").unwrap();
+            }
+            uploads
+        });
+        run_synthetic_worker(&config_path);
+        let uploads = receiver.join().unwrap();
+        assert_eq!(uploads.len(), 1);
+        assert_eq!(uploads[0]["events"].as_array().unwrap().len(), 1);
+        assert_eq!(uploads[0]["events"][0]["totalTokens"], 42);
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(outbox).unwrap()).unwrap();
+        assert_eq!(saved["pending"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
     fn runtime_keeps_a_local_history_of_start_baseline_and_unpaired_state() {
         let root = TestDir::new();
         let config = MeterConfig {
