@@ -340,11 +340,53 @@ class AdminUserLogoutIntegrationTest {
         read(plan).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("EXECUTING"))
                 .andExpect(jsonPath("$.accounts[0].status").value("NOT_ATTEMPTED"));
         now.set(NOW.plusSeconds(301));
-        read(plan).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("UNKNOWN"));
+        read(plan).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("PARTIAL"))
+                .andExpect(jsonPath("$.accounts[0].status").value("NOT_ATTEMPTED"));
         mvc.perform(get(url("current")).secure(true).header(HttpHeaders.AUTHORIZATION, token(admin)))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.operation.planId").value(plan));
         confirm(admin, plan, true).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("USER_LOGOUT_PLAN_CONSUMED"));
         verify(client, never()).revokeSession(any(), any(), anyString());
+    }
+
+    @Test void manuallyResolvedUnknownRetainsUncertainItemsButDoesNotBlockANewOperation() throws Exception {
+        binding(member, account, "owned", "ACTIVE");
+        JsonNode preview = preview();
+        String plan = preview.path("planId").asString();
+        UUID child = UUID.fromString(preview.path("accounts").get(0).path("planId").asString());
+        jdbc.update("update admin_user_logout_plans set status='SUBMITTED',system_status='REVOKED',started_at=? where id=?", at(NOW), UUID.fromString(plan));
+        jdbc.update("update admin_user_logout_accounts set dispatch_status='SUBMITTED' where plan_id=?", UUID.fromString(plan));
+        jdbc.update("update official_session_logout_plans set status='UNKNOWN',started_at=?,lease_until=?,results_json=? where id=?",
+                at(NOW), at(NOW.plusSeconds(300)), json.writeValueAsString(List.of(new OfficialSessionLogoutResult.Item("owned", "UNKNOWN", "OFFICIAL_LOGOUT_OUTCOME_UNKNOWN"))), child);
+        read(plan).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("UNKNOWN"));
+        mvc.perform(post("/api/v1/admin/official-accounts/{id}/session-logout/{plan}/acknowledge-unknown", account.getId(), child).secure(true)
+                        .header(HttpHeaders.AUTHORIZATION, token(admin)).contentType(MediaType.APPLICATION_JSON).content("{\"acknowledgeUncertainOutcome\":true}"))
+                .andExpect(status().isOk());
+        read(plan).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("PARTIAL"))
+                .andExpect(jsonPath("$.accounts[0].status").value("RESOLVED_UNKNOWN"))
+                .andExpect(jsonPath("$.accounts[0].results[0].status").value("UNKNOWN"));
+        now.set(NOW.plusSeconds(1));
+        String next = preview().path("planId").asString();
+        confirm(admin, next, true).andExpect(status().isOk());
+        mvc.perform(get(url("current")).secure(true).header(HttpHeaders.AUTHORIZATION, token(admin)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.operation.planId").value(next));
+        verify(client, never()).revokeSession(any(), any(), anyString());
+    }
+
+    @Test void committedChildrenRecoverWhenOnlyTheParentsFinalMarkerWasLost() throws Exception {
+        binding(member, account, "owned", "ACTIVE");
+        String plan = preview().path("planId").asString();
+        confirm(admin, plan, true).andExpect(status().isOk());
+        assertThat(awaitResult(plan).path("status").asString()).isEqualTo("ACCEPTED");
+        // Durable account dispatch journals and official outcomes survive this simulated crash.
+        jdbc.update("update admin_user_logout_plans set status='DISPATCHING' where id=?", UUID.fromString(plan));
+        read(plan).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("ACCEPTED"));
+        now.set(NOW.plusSeconds(301));
+        read(plan).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("ACCEPTED"));
+        String next = preview().path("planId").asString();
+        confirm(admin, next, true).andExpect(status().isOk());
+        mvc.perform(get(url("current")).secure(true).header(HttpHeaders.AUTHORIZATION, token(admin)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.operation.planId").value(next));
+        verify(client, times(1)).revokeSession(any(), isNull(), eq("owned"));
     }
 
     private OfficialAccount account(String key) {
