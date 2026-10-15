@@ -15,8 +15,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.pingche.web.auth.JwtService;
 import com.pingche.web.auth.RefreshSessionRepository;
+import com.pingche.web.meter.MeterDevice;
+import com.pingche.web.meter.MeterDeviceRepository;
 import com.pingche.web.quota.OfficialAccount;
 import com.pingche.web.quota.OfficialAccountRepository;
+import com.pingche.web.team.Team;
 import com.pingche.web.team.TeamRepository;
 import com.pingche.web.user.User;
 import com.pingche.web.user.UserRepository;
@@ -62,6 +65,7 @@ class OfficialSessionLogoutIntegrationTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired JwtService jwt;
     @Autowired ObjectMapper json;
+    @Autowired MeterDeviceRepository meterDevices;
     @MockitoBean OfficialSessionClient client;
     @MockitoBean Clock clock;
     private final AtomicReference<Instant> now = new AtomicReference<>(NOW);
@@ -69,10 +73,12 @@ class OfficialSessionLogoutIntegrationTest {
     private User admin;
     private User otherAdmin;
     private User member;
+    private Team selectedTeam;
 
     @BeforeEach
     void setup() {
         now.set(NOW);
+        selectedTeam = null;
         when(clock.instant()).thenAnswer(call -> now.get());
         jdbc.update("delete from session_bindings");
         jdbc.update("delete from session_binding_attempts");
@@ -285,6 +291,174 @@ class OfficialSessionLogoutIntegrationTest {
         now.set(NOW.plusSeconds(361));
         acknowledge(admin, plan, true).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("RESOLVED_UNKNOWN"));
         confirm(admin, plan, true).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("OFFICIAL_LOGOUT_PLAN_CONSUMED"));
+    }
+
+    @Test void selectedPreviewIncludesOnlyExplicitTargetsAndExplainsCurrentAndAmbiguousExclusions() throws Exception {
+        binding("bound");
+        when(client.fetch(any(OfficialSessionCredentials.class), isNull())).thenReturn(snapshot(List.of(
+                device("bound", false, false), device("trusted", true, false), device("unselected", false, false),
+                device("current", false, true), device("unknown-current", false, null),
+                device("duplicate", false, false), device("duplicate", false, false))));
+        JsonNode plan = selectedPreview(List.of("bound", "trusted", "current", "unknown-current", "duplicate"));
+        assertThat(plan.path("mode").asString()).isEqualTo("SELECTED");
+        assertThat(plan.path("targets").size()).isEqualTo(2);
+        List<String> targetIds = new java.util.ArrayList<>();
+        for (var target : plan.path("targets")) targetIds.add(target.path("sessionId").asString());
+        assertThat(targetIds).containsExactly("bound", "trusted");
+        assertThat(plan.path("excluded").toString()).contains("CURRENT_SESSION", "CURRENT_SESSION_UNKNOWN", "DUPLICATE_SESSION_ID");
+        assertThat(plan.path("warnings").toString()).contains("SELECTED_SESSIONS_ONLY", "SELECTED_BOUND_SESSION_ACCESS_REVOKED", "TRUSTED_DEVICE_SESSION_ONLY");
+        assertThat(org.mockito.Mockito.mockingDetails(client).getInvocations()).allMatch(invocation -> invocation.getMethod().getName().equals("fetch"));
+    }
+
+    @Test void selectedRequestsRejectInvalidOrAmbiguousSelectionWithoutFetchingOfficialState() throws Exception {
+        List<String> bodies = new java.util.ArrayList<>(List.of(
+                "{\"mode\":\"SELECTED\"}", "{\"mode\":\"SELECTED\",\"sessionIds\":null}",
+                "{\"mode\":\"SELECTED\",\"sessionIds\":[]}", "{\"mode\":\"SELECTED\",\"sessionIds\":[null]}",
+                "{\"mode\":\"SELECTED\",\"sessionIds\":[\" \" ]}", "{\"mode\":\"SELECTED\",\"sessionIds\":[\"one\",\"one\"]}",
+                "{\"mode\":\"ALL\",\"sessionIds\":[\"one\"]}", "{\"mode\":\"UNBOUND\",\"sessionIds\":[\"one\"]}"));
+        bodies.add(json.writeValueAsString(Map.of("mode", "SELECTED", "sessionIds", List.of("a".repeat(513)))));
+        bodies.add(json.writeValueAsString(Map.of("mode", "SELECTED", "sessionIds", java.util.stream.IntStream.range(0, 101).mapToObj(i -> "s-" + i).toList())));
+        for (String body : bodies) {
+            mvc.perform(post(url("preview")).secure(true).header(HttpHeaders.AUTHORIZATION, token(admin))
+                            .contentType(MediaType.APPLICATION_JSON).content(body))
+                    .andExpect(status().isBadRequest());
+        }
+        verifyNoInteractions(client);
+    }
+
+    @Test void unknownSelectedSessionRejectsWholePreview() throws Exception {
+        mvc.perform(post(url("preview")).secure(true).header(HttpHeaders.AUTHORIZATION, token(admin))
+                        .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(Map.of("mode", "SELECTED", "sessionIds", List.of("s-one", "not-in-this-account")))))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value("OFFICIAL_LOGOUT_SELECTION_INVALID"));
+        assertThat(jdbc.queryForObject("select count(*) from official_session_logout_plans", Integer.class)).isZero();
+    }
+
+    @Test void selectedBatchEndsAllChosenBindingsWithoutInvalidatingUnselectedBindingsOrConnection() throws Exception {
+        UUID firstDevice = selectedBinding("one"), secondDevice = selectedBinding("two"), untouchedDevice = selectedBinding("unselected");
+        when(client.fetch(any(OfficialSessionCredentials.class), isNull())).thenReturn(snapshot(List.of(device("one", true, false), device("two", false, false), device("unselected", false, false))));
+        connections.refresh(account.getId());
+        UUID revision = jdbc.queryForObject("select revision from official_account_connections where official_account_id=?", UUID.class, account.getId());
+        clientAccess(firstDevice, true);
+        clientAccess(secondDevice, true);
+        clientAccess(untouchedDevice, true);
+        when(client.revokeSession(any(OfficialSessionCredentials.class), isNull(), any(String.class))).thenReturn(new OfficialSessionWriteResult("ACCEPTED", null));
+        String plan = selectedPreview(List.of("one", "two")).path("planId").asString();
+        confirm(admin, plan, true).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("ACCEPTED"))
+                .andExpect(jsonPath("$.requiresReauthorization").value(false));
+        assertBinding("one", "INVALIDATED"); assertBinding("two", "INVALIDATED"); assertBinding("unselected", "ACTIVE");
+        assertThat(jdbc.queryForObject("select count(*) from session_binding_attempts where status='REJECTED' and error_code='OFFICIAL_LOGOUT_SELECTED'", Integer.class)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("select revision from official_account_connections where official_account_id=?", UUID.class, account.getId())).isEqualTo(revision);
+        assertThat(jdbc.queryForObject("select status from official_account_connections where official_account_id=?", String.class, account.getId())).isEqualTo("UNVERIFIED");
+        clientAccess(firstDevice, false); clientAccess(secondDevice, false); clientAccess(untouchedDevice, true);
+        verify(client).revokeSession(any(OfficialSessionCredentials.class), isNull(), eq("one"));
+        verify(client).revokeSession(any(OfficialSessionCredentials.class), isNull(), eq("two"));
+        verify(client, org.mockito.Mockito.never()).revokeSession(any(OfficialSessionCredentials.class), isNull(), eq("unselected"));
+        verify(client, org.mockito.Mockito.never()).logoutAll(any(OfficialSessionCredentials.class), isNull());
+    }
+
+    @Test void selectedPartialFailureInvalidatesOnlyAcceptedTargets() throws Exception {
+        for (String session : List.of("one", "two", "three", "unselected")) binding(session);
+        when(client.fetch(any(OfficialSessionCredentials.class), isNull())).thenReturn(snapshot(List.of(device("one", false, false), device("two", false, false), device("three", false, false), device("unselected", false, false))));
+        when(client.revokeSession(any(OfficialSessionCredentials.class), isNull(), eq("one"))).thenReturn(new OfficialSessionWriteResult("ACCEPTED", null));
+        when(client.revokeSession(any(OfficialSessionCredentials.class), isNull(), eq("two"))).thenReturn(new OfficialSessionWriteResult("REJECTED", "OFFICIAL_LOGOUT_REJECTED"));
+        String plan = selectedPreview(List.of("one", "two", "three")).path("planId").asString();
+        confirm(admin, plan, true).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("PARTIAL"))
+                .andExpect(jsonPath("$.results[1].status").value("FAILED")).andExpect(jsonPath("$.results[2].status").value("NOT_ATTEMPTED"));
+        assertBinding("one", "INVALIDATED"); assertBinding("two", "ACTIVE"); assertBinding("three", "ACTIVE"); assertBinding("unselected", "ACTIVE");
+        verify(client, org.mockito.Mockito.never()).revokeSession(any(OfficialSessionCredentials.class), isNull(), eq("three"));
+    }
+
+    @Test void selectedUnknownInvalidatesOnlyUncertainTargetAndAcknowledgementNeverRetries() throws Exception {
+        binding("one"); binding("two");
+        when(client.fetch(any(OfficialSessionCredentials.class), isNull())).thenReturn(snapshot(List.of(device("one", true, false), device("two", false, false))));
+        when(client.revokeSession(any(OfficialSessionCredentials.class), isNull(), eq("one"))).thenReturn(new OfficialSessionWriteResult("UNKNOWN", "OFFICIAL_LOGOUT_OUTCOME_UNKNOWN"));
+        String plan = selectedPreview(List.of("one", "two")).path("planId").asString();
+        confirm(admin, plan, true).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("UNKNOWN"));
+        assertBinding("one", "INVALIDATED"); assertBinding("two", "ACTIVE");
+        acknowledge(otherAdmin, plan, true).andExpect(status().isOk()).andExpect(jsonPath("$.requiresReauthorization").value(false));
+        assertBinding("one", "INVALIDATED"); assertBinding("two", "ACTIVE");
+        verify(client, times(1)).revokeSession(any(OfficialSessionCredentials.class), isNull(), eq("one"));
+        verify(client, org.mockito.Mockito.never()).revokeSession(any(OfficialSessionCredentials.class), isNull(), eq("two"));
+    }
+
+    @Test void selectedCrashAcknowledgementUsesOnlyPreviewTargetsAndDurablyDispatchedStatuses() throws Exception {
+        for (String session : List.of("accepted", "unknown", "not-attempted", "failed", "unselected")) binding(session);
+        when(client.fetch(any(OfficialSessionCredentials.class), isNull())).thenReturn(snapshot(List.of(device("accepted", false, false), device("unknown", false, false), device("not-attempted", false, false), device("failed", false, false), device("unselected", false, false))));
+        String plan = selectedPreview(List.of("accepted", "unknown", "not-attempted", "failed")).path("planId").asString();
+        jdbc.update("update official_session_logout_plans set status='EXECUTING',lease_until=?,results_json=? where id=?", NOW.minusSeconds(61).atOffset(ZoneOffset.UTC),
+                json.writeValueAsString(List.of(new OfficialSessionLogoutResult.Item("accepted", "ACCEPTED", null), new OfficialSessionLogoutResult.Item("unknown", "UNKNOWN", null),
+                        new OfficialSessionLogoutResult.Item("not-attempted", "NOT_ATTEMPTED", null), new OfficialSessionLogoutResult.Item("failed", "FAILED", null), new OfficialSessionLogoutResult.Item("unselected", "UNKNOWN", null))), UUID.fromString(plan));
+        acknowledge(admin, plan, true).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("RESOLVED_UNKNOWN"));
+        assertBinding("accepted", "INVALIDATED"); assertBinding("unknown", "INVALIDATED"); assertBinding("not-attempted", "ACTIVE"); assertBinding("failed", "ACTIVE"); assertBinding("unselected", "ACTIVE");
+        assertThat(org.mockito.Mockito.mockingDetails(client).getInvocations()).allMatch(invocation -> invocation.getMethod().getName().equals("fetch"));
+    }
+
+    @Test void selectedFinalLeaseCheckWithoutAPostPersistsNotAttemptedBeforeInvalidatingBindings() throws Exception {
+        binding("s-one");
+        String plan = selectedPreview(List.of("s-one")).path("planId").asString();
+        UUID id = UUID.fromString(plan);
+        when(clock.instant()).thenAnswer(call -> {
+            String journal = jdbc.queryForObject("select results_json from official_session_logout_plans where id=?", String.class, id);
+            return journal != null && journal.contains("UNKNOWN") ? NOW.plusSeconds(301) : NOW;
+        });
+        confirm(admin, plan, true).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("FAILED"))
+                .andExpect(jsonPath("$.results[0].status").value("NOT_ATTEMPTED"));
+        assertBinding("s-one", "ACTIVE");
+        verify(client, org.mockito.Mockito.never()).revokeSession(any(OfficialSessionCredentials.class), isNull(), any(String.class));
+    }
+
+    @Test void selectedPerTargetRevalidationRejectsSecurityIdentityDriftAfterTheFirstPost() throws Exception {
+        for (String drift : List.of("trusted", "row", "current", "current-unknown", "duplicate")) {
+            when(client.fetch(any(OfficialSessionCredentials.class), isNull())).thenReturn(snapshot(List.of(device("one", false, false), device("two", false, false))));
+            when(client.revokeSession(any(OfficialSessionCredentials.class), isNull(), eq("one"))).thenAnswer(call -> {
+                OfficialSessionInfo changed = switch (drift) {
+                    case "trusted" -> device("two", true, false);
+                    case "current" -> device("two", false, true);
+                    case "current-unknown" -> device("two", false, null);
+                    case "row" -> new OfficialSessionInfo("different-row", "two", "windows", "Device", null, null, null, false, false, NOW, NOW, null, null, null, List.of("Codex"));
+                    default -> device("two", false, false);
+                };
+                when(client.fetch(any(OfficialSessionCredentials.class), isNull())).thenReturn(snapshot("duplicate".equals(drift) ? List.of(changed, changed) : List.of(changed)));
+                return new OfficialSessionWriteResult("ACCEPTED", null);
+            });
+            String plan = selectedPreview(List.of("one", "two")).path("planId").asString();
+            confirm(admin, plan, true).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("PARTIAL"))
+                    .andExpect(jsonPath("$.results[1].status").value("NOT_ATTEMPTED"));
+        }
+        verify(client, org.mockito.Mockito.never()).revokeSession(any(OfficialSessionCredentials.class), isNull(), eq("two"));
+    }
+
+    private JsonNode selectedPreview(List<String> sessionIds) throws Exception {
+        String body = mvc.perform(post(url("preview")).secure(true).header(HttpHeaders.AUTHORIZATION, token(admin))
+                        .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(Map.of("mode", "SELECTED", "sessionIds", sessionIds))))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        return json.readTree(body);
+    }
+
+    private void assertBinding(String session, String state) {
+        assertThat(jdbc.queryForObject("select status from session_bindings where official_account_id=? and session_id=?", String.class, account.getId(), session)).isEqualTo(state);
+    }
+
+    private UUID selectedBinding(String session) {
+        if (selectedTeam == null) {
+            selectedTeam = new Team("Selected team", "", Team.Status.ACTIVE, 100, 100, NOW);
+            selectedTeam.updateTokenLimits(null, null, null, account.getId(), NOW);
+            selectedTeam = teams.saveAndFlush(selectedTeam);
+            jdbc.update("update users set team_id=? where id=?", selectedTeam.getId(), member.getId());
+        }
+        UUID device = UUID.randomUUID(), attempt = UUID.randomUUID();
+        meterDevices.saveAndFlush(new MeterDevice(device, member.getId(), UUID.randomUUID().toString().replace("-", "").repeat(2), NOW, NOW.plusSeconds(3600)));
+        UUID revision = jdbc.queryForObject("select revision from official_account_connections where official_account_id=?", UUID.class, account.getId());
+        jdbc.update("insert into session_binding_attempts(id,user_id,device_id,enrollment_id,team_id,team_version,official_account_id,connection_revision,status,created_at,expires_at) values(?,?,?,?,?,?,?,?, 'BOUND',?,?)", attempt, member.getId(), device, device, selectedTeam.getId(), selectedTeam.getVersion(), account.getId(), revision, NOW.atOffset(ZoneOffset.UTC), NOW.plusSeconds(600).atOffset(ZoneOffset.UTC));
+        jdbc.update("insert into session_bindings(id,attempt_id,user_id,device_id,enrollment_id,team_id,team_version,official_account_id,connection_revision,session_id,active_device_id,active_session_id,status,match_method,verification_level,created_at) values(?,?,?,?,?,?,?,?,?,?,?,?,'ACTIVE','SERIAL_LOGIN_DIFF','USER_CONFIRMED_INFERENCE',?)", UUID.randomUUID(), attempt, member.getId(), device, device, selectedTeam.getId(), selectedTeam.getVersion(), account.getId(), revision, session, device, session, NOW.atOffset(ZoneOffset.UTC));
+        return device;
+    }
+
+    private void clientAccess(UUID device, boolean allowed) throws Exception {
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/v1/client/access").header(HttpHeaders.AUTHORIZATION, token(member)).header("X-Quota-Guard-Device-ID", device))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.allowed").value(allowed));
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/v1/client/quota/overview").header(HttpHeaders.AUTHORIZATION, token(member)).header("X-Quota-Guard-Device-ID", device))
+                .andExpect(allowed ? status().isOk() : status().isForbidden());
     }
 
     private void binding(String session) {
