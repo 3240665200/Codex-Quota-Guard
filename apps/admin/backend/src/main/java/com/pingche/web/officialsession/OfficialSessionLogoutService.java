@@ -27,15 +27,19 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import org.springframework.http.HttpStatus;
+import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Official writes are journaled before dispatch and never automatically retried. */
 @Service
 public class OfficialSessionLogoutService {
+    private static final Logger LOG = LoggerFactory.getLogger(OfficialSessionLogoutService.class);
     private final JdbcTemplate jdbc;
     private final OfficialSessionCipher cipher;
     private final OfficialSessionClient client;
@@ -124,25 +128,55 @@ public class OfficialSessionLogoutService {
     }
 
     private void executeSafely(UUID owner, UUID account, Work work) {
-        try { execute(owner, account, work); }
-        catch (DomainException failure) {
-            transaction(() -> {
-                lock(account);
-                Plan current = owned(owner, account, work.plan.id);
-                if (!"EXECUTING".equals(current.status) || !connection(account).revision.equals(current.revision)) return null;
-                List<OfficialSessionLogoutResult.Item> items = storedItems(current.id);
-                invalidateSelectedBindings(current, items);
-                boolean dispatched = items.stream().anyMatch(item -> !"NOT_ATTEMPTED".equals(item.status()));
-                if (dispatched && "SELECTED".equals(current.mode)) clearSnapshot(account, false);
-                String status = dispatched ? "UNKNOWN" : "FAILED";
-                jdbc.update("update official_session_logout_plans set status=?,results_json=? where id=? and status='EXECUTING'", status,
-                        json.writeValueAsString(new OfficialSessionLogoutResult(work.plan.id, work.plan.mode, status, dispatched && "ALL".equals(work.plan.mode),
-                                dispatched ? storedItems(work.plan.id) : List.of(new OfficialSessionLogoutResult.Item(null, "NOT_ATTEMPTED", safeCode(failure.getCode()))), "Operation could not be safely completed")), work.plan.id);
-                return null;
-            });
-        } catch (RuntimeException ignored) {
+        LOG.info("Official logout audit event=STARTED planId={} mode={}", work.plan.id, auditMode(work.plan.mode));
+        try {
+            try { auditOutcome(work, execute(owner, account, work)); }
+            catch (DomainException failure) {
+                OfficialSessionLogoutResult outcome = transaction(() -> {
+                    lock(account);
+                    Plan current = owned(owner, account, work.plan.id);
+                    if (!"EXECUTING".equals(current.status) || !connection(account).revision.equals(current.revision)) return null;
+                    List<OfficialSessionLogoutResult.Item> items = storedItems(current.id);
+                    invalidateSelectedBindings(current, items);
+                    boolean dispatched = items.stream().anyMatch(item -> !"NOT_ATTEMPTED".equals(item.status()));
+                    if (dispatched && "SELECTED".equals(current.mode)) clearSnapshot(account, false);
+                    String status = dispatched ? "UNKNOWN" : "FAILED";
+                    OfficialSessionLogoutResult result = new OfficialSessionLogoutResult(work.plan.id, work.plan.mode, status, dispatched && "ALL".equals(work.plan.mode),
+                            dispatched ? storedItems(work.plan.id) : List.of(new OfficialSessionLogoutResult.Item(null, "NOT_ATTEMPTED", safeCode(failure.getCode()))), "Operation could not be safely completed");
+                    jdbc.update("update official_session_logout_plans set status=?,results_json=? where id=? and status='EXECUTING'", status,
+                            json.writeValueAsString(result), work.plan.id);
+                    return result;
+                });
+                auditOutcome(work, outcome);
+            }
+        } catch (RuntimeException failure) {
             // Keep the durable EXECUTING fence: a process/DB failure cannot prove the upstream outcome.
+            // Never log the exception, its message, a session identifier or provider response.
+            LOG.warn("Official logout audit event=WORKER_FAILED planId={} mode={} outcome=UNKNOWN failureType={}",
+                    work.plan.id, auditMode(work.plan.mode), auditFailureType(failure));
         }
+    }
+
+    private void auditOutcome(Work work, OfficialSessionLogoutResult result) {
+        List<OfficialSessionLogoutResult.Item> items = result == null ? List.of() : result.results();
+        String outcome = result == null ? "SUPERSEDED" : switch (result.status()) {
+            case "ACCEPTED", "PARTIAL", "FAILED", "UNKNOWN" -> result.status();
+            default -> "UNKNOWN";
+        };
+        LOG.info("Official logout audit event=FINISHED planId={} mode={} outcome={} accepted={} failed={} unknown={} notAttempted={}",
+                work.plan.id, auditMode(work.plan.mode), outcome, auditCount(items, "ACCEPTED"), auditCount(items, "FAILED"),
+                auditCount(items, "UNKNOWN"), auditCount(items, "NOT_ATTEMPTED"));
+    }
+    private long auditCount(List<OfficialSessionLogoutResult.Item> items, String status) {
+        return Math.min(500, items.stream().filter(item -> status.equals(item.status())).count());
+    }
+    private String auditMode(String mode) {
+        return switch (mode == null ? "" : mode) { case "ALL", "UNBOUND", "SELECTED" -> mode; default -> "INVALID"; };
+    }
+    private String auditFailureType(RuntimeException failure) {
+        if (failure instanceof DataAccessException) return "DATABASE";
+        if (failure instanceof IllegalStateException) return "ILLEGAL_STATE";
+        return "OTHER_RUNTIME";
     }
 
     private OfficialSessionLogoutResult execute(UUID owner, UUID account, Work work) {
@@ -435,7 +469,10 @@ public class OfficialSessionLogoutService {
     private record Work(Plan plan, Connection connection) { }
     private record SecurityIdentity(String rowId, String sessionId, Boolean current, Boolean trusted) { }
     private record BindingTarget(UUID id, UUID attempt) { }
-    @PreDestroy void close() { workers.shutdown(); }
+    @PreDestroy void close() {
+        LOG.info("Official logout audit event=WORKERS_STOPPING");
+        workers.shutdown();
+    }
     public record CurrentResponse(CurrentOperation operation) { }
     public record CurrentOperation(UUID planId, String mode, String status, boolean requiresReauthorization,
             List<OfficialSessionLogoutResult.Item> results, String message, boolean canAcknowledge, Instant canAcknowledgeAt) { }
