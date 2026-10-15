@@ -96,7 +96,7 @@ describe('官方网页登录与设备绑定入口', () => {
     expect(mocks.listSessionBindings).toHaveBeenCalledWith('account-1');
     expect(await within(dialog).findByText('设备会话绑定记录')).toBeInTheDocument();
     expect(within(dialog).getAllByText('已绑定成员')).toHaveLength(2);
-    expect(within(dialog).getByText('用户确认的推断')).toBeInTheDocument();
+    expect(within(dialog).getAllByText('用户确认的推断')).toHaveLength(2);
   });
 
   it('reloads safe connection, snapshot, and bindings after server login completion without another official refresh', async () => {

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { SessionBindingResult, SessionBindingsTable } from './SessionBindings';
 import type { SessionBinding } from '../../services/sessionBindingsApi';
@@ -17,6 +17,13 @@ describe('官方设备会话绑定结果', () => {
     expect(screen.getByText('测试成员')).toBeInTheDocument();
     expect(screen.getByText('设备：device-1')).toBeInTheDocument();
     expect(screen.getByText('用户确认的推断')).toBeInTheDocument();
+  });
+
+  it('identifies a server-verified binding without attributing confirmation to the user', () => {
+    render(<SessionBindingResult officialAccountId="official-1" sessionId="session-1"
+      bindings={[{ ...binding, verificationLevel: 'AUTOMATIC_SERIAL_INFERENCE' }]} />);
+    expect(screen.getByText('后台自动复核的推断')).toBeInTheDocument();
+    expect(screen.queryByText('用户确认的推断')).not.toBeInTheDocument();
   });
 
   it.each([
@@ -44,13 +51,16 @@ describe('官方设备会话绑定结果', () => {
 
   it('shows binding history and makes the verification limit visible', () => {
     render(<SessionBindingsTable bindings={[binding,
-      { ...binding, id: 'binding-2', status: 'ENDED', endedAt: '2026-10-15T01:00:00Z' },
+      { ...binding, id: 'binding-2', status: 'ENDED', verificationLevel: 'AUTOMATIC_SERIAL_INFERENCE', endedAt: '2026-10-15T01:00:00Z' },
       { ...binding, id: 'binding-3', status: 'INVALIDATED' }]} />);
     expect(screen.getByText('设备会话绑定记录')).toBeInTheDocument();
     expect(screen.getByText('已绑定')).toBeInTheDocument();
     expect(screen.getByText('已结束')).toBeInTheDocument();
     expect(screen.getByText('已失效')).toBeInTheDocument();
-    expect(screen.getByText(/绑定来自串行登录前后会话差异与用户确认/)).toBeInTheDocument();
+    expect(within(screen.getByText('已绑定').closest('tr')!).getByText('用户确认的推断')).toBeInTheDocument();
+    expect(within(screen.getByText('已结束').closest('tr')!).getByText('后台自动复核的推断')).toBeInTheDocument();
+    expect(screen.getByText(/无需用户再次确认/)).toBeInTheDocument();
+    expect(screen.getByText(/无法证明物理设备身份/)).toBeInTheDocument();
   });
 
   it('explains when no device has completed binding', () => {
