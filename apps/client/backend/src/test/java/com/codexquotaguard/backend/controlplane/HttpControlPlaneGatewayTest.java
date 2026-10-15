@@ -293,7 +293,7 @@ class HttpControlPlaneGatewayTest {
             assertThat(request).doesNotContain("codexAccountId");
             assertThat(request).contains("\"inputTokens\":3", "\"outputTokens\":7", "\"cachedInputTokens\":0");
             assertThat(request).doesNotContain("credential");
-            writeJson(exchange, quotaJson(userId, accountId, teamId, true, null));
+            writeJson(exchange, "{\"acceptedEvents\":1}");
         });
         server.start();
         try {
@@ -310,7 +310,7 @@ class HttpControlPlaneGatewayTest {
                     CodexUsageEventSource.TOKEN_USAGE_RECORD, "gpt-6.1-sol", "max"
             );
 
-            assertThat(gateway.reportUsage("session-access", List.of(event)).allowed()).isTrue();
+            assertThat(gateway.reportUsage("session-access", List.of(event))).isEqualTo(1);
         } finally {
             server.stop(0);
         }
