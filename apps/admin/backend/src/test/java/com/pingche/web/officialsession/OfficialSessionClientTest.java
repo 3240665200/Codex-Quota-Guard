@@ -121,6 +121,29 @@ class OfficialSessionClientTest {
     }
 
     @Test
+    void acceptsFractionalOfficialSessionSecondsWithoutLosingMicroseconds() {
+        HttpClient http = mock(HttpClient.class);
+        success(http, ACCOUNTS, SESSIONS
+                .replace("\"last_signed_in_timestamp_second\":1791964800", "\"last_signed_in_timestamp_second\":1791964800.0")
+                .replace("\"session_created_at_seconds\":1791878400", "\"session_created_at_seconds\":1791878400.123456"));
+
+        OfficialSessionInfo device = client(http).fetch(credentials(), null).sessions().devices().get(0);
+
+        assertThat(device.lastSignedInAt()).isEqualTo(Instant.ofEpochSecond(1791964800));
+        assertThat(device.sessionCreatedAt()).isEqualTo(Instant.ofEpochSecond(1791878400, 123456000));
+    }
+
+    @Test
+    void rejectsInvalidTimestampTypesAndValues() {
+        for (String invalid : List.of("\"1791878400.1\"", "-0.1", "253402300800.0", "1e999", "true", "[]")) {
+            HttpClient http = mock(HttpClient.class);
+            success(http, ACCOUNTS, SESSIONS.replace("\"session_created_at_seconds\":1791878400",
+                    "\"session_created_at_seconds\":" + invalid));
+            assertFailure(http, "OFFICIAL_RESPONSE_INVALID");
+        }
+    }
+
+    @Test
     void chosenProxyLeaseIsUsedAndAlwaysClosedWithoutFallingBackToDirect() {
         HttpClient http = mock(HttpClient.class);
         success(http);
