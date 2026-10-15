@@ -721,7 +721,7 @@ fn reportable_at(event: &UsageEvent, now: DateTime<Utc>) -> bool {
         .ok()
         .is_some_and(|timestamp| {
             let timestamp = timestamp.with_timezone(&Utc);
-            timestamp >= now - TimeDelta::days(29) && timestamp <= now + TimeDelta::minutes(4)
+            timestamp >= now - TimeDelta::days(30) && timestamp <= now + TimeDelta::minutes(4)
         })
 }
 
@@ -1555,11 +1555,35 @@ impl MeterRuntime {
         let mut reported_events = Vec::new();
         for batch in candidates.chunks(100) {
             self.guard.ensure_allowed()?;
-            send_events_guarded(&self.client, &self.config, &credential, batch, || self.guard.ensure_allowed())?;
-            reported_events.extend_from_slice(batch);
-            self.guard.with_allowed(|| outbox.acknowledge(&self.config, batch))?;
+            match send_events_guarded(&self.client, &self.config, &credential, batch, || self.guard.ensure_allowed()) {
+                Ok(()) => {
+                    reported_events.extend_from_slice(batch);
+                    self.guard.with_allowed(|| outbox.acknowledge(&self.config, batch))?;
+                }
+                Err(code) if code == "METER_REPORT_REJECTED" => {
+                    // A malformed event must not hold later valid events
+                    // hostage. Isolate rejected records with their owner.
+                    for event in batch {
+                        let one = std::slice::from_ref(event);
+                        let result = if batch.len() == 1 { Err(code.clone()) } else {
+                            send_events_guarded(&self.client, &self.config, &credential, one, || self.guard.ensure_allowed())
+                        };
+                        match result {
+                            Ok(()) => {
+                                self.guard.with_allowed(|| outbox.acknowledge(&self.config, one))?;
+                                reported_events.push(event.clone());
+                            }
+                            Err(code) if code == "METER_REPORT_REJECTED" => {
+                                self.guard.with_allowed(|| outbox.quarantine_rejected(&self.config, one))?;
+                            }
+                            Err(code) => return Err(code),
+                        }
+                    }
+                }
+                Err(code) => return Err(code),
+            }
             self.pending_events = Some(outbox.pending_count());
-            self.last_report_epoch_seconds = Some(epoch_seconds());
+            if !reported_events.is_empty() { self.last_report_epoch_seconds = Some(epoch_seconds()); }
         }
         self.guard.with_allowed(|| save_state(&state_path, outbox.scan_state()))?;
         let warning = outbox.owner_warning().or_else(|| (!outbox.pending.is_empty()).then_some("METER_EVENT_OUTSIDE_REPORT_WINDOW"));
@@ -2051,6 +2075,7 @@ mod tests {
     }
 
     fn read_http_request(stream: &mut std::net::TcpStream) -> Vec<u8> {
+        stream.set_nonblocking(false).unwrap();
         let mut bytes = Vec::new();
         let mut buffer = [0u8; 4096];
         loop {

@@ -29,6 +29,8 @@ pub(super) struct Outbox {
 struct QuarantinedUsage {
     user_id: Option<uuid::Uuid>,
     events: Vec<UsageEvent>,
+    #[serde(default)]
+    error_code: Option<String>,
 }
 
 impl Outbox {
@@ -79,12 +81,13 @@ impl Outbox {
                 outbox.quarantined.push(QuarantinedUsage {
                     user_id: outbox.user_id,
                     events: std::mem::take(&mut outbox.pending),
+                    error_code: None,
                 });
             }
             // These bytes arrived since the old cursor but before the new
             // owner was established. Preserve their uncertain attribution.
             if !events.is_empty() {
-                outbox.quarantined.push(QuarantinedUsage { user_id: None, events });
+                outbox.quarantined.push(QuarantinedUsage { user_id: None, events, error_code: None });
             }
             outbox.user_id = user_id;
         } else {
@@ -115,11 +118,22 @@ impl Outbox {
         self.pending.len() + self.quarantined.iter().map(|batch| batch.events.len()).sum::<usize>()
     }
 
+    pub(super) fn quarantine_rejected(&mut self, config: &MeterConfig, events: &[UsageEvent]) -> Result<(), String> {
+        self.quarantined.push(QuarantinedUsage {
+            user_id: self.user_id,
+            events: events.to_vec(),
+            error_code: Some("METER_REPORT_REJECTED".into()),
+        });
+        self.acknowledge(config, events)
+    }
+
     pub(super) fn owner_warning(&self) -> Option<&'static str> {
         if self.quarantined.iter().any(|batch| batch.user_id.is_none()) {
             Some("METER_OUTBOX_OWNER_UNKNOWN")
-        } else if !self.quarantined.is_empty() {
+        } else if self.quarantined.iter().any(|batch| batch.error_code.is_none()) {
             Some("METER_OUTBOX_OWNER_MISMATCH")
+        } else if !self.quarantined.is_empty() {
+            Some("METER_REPORT_REJECTED")
         } else { None }
     }
 
