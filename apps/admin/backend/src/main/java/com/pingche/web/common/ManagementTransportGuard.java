@@ -12,14 +12,22 @@ public class ManagementTransportGuard {
             "127.0.0.1", "::1", "0:0:0:0:0:0:0:1", "::ffff:127.0.0.1",
             "0:0:0:0:0:ffff:127.0.0.1", "::ffff:7f00:1", "0:0:0:0:0:ffff:7f00:1");
     private static final Set<String> LOOPBACK_HOSTS = Set.of("localhost", "127.0.0.1", "[::1]");
+    private final boolean requireHttps;
     private final boolean allowLoopbackHttp;
 
-    public ManagementTransportGuard(@Value("${MANAGEMENT_ALLOW_LOOPBACK_HTTP:false}") boolean allowLoopbackHttp) {
+    public ManagementTransportGuard(@Value("${app.require-https:false}") boolean requireHttps,
+            @Value("${MANAGEMENT_ALLOW_LOOPBACK_HTTP:false}") boolean allowLoopbackHttp) {
+        this.requireHttps = requireHttps;
         this.allowLoopbackHttp = allowLoopbackHttp;
     }
 
     public boolean isAllowed(HttpServletRequest request) {
+        String scheme = request.getScheme();
+        if (!contains(Set.of("http", "https"), scheme)) return false;
+        // Use the servlet's secure decision; raw forwarding headers are not proof of TLS.
         if (request.isSecure()) return true;
+        if (!"http".equalsIgnoreCase(scheme)) return false;
+        if (!requireHttps) return true;
         if (!allowLoopbackHttp || request.getHeader("Forwarded") != null || request.getHeader("X-Forwarded-Proto") != null) return false;
         return contains(LOOPBACK_ADDRESSES, request.getRemoteAddr())
                 && contains(LOOPBACK_ADDRESSES, request.getLocalAddr())

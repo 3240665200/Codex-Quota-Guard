@@ -33,7 +33,7 @@ public class BrowserLoginController {
             Authentication auth,HttpServletRequest http) { check(http);return result(service.complete(user(auth),id,body)); }
     @PostMapping("/browser-logins/{id}/cancel")
     public ResponseEntity<BrowserLoginService.Job> cancel(@PathVariable UUID id,Authentication auth,HttpServletRequest http) { check(http);return result(service.cancel(user(auth),id)); }
-    private void check(HttpServletRequest http) { if(!transport.isAllowed(http))throw new DomainException("OFFICIAL_HTTPS_REQUIRED","HTTPS or explicit local preview is required",HttpStatus.BAD_REQUEST); }
+    private void check(HttpServletRequest http) { if(!transport.isAllowed(http))throw new DomainException("OFFICIAL_HTTPS_REQUIRED","Request transport is not permitted by the server configuration",HttpStatus.BAD_REQUEST); }
     private UUID user(Authentication auth) { return (UUID)auth.getPrincipal(); }
     private <T> ResponseEntity<T> result(T value) { return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(value); }
 }

@@ -57,7 +57,7 @@ public class WebLoginController {
     }
 
     private void check(HttpServletRequest http) {
-        if(!transport.isAllowed(http))throw new DomainException("OFFICIAL_HTTPS_REQUIRED","HTTPS or explicit local preview is required",HttpStatus.BAD_REQUEST);
+        if(!transport.isAllowed(http))throw new DomainException("OFFICIAL_HTTPS_REQUIRED","Request transport is not permitted by the server configuration",HttpStatus.BAD_REQUEST);
     }
     private UUID user(Authentication authentication) {return (UUID)authentication.getPrincipal();}
     private <T>ResponseEntity<T> result(T value) {return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(value);}

@@ -68,7 +68,7 @@ public class OfficialSessionLogoutController {
     }
 
     private void check(HttpServletRequest http) {
-        if (!transport.isAllowed(http)) throw new DomainException("OFFICIAL_HTTPS_REQUIRED", "HTTPS is required for session logout", HttpStatus.BAD_REQUEST);
+        if (!transport.isAllowed(http)) throw new DomainException("OFFICIAL_HTTPS_REQUIRED", "Request transport is not permitted by the server configuration", HttpStatus.BAD_REQUEST);
     }
     private <T> ResponseEntity<T> result(T value) { return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(value); }
     public record PreviewRequest(@NotNull @Pattern(regexp = "ALL|UNBOUND|SELECTED") String mode, List<String> sessionIds) { }

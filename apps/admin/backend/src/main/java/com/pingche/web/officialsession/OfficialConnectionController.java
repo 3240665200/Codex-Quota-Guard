@@ -31,38 +31,38 @@ public class OfficialConnectionController {
 
     @GetMapping("/connection")
     public ResponseEntity<OfficialConnectionResponse> read(@PathVariable UUID id, HttpServletRequest http) {
-        requireHttps(http);
+        requireAllowedTransport(http);
         return noStore(service.read(id));
     }
 
     @PutMapping("/connection")
     public ResponseEntity<OfficialConnectionResponse> save(@PathVariable UUID id,
             @Valid @RequestBody OfficialConnectionRequest request, HttpServletRequest http) {
-        requireHttps(http);
+        requireAllowedTransport(http);
         return noStore(service.save(id, request));
     }
 
     @DeleteMapping("/connection")
     public ResponseEntity<Void> delete(@PathVariable UUID id, HttpServletRequest http) {
-        requireHttps(http);
+        requireAllowedTransport(http);
         service.delete(id);
         return ResponseEntity.noContent().cacheControl(CacheControl.noStore()).build();
     }
 
     @PostMapping("/connection/refresh")
     public ResponseEntity<OfficialConnectionRefreshResponse> refresh(@PathVariable UUID id, HttpServletRequest http) {
-        requireHttps(http);
+        requireAllowedTransport(http);
         return noStore(service.refresh(id));
     }
 
     @GetMapping("/sessions")
     public ResponseEntity<OfficialConnectionRefreshResponse> sessions(@PathVariable UUID id, HttpServletRequest http) {
-        requireHttps(http);
+        requireAllowedTransport(http);
         return noStore(service.sessions(id));
     }
 
-    private void requireHttps(HttpServletRequest request) {
-        if (!transportGuard.isAllowed(request)) throw new DomainException("OFFICIAL_HTTPS_REQUIRED", "HTTPS is required for official authorization and session data", HttpStatus.BAD_REQUEST);
+    private void requireAllowedTransport(HttpServletRequest request) {
+        if (!transportGuard.isAllowed(request)) throw new DomainException("OFFICIAL_HTTPS_REQUIRED", "Request transport is not permitted by the server configuration", HttpStatus.BAD_REQUEST);
     }
     private <T> ResponseEntity<T> noStore(T body) { return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(body); }
 }

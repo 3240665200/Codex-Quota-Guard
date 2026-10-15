@@ -59,7 +59,7 @@ public class AdminUserLogoutController {
     }
 
     private void check(HttpServletRequest http) {
-        if (!transport.isAllowed(http)) throw new DomainException("OFFICIAL_HTTPS_REQUIRED", "HTTPS is required for session logout", HttpStatus.BAD_REQUEST);
+        if (!transport.isAllowed(http)) throw new DomainException("OFFICIAL_HTTPS_REQUIRED", "Request transport is not permitted by the server configuration", HttpStatus.BAD_REQUEST);
     }
     private <T> ResponseEntity<T> response(T body) { return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(body); }
     public record ConfirmRequest(@NotNull UUID planId, Boolean acknowledgeLogoutRisk) { }

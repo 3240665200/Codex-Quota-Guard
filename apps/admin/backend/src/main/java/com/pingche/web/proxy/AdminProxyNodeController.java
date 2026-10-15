@@ -30,7 +30,7 @@ public class AdminProxyNodeController {
         this.transportGuard = transportGuard;
     }
     @GetMapping
-    public ResponseEntity<List<ProxyNodeResponse>> list() { return noStore(service.list()); }
+    public ResponseEntity<List<ProxyNodeResponse>> list(HttpServletRequest http) { secure(http); return noStore(service.list()); }
     @PostMapping
     public ResponseEntity<ProxyNodeResponse> create(@Valid @RequestBody ProxyNodeRequest request, HttpServletRequest http) {
         secure(http); return noStore(service.create(request));
@@ -52,7 +52,7 @@ public class AdminProxyNodeController {
         secure(http); return noStore(service.test(id));
     }
     private void secure(HttpServletRequest request) {
-        if (!transportGuard.isAllowed(request)) throw new DomainException("PROXY_HTTPS_REQUIRED", "代理敏感操作必须使用 HTTPS。", HttpStatus.FORBIDDEN);
+        if (!transportGuard.isAllowed(request)) throw new DomainException("PROXY_HTTPS_REQUIRED", "当前请求协议不符合服务器传输配置。", HttpStatus.FORBIDDEN);
     }
     private <T> ResponseEntity<T> noStore(T value) { return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(value); }
 }
