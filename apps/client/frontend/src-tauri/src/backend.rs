@@ -570,6 +570,15 @@ fn validate_usage_days(days: u32) -> Result<(), BackendError> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn session_binding_and_helper_routes_are_fixed_and_identifiers_are_validated() {
+        let id = "11111111-1111-4111-8111-111111111111";
+        let route = super::session_binding_route(id, super::BindingAction::Detect).unwrap();
+        assert_eq!(super::fixed_url(43117, route), format!("http://127.0.0.1:43117/api/v1/session-bindings/attempts/{id}/detect"));
+        assert!(super::session_binding_route("https://example.com", super::BindingAction::Confirm).is_err());
+        assert_eq!(super::fixed_url(43117, super::ApiRoute::OfficialLoginHelperJobs), "http://127.0.0.1:43117/api/v1/official-login-helper/jobs");
+        assert!(super::official_login_helper_route("../secret").is_err());
+    }
     use super::*;
 
     #[test]
