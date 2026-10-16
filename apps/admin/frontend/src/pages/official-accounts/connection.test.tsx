@@ -6,6 +6,7 @@ import ConnectionModal from './ConnectionModal';
 import type { OfficialAccountResponse } from '../../services/api';
 
 const mocks = vi.hoisted(() => ({
+  getOfficialAuthorizationPreset: vi.fn(), applyOfficialAuthorizationPreset: vi.fn(),
   createOfficialAccount: vi.fn(), deleteOfficialAccount: vi.fn(), listOfficialAccounts: vi.fn(),
   updateOfficialAccount: vi.fn(), getOfficialAccountConnection: vi.fn(), saveOfficialAccountConnection: vi.fn(),
   deleteOfficialAccountConnection: vi.fn(), refreshOfficialAccountConnection: vi.fn(),
@@ -54,6 +55,7 @@ describe('官方账户授权与只读会话', () => {
     vi.clearAllMocks();
     mocks.isSecureManagementContext.mockReturnValue(true);
     mocks.isSupportedManagementContext.mockReturnValue(true);
+    mocks.getOfficialAuthorizationPreset.mockResolvedValue({ available: false, requestedAccountId: null, revision: null, errorCode: null });
     mocks.getSessionLogoutCurrent.mockResolvedValue({ operation: null });
     mocks.listOfficialAccounts.mockResolvedValue([{ id: 'account-1', label: '研发账户',
       estimatedTotalTokens: 1000000, reporterEmail: null, quota: null,

@@ -5,6 +5,7 @@ import ConnectionModal from './ConnectionModal';
 import type { OfficialAccountResponse } from '../../services/api';
 
 const mocks = vi.hoisted(() => ({ getOfficialAccountConnection: vi.fn(), listProxyNodes: vi.fn(),
+  getOfficialAuthorizationPreset: vi.fn(), applyOfficialAuthorizationPreset: vi.fn(),
   getOfficialAccountSessions: vi.fn(), isSecureManagementContext: vi.fn(), isSupportedManagementContext: vi.fn(), saveOfficialAccountConnection: vi.fn(),
   refreshOfficialAccountConnection: vi.fn(), deleteOfficialAccountConnection: vi.fn(), listSessionBindings: vi.fn(),
   releaseSessionBinding: vi.fn(), getSessionLogoutCurrent: vi.fn(), previewSessionLogout: vi.fn(),
@@ -49,6 +50,7 @@ describe('会话表手动勾选登出范围', () => {
   beforeEach(() => {
     vi.clearAllMocks(); mocks.isSecureManagementContext.mockReturnValue(true);
     mocks.isSupportedManagementContext.mockReturnValue(true);
+    mocks.getOfficialAuthorizationPreset.mockResolvedValue({ available: false, requestedAccountId: null, revision: null, errorCode: null });
     mocks.getOfficialAccountConnection.mockResolvedValue(connection); mocks.listProxyNodes.mockResolvedValue([]);
     mocks.getOfficialAccountSessions.mockResolvedValue(snapshot); mocks.listSessionBindings.mockResolvedValue([binding]);
     mocks.getSessionLogoutCurrent.mockResolvedValue({ operation: null }); mocks.releaseSessionBinding.mockResolvedValue(undefined);

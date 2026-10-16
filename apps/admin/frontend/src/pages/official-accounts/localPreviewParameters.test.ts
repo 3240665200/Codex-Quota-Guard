@@ -40,3 +40,16 @@ it('imports only three validated local draft fields without swallowing surroundi
     expect(() => parseLocalPreviewParameters(invalid)).toThrow();
   }
 });
+
+it('accepts a private preset JSON file as a local draft with the same validation as txt', () => {
+  const draft = { requestedAccountId: 'workspace-json', authorization: 'Bearer synthetic-json',
+    cookie: '__Secure-next-auth.session-token=synthetic-cookie' };
+  expect(parseLocalPreviewParameters(JSON.stringify(draft))).toEqual(draft);
+  expect(parseLocalPreviewParameters(`\uFEFF${JSON.stringify({ ...draft, cookie: '' })}`)).toEqual({ ...draft, cookie: '' });
+  for (const input of [null, [], { ...draft, authorization: null }, { ...draft, requestedAccountId: 123 },
+    { ...draft, cookie: 'other=private' }, { ...draft, cookie: '__Secure-next-auth.session-token=one\n' },
+    { ...draft, authorization: 'Bearer invalid\n' }, { ...draft, extra: 'ignored-secret' }]) {
+    expect(() => parseLocalPreviewParameters(JSON.stringify(input))).toThrow();
+  }
+  expect(() => parseLocalPreviewParameters(`${JSON.stringify(draft)}${' '.repeat(65_536)}`)).toThrow();
+});

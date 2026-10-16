@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as api from './api';
 
 interface ManagedApi {
+  getOfficialAuthorizationPreset(): Promise<unknown>;
+  applyOfficialAuthorizationPreset(id: string, body: Record<string, unknown>): Promise<unknown>;
   getOfficialAccountConnection(id: string): Promise<unknown>;
   saveOfficialAccountConnection(id: string, body: Record<string, unknown>): Promise<unknown>;
   deleteOfficialAccountConnection(id: string): Promise<void>;
@@ -52,6 +54,21 @@ describe('官方授权与代理节点 API', () => {
     expect(fetchMock.mock.calls[0][1].method).toBe('PUT');
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual(body);
     expect(fetchMock.mock.calls[0][1].headers.get('Authorization')).toBeNull();
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('reads preset metadata and applies its revision without exposing or persisting credentials', async () => {
+    const write = vi.spyOn(Storage.prototype, 'setItem');
+    expect(managed.getOfficialAuthorizationPreset).toBeTypeOf('function');
+    expect(managed.applyOfficialAuthorizationPreset).toBeTypeOf('function');
+    await managed.getOfficialAuthorizationPreset();
+    const body = { version: 2, proxyNodeId: 'proxy-1', presetRevision: 'revision-1' };
+    await managed.applyOfficialAuthorizationPreset('account/id', body);
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      '/api/v1/admin/official-authorization-preset', '/api/v1/admin/official-accounts/account%2Fid/connection/preset',
+    ]);
+    expect(fetchMock.mock.calls[1][1].method).toBe('POST');
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual(body);
     expect(write).not.toHaveBeenCalled();
   });
 

@@ -5,6 +5,7 @@ import ConnectionModal from './ConnectionModal';
 import type { OfficialAccountResponse } from '../../services/api';
 
 const mocks = vi.hoisted(() => ({
+  getOfficialAuthorizationPreset: vi.fn(), applyOfficialAuthorizationPreset: vi.fn(),
   getOfficialAccountConnection: vi.fn(), listProxyNodes: vi.fn(), getOfficialAccountSessions: vi.fn(),
   isSecureManagementContext: vi.fn(), isSupportedManagementContext: vi.fn(), saveOfficialAccountConnection: vi.fn(),
   refreshOfficialAccountConnection: vi.fn(), deleteOfficialAccountConnection: vi.fn(),
@@ -65,6 +66,8 @@ describe('官方网页登录与设备绑定入口', () => {
   beforeEach(() => {
     vi.clearAllMocks(); mocks.isSecureManagementContext.mockReturnValue(true);
     mocks.isSupportedManagementContext.mockReturnValue(true);
+    mocks.getOfficialAuthorizationPreset.mockResolvedValue({ available: true, requestedAccountId: 'workspace-1', revision: 'preset-1', errorCode: null });
+    mocks.applyOfficialAuthorizationPreset.mockResolvedValue({ ...connection, version: 6, status: 'UNVERIFIED' });
     mocks.getOfficialAccountConnection.mockResolvedValue(connection);
     mocks.listProxyNodes.mockResolvedValue([]); mocks.getOfficialAccountSessions.mockResolvedValue(snapshot);
     mocks.listSessionBindings.mockResolvedValue([binding]);
@@ -83,9 +86,10 @@ describe('官方网页登录与设备绑定入口', () => {
     mocks.cancelOfficialBrowserLogin.mockResolvedValue({ id: 'job-1', officialAccountId: 'account-1', state: 'CANCELLED' });
   });
 
-  it('makes official login the primary path and keeps manual credentials in a closed advanced section', async () => {
+  it('offers preset and local browser login while keeping manual credentials in a closed advanced section', async () => {
     const dialog = await show();
-    expect(within(dialog).getByRole('button', { name: '开始官方网页登录' })).toBeEnabled();
+    expect(within(dialog).getByRole('button', { name: '在本机浏览器打开官方登录' })).toBeEnabled();
+    expect(within(dialog).getByRole('button', { name: '使用预置授权' })).toBeEnabled();
     expect(within(dialog).queryByLabelText('官方 Authorization')).not.toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole('button', { name: '高级：手动导入授权' }));
     expect(await within(dialog).findByLabelText('官方 Authorization')).toHaveValue('');
@@ -100,19 +104,13 @@ describe('官方网页登录与设备绑定入口', () => {
     expect(within(dialog).getAllByText('用户确认的推断')).toHaveLength(2);
   });
 
-  it('reloads safe connection, snapshot, and bindings after server login completion without another official refresh', async () => {
-    mocks.startOfficialBrowserLogin.mockImplementation(async () => {
-      mocks.getOfficialAccountConnection.mockResolvedValue({ ...connection, version: 6 });
-      mocks.getOfficialAccountSessions.mockResolvedValue({ ...snapshot, account: { email: 'completed@example.test' } });
-      return { id: 'job-1', officialAccountId: 'account-1', accountName: '研发账户', state: 'COMPLETED',
-        expiresAt: '2026-10-15T01:00:00Z', errorCode: null, proxyNodeId: null };
-    });
+  it('saves preset authorization and clears old official snapshots without another official refresh', async () => {
     const dialog = await show();
-    fireEvent.click(within(dialog).getByRole('button', { name: '开始官方网页登录' }));
-    expect(await within(dialog).findByText('completed@example.test')).toBeInTheDocument();
-    expect(mocks.startOfficialBrowserLogin).toHaveBeenCalledWith('account-1', { version: 5, proxyNodeId: null });
-    expect(mocks.getOfficialAccountConnection).toHaveBeenCalledTimes(2);
-    expect(mocks.listSessionBindings).toHaveBeenCalledTimes(2);
+    fireEvent.click(within(dialog).getByRole('button', { name: '使用预置授权' }));
+    await waitFor(() => expect(within(dialog).queryByText('official@example.test')).not.toBeInTheDocument());
+    expect(mocks.applyOfficialAuthorizationPreset).toHaveBeenCalledWith('account-1', { version: 5, proxyNodeId: null, presetRevision: 'preset-1' });
+    expect(mocks.getOfficialAccountConnection).toHaveBeenCalledOnce();
+    expect(mocks.listSessionBindings).toHaveBeenCalledOnce();
     expect(mocks.refreshOfficialAccountConnection).not.toHaveBeenCalled();
   });
 
@@ -124,18 +122,12 @@ describe('官方网页登录与设备绑定入口', () => {
     expect(within(dialog).queryByText('fixture-private-upstream')).not.toBeInTheDocument();
   });
 
-  it('clears an old snapshot when helper authorization was saved but official verification failed', async () => {
-    mocks.startOfficialBrowserLogin.mockImplementation(async () => {
-      mocks.getOfficialAccountConnection.mockResolvedValue({ ...connection, version: 6, status: 'ACCESS_BLOCKED',
-        lastErrorCode: 'OFFICIAL_CHALLENGE_REQUIRED' });
-      mocks.getOfficialAccountSessions.mockRejectedValue({ code: 'OFFICIAL_SNAPSHOT_UNAVAILABLE' });
-      return { id: 'job-1', officialAccountId: 'account-1', accountName: '研发账户', state: 'FAILED',
-        expiresAt: '2026-10-15T01:00:00Z', errorCode: 'OFFICIAL_CHALLENGE_REQUIRED', proxyNodeId: null };
-    });
+  it('keeps the saved snapshot when preset application is rejected without verification', async () => {
+    mocks.applyOfficialAuthorizationPreset.mockRejectedValue({ status: 409, code: 'OFFICIAL_PRESET_REVISION_CONFLICT' });
     const dialog = await show();
-    fireEvent.click(within(dialog).getByRole('button', { name: '开始官方网页登录' }));
-    await waitFor(() => expect(mocks.getOfficialAccountConnection).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(within(dialog).queryByText('official@example.test')).not.toBeInTheDocument());
+    fireEvent.click(within(dialog).getByRole('button', { name: '使用预置授权' }));
+    await within(dialog).findByText('预置授权已更新，请关闭窗口后重新打开，再确认使用。');
+    expect(within(dialog).getByText('official@example.test')).toBeInTheDocument();
     expect(mocks.refreshOfficialAccountConnection).not.toHaveBeenCalled();
   });
 
@@ -169,7 +161,7 @@ describe('官方网页登录与设备绑定入口', () => {
     await within(dialog).findByText('后台仍保留此操作锁');
     expect(within(dialog).getByRole('button', { name: '刷新官方账户与会话' })).toBeDisabled();
     expect(within(dialog).getByRole('button', { name: '删除保存的授权' })).toBeDisabled();
-    expect(within(dialog).getByRole('button', { name: '开始官方网页登录' })).toBeDisabled();
+    expect(within(dialog).getByRole('button', { name: '在本机浏览器打开官方登录' })).toBeDisabled();
     expect(within(dialog).getByRole('button', { name: /^关\s*闭$/ })).toBeEnabled();
   });
 
@@ -223,7 +215,7 @@ describe('官方网页登录与设备绑定入口', () => {
     fireEvent.click(submit);
     expect(mocks.releaseSessionBinding).toHaveBeenCalledExactlyOnceWith('binding-1', 'account-1');
     expect(within(dialog).getByRole('button', { name: '刷新官方账户与会话' })).toBeDisabled();
-    expect(within(dialog).getByRole('button', { name: '开始官方网页登录' })).toBeDisabled();
+    expect(within(dialog).getByRole('button', { name: '在本机浏览器打开官方登录' })).toBeDisabled();
     expect(within(dialog).getByRole('button', { name: '登出所有会话' })).toBeDisabled();
     mocks.listSessionBindings.mockResolvedValue([{ ...binding, status: 'ENDED', endedAt: '2026-10-15T02:00:00Z' }]);
     await act(async () => finish());
@@ -301,15 +293,15 @@ describe('官方网页登录与设备绑定入口', () => {
     await waitFor(() => expect(mocks.releaseSessionBinding).toHaveBeenCalledExactlyOnceWith('binding-1', 'account-1'));
   });
 
-  it.each(['browser', 'logout'] as const)('allows remote HTTP %s actions without treating HTTP as secure', async (action) => {
+  it.each(['preset', 'logout'] as const)('allows remote HTTP %s actions without treating HTTP as secure', async (action) => {
     mocks.isSecureManagementContext.mockReturnValue(false);
     const dialog = await show();
-    const login = within(dialog).getByRole('button', { name: '开始官方网页登录' });
+    const login = within(dialog).getByRole('button', { name: '使用预置授权' });
     const logout = within(dialog).getByRole('button', { name: '登出所有未绑定会话' });
     await waitFor(() => expect(login).toBeEnabled());
     await waitFor(() => expect(logout).toBeEnabled());
-    fireEvent.click(action === 'browser' ? login : logout);
-    await waitFor(() => expect(action === 'browser' ? mocks.startOfficialBrowserLogin : mocks.previewSessionLogout).toHaveBeenCalledOnce());
+    fireEvent.click(action === 'preset' ? login : logout);
+    await waitFor(() => expect(action === 'preset' ? mocks.applyOfficialAuthorizationPreset : mocks.previewSessionLogout).toHaveBeenCalledOnce());
     expect(mocks.confirmSessionLogout).not.toHaveBeenCalled();
   });
 
@@ -317,7 +309,7 @@ describe('官方网页登录与设备绑定入口', () => {
     mocks.isSecureManagementContext.mockReturnValue(false);
     mocks.isSupportedManagementContext.mockReturnValue(false);
     const dialog = await show();
-    expect(within(dialog).getByRole('button', { name: '开始官方网页登录' })).toBeDisabled();
+    expect(within(dialog).getByRole('button', { name: '在本机浏览器打开官方登录' })).toBeDisabled();
     expect(within(dialog).getByRole('button', { name: '解绑会话' })).toBeDisabled();
     expect(within(dialog).queryByRole('button', { name: '登出所有会话' })).not.toBeInTheDocument();
     expect(mocks.releaseSessionBinding).not.toHaveBeenCalled();
