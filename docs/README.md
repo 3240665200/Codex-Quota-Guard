@@ -2,9 +2,9 @@
 
 文档按用途分层维护，避免架构说明、接口契约和产品需求混在同一目录。
 
-当前版本：[0.3.22 发布说明与升级注意事项](releases/v0.3.22.md)。
+当前服务器发布目标：[服务器 0.3.23 发布说明与升级注意事项](releases/server-v0.3.23.md)。桌面客户端保持 [0.3.22](releases/v0.3.22.md)，统计程序保持 `0.2.4`。
 
-当前开发功能：[Windows 本地管理网页测试](local-admin-test.md)、[订阅与前置／后置代理链](proxy-subscriptions-and-chains.md)。
+使用与本地验证：[Windows 本地管理网页测试](local-admin-test.md)、[订阅与前置／后置代理链](proxy-subscriptions-and-chains.md)。
 
 ## 服务器部署
 

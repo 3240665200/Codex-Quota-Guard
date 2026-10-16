@@ -27,11 +27,11 @@
 
 Codex Quota Guard 由桌面客户端、中央 Java 服务和 Web 管理后台组成。用户在**官方 Codex 应用或 CLI 自行登录**，桌面端不替换本机 `auth.json`。管理员可使用运行时私有授权预置或导入授权文件，验证官方账户后加密保存限定凭据。网页通过用户自己的浏览器打开官网，服务器镜像不安装浏览器。HTTP 与 HTTPS 都可用，推荐 HTTPS 保护密码与授权。Windows 统计程序从本机可读取的 Codex 会话日志采集 Token 事件，上报中央服务；管理员在后台配置团队与个人额度、查看用量和设备状态。
 
-当前版本为 **0.3.22**，包含 Windows x64 桌面客户端、中央后端与管理网页；独立统计程序版本为 **0.2.4**。桌面端修复 HTTP／HTTPS 服务器地址访问，移除旧官方登录助手，并调整 CC Switch 冲突判定为默认共存。变更、验证范围与升级说明见[0.3.22 发布说明](./docs/releases/v0.3.22.md)。
+桌面客户端当前版本为 **0.3.22**，独立统计程序版本为 **0.2.4**。桌面端修复 HTTP／HTTPS 服务器地址访问，移除旧官方登录助手，并调整 CC Switch 冲突判定为默认共存。桌面变更与验证范围见[0.3.22 发布说明](./docs/releases/v0.3.22.md)。
 
-后端与网页使用相同的 `0.3.22` 版本。每个官方账户必须绑定一个已启用代理节点；没有节点或节点故障时拒绝官方请求，不回退直连。代理页面通过名称、协议、主机、端口及可选用户名／密码添加 HTTP、HTTPS、SOCKS5 节点，测试可查看出口 IP、国家、地区和城市，订阅导入已停用。授权仍可使用运行时私有预置或手工导入文件；公开发布不包含浏览器扩展、个人授权文件或自动 Cookie 采集功能。打开 `https://chatgpt.com/` 不会自动读取跨站 Cookie，也不会自动完成 OAuth。HTTP 页面保留风险提示，HTTPS overlay 可显式强制加密传输。
+服务器发布目标为 **0.3.23**，后端与管理网页使用相同版本，源码与配套配置标签为 `server-v0.3.23`；发布状态与升级范围见[服务器 0.3.23 发布说明](./docs/releases/server-v0.3.23.md)。每个官方账户必须绑定已启用出口节点，并可选择前置节点；任一所选节点缺失、停用或故障时拒绝官方请求，不回退直连。代理页面可手动添加 HTTP、HTTPS、SOCKS5 节点，也可管理持久订阅并手动更新节点；测试可查看最终出口 IP、国家、地区和城市。授权仍可使用运行时私有预置或手工导入文件；公开发布不包含浏览器扩展、个人授权文件或自动 Cookie 采集功能。打开 `https://chatgpt.com/` 不会自动读取跨站 Cookie，也不会自动完成 OAuth。HTTP 页面保留风险提示，HTTPS overlay 可显式强制加密传输。
 
-当前源码另有尚未发布的[订阅与双节点代理链](./docs/proxy-subscriptions-and-chains.md)：支持手动更新 Clash/Mihomo YAML、URI/Base64 订阅，每个账户可选择“前置 → 出口”；失败不回退直连。公开 `0.3.22` 镜像仍以上述已发布行为为准。
+服务器 `0.3.23` 加入[订阅与双节点代理链](./docs/proxy-subscriptions-and-chains.md)：支持 Clash/Mihomo YAML、URI/Base64 订阅，每个账户可单独保存“前置 → 出口”，无需重填已有授权。Trojan URI 支持 `peer`／`sni` 兼容和默认关闭、按订阅确认的节点证书例外。旧 `0.3.22` 镜像不包含这些功能，需要同时升级后端与管理网页；桌面客户端与统计程序继续使用上述版本。
 
 在 Windows 本机测试这项新功能，请按[管理网页本地启动与测试指南](./docs/local-admin-test.md)从当前源码工作区启动。双击 `一键启动-管理后台.cmd` 会启动回环管理网页（8000）和中央 API（18080），并显示本次运行的停止命令；无需同时启动桌面客户端。
 
@@ -75,16 +75,16 @@ Codex Quota Guard 由桌面客户端、中央 Java 服务和 Web 管理后台组
 - [后端 · minjm/codex-quota-guard-backend](https://hub.docker.com/r/minjm/codex-quota-guard-backend)
 - [管理网页 · minjm/codex-quota-guard-web](https://hub.docker.com/r/minjm/codex-quota-guard-web)
 
-部署配置固定后端和网页 `0.3.22`，支持 **Linux amd64 / x86_64**，数据库使用官方 `postgres:17-alpine`。后端保留 sing-box，不含 Chromium，也没有浏览器变体，不需要浏览器 seccomp 或额外容器权限；HTTPS overlay 可选，详见[部署说明](./deploy/docker/registry/README.md)。私有授权通过 `./secrets:/run/secrets` 只读挂载，真实凭据不进入源码、公开镜像或公开包。Windows 桌面客户端和 Rust 统计服务仍安装在用户电脑。版本范围见[0.3.22 发布说明](./docs/releases/v0.3.22.md)；旧版本标签保持不变。
+部署配置固定后端和网页 `0.3.23`，支持 **Linux amd64 / x86_64**，数据库使用官方 `postgres:17-alpine`。后端保留 sing-box，不含 Chromium，也没有浏览器变体，不需要浏览器 seccomp 或额外容器权限；HTTPS overlay 可选，详见[部署说明](./deploy/docker/registry/README.md)。私有授权通过 `./secrets:/run/secrets` 只读挂载，真实凭据不进入源码、公开镜像或公开包。Windows 桌面客户端和 Rust 统计服务仍安装在用户电脑。服务器版本范围见[0.3.23 发布说明](./docs/releases/server-v0.3.23.md)；旧版本标签保持不变。
 
-服务器准备好 **Docker Engine、Docker Compose v2.24.4+、Bash、curl 和 OpenSSL** 后，可使用镜像或配套离线包部署。以下配置固定在 `v0.3.22` 标签，替换服务器 IP 和管理员邮箱：
+服务器准备好 **Docker Engine、Docker Compose v2.24.4+、Bash、curl 和 OpenSSL** 后，可使用镜像或配套离线包部署。以下配置固定在 `server-v0.3.23` 标签，公开拉取前确认该标签和两个镜像已经发布，替换服务器 IP 和管理员邮箱：
 
 ```bash
 (
   set -e
   mkdir codex-quota-guard-server
   cd codex-quota-guard-server
-  qg_base="https://raw.githubusercontent.com/3240665200/Codex-Quota-Guard/v0.3.22/deploy/docker"
+  qg_base="https://raw.githubusercontent.com/3240665200/Codex-Quota-Guard/server-v0.3.23/deploy/docker"
   curl -fSL --fail-early --remote-name-all \
     "$qg_base/registry/compose.yaml" \
     "$qg_base/registry/start.sh" \
@@ -96,20 +96,20 @@ Codex Quota Guard 由桌面客户端、中央 Java 服务和 Web 管理后台组
 )
 ```
 
-以上下载地址固定到 `v0.3.22` 源码标签，只下载 5 个小文件，不下载整个项目；已有同名目录时会停止，避免覆盖旧部署。初始化会提示设置管理员密码，保存独立密钥到 `.env` 并创建空 `secrets` 目录；预置文件不存在时服务仍可启动，管理员可手工导入授权文件。启动后，**管理网页和桌面客户端都使用 `http://服务器IP:8080`**。基础 Compose 的 `APP_REQUIRE_HTTPS=false` 允许 HTTP 和 HTTPS 官方管理操作；启用 HTTPS overlay 后则强制 HTTPS。按需放行网站入口端口，不要单独开放数据库或后端端口。
+以上下载地址固定到 `server-v0.3.23` 源码标签，只下载 5 个小文件，不下载整个项目；已有同名目录时会停止，避免覆盖旧部署。初始化会提示设置管理员密码，保存独立密钥到 `.env` 并创建空 `secrets` 目录；预置文件不存在时服务仍可启动，管理员可手工导入授权文件。启动后，**管理网页和桌面客户端都使用 `http://服务器IP:8080`**。基础 Compose 的 `APP_REQUIRE_HTTPS=false` 允许 HTTP 和 HTTPS 官方管理操作；启用 HTTPS overlay 后则强制 HTTPS。按需放行网站入口端口，不要单独开放数据库或后端端口。
 
 > [!WARNING]
 > HTTP 会明文传输密码、系统令牌和导入的官方授权，推荐使用 HTTPS。允许 HTTP 不改变上游官方 TLS 校验、鉴权或密钥加密。新部署不会带入原电脑的用户和流水，需要另行迁移数据库。升级前先备份，保留原 `.env` 和数据库卷，**不要执行 `docker compose down -v`**。`latest` 后续可能变化，生产部署建议固定版本。
 
 进入 `codex-quota-guard-server` 目录后，可用 `bash start.sh status` 查看状态、`bash start.sh logs backend` 查看日志、`bash start.sh backup` 备份、`bash start.sh stop` 停止并保留数据。
 
-从 `0.3.18/0.3.19/0.3.20` 升级到 `0.3.22` 会新增 **V31 代理测试元数据迁移**，不改写已有代理凭据。先备份并保留原 `.env`、数据库卷和全部密钥，同时更新后端与网页，建议升级桌面至 `0.3.22`；在发起任何官方账户请求前，先为该账户选择已启用代理节点。旧浏览器 overlay 不再使用，保留所选 HTTP/HTTPS 配置，详见[升级步骤](./deploy/docker/registry/README.md#升级到-0322)。从 `0.3.11` 升级会执行 **V22–V31**，V29 前必须停止全部旧应用写入进程；不要重新初始化或删除数据库卷，见[旧版本升级说明](./deploy/docker/registry/README.md#从-0311-或更早版本升级)。
+从 `0.3.22` 升级到服务器 `0.3.23` 会执行 **V32–V34**，增加可空前置节点引用、加密订阅及节点来源关系、默认关闭的 Trojan 证书例外许可；更早的 `0.3.18/0.3.19/0.3.20` 还会执行 V31 代理测试元数据迁移。先停止旧应用并备份，保留原 `.env`、数据库卷和全部密钥，同时更新后端与网页，桌面继续使用 `0.3.22`。旧应用不理解前置链和订阅许可，不能直接换回旧镜像视作等价回滚，详见[升级步骤](./deploy/docker/registry/README.md#升级到-0323)。从 `0.3.11` 升级会执行 **V22–V34**，V29 前必须停止全部旧应用写入进程；不要重新初始化或删除数据库卷，见[旧版本升级说明](./deploy/docker/registry/README.md#从-0311-或更早版本升级)。
 
 详细说明：[Docker Hub 拉取部署](./deploy/docker/registry/README.md) · [离线镜像部署](./deploy/docker/offline/README.md) · [从源码构建镜像](./deploy/docker/README.md)。
 
 ## 快速开始
 
-桌面安装包面向 **Windows x64**，包含本地 Java 运行时、WebView2 离线安装器和 Rust 统计程序；用户电脑**不需要**安装 Java、Maven、Node.js、pnpm 或 Rust。请从 [GitHub Releases](https://github.com/3240665200/Codex-Quota-Guard/releases/latest) 下载并核对 `0.3.22` 安装包。
+桌面安装包面向 **Windows x64**，包含本地 Java 运行时、WebView2 离线安装器和 Rust 统计程序；用户电脑**不需要**安装 Java、Maven、Node.js、pnpm 或 Rust。请从 [GitHub 桌面版 0.3.22](https://github.com/3240665200/Codex-Quota-Guard/releases/tag/v0.3.22) 下载并核对安装包；服务器 `server-v0.3.23` 不提供新桌面安装包。
 
 1. 部署中央 Java API、PostgreSQL 和管理后台。Linux 服务器推荐使用上面的 [Docker 镜像部署](#docker-服务器部署)，默认支持 IP + HTTP；管理员创建系统用户、团队并设置额度。手动部署见[管理端后端文档](./apps/admin/backend/README.md)。
 2. 安装与服务器配套的 `0.3.22` 桌面版本。在登录页的“服务器设置”中保存中央服务地址，例如 `https://your-server.example.com` 或 `http://<服务器 IP>:8080`。保存后从**系统托盘菜单退出客户端**，不要只关闭窗口。`0.0.0.0` 是监听地址，不能作为其他电脑的连接地址。
