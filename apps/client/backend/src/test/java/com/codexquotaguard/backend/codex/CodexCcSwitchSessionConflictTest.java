@@ -23,7 +23,8 @@ class CodexCcSwitchSessionConflictTest {
         assertThatThrownBy(() -> service.requireChatGptAccount(
                 json.readTree("{\"account\":{\"type\":\"apiKey\"}}"), service.authFingerprint()))
                 .isInstanceOf(CodexCcSwitchSessionConflictException.class)
-                .hasMessageNotContaining("PROXY_MANAGED", home.toString());
+                .hasMessageNotContaining("PROXY_MANAGED")
+                .hasMessageNotContaining(home.toString());
     }
 
     @Test void genuineChatGptAccountIsNeverAConflict() throws Exception {

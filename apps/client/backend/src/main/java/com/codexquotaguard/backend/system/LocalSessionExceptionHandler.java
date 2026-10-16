@@ -1,6 +1,7 @@
 package com.codexquotaguard.backend.system;
 
 import com.codexquotaguard.backend.codex.OfficialCodexRateLimitsUnavailableException;
+import com.codexquotaguard.backend.codex.CodexCcSwitchSessionConflictException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -72,6 +73,12 @@ public final class LocalSessionExceptionHandler {
     public ResponseEntity<ErrorBody> officialLimitsUnavailable() {
         return response(HttpStatus.SERVICE_UNAVAILABLE, "OFFICIAL_CODEX_LIMITS_UNAVAILABLE",
                 "请先在官方 Codex 应用或 CLI 登录；登录后重试读取官方额度。");
+    }
+
+    @ExceptionHandler(CodexCcSwitchSessionConflictException.class)
+    public ResponseEntity<ErrorBody> officialSessionConflict() {
+        return response(HttpStatus.CONFLICT, "CODEX_CC_SWITCH_SESSION_CONFLICT",
+                "检测到 Codex 官方登录凭据被代理占位替代，正在核对是否存在 CC Switch 接管冲突。");
     }
 
     private static ResponseEntity<ErrorBody> response(HttpStatus status, String code, String message) {

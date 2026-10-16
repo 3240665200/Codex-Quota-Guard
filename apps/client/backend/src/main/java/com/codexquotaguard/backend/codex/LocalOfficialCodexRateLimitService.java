@@ -12,11 +12,14 @@ import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
+import java.security.MessageDigest;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -49,6 +52,7 @@ public final class LocalOfficialCodexRateLimitService {
 
     public OfficialCodexRateLimits read() {
         Process process = null;
+        String beforeAuth = authFingerprint();
         try {
             ProcessBuilder builder = new ProcessBuilder(executable, "app-server", "--listen", "stdio://",
                     "-c", "cli_auth_credentials_store=\"file\"", "-c", "features.plugins=false");
@@ -62,12 +66,12 @@ public final class LocalOfficialCodexRateLimitService {
                         "name", "codex_quota_guard", "version", "0.3.2")));
                 rpc.notifyInitialized();
                 JsonNode account = rpc.call("account/read", Map.of("refreshToken", false));
-                if (!"chatgpt".equals(account.path("account").path("type").asString(""))) {
-                    throw new IllegalStateException();
-                }
+                requireChatGptAccount(account, beforeAuth);
                 JsonNode limits = rpc.call("account/rateLimits/read", Map.of());
                 return parse(account, limits, clock.instant());
             }
+        } catch (CodexCcSwitchSessionConflictException conflict) {
+            throw conflict;
         } catch (Exception exception) {
             // Neither raw protocol output nor local paths may enter UI errors.
             throw new OfficialCodexRateLimitsUnavailableException();
@@ -76,6 +80,66 @@ public final class LocalOfficialCodexRateLimitService {
                 process.destroyForcibly();
             }
         }
+    }
+
+    String authFingerprint() {
+        byte[] bytes = readAuth();
+        if (bytes == null) return null;
+        try { return fingerprint(bytes); }
+        finally { Arrays.fill(bytes, (byte) 0); }
+    }
+
+    void requireChatGptAccount(JsonNode account, String beforeAuth) {
+        String type = account.path("account").path("type").asString("");
+        if ("chatgpt".equals(type)) return;
+        // Only a successful, explicit apiKey account result can supply evidence.
+        // Missing accounts, protocol errors and all network failures remain ordinary errors.
+        if ("apiKey".equals(type) && beforeAuth != null && hasStableProxyPlaceholder(beforeAuth)) {
+            throw new CodexCcSwitchSessionConflictException();
+        }
+        throw new OfficialCodexRateLimitsUnavailableException();
+    }
+
+    private boolean hasStableProxyPlaceholder(String beforeAuth) {
+        byte[] bytes = readAuth();
+        if (bytes == null) return false;
+        try {
+            if (!beforeAuth.equals(fingerprint(bytes))) return false;
+            JsonNode auth = mapper.readTree(bytes);
+            if (!auth.isObject() || !"PROXY_MANAGED".equals(auth.path("OPENAI_API_KEY").asString(""))
+                    || "chatgpt".equals(auth.path("auth_mode").asString(""))) return false;
+            for (String key : List.of("access_token", "id_token", "refresh_token")) {
+                if (!emptyCredential(auth.path(key))) return false;
+            }
+            JsonNode tokens = auth.path("tokens");
+            if (!tokens.isMissingNode() && !tokens.isNull()
+                    && (!tokens.isObject() || tokens.properties().stream().anyMatch(entry -> !emptyCredential(entry.getValue())))) {
+                return false;
+            }
+            // The later native/meter checks also revalidate the same current files.
+            return beforeAuth.equals(authFingerprint());
+        } catch (RuntimeException failure) {
+            return false;
+        } finally { Arrays.fill(bytes, (byte) 0); }
+    }
+
+    private static boolean emptyCredential(JsonNode value) {
+        return value.isMissingNode() || value.isNull() || value.isString() && value.asString().isBlank();
+    }
+
+    private byte[] readAuth() {
+        Path auth = officialHome.resolve("auth.json");
+        if (!Files.isRegularFile(auth, LinkOption.NOFOLLOW_LINKS)) return null;
+        try (var input = Files.newInputStream(auth, LinkOption.NOFOLLOW_LINKS)) {
+            byte[] bytes = input.readNBytes(65_537);
+            if (bytes.length > 65_536) { Arrays.fill(bytes, (byte) 0); return null; }
+            return bytes;
+        } catch (IOException | SecurityException unavailable) { return null; }
+    }
+
+    private static String fingerprint(byte[] bytes) {
+        try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)); }
+        catch (java.security.NoSuchAlgorithmException unavailable) { return null; }
     }
 
     static OfficialCodexRateLimits parse(JsonNode account, JsonNode limits, Instant fetchedAt) {
