@@ -5,13 +5,13 @@ import { useEffect, useRef, useState } from 'react';
 import type { ChangeEvent, ReactNode } from 'react';
 import { managedErrorCode, managedErrorMessage } from '../../components/managedErrors';
 import ManagementTransportNotice from '../../components/ManagementTransportNotice';
-import { deleteOfficialAccountConnection, getOfficialAccountConnection, getOfficialAccountSessions,
+import { applyOfficialAuthorizationPreset, deleteOfficialAccountConnection, getOfficialAccountConnection, getOfficialAccountSessions,
+  getOfficialAuthorizationPreset,
   isSupportedManagementContext, listProxyNodes, refreshOfficialAccountConnection,
   saveOfficialAccountConnection } from '../../services/api';
 import type { OfficialAccountConnection, OfficialAccountResponse, OfficialAccountSnapshot,
-  OfficialConnectionInput, OfficialConnectionStatus, OfficialSessionDevice, ProxyNode } from '../../services/api';
+  OfficialAuthorizationPreset, OfficialConnectionInput, OfficialConnectionStatus, OfficialSessionDevice, ProxyNode } from '../../services/api';
 import { LOCAL_PREVIEW_PARAMETER_MAX_BYTES, parseLocalPreviewParameters } from './localPreviewParameters';
-import BrowserLoginPanel from './BrowserLoginPanel';
 import SessionBindingQueue from './SessionBindingQueue';
 import SessionLogoutPanel from './SessionLogoutPanel';
 import { SessionBindingResult, SessionBindingsTable } from './SessionBindings';
@@ -121,11 +121,13 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
   const [releaseAcknowledged, setReleaseAcknowledged] = useState(false);
   const [releaseBusy, setReleaseBusy] = useState(false);
   const [releaseError, setReleaseError] = useState('');
-  const [browserLoginActive, setBrowserLoginActive] = useState(false);
+  const [preset, setPreset] = useState<OfficialAuthorizationPreset | null>(null);
+  const [presetNotice, setPresetNotice] = useState('');
+  const [manualKeys, setManualKeys] = useState<string[]>([]);
   const [logoutBusy, setLogoutBusy] = useState(false);
   const [queueRevision, setQueueRevision] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState<'save' | 'refresh' | 'delete' | 'import' | null>(null);
+  const [busy, setBusy] = useState<'save' | 'preset' | 'refresh' | 'delete' | 'import' | null>(null);
   const [error, setError] = useState('');
   const [snapshotNotice, setSnapshotNotice] = useState('');
   const active = useRef(true);
@@ -134,10 +136,8 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
   const parameterFileInput = useRef<HTMLInputElement>(null);
   const parameterFileReader = useRef<FileReader | null>(null);
   const supported = isSupportedManagementContext();
-  const localPreview = typeof window !== 'undefined' && window.location.protocol === 'http:'
-    && ['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname);
   const selectedNode = Form.useWatch('proxyNodeId', form);
-  const externallyLocked = loading || busy !== null || browserLoginActive || releaseBusy;
+  const externallyLocked = loading || busy !== null || releaseBusy;
   const locked = externallyLocked || logoutBusy;
   const selectedSessionIds = sessionSelection.snapshot === snapshot ? sessionSelection.ids : [];
   const isCurrentLifetime = (lifetime: typeof releaseLifetime.current) => active.current && lifetime.active
@@ -168,11 +168,12 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
   };
 
   const importParameters = (event: ChangeEvent<HTMLInputElement>) => {
+    const lifetime = releaseLifetime.current;
     const file = event.currentTarget.files?.[0];
     event.currentTarget.value = '';
-    if (!file || locked || !localPreview || !supported || !config?.encryptionReady) return;
-    if (!file.name.toLowerCase().endsWith('.txt') || file.size > LOCAL_PREVIEW_PARAMETER_MAX_BYTES) {
-      setError('请选择不超过 64 KiB 的本机 .txt 参数文件。');
+    if (!file || !isCurrentLifetime(lifetime) || locked || !supported || !config?.encryptionReady) return;
+    if (!/\.(txt|json)$/i.test(file.name) || file.size > LOCAL_PREVIEW_PARAMETER_MAX_BYTES) {
+      setError('请选择不超过 64 KiB 的本机 .txt 或 .json 参数文件。');
       return;
     }
     setBusy('import'); setError('');
@@ -181,21 +182,22 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
     const finish = () => {
       if (parameterFileReader.current !== reader) return;
       parameterFileReader.current = null;
-      if (active.current) setBusy(null);
+      if (isCurrentLifetime(lifetime)) setBusy(null);
     };
     reader.onload = () => {
-      if (!active.current || parameterFileReader.current !== reader) return;
+      if (!isCurrentLifetime(lifetime) || parameterFileReader.current !== reader) return;
       try {
         if (typeof reader.result !== 'string') throw new Error('Invalid local file');
         const draft = parseLocalPreviewParameters(reader.result);
+        setManualKeys(['manual']);
         form.setFieldsValue(draft);
         message.success('三项授权参数已填入本机草稿，尚未保存');
       } catch {
-        setError('本机参数文件格式不正确，请检查三段标签、对应参数及允许的官方登录 Cookie。');
+        setError('本机参数文件格式不正确，请检查 JSON 字段或三段标签、对应参数及允许的官方登录 Cookie。');
       } finally { finish(); }
     };
     reader.onerror = () => {
-      if (active.current && parameterFileReader.current === reader) setError('无法读取本机参数文件，请重新选择。');
+      if (isCurrentLifetime(lifetime) && parameterFileReader.current === reader) setError('无法读取本机参数文件，请重新选择。');
       finish();
     };
     reader.onabort = finish;
@@ -206,12 +208,13 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
     active.current = true;
     const lifetime = { accountId: account.id, active: true, busy: false }; releaseLifetime.current = lifetime;
     setLoading(true); setConfig(null); updateSnapshot(null); setBindings(null);
-    setBusy(null); setBrowserLoginActive(false);
+    setBusy(null); setPreset(null); setPresetNotice(''); setManualKeys([]); form.resetFields();
     setError(''); setSnapshotNotice(''); setBindingNotice(''); setLogoutBusy(false);
     setReleaseTarget(null); setReleaseAcknowledged(false); setReleaseBusy(false); setReleaseError(''); setBindingRevision(0);
     let cancelled = false;
-    void Promise.allSettled([getOfficialAccountConnection(account.id), listProxyNodes(), getOfficialAccountSessions(account.id), listSessionBindings(account.id)])
-      .then(([connectionResult, nodesResult, snapshotResult, bindingsResult]) => {
+    void Promise.allSettled([getOfficialAccountConnection(account.id), listProxyNodes(), getOfficialAccountSessions(account.id), listSessionBindings(account.id),
+      view === 'sessions' ? Promise.resolve(null) : getOfficialAuthorizationPreset()])
+      .then(([connectionResult, nodesResult, snapshotResult, bindingsResult, presetResult]) => {
         if (cancelled || !active.current) return;
         if (connectionResult.status === 'fulfilled') {
           const saved = connectionResult.value;
@@ -227,32 +230,15 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
           : managedErrorMessage(snapshotResult.reason, '官方会话快照读取失败，可手动刷新后重试。'));
         if (bindingsResult.status === 'fulfilled') setBindings(bindingsResult.value);
         else setBindingNotice(managedErrorMessage(bindingsResult.reason, '绑定结果暂时无法读取，请关闭窗口后重试。'));
+        if (presetResult.status === 'fulfilled') {
+          setPreset(presetResult.value);
+          if (presetResult.value?.errorCode) setPresetNotice(managedErrorMessage({ code: presetResult.value.errorCode },
+            '预置授权暂不可用，可从本机参数文件填入或手动导入授权。'));
+        } else setPresetNotice(managedErrorMessage(presetResult.reason, '预置授权暂不可用，可从本机参数文件填入或手动导入授权。'));
         setLoading(false);
       });
     return () => { cancelled = true; lifetime.active = false; active.current = false; stopParameterImport(); };
-  }, [account.id, form]);
-
-  const reloadAfterBrowserLogin = async () => {
-    const lifetime = releaseLifetime.current;
-    if (!isCurrentLifetime(lifetime)) return;
-    clearSecrets();
-    const [connectionResult, snapshotResult, bindingsResult] = await Promise.allSettled([
-      getOfficialAccountConnection(lifetime.accountId), getOfficialAccountSessions(lifetime.accountId), listSessionBindings(lifetime.accountId),
-    ]);
-    if (!isCurrentLifetime(lifetime)) return;
-    if (connectionResult.status === 'fulfilled') {
-      const saved = connectionResult.value;
-      setConfig(saved);
-      form.setFieldsValue({ requestedAccountId: saved.requestedAccountId ?? '', proxyNodeId: saved.proxyNodeId, version: saved.version });
-    } else setError(managedErrorMessage(connectionResult.reason, '授权已保存，但连接状态暂时无法读取，请关闭窗口后重新打开。'));
-    if (snapshotResult.status === 'fulfilled') { updateSnapshot(snapshotResult.value); setSnapshotNotice(''); }
-    else {
-      updateSnapshot(null);
-      setSnapshotNotice(managedErrorMessage(snapshotResult.reason, '授权已保存，尚无可用的官方会话快照，请手动刷新。'));
-    }
-    if (bindingsResult.status === 'fulfilled') { setBindings(bindingsResult.value); setBindingNotice(''); }
-    else { setBindings(null); setBindingNotice(managedErrorMessage(bindingsResult.reason, '绑定结果暂时无法读取，请关闭窗口后重试。')); }
-  };
+  }, [account.id, form, view]);
 
   const reloadAfterLogout = async (completedAccountId: string) => {
     const lifetime = releaseLifetime.current;
@@ -319,7 +305,7 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
     if (!isCurrentLifetime(lifetime) || locked || !config?.encryptionReady || !supported) return;
     let values: OfficialConnectionInput;
     try { values = await form.validateFields(); } catch { return; }
-    if (!isCurrentLifetime(lifetime)) return;
+    if (!isCurrentLifetime(lifetime) || lifetime.busy) return;
     const body: OfficialConnectionInput = {
       authorization: values.authorization.trim(), requestedAccountId: values.requestedAccountId.trim(),
       proxyNodeId: values.proxyNodeId || null, version: config.version,
@@ -337,6 +323,28 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
     } finally {
       body.authorization = ''; delete body.cookie;
       values.authorization = ''; delete values.cookie;
+      if (isCurrentLifetime(lifetime)) { clearSecrets(); setBusy(null); }
+    }
+  };
+
+  const applyPreset = async () => {
+    const lifetime = releaseLifetime.current;
+    if (!isCurrentLifetime(lifetime) || lifetime.busy || locked || !supported || !config?.encryptionReady
+      || !preset?.available || !preset.revision || nodeUnavailable) return;
+    lifetime.busy = true; setBusy('preset'); setError(''); clearSecrets();
+    try {
+      const saved = await applyOfficialAuthorizationPreset(lifetime.accountId, {
+        version: config.version, proxyNodeId: selectedNode || null, presetRevision: preset.revision,
+      });
+      if (!isCurrentLifetime(lifetime)) return;
+      setConfig(saved); updateSnapshot(null);
+      form.setFieldsValue({ requestedAccountId: saved.requestedAccountId ?? '', proxyNodeId: saved.proxyNodeId, version: saved.version });
+      setSnapshotNotice('尚无官方会话快照，请手动刷新官方账户与会话。');
+      message.success('预置授权已加密保存，请手动刷新官方账户与会话');
+    } catch (reason) {
+      if (isCurrentLifetime(lifetime)) setError(managedErrorMessage(reason, '预置授权保存失败，请检查配置后重试。'));
+    } finally {
+      lifetime.busy = false;
       if (isCurrentLifetime(lifetime)) { clearSecrets(); setBusy(null); }
     }
   };
@@ -401,7 +409,7 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
           ]} /> : null}
           {config?.lastErrorCode ? <Alert type="warning" showIcon title={managedErrorMessage({ code: config.lastErrorCode }, '最近一次官方读取未成功，请检查授权和代理配置。')} /> : null}
           {view !== 'sessions' ? <Form form={form} layout="vertical" preserve={false} disabled={locked || !supported || !config?.encryptionReady}>
-            <Form.Item name="proxyNodeId" label="访问代理节点" extra="服务器登录浏览器与后台读取官方账户均使用此节点或直连；不会失败回退或自动切换出口。">
+            <Form.Item name="proxyNodeId" label="访问代理节点" extra="后台读取官方账户使用此节点或直连；本机浏览器使用你本机的网络设置。不会失败回退或自动切换出口。">
               <Select virtual={false} allowClear placeholder="直连（不使用代理）" options={[
                 ...nodes.map((node) => ({ value: node.id, label: `${node.label} · ${node.protocol}${node.enabled ? '' : '（已停用）'}`, disabled: !node.enabled })),
                 ...(missingNode ? [{ value: config.proxyNodeId!, label: '已保存的节点（当前不可用）', disabled: true }] : []),
@@ -409,23 +417,40 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
             </Form.Item>
             {nodeUnavailable ? <Alert type="warning" showIcon title="当前代理节点不可用，请明确选择其他节点或清空为直连，再重新保存授权。" /> : null}
             <Space orientation="vertical" size={16} style={{ width: '100%' }}>
-              <BrowserLoginPanel key={account.id} accountId={account.id} version={config?.version ?? 0} proxyNodeId={selectedNode || null}
-                disabled={loading || busy !== null || logoutBusy || releaseBusy || !supported || !config?.encryptionReady || Boolean(nodeUnavailable)}
-                onActiveChange={setBrowserLoginActive} onResultChanged={reloadAfterBrowserLogin} />
-              <Collapse style={{ width: '100%' }} onChange={(keys) => { if (!keys.includes('manual')) clearSecrets(); }} items={[{
+              <Card size="small" title="预置授权">
+                <Space orientation="vertical" size={12} style={{ width: '100%' }}>
+                  <Typography.Text>{preset?.available
+                    ? `服务端已准备官方 Account ID：${preset.requestedAccountId || '未提供'}。点击后应用到当前账户，无需填写授权字段。`
+                    : loading ? '正在检查预置授权。' : '服务端尚无可用预置授权，可从本机参数文件填入或手动导入授权。'}</Typography.Text>
+                  {presetNotice ? <Alert type="warning" showIcon title={presetNotice} /> : null}
+                  <Typography.Text type="secondary">授权由服务端加密保存，凭据不会返回此页面。应用后请手动刷新以验证连接。</Typography.Text>
+                  <Button type="primary" disabled={locked || !supported || !config?.encryptionReady || Boolean(nodeUnavailable)
+                    || !preset?.available || !preset.revision} loading={busy === 'preset'} onClick={() => void applyPreset()}>使用预置授权</Button>
+                </Space>
+              </Card>
+              <Alert type="info" showIcon title="在本机浏览器登录官网"
+                description={<Space orientation="vertical" size={8}>
+                  <span>将在本机浏览器的新标签页打开 ChatGPT。外部登录不会自动读取跨站 Cookie，也不会自动保存本系统授权；完成后可使用预置授权或导入你自己的授权文件。</span>
+                  <Button disabled={locked || !supported}
+                    onClick={() => { if (!locked && supported) window.open('https://chatgpt.com/', '_blank', 'noopener,noreferrer'); }}>在本机浏览器打开官方登录</Button>
+                </Space>} />
+              <Alert type="info" showIcon title="本机参数文件导入草稿"
+                description={<Space orientation="vertical" size={8}>
+                  <span id="local-preview-parameters-description">支持不超过 64 KiB 的 .txt 或 .json 文件，仅由当前浏览器读取，不上传。填入会替换 Account ID、Authorization 和 Cookie，保留代理选择；请核对后明确保存，不会自动刷新官方会话。</span>
+                  <input ref={parameterFileInput} id="local-preview-parameters-file" type="file" accept=".txt,.json,text/plain,application/json"
+                    aria-label="本机参数文件" aria-describedby="local-preview-parameters-description" hidden
+                    disabled={locked || !supported || !config?.encryptionReady} onChange={importParameters} />
+                  <Button disabled={locked || !supported || !config?.encryptionReady} loading={busy === 'import'}
+                    aria-controls="local-preview-parameters-file" aria-describedby="local-preview-parameters-description"
+                    onClick={() => parameterFileInput.current?.click()}>从本机参数文件填入</Button>
+                </Space>} />
+              <Collapse style={{ width: '100%' }} activeKey={manualKeys} onChange={(keys) => {
+                setManualKeys(typeof keys === 'string' ? [keys] : keys);
+                if (!keys.includes('manual')) clearSecrets();
+              }} items={[{
                 key: 'manual', label: '高级：手动导入授权', children: <Space orientation="vertical" size={16} style={{ width: '100%' }}>
                   <Alert type="info" showIcon title="手动导入你自己的官方网页登录授权"
                     description="适用于已有授权参数的管理员。每次保存会完整替换授权，Cookie 留空会清除旧 Cookie。提交后立即清空，不在浏览器存储中保存。" />
-          {localPreview ? <Alert type="info" showIcon title="本机参数文件导入草稿"
-            description={<Space orientation="vertical" size={8}>
-              <span id="local-preview-parameters-description">文件仅由当前浏览器读取，不上传。填入会替换 Account ID、Authorization 和 Cookie，保留代理选择；不会保存授权或刷新官方会话。</span>
-              <input ref={parameterFileInput} id="local-preview-parameters-file" type="file" accept=".txt,text/plain"
-                aria-label="本机参数文件" aria-describedby="local-preview-parameters-description" hidden
-                onChange={importParameters} />
-              <Button disabled={locked || !supported || !config?.encryptionReady} loading={busy === 'import'}
-                aria-controls="local-preview-parameters-file" aria-describedby="local-preview-parameters-description"
-                onClick={() => parameterFileInput.current?.click()}>从本机参数文件填入</Button>
-            </Space>} /> : null}
             <Form.Item name="requestedAccountId" label="官方 Account ID" rules={[
               { required: true, whitespace: true, message: '请输入官方 Account ID' },
               { pattern: /^[^\x00-\x1f\x7f]+$/, message: '官方 Account ID 不能包含控制字符' },

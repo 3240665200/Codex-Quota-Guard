@@ -343,6 +343,19 @@ export function isSecureManagementContext(): boolean {
     && ['localhost', '127.0.0.1', '[::1]'].includes(hostname));
 }
 
+export interface OfficialAuthorizationPreset {
+  available: boolean;
+  requestedAccountId: string | null;
+  revision: string | null;
+  errorCode: string | null;
+}
+
+export interface OfficialAuthorizationPresetInput {
+  version: number;
+  proxyNodeId: string | null;
+  presetRevision: string;
+}
+
 export function isSupportedManagementContext(): boolean {
   if (typeof window === 'undefined') return false;
   return window.location.protocol === 'https:' || window.location.protocol === 'http:';
@@ -350,6 +363,16 @@ export function isSupportedManagementContext(): boolean {
 
 export function getOfficialAccountConnection(id: string): Promise<OfficialAccountConnection> {
   return request(`/api/v1/admin/official-accounts/${encodeURIComponent(id)}/connection`);
+}
+
+export function getOfficialAuthorizationPreset(): Promise<OfficialAuthorizationPreset> {
+  return request('/api/v1/admin/official-authorization-preset');
+}
+
+export function applyOfficialAuthorizationPreset(id: string, body: OfficialAuthorizationPresetInput): Promise<OfficialAccountConnection> {
+  return request(`/api/v1/admin/official-accounts/${encodeURIComponent(id)}/connection/preset`, {
+    method: 'POST', body: JSON.stringify(body),
+  });
 }
 
 export function saveOfficialAccountConnection(id: string, body: OfficialConnectionInput): Promise<OfficialAccountConnection> {

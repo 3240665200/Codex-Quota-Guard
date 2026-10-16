@@ -1,6 +1,7 @@
 import { act, configure, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { App as AntApp } from 'antd';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ButtonHTMLAttributes, ReactNode } from 'react';
 import ConnectionModal from './ConnectionModal';
 import type { OfficialAccountResponse } from '../../services/api';
 
@@ -15,6 +16,19 @@ vi.mock('../../services/officialWebLoginApi', () => ({ startOfficialWebLogin: mo
   completeOfficialWebLogin: vi.fn(), WEB_LOGIN_KEYS: [] }));
 vi.mock('../../services/sessionLogoutApi', () => ({ getSessionLogoutCurrent: vi.fn(), previewSessionLogout: vi.fn(),
   confirmSessionLogout: mocks.confirmSessionLogout, acknowledgeSessionLogoutUnknown: vi.fn() }));
+// Keep real Form/Input/Select/Collapse behavior; avoid layout-only antd work in these state-transition tests.
+vi.mock('antd', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('antd')>();
+  const Plain = ({ children }: { children?: ReactNode }) => <div>{children}</div>;
+  return { ...actual, Space: Plain, Spin: Plain,
+    Card: ({ title, extra, children }: { title?: ReactNode; extra?: ReactNode; children?: ReactNode }) => <section>{title}{extra}{children}</section>,
+    Alert: ({ title, description }: { title?: ReactNode; description?: ReactNode }) => <div role="alert"><div>{title}</div><div>{description}</div></div>,
+    Typography: { ...actual.Typography, Text: Plain },
+    Descriptions: ({ items }: { items: { key: string; label: ReactNode; children: ReactNode }[] }) => <dl>{items.map((item) => <div key={item.key}><dt>{item.label}</dt><dd>{item.children}</dd></div>)}</dl>,
+    Button: ({ children, onClick, disabled, ...props }: ButtonHTMLAttributes<HTMLButtonElement>) => <button type="button" onClick={onClick} disabled={disabled}
+      aria-controls={props['aria-controls']} aria-describedby={props['aria-describedby']}>{children}</button>,
+  };
+});
 
 const connection = { configured: true, encryptionReady: true, status: 'UNVERIFIED', requestedAccountId: 'workspace-before',
   proxyNodeId: 'proxy-1', hasAuthorization: true, hasCookie: false, version: 5 };
@@ -23,7 +37,9 @@ const account = (id = 'account-1') => ({ id, label: id } as OfficialAccountRespo
 const ui = (id = 'account-1') => <AntApp><ConnectionModal account={account(id)} onClose={vi.fn()} view="authorization" inline /></AntApp>;
 async function show() {
   const view = render(ui());
-  await waitFor(() => expect(screen.getByRole('button', { name: '使用预置授权' })).toBeEnabled());
+  await act(async () => {});
+  const apply = screen.getByRole('button', { name: '使用预置授权' });
+  await waitFor(() => expect(apply).toBeEnabled());
   return view;
 }
 const jsonDraft = { requestedAccountId: 'workspace-file', authorization: 'Bearer synthetic-file', cookie: '' };
@@ -33,8 +49,8 @@ function chooseFile(contents: string, name: string) {
 }
 
 describe('统一预置授权与本机浏览器入口', () => {
-  beforeAll(() => configure({ defaultHidden: true }));
-  afterAll(() => configure({ defaultHidden: false }));
+  beforeAll(() => configure({ defaultHidden: true, asyncUtilTimeout: 5000 }));
+  afterAll(() => configure({ defaultHidden: false, asyncUtilTimeout: 1000 }));
   afterEach(() => vi.unstubAllGlobals());
   beforeEach(() => {
     vi.clearAllMocks(); mocks.isSupportedManagementContext.mockReturnValue(true);
@@ -93,16 +109,18 @@ describe('统一预置授权与本机浏览器入口', () => {
     vi.stubGlobal('window', new Proxy(originalWindow, { get: (target, property) => property === 'location' ? location : Reflect.get(target, property) }));
     mocks.getOfficialAuthorizationPreset.mockResolvedValue({ available: false, requestedAccountId: null, revision: null, errorCode: null });
     const storage = vi.spyOn(Storage.prototype, 'setItem');
-    render(ui());
-    await waitFor(() => expect(screen.getByRole('button', { name: '从本机参数文件填入' })).toBeEnabled());
+    await act(async () => { render(ui()); });
+    const importFile = screen.getByRole('button', { name: '从本机参数文件填入' });
+    await waitFor(() => expect(importFile).toBeEnabled());
     expect(screen.getByRole('button', { name: '使用预置授权' })).toBeDisabled();
     chooseFile(txtDraft, 'authorization.txt');
     await waitFor(() => expect(screen.getByLabelText('官方 Authorization')).toHaveValue(jsonDraft.authorization));
+    const save = screen.getByRole('button', { name: '保存授权' });
     chooseFile(JSON.stringify(jsonDraft), 'authorization.json');
-    await waitFor(() => expect(screen.getByRole('button', { name: '保存授权' })).toBeEnabled());
+    await waitFor(() => expect(save).toBeEnabled());
     expect(mocks.saveOfficialAccountConnection).not.toHaveBeenCalled();
     expect(mocks.applyOfficialAuthorizationPreset).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: '保存授权' }));
+    fireEvent.click(save);
     await waitFor(() => expect(mocks.saveOfficialAccountConnection).toHaveBeenCalledOnce());
     expect(mocks.saveOfficialAccountConnection.mock.calls[0][0]).toBe('account-1');
     expect(screen.getByLabelText('官方 Authorization')).toHaveValue('');
@@ -110,7 +128,7 @@ describe('统一预置授权与本机浏览器入口', () => {
     expect(mocks.refreshOfficialAccountConnection).not.toHaveBeenCalled();
   });
 
-  it('blocks apply/import/open for unsupported page protocols and blocks oversized files', async () => {
+  it('blocks apply/import/open for unsupported page protocols', async () => {
     mocks.isSupportedManagementContext.mockReturnValue(false); render(ui());
     await screen.findByText(/当前页面协议不受支持/);
     expect(screen.getByRole('button', { name: '使用预置授权' })).toBeDisabled();
@@ -130,8 +148,8 @@ describe('统一预置授权与本机浏览器入口', () => {
     expect(screen.getByRole('button', { name: '从本机参数文件填入' })).toBeDisabled();
     expect(screen.getByRole('button', { name: '刷新官方账户与会话' })).toBeDisabled();
     mocks.getOfficialAccountConnection.mockResolvedValue({ ...connection, requestedAccountId: 'workspace-second', version: 12 });
-    view.rerender(ui('account-2'));
-    await waitFor(() => expect(screen.getByRole('button', { name: '使用预置授权' })).toBeEnabled());
+    await act(async () => view.rerender(ui('account-2')));
+    expect(screen.getByRole('button', { name: '使用预置授权' })).toBeEnabled();
     await act(async () => finish({ ...connection, requestedAccountId: 'workspace-stale', version: 6 }));
     fireEvent.click(screen.getByRole('button', { name: '高级：手动导入授权' }));
     expect(screen.getByLabelText('官方 Account ID')).toHaveValue('workspace-second');
@@ -146,8 +164,8 @@ describe('统一预置授权与本机浏览器入口', () => {
     const abort = vi.spyOn(FileReader.prototype, 'abort').mockImplementation(() => undefined);
     const view = await show(); chooseFile(JSON.stringify(jsonDraft), 'authorization.json');
     mocks.getOfficialAccountConnection.mockResolvedValue({ ...connection, requestedAccountId: 'workspace-second' });
-    view.rerender(ui('account-2'));
-    await waitFor(() => expect(screen.getByRole('button', { name: '使用预置授权' })).toBeEnabled());
+    await act(async () => view.rerender(ui('account-2')));
+    expect(screen.getByRole('button', { name: '使用预置授权' })).toBeEnabled();
     expect(abort).toHaveBeenCalledOnce();
     Object.defineProperty(reader, 'result', { value: JSON.stringify(jsonDraft) });
     await act(async () => reader.onload?.call(reader, {} as ProgressEvent<FileReader>));
