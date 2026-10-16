@@ -38,7 +38,7 @@ services:
     init: true
     environment:
       SPRING_PROFILES_ACTIVE: prod
-      # Direct Spring property override: REQUIRE_HTTPS alone cannot override prod.
+      # Explicit deployment policy shared with local/test defaults.
       # false accepts HTTP and HTTPS, including management credentials.
       # HTTP is unencrypted; compose.https.yaml enables HTTPS-only ingress.
       APP_REQUIRE_HTTPS: "false"

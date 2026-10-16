@@ -1,3 +1,9 @@
+# 历史浏览器配置许可说明
+
+服务器 0.3.20 已移除 Chromium 运行目标、浏览器 overlay 和 chromium-seccomp.json；当前部署使用 Docker 默认 seccomp，不引用此目录的 Playwright 派生配置。
+
+以下许可与说明仅用于追溯旧版本，旧文件仍可在 server-v0.3.19 等历史标签查看。保留 playwright-LICENSE，不代表当前镜像内含浏览器。
+
 # Browser sandbox profile
 
 ../chromium-seccomp.json is derived from the Chromium sandbox seccomp profile from Microsoft Playwright v1.64.0 (Apache-2.0).

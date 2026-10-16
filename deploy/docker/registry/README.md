@@ -1,28 +1,27 @@
 # Docker Hub 拉取部署
 
-服务器 `0.3.19` 已发布，源码标签为 `server-v0.3.19`，面向 **Linux amd64 / x86_64**。普通后端和网页的 `latest` 与 `0.3.19` 摘要一致；生产部署建议固定版本。
+本配置面向服务器 `0.3.20`，后端与管理网页版本一致，平台为 **Linux amd64 / x86_64**。本轮构建和离线打包不等于已推送 Docker Hub；在线部署前请确认两个镜像与 `server-v0.3.20` 源码标签已公开发布。生产部署固定版本，不依赖 `latest`。
 
 | 组件 | 镜像 |
 | --- | --- |
-| 普通后端，不含 Chromium | `minjm/codex-quota-guard-backend:0.3.19` |
-| 管理网页 | `minjm/codex-quota-guard-web:0.3.19` |
-| 可选服务器网页登录后端 | `minjm/codex-quota-guard-backend:0.3.19-browser` |
+| 普通后端，不含 Chromium | `minjm/codex-quota-guard-backend:0.3.20` |
+| 管理网页 | `minjm/codex-quota-guard-web:0.3.20` |
 | 数据库 | 官方 `postgres:17-alpine` |
 
 镜像仓库：[后端](https://hub.docker.com/r/minjm/codex-quota-guard-backend) · [管理网页](https://hub.docker.com/r/minjm/codex-quota-guard-web)。服务器不需要源码、Java、Node.js 或 Maven；需要 Docker Engine、Compose **v2.24.4+**、Bash、OpenSSL，以及访问 Docker Hub 的网络。下载配置另外需要 `curl`。这不是 Windows 容器或 ARM 镜像。
 
-保留既有 `0.3.18`、`0.3.18-browser` 和 `0.3.11` 镜像，不覆盖旧标签。不要依赖 `latest` 判断版本或自动升级；数据库变化后，保留旧镜像也不表示可以直接切回。
+0.3.20 只有普通后端，保留 sing-box，无内置 Chromium 或浏览器专用镜像，不需要额外 seccomp 权限。旧版镜像与历史源码标签保持原样。不要依赖 `latest` 判断版本或自动升级；数据库变化后，保留旧镜像也不表示可以直接切回。
 
 ## 首次部署
 
-已拿到拉取部署包时，先解压到服务器。如果没有部署包，可直接下载这 5 个小配置文件，无需下载源码；下载步骤额外需要 `curl`：
+已拿到拉取部署包时，先解压到服务器。对应版本公开发布后，也可直接下载这 5 个小配置文件，无需下载源码；下载步骤额外需要 `curl`：
 
 ```bash
 (
   set -e
   mkdir codex-quota-guard-server
   cd codex-quota-guard-server
-  qg_base="https://raw.githubusercontent.com/3240665200/Codex-Quota-Guard/server-v0.3.19/deploy/docker"
+  qg_base="https://raw.githubusercontent.com/3240665200/Codex-Quota-Guard/server-v0.3.20/deploy/docker"
   curl -fSL --fail-early --remote-name-all \
     "$qg_base/registry/compose.yaml" \
     "$qg_base/registry/start.sh" \
@@ -32,7 +31,7 @@
 )
 ```
 
-下载地址固定到与 `0.3.19` 镜像配套的 `server-v0.3.19` 服务器源码标签，与 Windows 安装包版本独立。已有同名目录时下载步骤会停止，不覆盖已有部署。
+下载地址固定到与 `0.3.20` 镜像配套的 `server-v0.3.20` 服务器源码标签，与 Windows 安装包版本独立。已有同名目录时下载步骤会停止，不覆盖已有部署。
 
 进入包含 `start.sh` 的目录（上述下载方式为 `cd codex-quota-guard-server`），替换服务器 IP 和管理员邮箱后执行：
 
@@ -41,21 +40,25 @@ bash start.sh init http://服务器IP:8080 管理员邮箱
 bash start.sh up
 ```
 
-初始化提示设置管理员密码，生成独立数据库密码、JWT、邮箱、官方会话及代理加密密钥，保存在权限受限的 `.env`；已有 `.env` 不会被覆盖或自动补字段。启动自动拉取固定镜像并等待健康检查，不在服务器编译。初始化入口只接受 HTTP 地址；需要 HTTPS 时，先初始化，再按下文配置证书与 `PUBLIC_ORIGIN`，最后用组合命令启动。
+初始化提示设置管理员密码，生成独立数据库密码、JWT、邮箱、官方会话及代理加密密钥，保存在权限受限的 `.env`；已有 `.env` 不会被覆盖或自动补字段。初始化及 `up` 创建缺失的空 `secrets` 目录，不读取预置内容、不修改既有文件所有者。启动自动拉取固定镜像并等待健康检查，不在服务器编译。初始化入口只接受 HTTP 地址；需要 HTTPS 时，先初始化，再按下文配置证书与 `PUBLIC_ORIGIN`，最后用组合命令启动。
 
-管理网页和桌面端使用同一个中央服务地址。基础 Compose 设置 `APP_REQUIRE_HTTPS=false`，允许 HTTP 和 HTTPS，包括官方授权导入、会话管理与服务器网页登录，不再仅限 localhost。HTTP 页面只提示风险，不因协议禁用功能；**HTTP 会明文传输系统密码、授权及浏览器输入，推荐使用 HTTPS**。服务器到官方站点的 TLS 校验、鉴权、密钥加密和沙箱规则不变。数据库、Java 内部端口和 Chromium 调试端口都不单独公开。
+管理网页和桌面端使用同一个中央服务地址。基础 Compose 设置 `APP_REQUIRE_HTTPS=false`，允许 HTTP 和 HTTPS，包括私有预置授权、授权文件导入与会话管理，不再仅限 localhost。HTTP 页面只提示风险，不因协议禁用功能；**HTTP 会明文传输系统密码、导入的官方授权，推荐使用 HTTPS**。服务器到官方站点的 TLS 校验、鉴权和密钥加密规则不变。数据库和 Java 内部端口不单独公开。
 
 桌面端应为支持设备标识的 **0.3.14 或更高版本，建议 0.3.18**。本次发布范围为源码与服务器镜像，0.3.18 Windows 本地测试安装包尚未作为新的 GitHub Release 上传；请先准备配套客户端再升级服务器，不能假定既有公开安装包兼容新绑定流程。
 
-## 从 0.3.18 升级
+## 从 0.3.18 或 0.3.19 升级
 
-`0.3.19` 调整管理入口的传输策略，**没有新增数据库迁移**，不更新桌面客户端。升级前停止应用并备份数据库与原 `.env`，保留项目名、数据库卷、全部密钥和自定义配置。后端、网页同时改为 `0.3.19`；启用服务器浏览器时同步更新 registry overlay 至 `0.3.19-browser`。不要覆盖原 `.env` 或重新执行 `init`。
+`0.3.20` 统一为不含浏览器的后端，**没有新增数据库迁移**，仍为 V30，不更新桌面客户端。升级前用原配置停止应用、保留 PostgreSQL 运行并备份数据库与原 `.env`；保留项目名、数据库卷、全部密钥和自定义配置。后端、网页同时改为 `0.3.20`，不要覆盖原 `.env` 或重新生成密钥。
 
-继续使用 HTTP 时，保留基础 Compose 的 `APP_REQUIRE_HTTPS=false`；浏览器只需基础配置加 browser overlay。继续强制 HTTPS 时，保留 `compose.https.yaml`，其 `APP_REQUIRE_HTTPS=true` 与 HTTP→HTTPS 重定向保持生效。启动命令见下一节；升级后验收管理员登录、官方管理入口和客户端访问核验。
+从启动、日志和停止命令中移除 `-f compose.web-login.yaml`，不再使用旧 `-browser` 镜像。新版本删除了浏览器 overlay 与 `chromium-seccomp.json`，历史 `server-v0.3.19` 标签仍保留它们；旧文件可留作备份，但不能再叠加到新 Compose。若有自定义副本，也移除其浏览器环境变量和 seccomp 设置，沿用基础配置的非 root、`cap_drop: ALL`、只读文件系统与 `no-new-privileges`。
+
+`start.sh up` 会为旧安装创建缺失的 `secrets` 目录。若直接使用 Compose，请先执行 `mkdir -p secrets`，再合并新的只读挂载及 `OFFICIAL_AUTHORIZATION_PRESET_FILE` 映射。不要对原部署目录递归改 owner 或权限。预置不存在时可正常启动，授权文件导入仍可使用。
+
+HTTP 部署保留基础 `APP_REQUIRE_HTTPS=false`；强制 HTTPS 部署继续使用 `-f compose.https.yaml`，其中 `APP_REQUIRE_HTTPS=true` 与 HTTP→HTTPS 重定向保持生效。两者使用相同业务代码和授权入口。升级后验收管理员登录、预置可用状态／文件导入、官方会话管理和客户端访问核验。
 
 ## 从 0.3.11 或更早版本升级
 
-`0.3.19` 包含此前的自动绑定与交接、取得名额后 30 分钟登录期限、至少间隔 10 秒的官方会话监测、官方账户与会话管理，以及区分系统用户退出和官方会话退出的管理操作。从 `0.3.11` 升级会执行 **V22–V30 数据库迁移**。
+`0.3.20` 包含此前的自动绑定与交接、取得名额后 30 分钟登录期限、至少间隔 10 秒的官方会话监测、官方账户与会话管理，以及区分系统用户退出和官方会话退出的管理操作。从 `0.3.11` 升级会执行 **V22–V30 数据库迁移**。
 
 **V29 要求所有旧应用写入进程先停止，禁止新旧队列 writer 混跑。** 迁移增加代际校验字段，旧程序不会检查它们。按以下顺序在原部署目录操作：
 
@@ -75,8 +78,8 @@ bash start.sh backup
 普通部署的两个镜像改为：
 
 ```text
-minjm/codex-quota-guard-backend:0.3.19
-minjm/codex-quota-guard-web:0.3.19
+minjm/codex-quota-guard-backend:0.3.20
+minjm/codex-quota-guard-web:0.3.20
 ```
 
 旧 Compose 的 `services.backend.environment` 合并下列映射（若文件为 JSON，使用等价的 JSON 键值格式）：
@@ -86,7 +89,10 @@ OFFICIAL_SESSION_ENCRYPTION_KEY: "${OFFICIAL_SESSION_ENCRYPTION_KEY:-}"
 MANAGED_PROXY_ENCRYPTION_KEY: "${MANAGED_PROXY_ENCRYPTION_KEY:-}"
 MANAGED_PROXY_MAX_PROCESSES: "${MANAGED_PROXY_MAX_PROCESSES:-4}"
 MANAGED_PROXY_ALLOW_PRIVATE_NODES: "${MANAGED_PROXY_ALLOW_PRIVATE_NODES:-false}"
+OFFICIAL_AUTHORIZATION_PRESET_FILE: /run/secrets/official-authorization.json
 ```
+
+同时为后端添加 `./secrets:/run/secrets:ro` 目录挂载（推荐复制当前 Compose 的长格式、`create_host_path: false`），启动前创建 `secrets` 目录。保留原数据库挂载，不能用这项替换数据库卷。
 
 核对 `.env`：`OFFICIAL_SESSION_ENCRYPTION_KEY` 用于建立官方连接及新绑定，`MANAGED_PROXY_ENCRYPTION_KEY` 用于保存代理节点。缺失密钥不一定使健康检查失败，但相应业务不可用。只有从未配置过对应密钥、数据库也没有对应密文时，才为缺失项分别生成独立的 32 字节 Base64 密钥（`openssl rand -base64 32`），通过安全编辑器保存；配置过的密钥必须沿用原值，丢失时应找回原备份，不要生成替代值。不要将 `.env` 当脚本 `source` 执行或把密钥贴到日志、聊天、GitHub。
 
@@ -96,40 +102,44 @@ MANAGED_PROXY_ALLOW_PRIVATE_NODES: "${MANAGED_PROXY_ALLOW_PRIVATE_NODES:-false}"
 bash start.sh up
 ```
 
-启用 HTTPS 或服务器浏览器的部署使用下一节完整的组合命令，不能用只读取基础配置的 `start.sh up` 代替。不要重跑 `init`、用 `.env.example` 替换真实 `.env`、更换数据库密码/JWT/任何加密密钥，或执行 `docker compose down -v`。
+启用 HTTPS 的部署使用下一节完整的组合命令，不能用只读取基础配置的 `start.sh up` 代替。不要重跑 `init`、用 `.env.example` 替换真实 `.env`、更换数据库密码/JWT/任何加密密钥，或执行 `docker compose down -v`。
 
 升级失败时先保持停写并检查日志。**不可假定把两个镜像换回 `0.3.11` 就安全回退**；表结构和绑定/退出策略已经改变。优先修复前向升级；需要恢复旧版本时，应在停写状态下由数据库管理员恢复升级前数据库及匹配的 `.env`、配置和旧镜像，明确接受备份之后数据的损失，再验证业务。不要自动 `flyway repair` 或跳过迁移校验。
 
-## HTTPS 与服务器网页登录（可选）
+## 私有授权预置
 
-普通后端镜像来自 `runtime` 目标，**不含 Chromium**。服务器网页登录使用独立的 `0.3.19-browser` 镜像及本目录的 `compose.web-login.yaml`；不要使用上一层包含 `build.target` 的源码部署 overlay。HTTP 与 HTTPS 均需这套浏览器镜像和安全参数，HTTPS overlay 是可选的传输策略。
+管理员界面提供“使用预置授权”和授权文件导入。预置通过运行时文件提供，开发、测试与发布使用同一功能，不根据 profile 隐藏入口。预置仅在管理员主动提交时验证并保存，不会自动绑定账户或执行官方 OAuth 登录。
 
-在部署目录取得以下附加文件，与基础 `compose.yaml` 放在同一层：
+源码与 registry Compose 均把同目录 `./secrets` 只读挂载为 `/run/secrets`，固定设置 `OFFICIAL_AUTHORIZATION_PRESET_FILE=/run/secrets/official-authorization.json`。因此主机文件为 `secrets/official-authorization.json`。这是最多 **64 KiB** 的 UTF-8 JSON，必需字段为 `requestedAccountId`、`authorization`，`cookie` 可选；仅接受本模块支持的 Bearer 授权及限定登录 Cookie，不能直接使用完整浏览器导出、curl 命令、Codex `auth.json` 或 API Key。格式和管理员操作见 [官方账户说明](../../../docs/official-account-management.md)。
+
+公开包只提供挂载约定，不含真实授权。没有预置文件、文件无法读取或格式不合要求时，服务可以启动，但页面显示预置不可用，仍可选择自己的授权文件导入。状态接口不会回显授权原文；失效凭据仍需正常更新与验证。打开 [ChatGPT 官网](https://chatgpt.com/) 是在用户自己的浏览器操作，跨站限制使本系统不能仅靠跳转读取官网 Cookie。
+
+容器后端以 **UID/GID 10001** 运行，必须能遍历 `secrets` 目录并读取预置文件。初始化创建的空目录为 0700；放入私有文件后，部署者应为 UID 10001 授予最小权限。例如支持 POSIX ACL 的 Linux 可在部署目录对这两个精确路径执行：
+
+```bash
+setfacl -m u:10001:rx secrets
+setfacl -m u:10001:r secrets/official-authorization.json
+```
+
+ACL 不改变现有 owner。没有 ACL 支持时请按主机权限策略配置该目录与该文件，确保其他普通用户不能读取；不要对整个项目、数据库卷、证书目录递归 `chown` 或 `chmod`。脚本不自动调整既有权限。文件换成新的 inode 后须重新确认权限。rootless Docker 或用户命名空间重映射需要按实际映射后的 UID 设置。
+
+真实文件不得进入 Git、Docker context、镜像层、网页资源或公开归档；仓库已忽略 `secrets/`，根 `.dockerignore` 排除所有 `**/secrets`。不要把凭据直接写入 Compose、`.env.example` 或命令行。私有部署文件单独传递和加密备份；`backup` 只包含数据库与 `.env`，不自动复制这份预置。
+
+## HTTPS（可选）
+
+HTTP 与 HTTPS 使用相同镜像、预置和文件导入。需要强制 HTTPS 时，在部署目录取得 `compose.https.yaml` 和 `nginx.https.conf`（对应版本公开发布后可按以下方式下载）：
 
 ```bash
 (
   set -e
-  qg_base="https://raw.githubusercontent.com/3240665200/Codex-Quota-Guard/server-v0.3.19/deploy/docker"
+  qg_base="https://raw.githubusercontent.com/3240665200/Codex-Quota-Guard/server-v0.3.20/deploy/docker"
   curl -fSL --fail-early --remote-name-all \
-    "$qg_base/registry/compose.web-login.yaml" \
-    "$qg_base/chromium-seccomp.json" \
     "$qg_base/compose.https.yaml" \
     "$qg_base/nginx.https.conf"
-  mkdir -p licenses
-  curl -fSL "$qg_base/licenses/README.md" -o licenses/README.md
-  curl -fSL "$qg_base/licenses/playwright-LICENSE" -o licenses/playwright-LICENSE
 )
 ```
 
-HTTP 浏览器模式保留 `.env` 中的 `PUBLIC_ORIGIN=http://服务器IP:8080`，不需要证书或 `TLS_CERT_DIRECTORY`，执行：
-
-```bash
-docker compose --project-name codex-quota-guard --env-file .env -f compose.yaml -f compose.web-login.yaml config --quiet
-docker compose --project-name codex-quota-guard --env-file .env -f compose.yaml -f compose.web-login.yaml up -d --no-build --pull always --wait --wait-timeout 240
-docker compose --project-name codex-quota-guard --env-file .env -f compose.yaml -f compose.web-login.yaml ps
-```
-
-推荐的 HTTPS 模式另外准备可由容器内非 root 网页进程读取的可信 TLS 证书，目录内包含 `fullchain.pem` 和 `privkey.pem`。证书目录通过只读挂载提供，不放进镜像或 Git。使用安全编辑器在原 `.env` 中设置：
+准备可由容器内非 root Nginx 进程读取的可信证书，目录内包含 `fullchain.pem` 和 `privkey.pem`。证书目录只读挂载，不进入镜像或 Git。用安全编辑器在原 `.env` 设置：
 
 ```dotenv
 PUBLIC_ORIGIN=https://quota.example.com
@@ -137,19 +147,16 @@ TLS_CERT_DIRECTORY=/etc/codex-quota-guard/tls
 HTTPS_BIND=0.0.0.0
 ```
 
-域名需解析到服务器并放行 443；`TLS_CERT_DIRECTORY` 必须是实际存在的绝对路径。此 HTTPS overlay 在容器内终止 TLS、覆盖可信转发头，并将 `APP_REQUIRE_HTTPS=true` 设为只接受 HTTPS；HTTP 业务入口重定向 HTTPS。不要只修改该值而不配置可信反向代理链。
+域名需解析到服务器并放行 443；`TLS_CERT_DIRECTORY` 是实际存在的绝对路径。HTTPS overlay 在网页容器终止 TLS、覆盖可信转发头，显式设置 `APP_REQUIRE_HTTPS=true` 并把 HTTP 业务入口重定向 HTTPS。仅修改 `PUBLIC_ORIGIN` 不会建立 TLS 入口。
 
 ```bash
-docker compose --project-name codex-quota-guard --env-file .env -f compose.yaml -f compose.web-login.yaml -f compose.https.yaml config --quiet
-docker compose --project-name codex-quota-guard --env-file .env -f compose.yaml -f compose.web-login.yaml -f compose.https.yaml up -d --no-build --pull always --wait --wait-timeout 240
-docker compose --project-name codex-quota-guard --env-file .env -f compose.yaml -f compose.web-login.yaml -f compose.https.yaml ps
+mkdir -p secrets
+docker compose --project-name codex-quota-guard --env-file .env -f compose.yaml -f compose.https.yaml config --quiet
+docker compose --project-name codex-quota-guard --env-file .env -f compose.yaml -f compose.https.yaml up -d --no-build --pull always --wait --wait-timeout 240
+docker compose --project-name codex-quota-guard --env-file .env -f compose.yaml -f compose.https.yaml ps
 ```
 
-仅需 HTTPS、不启用服务器浏览器时，从这三条命令中移除 `-f compose.web-login.yaml`。后续启动、升级、查看日志和停止应用都使用同样的组合；`start.sh` 只读取基础 `compose.yaml`，不会自动加载 overlay。`bash start.sh backup` 仍可备份同一项目的 PostgreSQL 与 `.env`，overlay 和证书需另外备份。
-
-浏览器模式保留非 root、`cap_drop: ALL`、只读根文件系统和 `no-new-privileges`，通过 `chromium-seccomp.json` 保持 Chromium 命名空间沙箱。该配置基于 Playwright 派生，只增加子用户命名空间沙箱所需的 `chroot` 系统调用许可，不授予容器 `CAP_SYS_CHROOT`；出处、修改记录与 Apache-2.0 许可保留在 `licenses/`。不要添加 `--no-sandbox`、privileged、SYS_ADMIN 或公开 Chromium 调试端口。宿主机须允许非特权用户命名空间，兼容性需在目标服务器验证；后端限制 2 GiB 内存、256 MiB 共享内存、512 MiB 临时目录，建议整机至少 4 GiB 可用内存。
-
-传输策略与浏览器隔离独立：允许 HTTP 不会关闭沙箱、上游 TLS 校验或管理员权限检查。HTTP 风险提示不会额外阻止操作，管理员仍须本人完成官方验证码或人机验证；当前邮箱登录支持不代表支持外部 SSO，也不能保证官方接受服务器网络。重启会令未完成的浏览器任务失效。
+后续启动、升级、日志和停止使用同样的组合；`start.sh` 只读取基础 `compose.yaml`，不会自动加载 overlay。`bash start.sh backup` 仍可备份同一项目的 PostgreSQL 与 `.env`，证书、overlay 和预置需另外加密备份。
 
 ## 日常操作
 
@@ -162,6 +169,6 @@ bash start.sh backup
 bash start.sh stop
 ```
 
-`stop` 停止全部服务但保留数据库卷；`.env` 与备份含敏感信息，不要公开。原电脑的数据不会自动迁入服务器。健康检查只验证进程、认证入口和数据库基本存活，不代替真实登录、绑定、官方连接、邮箱或代理连通性验收。
+`stop` 停止全部服务但保留数据库卷；`.env`、私有预置与备份含敏感信息，不要公开。原电脑的数据不会自动迁入服务器。健康检查只验证进程、认证入口和数据库基本存活，不代替真实登录、绑定、官方连接、邮箱或代理连通性验收。
 
-基础分发包包含 `compose.yaml`、`start.sh`、`deploy.sh`、`.env.example`、`init-db.sql` 和本说明。组装时从上一层复制公共脚本/模板；可选功能按上文添加 overlay、seccomp、Nginx 配置及许可证。不要分发真实 `.env`、证书私钥或数据库。
+基础分发包包含 `compose.yaml`、`start.sh`、`deploy.sh`、`.env.example`、`init-db.sql` 和本说明。组装时从上一层复制公共脚本/模板；可选 HTTPS 按上文添加 overlay 和 Nginx 配置。公开包不得带入真实 `.env`、官方授权预置、证书私钥或数据库。

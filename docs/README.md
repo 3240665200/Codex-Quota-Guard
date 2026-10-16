@@ -5,6 +5,7 @@
 ## 服务器部署
 
 - [Docker Hub 拉取部署（推荐，无需源码）](../deploy/docker/registry/README.md)
+- [官方账户授权、私有预置与会话管理](official-account-management.md)
 - [离线镜像部署](../deploy/docker/offline/README.md)
 - [Linux Docker 源码构建部署](../deploy/docker/README.md)
 

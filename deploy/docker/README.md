@@ -4,27 +4,17 @@
 
 桌面程序、本地 Java 和 Rust 统计服务仍安装在用户电脑，**不在服务器容器内运行**。
 
-Linux amd64 的后端/网页 `0.3.19` 和可选后端 `0.3.19-browser` 已发布，源码标签为 `server-v0.3.19`；旧 `0.3.18` 镜像保持可用。只想拉取镜像时使用[registry 部署说明](./registry/README.md)，本页的 `--build` 命令用于源码部署。桌面源码版本仍为 `0.3.18`，配套桌面端需 0.3.14+（建议 0.3.18）；本次不更新桌面或新增安装包 Release。
+当前配置面向 Linux amd64 的统一后端/网页 `0.3.20`，只有普通 `runtime` 后端，无浏览器变体。本轮本地构建不表示已公开推送；公开拉取前请确认对应镜像及源码标签已发布。只想拉取镜像时使用[registry 部署说明](./registry/README.md)，本页的 `--build` 命令用于源码部署。桌面源码版本仍为 `0.3.18`，配套桌面端需 0.3.14+（建议 0.3.18）；本次不更新桌面或新增安装包 Release。
 
-## 服务器网页登录（可选）
+## 官方授权预置与文件导入
 
-管理页支持在网页中操作服务器独立浏览器，完成官方登录并由后台获取限定 Cookie。HTTP 与 HTTPS 均可使用；HTTP 会明文传输密码、授权及浏览器输入，推荐 HTTPS。默认普通后台镜像不安装浏览器，启用网页浏览器需使用下面的 overlay。
+开发、测试和发布使用相同授权功能，不按环境或协议隐藏操作。管理员可在“官方账户 → 账户管理 → 授权与会话”使用服务器预置授权，或选择已有的授权 JSON 文件导入；可在自己的浏览器打开 [ChatGPT 官网](https://chatgpt.com/) 完成正常登录。单纯打开官网不能让本系统读取跨站 Cookie，也不会自动完成 OAuth 授权。
 
-源码构建的 HTTP 浏览器模式组合两个配置（Compose 2.24.4+），保留 `.env` 中的 HTTP `PUBLIC_ORIGIN`，不需要 TLS 证书：
+后端保留 sing-box，镜像不包含 Chromium，不需要额外 seccomp、用户命名空间或浏览器容器权限。私有预置只在运行时读取，不写入镜像层或前端构建产物；配置、权限与更新方法见 [私有授权预置](./registry/README.md#私有授权预置)。
 
-```sh
-cd deploy/docker
-docker compose --env-file .env -f compose.yaml -f compose.web-login.yaml config --quiet
-docker compose --env-file .env -f compose.yaml -f compose.web-login.yaml up -d --build --wait
-```
+源码与 registry Compose 都将同目录下的 `./secrets` 只读挂载为 `/run/secrets`，并固定注入 `OFFICIAL_AUTHORIZATION_PRESET_FILE=/run/secrets/official-authorization.json`。初始化和启动会创建缺失的空目录，不生成凭据、不修改既有目录或文件的所有者。没有预置文件时后台可以启动，页面显示预置不可用，仍可导入授权文件。直接调用 Compose 时先执行 `mkdir -p secrets`。
 
-需要强制 HTTPS 时，先按下文配置 `TLS_CERT_DIRECTORY`、可信证书和 HTTPS `PUBLIC_ORIGIN`，再在以上两条命令中追加 `-f compose.https.yaml`（放在 `config` 或 `up` 前）。所有模式都保留现有数据库及加密密钥。浏览器目标增加 Chromium 和中文字体，后台内存上限 2 GiB、共享内存 256 MiB、临时目录 512 MiB，最多两个临时浏览器；建议整机至少 4 GiB 可用内存。后续操作继续传入所选全部 overlay；`deploy.sh up` 只读取基础 Compose。
-
-`chromium-seccomp.json` 基于 Playwright v1.64.0 派生，出处、修改记录及 Apache-2.0 许可位于 `licenses/`。它保留默认拒绝策略，额外为 Chromium 子用户命名空间沙箱允许 `chroot` 系统调用，不授予容器 `CAP_SYS_CHROOT`；仍搭配非 root、capabilities 全部移除及 no-new-privileges。不要关闭浏览器沙箱、使用 privileged/SYS_ADMIN 或公开调试端口。宿主机需允许非特权用户命名空间；Docker/内核兼容仍需在目标服务器验证。
-
-Cookie 登录目前支持邮箱方式；外部 SSO 会明确提示不支持。官方验证码、人机验证仍由管理员本人完成，不能保证官方接受所有服务器网络。无论页面还是测试都不代替用户登录。新子菜单为“官方账户 → 账户管理 / 会话管理”。V28 扩展任务来源和管理员版本信息，不清除旧授权；部署重启会使未完成的服务器浏览器任务失效。
-
-普通 `runtime` 镜像不含 Chromium，不能仅通过增加环境变量获得浏览器。拉取部署使用已发布的 `0.3.19-browser` 及 [registry 专用 overlay](./registry/compose.web-login.yaml)，其中不包含 `build` 配置。基础 `APP_REQUIRE_HTTPS=false` 允许 HTTP 和 HTTPS 官方管理操作，不限 localhost；HTTPS overlay 设置为 `true` 时仍只接受 HTTPS。页面提示 HTTP 风险但不因协议禁用操作；上游官方 TLS 校验、密钥加密、鉴权及沙箱不变。
+HTTP 和 HTTPS 均支持上述功能。基础 `APP_REQUIRE_HTTPS=false` 允许两种协议；可选 HTTPS overlay 显式设为 `true` 并将 HTTP 重定向到 HTTPS。协议策略只影响传输，不提供另一套业务功能。
 
 ## 1. 准备服务器
 
@@ -34,7 +24,7 @@ Cookie 登录目前支持邮箱方式；外部 SSO 会明确提示不支持。�
 - 将**完整项目源码**上传服务器，保留 `apps/`、根目录的包清单/锁文件及 `deploy/docker/`；不要只上传这一个脚本。也不需要上传 `node_modules`、`target`、本机私密配置或 Windows 安装包。
 - 防火墙/云安全组只需放行选定的网站 HTTP/HTTPS 入口端口，并尽量限制访问来源。PostgreSQL 5432、Java 内部 8080 不单独映射到宿主机。
 
-> 基础配置使用 IP + HTTP，不重定向 HTTPS。HTTP 会明文传输密码、系统令牌、官方授权、浏览器输入及邮箱验证码；推荐通过可选 HTTPS 入口保护传输。
+> 基础配置使用 IP + HTTP，不重定向 HTTPS。HTTP 会明文传输密码、系统令牌、官方授权及邮箱验证码；推荐通过可选 HTTPS 入口保护传输。
 
 ## 2. 首次初始化并启动
 
@@ -88,7 +78,7 @@ bash deploy/docker/deploy.sh up
 
 容器配置 `unless-stopped`：Docker 服务开机运行时会恢复容器；手动 `stop` 后不会自行恢复，需再次 `up`。数据库持久卷默认名 `codex-quota-guard_pgdata`。日志每个容器最多保留 3 份、每份 10 MB；长期审计请另做日志归档。
 
-`backup` 生成 `deploy/docker/backups/<时间>-<随机后缀>/`，内含 `database.dump` 和 `deployment.env`。目录仅当前用户可访问；备份失败只留下 `.incomplete.*`，不会被标记为成功备份。**备份含邮箱、官方会话、代理密文及其解密密钥，必须加密离线保存，不能发到聊天或上传 GitHub。** 脚本不自动清理旧备份，请监控磁盘空间；overlay、证书与自定义配置需另行备份。
+`backup` 生成 `deploy/docker/backups/<时间>-<随机后缀>/`，内含 `database.dump` 和 `deployment.env`。目录仅当前用户可访问；备份失败只留下 `.incomplete.*`，不会被标记为成功备份。**备份含邮箱、官方会话、代理密文及其解密密钥，必须加密离线保存，不能发到聊天或上传 GitHub。** 脚本不自动清理旧备份，请监控磁盘空间；私有预置文件、overlay、证书与自定义配置需另行加密备份。
 
 ## 4. 修改端口、访问地址
 
@@ -119,15 +109,15 @@ docker compose --env-file .env -f compose.yaml -f compose.https.yaml config --qu
 docker compose --env-file .env -f compose.yaml -f compose.https.yaml up -d --build --wait
 ```
 
-同时启用服务器网页登录时，在这两条 HTTPS 命令中加入 `-f compose.web-login.yaml`（放在 `config` 或 `up` 前）。后续操作必须携带相同 overlay；`deploy.sh up` 不自动加载 HTTPS 配置。该模式将 HTTP 业务入口重定向到 HTTPS；数据库、后端与浏览器调试端口不对外发布。若使用宝塔/1Panel/其他外部反代，需建立可信转发链；仅修改 `PUBLIC_ORIGIN` 不会启用 TLS，仅设 `APP_REQUIRE_HTTPS=true` 而未提供可信 HTTPS 入口会拒绝 HTTP 或产生重定向问题。
+直接执行上述命令前先确认 `secrets` 目录存在。后续操作必须携带相同 HTTPS overlay；`deploy.sh up` 不自动加载 HTTPS 配置。该模式将 HTTP 业务入口重定向到 HTTPS；数据库与后端端口不对外发布。若使用宝塔/1Panel/其他外部反代，需建立可信转发链；仅修改 `PUBLIC_ORIGIN` 不会启用 TLS，仅设 `APP_REQUIRE_HTTPS=true` 而未提供可信 HTTPS 入口会拒绝 HTTP 或产生重定向问题。
 
 ## 5. 升级与迁移现有数据
 
 **现有电脑的数据不会自动出现在服务器。** 新卷会创建空库；如需保留原用户、团队、流水和邮箱配置，必须迁移旧数据库，不能只复制 JAR 或 Windows 的 `.clixml` 文件。
 
-从 `0.3.18` 升级到本次 `0.3.19` **没有新增数据库迁移**，不更新桌面客户端；按所选 HTTP/HTTPS 模式同时更新后端与管理网页，保留原 `.env`、数据库和全部密钥，并先备份。HTTP 浏览器用两个配置，强制 HTTPS 浏览器用三个配置；详见[拉取部署升级说明](./registry/README.md#从-0318-升级)。
+从 `0.3.18/0.3.19` 升级到本次 `0.3.20` **没有新增数据库迁移**，不更新桌面客户端；先备份，同时更新后端与管理网页，保留原 `.env`、数据库和全部密钥。启动命令移除 `-f compose.web-login.yaml`，不再选择 `browser-runtime` 或 `-browser` 镜像；HTTPS 部署继续使用 `-f compose.https.yaml`。直接使用 Compose 时先创建空 `secrets` 目录。详见[拉取部署升级说明](./registry/README.md#从-0318-或-0319-升级)。
 
-从 `0.3.11` 升级到本次 `0.3.19` 会执行 **V22–V30**。**V29 迁移前必须停止所有旧后端、队列 worker、定时任务及其他写入副本，禁止新旧 writer 混跑。** 先保存当前 Git 提交/版本、镜像及配置，在维护窗口停止应用、保留 PostgreSQL 运行，然后运行 `backup` 保存原数据库和 `.env`；确认备份成功后再更新源码、合并配置并执行所选组合的 `up`。
+从 `0.3.11` 升级到本次 `0.3.20` 会执行 **V22–V30**。**V29 迁移前必须停止所有旧后端、队列 worker、定时任务及其他写入副本，禁止新旧 writer 混跑。** 先保存当前 Git 提交/版本、镜像及配置，在维护窗口停止应用、保留 PostgreSQL 运行，然后运行 `backup` 保存原数据库和 `.env`；确认备份成功后再更新源码、合并配置并执行所选组合的 `up`。
 
 例如在 `deploy/docker` 中先执行 `docker compose --env-file .env -f compose.yaml stop web backend`（如已有 overlay，同样带上全部 `-f` 参数），再执行 `bash deploy.sh backup`。其他机器或非 Compose 方式启动的旧写入进程也要停止。不要先使用会停止全部容器的 `deploy.sh stop`，否则备份时数据库不可用。
 
@@ -148,6 +138,6 @@ Flyway 默认开启迁移和校验，历史 V9 包含旧托管凭证表删除，
 - `healthz` 只检测 Nginx；后端检查验证 HTTP 认证链存活、数据库另用 `pg_isready`。这些探针不验证真实登录、业务查询或邮箱连通；部署后仍须用自己的管理员账户完成一次登录和测试邮箱配置。
 - 邮件监听失败：确认 Linux 服务器可访问邮件服务商，已有 `.env` 邮箱密钥与数据库匹配。容器时区为 UTC，浏览器按本地时间显示。
 
-开发者可在仓库执行 `node --test deploy/docker/tests/*.test.mjs`（需要 Node、Bash、OpenSSL，仅用于测试，不是部署依赖）。设置 `COMPOSE_BINARY` 为独立 `docker-compose` 可执行文件的完整路径后，还会通过实际 Compose 解析器检查 registry 基础/浏览器的 HTTP 与 HTTPS，以及源码浏览器两种模式；这些检查仅运行 `config`，使用合成配置，不启动容器。其他脚本测试使用模拟 Docker，不连接真实数据库或邮箱，**不等于 Docker 镜像构建和容器运行通过**。
+开发者可在仓库执行 `node --test deploy/docker/tests/*.test.mjs`（需要 Node、Bash、OpenSSL，仅用于测试，不是部署依赖）。设置 `COMPOSE_BINARY` 为独立 `docker-compose` 可执行文件的完整路径后，还会通过实际 Compose 解析器检查源码与 registry 的 HTTP/HTTPS 四种组合、相同预置挂载和既有数据卷；这些检查仅运行 `config`，使用合成配置，不启动容器。其他脚本测试使用模拟 Docker，不连接真实数据库或邮箱，**不等于 Docker 镜像构建和容器运行通过**。
 
 部署配置参考：[Docker Compose 启动等待](https://docs.docker.com/reference/cli/docker/compose/up/)、[环境变量优先级](https://docs.docker.com/compose/how-tos/environment-variables/envvars-precedence/)、[官方镜像清单](https://github.com/docker-library/official-images/tree/master/library)。基础镜像按明确版本系列选取、未使用 `latest`，系列标签仍会随安全补丁更新；需严格复现时应另外记录并固定镜像 digest。

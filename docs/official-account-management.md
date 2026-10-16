@@ -10,19 +10,15 @@
 
 ## 管理员操作流程
 
-1. 通过 HTTP 或 HTTPS 登录本系统管理后台，推荐 HTTPS。允许 HTTP 的部署不因远程地址禁用功能；HTTP 页面会提示密码、授权与浏览器输入可能明文传输。
+1. 通过 HTTP 或 HTTPS 登录本系统管理后台，推荐 HTTPS。允许 HTTP 的部署保留相同功能，页面会提示密码与导入的授权可能明文传输。
 2. 如需代理，在“代理节点”添加节点或导入订阅内容／HTTPS 订阅链接。
-3. 在“官方账户 → 账户管理 → 授权与会话”选择访问代理，发起服务器网页登录。无需安装或打开 Quota Guard 桌面客户端。
-4. 管理网页显示服务器独立浏览器的画面。管理员亲自在官方页面输入账号、密码和验证码，支持鼠标、滚动、键盘及中文粘贴。当前版本支持官方邮箱登录；外部 Google、Microsoft、Apple 等 SSO 跳转会明确提示暂不支持，不会放开任意网站。官方人机验证仍由用户处理，不能保证所有账号或服务器网络都能通过。
-5. 官网登录可能跳回首页；可点击“打开官方会话页”导航至固定安全页面。当成功的官方账户查询及限定 Cookie 已被捕获后，点击“完成登录并保存”。这只是准备提交，不代表后台已验证成功。
-6. 后台先使用候选授权验证账户身份与会话响应，再在同一事务中核对当前管理员、任务状态、原连接版本及绑定身份，最后加密保存。验证失败保留原授权，不将失败候选覆盖旧连接。成功更新授权会按现有规则轮换连接修订号，原设备绑定需重新验证或绑定。
-7. Cookie、Authorization、浏览器调试地址不会回传到管理网页；画面与输入仅短期内存使用，不落截图文件、不记录密码或输入正文。网页输入实际发生在服务器浏览器中，请仅在自己信任的服务器上使用。
-8. 每位管理员最多一个、单个后台进程最多两个浏览器任务；十分钟到期。关闭网页、切换账户、取消、系统退出登录或管理员权限失效时清理临时环境。保存阶段不能中途取消，过期/失效任务不能覆盖后来的授权。服务重启不会恢复原浏览器或重放输入，待完成任务安全失败，需重新开始。
-9. 服务器浏览器与后台验证都使用明确选择的代理节点；直连表示不使用本软件代理节点，不修改系统网络配置。代理不可用时不会偷偷回退直连。访问受阻时显示错误，不自动重试登出，也不绕过官方验证。
+3. 在“官方账户 → 账户管理 → 授权与会话”选择访问代理。已配置私有预置时可点击“使用预置授权”，无需手工填写 Cookie 或 Authorization；也可以通过“从本机参数文件填入”选择已有授权文件，再明确保存。
+4. 如需正常登录官网，点击“在本机浏览器打开官方登录”，在自己的浏览器访问 [ChatGPT](https://chatgpt.com/) 并完成官方验证。本系统不能仅通过打开官网抓取跨站 Cookie，也不会自动完成 OAuth 登录；在官网登录成功不等于本系统已保存授权。
+5. 授权文件为最多 **64 KiB** 的 UTF-8 JSON，必需 `requestedAccountId`、`authorization`，可选 `cookie`。账户 ID 为 1–160 个字母、数字、下划线或连字符；Authorization 必须是网页登录的 `Bearer …`，最多 16384 字符。Cookie 可省略、为 null 或空白，非空时最多 32768 字符，只允许 `__Secure-next-auth.session-token` 及其 1–3 位数字分块，不能重复，不接受挑战 Cookie。它不是邮箱密码、API Key、完整浏览器导出、curl 命令或 Codex `auth.json`。页面也兼容原有三段标签文本文件；服务器预置只接受 JSON。
+6. 管理员主动提交后，后台使用候选授权验证账户身份与会话响应，核对既有连接版本和绑定身份后加密保存；失败保留原授权，不能把预置可用状态当成官方验证成功。成功更新授权仍按现有规则轮换连接修订号，原设备绑定需重新验证或绑定。
+7. “官方账户 → 会话管理”是独立工作区：先选择账户，再查看会话、绑定记录和队列，执行预览确认后的登出或解绑。选择的代理故障时不会静默回退直连。
 
-“官方账户 → 会话管理”是独立工作区：先选择账户，再查看会话、绑定记录和队列，执行预览确认后的登出或解绑。旧 `/official-accounts` 地址自动跳到账户管理。原桌面助手接口保留兼容，但不再是网页主登录入口；高级手动导入也仍可使用。
-
-授权导入不是“填写邮箱密码即可自动登录”。不要将 Codex API Key、邮箱授权码或其他账号密码填入此表单。当前接口只使用管理员显式提供的网页登录 `Authorization: Bearer …` 与可选登录 Cookie；Cookie 仅允许 `__Secure-next-auth.session-token` 及其数字分块，不接受挑战 Cookie。完整浏览器导出、curl 命令或 Codex auth.json 都不是此表单的输入格式。不要将真实凭据粘贴到聊天、日志或仓库。
+服务器 `0.3.20` 镜像不包含 Chromium，也不在管理页显示远程浏览器画面。开发、测试与发布使用相同预置／导入流程，无环境专属业务开关；既有手工授权导入可继续使用。私有预置通过后台运行时文件读取，状态和保存响应不回显原始秘密。不要把真实凭据粘贴到聊天、日志、仓库或公开包。
 
 删除本系统保存的授权，只删除本系统连接记录，不调用官网退出。不同的真实官方账号不能无提示覆盖已验证的连接，必须先明确解除本地连接。
 
@@ -33,7 +29,7 @@
 - URI 按行排列的订阅内容，以及 Base64 包装的同类内容；HTTPS 订阅 URL 为手动、一次性抓取导入，不持续订阅、不自动刷新已绑定节点。
 - 本轮不接受完整 Clash YAML、sing-box JSON、任意分流规则、链式代理、插件、跳过证书验证或未支持的传输参数。遇到未知参数明确拒绝，不悄悄丢弃。
 
-所有节点均通过独立 sing-box 1.13.14 子进程提供有期限的 loopback 入口。配置经 stdin 传递，不落盘明文、不放在命令行。普通官方接口用途仍只允许 `chatgpt.com:443`；服务器浏览器用途另有固定的官方登录/静态资源/验证码 HTTPS 域名白名单及十分钟租期，拒绝其他目标。即使直连，浏览器也经过受限的本机入口。应用层仍验证官方 TLS 证书，未关闭浏览器沙箱或同源限制。内核没有 TUN 权限，不修改系统代理，不对外开放代理或 CDP 端口。已选节点故障时不会回退直连。
+所有节点均通过独立 sing-box 1.13.14 子进程提供有期限的 loopback 入口。配置经 stdin 传递，不落盘明文、不放在命令行。官方接口用途只允许 `chatgpt.com:443`；应用层仍验证官方 TLS 证书。内核没有 TUN 权限，不修改系统代理，不对外开放代理端口；已选节点故障时不会回退直连。用户自己的浏览器网络由用户管理，不会因后台选择代理而自动改变。
 
 订阅抓取只允许 HTTPS、公网地址、禁止重定向，并限制响应大小、数量及总耗时。代理服务器自身默认也限制公网；只有管理员通过服务器配置明确开启 `MANAGED_PROXY_ALLOW_PRIVATE_NODES=true` 后，才能使用私有网络代理端点，订阅 URL 不受此例外影响。
 
@@ -53,15 +49,11 @@ MANAGED_PROXY_ALLOW_PRIVATE_NODES=false
 
 缺少密钥时相应功能不可用；缺少官方会话密钥还会阻止建立官方连接及新绑定，不能用健康检查通过判断额度业务完整可用。授权、登录 Cookie、官方快照和代理配置均加密保存；页面/API 不回显秘密。普通用户无权访问管理接口。HTTP 支持不改变这些鉴权和存储规则。
 
-服务器浏览器还需显式启用并配置已安装的 Chromium/Chrome/Edge 可执行文件：
+私有预置由 `OFFICIAL_AUTHORIZATION_PRESET_FILE` 指向运行时 JSON 文件。Docker 默认路径是 `/run/secrets/official-authorization.json`，对应主机 `./secrets/official-authorization.json`；源码运行时可显式指定自己的私有文件路径。该设置只提供文件位置，不包含秘密，文件内容不能写进环境变量、前端构建或镜像。
 
-```dotenv
-WEB_LOGIN_BROWSER_ENABLED=true
-WEB_LOGIN_BROWSER_EXECUTABLE=/usr/lib/chromium/chrome
-WEB_LOGIN_BROWSER_HEADLESS=true
-```
+没有预置或文件不可用时后端仍可启动，页面显示预置不可用，文件导入仍然可用。文件原始字节最多 64 KiB，提交时重新读取并验证；拒绝未知字段、重复字段、尾随 JSON、非法 UTF-8、控制字符和非字符串字段（可选 Cookie 可为 null）。页面读取后预置若发生变化，提交会拒绝旧修订号，需刷新后确认。文件可用不代表凭据未过期或官方接口可达。预置由管理员显式使用，不自动建立连接或绑定。
 
-默认不开启。每次任务使用独立临时目录，绝不读取服务器上已有的日常浏览器 profile；浏览器子进程不继承数据库密码、JWT 或加密密钥。`HEADLESS=true` 表示不显示服务器原生窗口，画面仍由管理网页显示，不表示自动完成登录。多副本部署还需单独设计任务亲和与集群容量，本版按单后台进程提供服务。
+容器 UID 10001 必须能遍历挂载目录并读取文件。部署脚本只创建缺失的空目录，不修改原有文件 owner；可对精确目录与文件授予 ACL，详见[私有预置和权限说明](../deploy/docker/registry/README.md#私有授权预置)。预置与数据库密钥是不同材料，更新预置不应重置加密密钥。
 
 ## Docker、HTTP 与 HTTPS
 
@@ -70,15 +62,16 @@ WEB_LOGIN_BROWSER_HEADLESS=true
 - <https://github.com/SagerNet/sing-box/tree/v1.13.14>
 - <https://github.com/SagerNet/sing-box/blob/v1.13.14/LICENSE>
 
-服务器 `0.3.19` 已发布，基础后端/网页标签为 `0.3.19`，浏览器后端为 `0.3.19-browser`，配套源码标签为 `server-v0.3.19`。已有 `0.3.18` 标签保持不变；本次不更新桌面，数据库仍为 V30，无新增迁移。镜像拉取部署见[registry 说明](../deploy/docker/registry/README.md)，下列 `--build` 命令用于源码部署。
+服务器目标版本为 `0.3.20`，后端和网页均使用同版普通镜像，无浏览器后端。本轮构建不等于已公开推送；在线拉取前确认镜像与 `server-v0.3.20` 标签已发布。旧版标签保持不变；本次不更新桌面，数据库仍为 V30，无新增迁移。镜像拉取部署见[registry 说明](../deploy/docker/registry/README.md)，下列 `--build` 命令用于源码部署。
 
-传输策略由现有 `app.require-https` 统一控制。基础 Compose 设置 `APP_REQUIRE_HTTPS=false`，允许 HTTP 和 HTTPS 的官方授权导入、会话操作、代理节点管理和服务器网页登录，不再限于 localhost；HTTP 前端仅提示风险，不禁用操作。**HTTP 会明文传输本系统密码、官方授权及浏览器输入，推荐 HTTPS。** 官方上游、代理订阅与邮箱各自原有的 TLS 校验要求不变。
+传输策略由现有 `app.require-https` 统一控制。基础 Compose 设置 `APP_REQUIRE_HTTPS=false`，允许 HTTP 和 HTTPS 的私有预置授权、文件导入、会话操作和代理节点管理，不再限于 localhost；HTTP 前端仅提示风险，不禁用操作。**HTTP 会明文传输本系统密码与导入的官方授权，推荐 HTTPS。** 官方上游、代理订阅与邮箱各自原有的 TLS 校验要求不变。
 
-HTTP 服务器浏览器仍需 Chromium 镜像/构建目标和全部沙箱参数，在 `deploy/docker` 下执行（Compose 2.24.4+）：
+HTTP 使用基础 Compose，在 `deploy/docker` 下执行：
 
 ```sh
-docker compose --env-file .env -f compose.yaml -f compose.web-login.yaml config --quiet
-docker compose --env-file .env -f compose.yaml -f compose.web-login.yaml up -d --build --wait
+mkdir -p secrets
+docker compose --env-file .env -f compose.yaml config --quiet
+docker compose --env-file .env -f compose.yaml up -d --build --wait
 ```
 
 保留 `.env` 的 `PUBLIC_ORIGIN=http://服务器IP:8080`。HTTP 模式不需要 TLS 证书。若选择强制 HTTPS，可使用 TLS 入口配置：
@@ -94,7 +87,7 @@ docker compose --env-file .env -f compose.yaml -f compose.https.yaml up -d --bui
 
 HTTPS overlay 将 `APP_REQUIRE_HTTPS=true` 设为只接受 HTTPS，并把 HTTP 业务入口重定向到 HTTPS。只开放网站端口，后台和数据库不直接暴露公网。TLS 入口覆盖转发头，后端只接受受控反代流量，不能信任客户端自行填写的 `X-Forwarded-Proto`。使用其他反代时按同样原则配置，不通过伪造请求头绕过 HTTPS 策略。
 
-HTTPS 源码部署同时启用服务器浏览器时，在上述命令中增加 `-f compose.web-login.yaml`（放在 `config` 或 `up` 前）。浏览器目标包含 Chromium 与中文字体，HTTP 和 HTTPS 都使用非 root、`cap_drop: ALL`、`no-new-privileges`、只读根文件系统及附带的 Chromium user-namespace seccomp 配置，不使用 `privileged`、`SYS_ADMIN`、`--no-sandbox`。需要宿主内核允许非特权用户命名空间；无法启动时检查环境，不关闭沙箱或公开 CDP 端口。详见[浏览器部署](../deploy/docker/README.md#服务器网页登录可选)。普通后端镜像不含浏览器。
+HTTP 与 HTTPS 均使用同一 `runtime` 目标、sing-box 和只读预置挂载，保持非 root、`cap_drop: ALL`、`no-new-privileges` 及只读根文件系统，无浏览器 seccomp 或额外权限。升级旧浏览器部署时，从命令中移除 `-f compose.web-login.yaml`，不再使用 `-browser` 镜像；保留原数据库、密钥与所选 HTTPS 配置，见[部署升级说明](../deploy/docker/registry/README.md#从-0318-或-0319-升级)。
 
 ## 本机测试服务的生命周期
 
@@ -164,8 +157,8 @@ Windows 本机预览由 `scripts/windows/start-admin-preview.ps1` 启动。启�
 
 ## 0.3.14 手动验收
 
-1. 保留原加密密钥；本节记录 0.3.14 的 V24–V27 功能验收，当前 0.3.19 后台已包含 V30。当前基础部署允许远程 HTTP 与 HTTPS，推荐 HTTPS；启用 HTTPS overlay 的部署仍强制 HTTPS。客户端至少使用 0.3.14，旧客户端没有设备门禁请求头；新增管理员解绑和选中登出不需要重新打包该客户端。
-2. 管理员发起官方网页登录，在新版桌面助手完成登录，检查后台真实账户身份和会话。
+1. 保留原加密密钥；本节记录 0.3.14 的 V24–V27 功能验收，当前 0.3.20 后台已包含 V30。当前基础部署允许远程 HTTP 与 HTTPS，推荐 HTTPS；启用 HTTPS overlay 的部署仍强制 HTTPS。客户端至少使用 0.3.14，旧客户端没有设备门禁请求头；新增管理员解绑和选中登出不需要重新打包该客户端。
+2. 当前版本由管理员使用预置授权或导入授权文件，检查后台验证后的账户身份和会话；不需要服务器浏览器或桌面助手代为获取网页 Cookie。
 3. 给测试用户配置团队、官方账户与有效设备登记。用测试用户登录桌面，确认只有“登录辅助”可用；申请绑定并等待“可登录”。
 4. 在官方 Codex 完成本次登录，回客户端点识别，核对唯一候选后确认。后台应显示对应用户、设备 UUID 和 Session ID；门禁重新验证通过后开放其他菜单。
 5. 另用两个测试设备检查排队；测试超时/取消/多个候选时，应拒绝误绑定并要求管理员核对。管理员登出操作会真实影响官方会话，请先核对预览与警告，不要在正在工作的会话上随意测试。
