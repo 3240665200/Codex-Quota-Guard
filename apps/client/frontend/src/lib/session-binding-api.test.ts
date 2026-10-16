@@ -85,7 +85,7 @@ describe("desktop binding transport", () => {
     await api.sessionBindingStart();
     expect(native).toHaveBeenLastCalledWith("session_binding_start");
   });
-  it("rejects malformed and mismatched task IDs, unknown secret fields, and invalid browser choices", async () => {
+  it("rejects malformed and mismatched task IDs and unknown secret fields", async () => {
     await expect(
       api.sessionBindingAction("https://evil.invalid", "confirm"),
     ).rejects.toThrow();
@@ -100,10 +100,5 @@ describe("desktop binding transport", () => {
       accessToken: "must-never-reach-renderer",
     });
     await expect(api.sessionBindingStart()).rejects.toThrow();
-    native.mockClear();
-    await expect(
-      api.officialLoginHelperStart(id, "CMD" as "EDGE"),
-    ).rejects.toThrow();
-    expect(native).not.toHaveBeenCalled();
   });
 });

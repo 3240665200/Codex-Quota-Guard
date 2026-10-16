@@ -46,10 +46,6 @@ pub(crate) enum ApiRoute {
     SessionBindingCurrent,
     SessionBindingStart,
     SessionBindingAttempt { id: Uuid, action: BindingAction },
-    OfficialLoginHelperJobs,
-    OfficialLoginHelperStatus,
-    OfficialLoginHelperStart { id: Uuid },
-    OfficialLoginHelperCancel,
     MeterRuntimeLogs,
     CodexRateLimits,
     SystemLogin,
@@ -79,11 +75,6 @@ impl ApiRoute {
             Self::SessionBindingStart | Self::SessionBindingAttempt { .. } => {
                 "/api/v1/session-bindings/attempts"
             }
-            Self::OfficialLoginHelperJobs | Self::OfficialLoginHelperStart { .. } => {
-                "/api/v1/official-login-helper/jobs"
-            }
-            Self::OfficialLoginHelperStatus => "/api/v1/official-login-helper/status",
-            Self::OfficialLoginHelperCancel => "/api/v1/official-login-helper/cancel",
             Self::MeterRuntimeLogs => "/api/v1/usage/logs",
             Self::CodexRateLimits => "/api/v1/codex/rate-limits",
             Self::SystemLogin => "/api/v1/session/login",
@@ -142,8 +133,6 @@ pub(crate) enum BackendError {
     InvalidBindingTask,
     #[error("本设备绑定请求被拒绝，请联系管理员检查设备归属、官方账户与队列状态。")]
     BindingRejected,
-    #[error("官方登录助手暂不可用，请检查当前管理员身份、浏览器安装和后台任务。")]
-    OfficialLoginHelperRejected,
     #[error("邮箱或密码不正确，请检查后重试。")]
     InvalidCredentials,
     #[error(
@@ -325,23 +314,6 @@ impl BackendState {
         .await
     }
 
-    pub(crate) async fn official_login_helper_start(
-        &self,
-        job_id: &str,
-        browser: &str,
-    ) -> Result<Value, BackendError> {
-        let route = official_login_helper_route(job_id)?;
-        if !matches!(browser, "EDGE" | "CHROME") {
-            return Err(BackendError::OfficialLoginHelperRejected);
-        }
-        self.json_request(
-            Method::POST,
-            route,
-            Some(serde_json::json!({ "browser": browser })),
-        )
-        .await
-    }
-
     async fn json_request(
         &self,
         method: Method,
@@ -476,24 +448,10 @@ fn classify_response(route: ApiRoute, status: StatusCode) -> BackendError {
         ApiRoute::SessionBindingCurrent
             | ApiRoute::SessionBindingStart
             | ApiRoute::SessionBindingAttempt { .. }
-            | ApiRoute::OfficialLoginHelperJobs
-            | ApiRoute::OfficialLoginHelperStatus
-            | ApiRoute::OfficialLoginHelperStart { .. }
-            | ApiRoute::OfficialLoginHelperCancel
     ) {
         return match status {
             StatusCode::UNAUTHORIZED => BackendError::SystemLoginRequired,
             StatusCode::SERVICE_UNAVAILABLE => BackendError::ControlPlaneUnavailable,
-            _ if matches!(
-                route,
-                ApiRoute::OfficialLoginHelperJobs
-                    | ApiRoute::OfficialLoginHelperStatus
-                    | ApiRoute::OfficialLoginHelperStart { .. }
-                    | ApiRoute::OfficialLoginHelperCancel
-            ) =>
-            {
-                BackendError::OfficialLoginHelperRejected
-            }
             _ => BackendError::BindingRejected,
         };
     }
@@ -570,11 +528,6 @@ pub(crate) fn session_binding_route(
 ) -> Result<ApiRoute, BackendError> {
     let id = Uuid::parse_str(attempt_id).map_err(|_| BackendError::InvalidBindingTask)?;
     Ok(ApiRoute::SessionBindingAttempt { id, action })
-}
-
-pub(crate) fn official_login_helper_route(job_id: &str) -> Result<ApiRoute, BackendError> {
-    let id = Uuid::parse_str(job_id).map_err(|_| BackendError::InvalidBindingTask)?;
-    Ok(ApiRoute::OfficialLoginHelperStart { id })
 }
 
 fn request_graceful_shutdown(process: &mut RunningBackend) -> bool {
@@ -718,7 +671,6 @@ fn fixed_url(port: u16, route: ApiRoute) -> String {
         ApiRoute::UsageAnalytics { days } => format!("{base}?days={days}"),
         ApiRoute::LoginAssistanceListener { id } => format!("{base}/{id}"),
         ApiRoute::SessionBindingAttempt { id, action } => format!("{base}/{id}{}", action.suffix()),
-        ApiRoute::OfficialLoginHelperStart { id } => format!("{base}/{id}/start"),
         _ => base,
     }
 }
@@ -742,7 +694,7 @@ fn validate_usage_days(days: u32) -> Result<(), BackendError> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn session_binding_and_helper_routes_are_fixed_and_identifiers_are_validated() {
+    fn session_binding_routes_are_fixed_and_identifiers_are_validated() {
         let id = "11111111-1111-4111-8111-111111111111";
         let route = super::session_binding_route(id, super::BindingAction::Detect).unwrap();
         assert_eq!(
@@ -753,11 +705,6 @@ mod tests {
             super::session_binding_route("https://example.com", super::BindingAction::Confirm)
                 .is_err()
         );
-        assert_eq!(
-            super::fixed_url(43117, super::ApiRoute::OfficialLoginHelperJobs),
-            "http://127.0.0.1:43117/api/v1/official-login-helper/jobs"
-        );
-        assert!(super::official_login_helper_route("../secret").is_err());
     }
     use super::*;
 

@@ -124,16 +124,8 @@ describe("device binding access gate", () => {
           accountLabel: null,
           recipientEmail: null,
         };
-      if (command === "official_login_helper_jobs") return [];
       if (command === "autostart_status")
         return { supported: true, enabled: false };
-      if (command === "official_login_helper_status")
-        return {
-          jobId: null,
-          state: "IDLE",
-          errorCode: null,
-          accountName: null,
-        };
       throw new Error("unsupported");
     });
   });
@@ -142,9 +134,12 @@ describe("device binding access gate", () => {
     await screen.findByRole("heading", { name: "监听登录邮件" });
     expect(mock).toHaveBeenCalledWith("session_binding_current");
     expect(mock).toHaveBeenCalledWith("login_assistance_info");
+    expect(screen.getByRole("button", { name: "设置" })).toBeDisabled();
     expect(screen.queryByRole("region", { name: "官方登录助手" })).toBeNull();
     expect(
-      mock.mock.calls.some(([name]) => name.startsWith("official_login_helper_")),
+      mock.mock.calls.some(([name]) =>
+        name.startsWith("official_login_helper_"),
+      ),
     ).toBe(false);
   });
   it("does not reset an already verified gate when opening its saved binding record", async () => {
@@ -276,11 +271,6 @@ describe("device binding access gate", () => {
         ["quota_overview", "usage_status", "codex_rate_limits"].includes(name),
       ),
     ).toBe(false);
-  });
-  it("makes the admin official helper available before binding", async () => {
-    show("ADMIN");
-    await screen.findByRole("heading", { name: "官方登录助手" });
-    expect(screen.getByRole("button", { name: "设置" })).toBeDisabled();
   });
   it("locks the current page immediately when access is revoked or cannot be checked", async () => {
     access = { allowed: true, bindingId, reason: null };

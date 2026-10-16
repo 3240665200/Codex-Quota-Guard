@@ -388,38 +388,6 @@ async fn session_binding_cancel(
 ) -> CommandResult<Value> {
     binding_action(state, attempt_id, BindingAction::Cancel).await
 }
-#[tauri::command]
-async fn official_login_helper_jobs(state: State<'_, BackendState>) -> CommandResult<Value> {
-    state
-        .json(Method::GET, ApiRoute::OfficialLoginHelperJobs)
-        .await
-        .map_err(command_error)
-}
-#[tauri::command]
-async fn official_login_helper_status(state: State<'_, BackendState>) -> CommandResult<Value> {
-    state
-        .json(Method::GET, ApiRoute::OfficialLoginHelperStatus)
-        .await
-        .map_err(command_error)
-}
-#[tauri::command]
-async fn official_login_helper_start(
-    job_id: String,
-    browser: String,
-    state: State<'_, BackendState>,
-) -> CommandResult<Value> {
-    state
-        .official_login_helper_start(&job_id, &browser)
-        .await
-        .map_err(command_error)
-}
-#[tauri::command]
-async fn official_login_helper_cancel(state: State<'_, BackendState>) -> CommandResult<Value> {
-    state
-        .json(Method::POST, ApiRoute::OfficialLoginHelperCancel)
-        .await
-        .map_err(command_error)
-}
 
 #[tauri::command]
 async fn system_logout(state: State<'_, BackendState>) -> CommandResult<()> {
@@ -528,10 +496,6 @@ fn main() {
             session_binding_detect,
             session_binding_confirm,
             session_binding_cancel,
-            official_login_helper_jobs,
-            official_login_helper_status,
-            official_login_helper_start,
-            official_login_helper_cancel,
             server_config_get,
             server_config_save
         ]);

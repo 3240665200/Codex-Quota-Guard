@@ -123,7 +123,9 @@ describe("Dashboard", () => {
       ]) {
         fireEvent.click(screen.getByRole("button", { name: page }));
         await screen.findByRole("heading", { name: heading });
-        expect(screen.queryByRole("region", { name: "官方登录助手" })).toBeNull();
+        expect(
+          screen.queryByRole("region", { name: "官方登录助手" }),
+        ).toBeNull();
         expect(
           invokeMock.mock.calls.some(([name]) =>
             name.startsWith("official_login_helper_"),

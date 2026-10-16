@@ -28,16 +28,14 @@ public class ClientBindingGateConfiguration implements WebMvcConfigurer {
         if ("GET".equals(method)) {
             return java.util.Set.of("/api/v1/status", "/api/v1/session/current", "/api/v1/session/access",
                     "/api/v1/login-assistance", "/api/v1/login-assistance/listeners/current", "/api/v1/login-assistance/events",
-                    "/api/v1/session-bindings", "/api/v1/official-login-helper/jobs",
-                    "/api/v1/official-login-helper/status").contains(path)
+                    "/api/v1/session-bindings").contains(path)
                     || path.matches("/api/v1/login-assistance/listeners/" + uuid)
                     || path.matches("/api/v1/session-bindings/attempts/" + uuid);
         }
         if ("DELETE".equals(method)) return path.matches("/api/v1/login-assistance/listeners/" + uuid);
         return "POST".equals(method) && (java.util.Set.of("/api/v1/session/login", "/api/v1/session/logout",
                 "/api/v1/usage/pair", "/api/v1/system/shutdown", "/api/v1/login-assistance/listeners",
-                "/api/v1/session-bindings/attempts", "/api/v1/official-login-helper/cancel").contains(path)
-                || path.matches("/api/v1/session-bindings/attempts/" + uuid + "/(prepare|detect|confirm|cancel)")
-                || path.matches("/api/v1/official-login-helper/jobs/" + uuid + "/start"));
+                "/api/v1/session-bindings/attempts").contains(path)
+                || path.matches("/api/v1/session-bindings/attempts/" + uuid + "/(prepare|detect|confirm|cancel)"));
     }
 }

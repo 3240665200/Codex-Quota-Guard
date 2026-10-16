@@ -29,7 +29,6 @@ import { AppIcon } from "@/components/app-icon";
 import { ClientSettings } from "@/components/client-settings";
 import { LoginAssistance } from "@/components/login-assistance";
 import { SessionBinding } from "@/components/session-binding";
-import { OfficialLoginHelper } from "@/components/official-login-helper";
 import { subscribeToAssistanceEvents } from "@/lib/assistance-events";
 import {
   api,
@@ -1114,29 +1113,13 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
               )
             ) : visibleWorkspace === "login-assistance" ? (
               showAssistance ? (
-                <>
-                  <LoginAssistance
-                    key={`assistance:${session.user!.id}`}
-                    userId={session.user!.id}
-                  />
-                  {session.user?.role === "ADMIN" ? (
-                    <OfficialLoginHelper
-                      key={`official:${session.user.id}`}
-                      userId={session.user.id}
-                    />
-                  ) : null}
-                </>
+                <LoginAssistance
+                  key={`assistance:${session.user!.id}`}
+                  userId={session.user!.id}
+                />
               ) : null
             ) : bindingAllowed && visibleWorkspace === "settings" ? (
-              <>
-                <ClientSettings />
-                {session.user?.role === "ADMIN" ? (
-                  <OfficialLoginHelper
-                    key={session.user.id}
-                    userId={session.user.id}
-                  />
-                ) : null}
-              </>
+              <ClientSettings />
             ) : bindingAllowed ? (
               <UsageActivityPanel
                 key={session.user!.id}
