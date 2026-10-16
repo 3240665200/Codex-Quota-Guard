@@ -224,7 +224,7 @@ mod native_security {
         // Account SIDs only, with no filesystem metacharacters or aliases.
         if !common.is_absolute()
             || sid.len() > 184
-            || !sid.starts_with("S-1-5-21-")
+            || !(sid.starts_with("S-1-5-21-") || sid.starts_with("S-1-12-1-"))
             || sid
                 .split('-')
                 .skip(4)
