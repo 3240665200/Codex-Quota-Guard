@@ -12,9 +12,43 @@ import java.net.InetAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 
 class ProxySubscriptionFetcherTest {
+    @Test
+    void limitsAllSubscriptionDownloadsToTwoAndReleasesPermitsAfterCompletion() throws Exception {
+        var connected = new CountDownLatch(2);
+        var release = new CountDownLatch(1);
+        var executor = Executors.newFixedThreadPool(3);
+        ProxyEndpointPolicy policy = new ProxyEndpointPolicy(host -> new InetAddress[] {InetAddress.getByName("8.8.8.8")});
+        ProxySubscriptionFetcher fetcher = new ProxySubscriptionFetcher(policy, (host, pinned, port, active) -> {
+            connected.countDown();
+            try { if (!release.await(10, TimeUnit.SECONDS)) throw new java.io.IOException(); }
+            catch (InterruptedException error) { Thread.currentThread().interrupt(); throw new java.io.IOException(); }
+            return new FakeSocket("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+        });
+        try {
+            var first = executor.submit(() -> fetcher.fetch("https://one.example.com/list"));
+            var second = executor.submit(() -> fetcher.fetch("https://two.example.com/list"));
+            assertThat(connected.await(5, TimeUnit.SECONDS)).isTrue();
+            var third = executor.submit(() -> fetcher.fetch("https://three.example.com/list"));
+            assertThatThrownBy(() -> third.get(2, TimeUnit.SECONDS)).isInstanceOf(ExecutionException.class)
+                    .cause().isInstanceOf(DomainException.class)
+                    .satisfies(error -> assertThat(((DomainException) error).getCode()).isEqualTo("PROXY_SUBSCRIPTION_BUSY"));
+            release.countDown();
+            assertThat(first.get(5, TimeUnit.SECONDS)).isEqualTo("ok");
+            assertThat(second.get(5, TimeUnit.SECONDS)).isEqualTo("ok");
+            assertThat(fetcher.fetch("https://four.example.com/list")).isEqualTo("ok");
+        } finally {
+            release.countDown(); executor.shutdownNow(); executor.awaitTermination(5, TimeUnit.SECONDS);
+            fetcher.destroy(); policy.destroy();
+        }
+    }
+
     @Test
     void fetchesFromValidatedPinnedAddressAndClosesConnection() throws Exception {
         InetAddress address = InetAddress.getByAddress(new byte[] {8, 8, 8, 8});

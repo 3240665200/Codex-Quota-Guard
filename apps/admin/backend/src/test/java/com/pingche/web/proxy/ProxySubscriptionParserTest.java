@@ -12,6 +12,19 @@ class ProxySubscriptionParserTest {
     private final ProxyNodeParser parser = new ProxyNodeParser(json);
 
     @Test
+    void preservesReservedCharactersInClashBasicProxyCredentials() {
+        var definition = parser.parseSubscription("proxies: [{name: Credentials, type: socks5, server: proxy.example.com, port: 1080, username: 'synthetic:user%@', password: 'synthetic:pass%@'}]").get(0);
+        var config = json.readTree(definition.outboundJson());
+        assertThat(config.get("username").asString()).isEqualTo("synthetic:user%@");
+        assertThat(config.get("password").asString()).isEqualTo("synthetic:pass%@");
+        for (String scheme : new String[] {"http", "https", "socks5"}) {
+            var uri = parser.parse(scheme + "://synthetic%3Auser%25%40:synthetic%3Apass%25%40@proxy.example.com:8443#Credentials");
+            assertThat(json.readTree(uri.outboundJson()).get("username").asString()).isEqualTo("synthetic:user%@");
+            assertThat(json.readTree(uri.outboundJson()).get("password").asString()).isEqualTo("synthetic:pass%@");
+        }
+    }
+
+    @Test
     void importsOnlyClashProxyDefinitionsAndMapsSupportedTransportFields() {
         var definitions = parser.parseSubscription("""
                 mixed-port: 7890
