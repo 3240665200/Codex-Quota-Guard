@@ -127,6 +127,7 @@ pub(crate) use native_security::ProtectedEvidenceChannel;
 /// SYSTEM may publish evidence. Keep all directory handles pinned through each
 /// read/write, so an unprivileged junction/rename cannot redirect a checked path.
 #[cfg(windows)]
+#[allow(dead_code)] // The desktop publishes; the service consumes this shared module.
 mod native_security {
     use super::*;
     use std::{
@@ -595,7 +596,7 @@ mod native_security {
         use super::*;
 
         #[test]
-        fn pinned_directory_blocks_rename_and_reparse_write_access() {
+        fn pinned_directory_blocks_rename_and_data_write_access() {
             let directory =
                 std::env::temp_dir().join(format!("guard-pin-{}", uuid::Uuid::new_v4()));
             fs::create_dir(&directory).unwrap();
@@ -627,7 +628,12 @@ mod native_security {
                     drop(file);
                     fs::remove_file(&output).unwrap();
                 }
-                Err(_) => assert!(!output.exists()),
+                Err(error) => {
+                    // A filtered administrator token cannot assign the BA
+                    // owner; a broken SDDL/API must not silently pass this test.
+                    assert!(matches!(error.raw_os_error(), Some(5 | 1307)));
+                    assert!(!output.exists());
+                }
             }
             fs::remove_dir(directory).unwrap();
         }
