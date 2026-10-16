@@ -406,6 +406,30 @@ mod native_security {
             result.is_ok() && removed
         }
     }
+
+    #[cfg(test)]
+    mod output_tests {
+        use super::*;
+
+        #[test]
+        fn evidence_output_is_created_with_privileged_owner_or_is_rejected() {
+            let directory = std::env::temp_dir().join(format!("guard-output-{}", uuid::Uuid::new_v4()));
+            fs::create_dir(&directory).unwrap();
+            let output = directory.join("proof.tmp");
+            match create_private_output(&output) {
+                Ok(file) => {
+                    let summary = security(&file).unwrap();
+                    assert_eq!(summary.owner, ADMINS);
+                    assert!(summary.protected);
+                    assert!(validate_security(&summary, true).is_ok());
+                    drop(file);
+                    fs::remove_file(&output).unwrap();
+                },
+                Err(_) => assert!(!output.exists()),
+            }
+            fs::remove_dir(directory).unwrap();
+        }
+    }
 }
 
 #[cfg(test)]
