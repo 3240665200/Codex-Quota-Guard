@@ -149,6 +149,26 @@ test('up refuses missing images or the wrong architecture before starting', (t) 
   assert.equal(f.calls().some((call) => call.includes('up')), false);
 });
 
+test('offline upgrade creates missing secrets without replacing a private preset', (t) => {
+  const f = fixture(t);
+  assert.equal(f.run(['up']).status, 0);
+  const secrets = path.join(f.bundle, 'secrets');
+  assert.ok(existsSync(secrets));
+  const preset = path.join(secrets, 'official-authorization.json');
+  writeFileSync(preset, 'synthetic-private-preset');
+  const result = f.run(['up']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(preset, 'utf8'), 'synthetic-private-preset');
+  assert.doesNotMatch(result.stdout + result.stderr, /synthetic-private-preset/);
+});
+
+test('offline up rejects a non-directory secrets path before starting', (t) => {
+  const f = fixture(t);
+  writeFileSync(path.join(f.bundle, 'secrets'), 'must-stay');
+  assert.notEqual(f.run(['up']).status, 0);
+  assert.equal(f.calls().some((call) => call.includes('up')), false);
+});
+
 test('up rejects malformed, duplicate, missing or extra image references without evaluating them', (t) => {
   const f = fixture(t);
   const invalid = [images.slice(0, 2), [...images, 'extra/example:test'], [images[0], images[0], images[2]],

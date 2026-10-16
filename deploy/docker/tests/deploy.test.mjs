@@ -90,6 +90,34 @@ test('init is idempotent and cannot replace an existing configuration', (t) => {
   assert.equal(readFileSync(f.envPath, 'utf8'), before);
 });
 
+test('init and upgrade up prepare an empty secrets directory without replacing private presets or keys', (t) => {
+  const f = fixture(t);
+  const before = f.init();
+  const secrets = path.join(f.deployment, 'secrets');
+  assert.ok(existsSync(secrets));
+  assert.deepEqual(readdirSync(secrets), []);
+  rmSync(secrets, { recursive: true });
+  assert.equal(f.run(['up']).status, 0);
+  assert.ok(existsSync(secrets), 'upgrade must create the missing directory');
+  const preset = path.join(secrets, 'official-authorization.json');
+  writeFileSync(preset, 'synthetic-private-preset');
+  assert.equal(f.run(['init']).status, 0);
+  assert.equal(f.run(['up']).status, 0);
+  assert.equal(readFileSync(preset, 'utf8'), 'synthetic-private-preset');
+  assert.equal(readFileSync(f.envPath, 'utf8'), before);
+});
+
+test('up rejects a non-directory secrets path without starting containers', (t) => {
+  const f = fixture(t);
+  f.init();
+  const secrets = path.join(f.deployment, 'secrets');
+  if (existsSync(secrets)) rmSync(secrets, { recursive: true });
+  writeFileSync(secrets, 'must-stay');
+  assert.notEqual(f.run(['up']).status, 0);
+  assert.equal(readFileSync(secrets, 'utf8'), 'must-stay');
+  assert.doesNotMatch(f.commands(), / up /);
+});
+
 test('init aborts random generator failure without publishing empty secrets', (t) => {
   const f = fixture(t);
   const result = f.run(['init', 'http://192.0.2.10:8080', 'admin@example.com'], {
