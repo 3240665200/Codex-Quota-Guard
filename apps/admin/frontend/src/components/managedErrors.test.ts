@@ -1,6 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { managedErrorMessage } from './managedErrors';
 
+it.each([
+  ['OFFICIAL_PROXY_REQUIRED', '请为当前官方账户选择一个已启用的代理节点并重新保存授权，所有官方请求均禁止直连。'],
+  ['PROXY_NODE_INVALID', '节点信息无效，请检查名称、协议、服务器、端口及用户名和密码。'],
+  ['PROXY_NODE_UNAVAILABLE', '此账户保存的代理节点不可用，请检查节点状态或重新选择并保存。'],
+  ['PROXY_NODE_DISABLED', '此代理节点已停用，请启用节点后再测试或使用。'],
+  ['PROXY_CONNECT_TIMEOUT', '代理连接超时，请检查服务器地址、端口和节点网络后重试。'],
+  ['PROXY_TEST_RESPONSE_INVALID', '未能验证节点测试返回的出口信息，请检查节点后重新测试。'],
+])('explains proxy failure %s without exposing server details', (code, message) => {
+  expect(managedErrorMessage({ code, message: 'fixture-private-proxy-password' })).toBe(message);
+});
+
 it.each(['OFFICIAL_HTTPS_REQUIRED', 'PROXY_HTTPS_REQUIRED', 'SESSION_BINDING_HTTPS_REQUIRED'])(
   'explains the server transport policy for %s without claiming HTTP is always forbidden', (code) => {
     const message = managedErrorMessage({ code, status: 403, message: 'synthetic-private-detail' });
