@@ -3,16 +3,44 @@ package com.codexquotaguard.backend.officiallogin;
 import static org.assertj.core.api.Assertions.*;
 import com.sun.net.httpserver.HttpServer;
 import java.net.*;
+import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import tools.jackson.databind.ObjectMapper;
 
 class HttpOfficialLoginGatewayTest {
-    @Test void rejectsNonSecureRemoteAndCredentialBearingOrigins() {
-        for(String url : new String[]{"http://example.test","http://localhost:8080","https://user:secret@example.test","https://example.test/path","https://example.test?token=synthetic"})
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "http://198.51.100.10:8080", "http://control.example.test:8080",
+            "http://localhost:8080", "http://[2001:db8::10]:8080",
+            "https://control.example.test", "https://198.51.100.10:8443",
+            "http://127.0.0.1:8080", "https://control.example.test/"
+    })
+    void startsLocalGatewayWithHttpAndHttpsServerOrigins(String origin) {
+        new ApplicationContextRunner()
+                .withUserConfiguration(HttpOfficialLoginGateway.class)
+                .withBean(ObjectMapper.class, ObjectMapper::new)
+                .withPropertyValues("quota-guard.control-plane.base-url=" + origin)
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).hasSingleBean(OfficialLoginGateway.class);
+                });
+    }
+
+    @Test void rejectsMalformedAndCredentialBearingOrigins() {
+        for(String url : new String[]{"ftp://example.test", "file:///tmp/server", "https://user:secret@example.test", "http://user:secret@example.test", "https://example.test/path", "https://example.test?token=synthetic", "http://example.test#fragment", "http://example.test:0", "http://example.test:65536"})
             assertThatThrownBy(() -> new HttpOfficialLoginGateway(url,new ObjectMapper())).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test void rejectsHttpClientsThatAutomaticallyFollowRedirects() {
+        var http = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.ALWAYS).build();
+        assertThatThrownBy(() -> new HttpOfficialLoginGateway("http://control.example.test", new ObjectMapper(), http))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test void sendsOwnedJobActionsWithoutRedirectsAndKeepsSecretsOutOfUrls() throws Exception {
