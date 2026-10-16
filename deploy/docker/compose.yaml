@@ -79,8 +79,9 @@ services:
     security_opt: [no-new-privileges:true]
     mem_limit: 1g
     healthcheck:
-      # 401 is the expected unauthenticated response, not a database probe.
-      test: [CMD-SHELL, "test \"$$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 3 http://127.0.0.1:8080/api/v1/users/me)\" = 401"]
+      # Authentication returns 401, or redirects with 302 in explicit HTTPS-only mode.
+      # This fixed local probe verifies transport/authentication, not the database.
+      test: [CMD-SHELL, "code=$$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 3 http://127.0.0.1:8080/api/v1/users/me) && { test \"$$code\" = 401 || test \"$$code\" = 302; }"]
       interval: 10s
       timeout: 5s
       retries: 12
