@@ -42,6 +42,22 @@ class MailDnsResolverTest {
         verifyNoInteractions(client);
     }
 
+    @Test void explicitPublicLookupUsesTheBoundedResolverWithoutRepeatingSystemDns() throws Exception {
+        reply(200, payload(1, record(HOST, 1, "1.1.1.1")));
+        MailDnsResolver resolver = resolver(host -> { throw new AssertionError("Public lookup must not repeat local DNS"); });
+        assertThat(resolver.resolvePublicDns(HOST)).containsExactly(address("1.1.1.1"));
+        assertThat(requests).hasSize(1);
+        assertThat(requests.get(0).uri().getHost()).isEqualTo("cloudflare-dns.com");
+    }
+
+    @Test void explicitPublicLookupRejectsAddressLiteralsBeforeAnyRequest() {
+        MailDnsResolver resolver = resolver(host -> { throw new AssertionError("Literal must not reach local DNS"); });
+        for (String literal : new String[] {"198.18.0.42", "127.0.0.1", "fdfe:dcba:9876::38", "::1"}) {
+            assertThatThrownBy(() -> resolver.resolvePublicDns(literal)).isInstanceOf(DomainException.class);
+        }
+        verifyNoInteractions(client);
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"10.0.0.1", "127.0.0.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "fc00::1",
             "fdfe:dcba:9876:1::1", "fdfe:dcba:9875:ffff::1", "fdfe:dcbb:9876::1", "fdfd:dcba:9876::1"})

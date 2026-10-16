@@ -1,6 +1,7 @@
 package com.pingche.web.proxy;
 
 import com.pingche.web.auth.DomainException;
+import com.pingche.web.mail.MailDnsResolver;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.util.concurrent.ExecutionException;
@@ -11,25 +12,36 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import org.springframework.beans.factory.DisposableBean;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 
 @Component
 public class ProxyEndpointPolicy implements DisposableBean {
     private final Resolver resolver;
+    private final Resolver publicDns;
     private final Semaphore available = new Semaphore(4);
     private final ExecutorService workers = Executors.newFixedThreadPool(4, runnable -> {
         Thread thread = new Thread(runnable, "managed-proxy-dns"); thread.setDaemon(true); return thread;
     });
 
-    public ProxyEndpointPolicy() { this(InetAddress::getAllByName); }
-    ProxyEndpointPolicy(Resolver resolver) { this.resolver = resolver; }
+    @Autowired
+    public ProxyEndpointPolicy(MailDnsResolver publicDns) {
+        this(InetAddress::getAllByName, publicDns::resolvePublicDns);
+    }
+    ProxyEndpointPolicy(Resolver resolver) {
+        this(resolver, host -> { throw new UnknownHostException(); });
+    }
+    ProxyEndpointPolicy(Resolver resolver, Resolver publicDns) {
+        this.resolver = resolver;
+        this.publicDns = publicDns;
+    }
 
     InetAddress resolve(String value, boolean allowPrivate) {
         String host = ProxyNodeParser.normalizeHost(value);
         if (!available.tryAcquire()) throw blocked();
         Future<InetAddress[]> task = workers.submit(() -> {
-            try { return resolver.resolve(host); }
+            try { return resolveAddresses(host); }
             finally { available.release(); }
         });
         try {
@@ -44,6 +56,26 @@ public class ProxyEndpointPolicy implements DisposableBean {
             Thread.currentThread().interrupt(); throw blocked();
         } catch (ExecutionException | TimeoutException ignored) { throw blocked(); }
         finally { if (!task.isDone()) task.cancel(true); }
+    }
+
+    private InetAddress[] resolveAddresses(String host) throws UnknownHostException {
+        InetAddress[] addresses = resolver.resolve(host);
+        if (addresses == null || addresses.length == 0 || addresses.length > 32) throw blocked();
+        boolean fakeIp = false;
+        boolean otherNonPublic = false;
+        for (InetAddress address : addresses) {
+            if (address == null) throw blocked();
+            if (MailDnsResolver.isDefaultFakeIp(address)) fakeIp = true;
+            else if (!isPublic(address)) otherNonPublic = true;
+        }
+        if (!fakeIp) return addresses;
+        // Never reinterpret literal or ordinary private targets as public DNS names.
+        if (host.matches("[0-9.]+") || host.contains(":") || otherNonPublic) throw blocked();
+        // This runs inside the existing five-second task. Cancellation interrupts DoH and closes its pending request.
+        InetAddress[] resolved = publicDns.resolve(host);
+        if (resolved == null || resolved.length == 0 || resolved.length > 32) throw blocked();
+        for (InetAddress address : resolved) if (address == null || !isPublic(address)) throw blocked();
+        return resolved;
     }
 
     static boolean isPublic(InetAddress address) {

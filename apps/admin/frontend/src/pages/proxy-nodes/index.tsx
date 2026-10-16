@@ -6,8 +6,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { managedErrorMessage } from '../../components/managedErrors';
 import ManagementTransportNotice from '../../components/ManagementTransportNotice';
 import { createProxyNode, deleteProxyNode, isSupportedManagementContext,
-  listProxyNodes, testProxyNode, updateProxyNode } from '../../services/api';
+  listProxyNodes, setProxyNodeEnabled, testProxyNode, updateProxyNode } from '../../services/api';
 import type { ProxyConnectionTest, ProxyNode, ProxyNodeInput } from '../../services/api';
+import SubscriptionManager from './SubscriptionManager';
 
 type NodeForm = ProxyNodeInput & { clearCredentials?: boolean };
 const protocols = ['HTTP', 'HTTPS', 'SOCKS5'] as const;
@@ -25,29 +26,37 @@ export default function ProxyNodesPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState<string | null>(null);
+  const [changing, setChanging] = useState<string | null>(null);
+  const [removing, setRemoving] = useState<string | null>(null);
+  const [subscriptionsOpen, setSubscriptionsOpen] = useState(false);
   const [error, setError] = useState('');
   const [formError, setFormError] = useState('');
   const [testResult, setTestResult] = useState<{ label: string; result: ProxyConnectionTest } | null>(null);
   const active = useRef(true);
+  const pending = useRef(false);
+  const loadRevision = useRef(0);
   const supported = isSupportedManagementContext();
+  const busy = saving || testing !== null || changing !== null || removing !== null;
 
   const load = useCallback(async () => {
+    const revision = ++loadRevision.current;
     setLoading(true);
     try {
       const result = await listProxyNodes();
-      if (active.current) { setNodes(result); setError(''); }
+      if (active.current && revision === loadRevision.current) { setNodes(result); setError(''); }
     } catch (reason) {
-      if (active.current) setError(managedErrorMessage(reason, '代理节点读取失败，请稍后重试。'));
-    } finally { if (active.current) setLoading(false); }
+      if (active.current && revision === loadRevision.current) setError(managedErrorMessage(reason, '代理节点读取失败，请稍后重试。'));
+    } finally { if (active.current && revision === loadRevision.current) setLoading(false); }
   }, []);
   useEffect(() => {
     active.current = true; void load();
-    return () => { active.current = false; };
+    return () => { active.current = false; loadRevision.current += 1; };
   }, [load]);
 
   const clearSecrets = () => form.setFieldsValue({ username: '', password: '' });
   const closeEdit = () => { clearSecrets(); form.resetFields(); setOpen(false); setFormError(''); };
   const edit = (node: ProxyNode | null) => {
+    if (node && (node.sourceSubscriptionId || !protocols.includes(node.protocol as NodeForm['protocol']))) return;
     setEditing(node); setFormError(''); form.resetFields();
     form.setFieldsValue({ label: node?.label ?? '', enabled: node?.enabled ?? true,
       protocol: node ? (protocols.includes(node.protocol as NodeForm['protocol']) ? node.protocol as NodeForm['protocol'] : undefined) : 'HTTP',
@@ -56,9 +65,11 @@ export default function ProxyNodesPage() {
   };
 
   const save = async () => {
-    if (!supported || saving) return;
+    if (!supported || pending.current) return;
     let values: NodeForm;
     try { values = await form.validateFields(); } catch { return; }
+    if (!active.current || pending.current) return;
+    pending.current = true;
     const username = values.username?.trim() ?? '';
     const password = values.password ?? '';
     const body: ProxyNodeInput = { label: values.label.trim(), protocol: values.protocol,
@@ -75,21 +86,24 @@ export default function ProxyNodesPage() {
       if (active.current) setFormError(managedErrorMessage(reason, '节点保存失败，请检查服务器配置后重新输入凭据。'));
     } finally {
       delete values.username; delete values.password; delete body.username; delete body.password;
+      pending.current = false;
       if (active.current) { clearSecrets(); setSaving(false); }
     }
   };
 
   const remove = async (node: ProxyNode) => {
-    if (!supported) return;
+    if (!supported || pending.current) return;
+    pending.current = true; setRemoving(node.id); setError('');
     try {
       await deleteProxyNode(node.id);
       if (active.current) { message.success('代理节点已删除'); await load(); }
     } catch (reason) {
       if (active.current) setError(managedErrorMessage(reason, '代理节点删除失败，请稍后重试。'));
-    }
+    } finally { pending.current = false; if (active.current) setRemoving(null); }
   };
   const test = async (node: ProxyNode) => {
-    if (!supported || !node.enabled || testing !== null) return;
+    if (!supported || !node.enabled || node.sourceMissing || pending.current) return;
+    pending.current = true;
     setTesting(node.id); setTestResult(null); setError('');
     try {
       const result = await testProxyNode(node.id);
@@ -99,12 +113,28 @@ export default function ProxyNodesPage() {
         await load();
         if (active.current) setError(managedErrorMessage(reason, '代理连接测试失败，请检查节点服务。'));
       }
-    } finally { if (active.current) setTesting(null); }
+    } finally { pending.current = false; if (active.current) setTesting(null); }
+  };
+
+  const toggle = async (node: ProxyNode, enabled: boolean) => {
+    if (!supported || pending.current || (enabled && node.sourceMissing)) return;
+    pending.current = true;
+    setChanging(node.id); setError('');
+    try {
+      await setProxyNodeEnabled(node.id, { enabled, version: node.version });
+      if (active.current) { message.success(enabled ? '节点已启用' : '节点已停用'); await load(); }
+    } catch (reason) {
+      if (active.current) setError(managedErrorMessage(reason, '节点状态更新失败，请刷新后重试。'));
+    } finally { pending.current = false; if (active.current) setChanging(null); }
   };
 
   const columns: TableColumnsType<ProxyNode> = [
     { title: '节点名称', dataIndex: 'label', render: (label: string) => <Typography.Text strong>{label}</Typography.Text> },
     { title: '协议', dataIndex: 'protocol', render: (protocol: string) => <Tag>{protocol === 'SHADOWSOCKS' ? 'SS' : protocol}</Tag> },
+    { title: '来源', render: (_, node) => <Space orientation="vertical" size={2}>
+      <Tag>{node.sourceSubscriptionId ? '订阅节点' : '手动节点'}</Tag>
+      {node.sourceMissing ? <Tag color="warning">订阅中已移除</Tag> : null}
+    </Space> },
     { title: '服务器', render: (_, node) => `${node.host.includes(':') ? `[${node.host}]` : node.host}:${node.port}` },
     { title: '出口 IP', dataIndex: 'egressIp', render: (value: string | null) => value || '尚未获取' },
     { title: '出口地区', render: (_, node) => locationText(node) },
@@ -113,23 +143,30 @@ export default function ProxyNodesPage() {
         {node.testStatus === 'CONNECTED' ? '测试成功' : node.testStatus === 'FAILED' ? '测试失败' : '未测试'}</Tag>
       <Typography.Text type="secondary">{dateText(node.testedAt)}</Typography.Text>
     </Space> },
-    { title: '状态', render: (_, node) => <Tag color={node.enabled ? 'success' : 'default'}>{node.enabled ? '启用' : '停用'}</Tag> },
+    { title: '状态', render: (_, node) => <Switch aria-label={`启停 ${node.label}`} checked={node.enabled}
+      checkedChildren="启用" unCheckedChildren="停用" loading={changing === node.id}
+      disabled={!supported || busy || Boolean(node.sourceMissing && !node.enabled)}
+      onChange={(enabled) => void toggle(node, enabled)} /> },
     { title: '节点授权', render: (_, node) => node.hasCredentials ? '已加密保存' : '无需授权' },
     { title: '操作', width: 200, render: (_, node) => <Space size={0}>
-      <Button type="link" aria-label={`测试 ${node.label}`} disabled={!supported || !node.enabled || testing !== null}
+      <Button type="link" aria-label={`测试 ${node.label}`} disabled={!supported || busy || !node.enabled || node.sourceMissing}
         loading={testing === node.id} onClick={() => void test(node)}>测试节点</Button>
-      <Button type="text" aria-label={`编辑 ${node.label}`} icon={<EditOutlined />} disabled={!supported || saving || testing !== null} onClick={() => edit(node)} />
+      <Button type="text" aria-label={`编辑 ${node.label}`} icon={<EditOutlined />}
+        title={node.sourceSubscriptionId ? '订阅节点请通过订阅更新，启停可单独操作' : undefined}
+        disabled={!supported || busy || Boolean(node.sourceSubscriptionId)
+          || !protocols.includes(node.protocol as NodeForm['protocol'])} onClick={() => edit(node)} />
       <Popconfirm title={`删除「${node.label}」？`} description="正在被官方账户使用的节点不可删除。"
         okText="确认删除" cancelText="取消" onConfirm={() => void remove(node)}>
-        <Button type="text" aria-label={`删除 ${node.label}`} danger icon={<DeleteOutlined />} disabled={!supported || testing !== null} />
+        <Button type="text" aria-label={`删除 ${node.label}`} danger icon={<DeleteOutlined />} loading={removing === node.id} disabled={!supported || busy} />
       </Popconfirm>
     </Space> },
   ];
 
-  return <PageContainer title="代理节点" content="管理 HTTP、HTTPS、SOCKS5 代理。每个官方账户独立选择已启用节点，所有官方请求必须经过该账户保存的节点。"
+  return <PageContainer title="代理节点" content="管理手动节点与代理订阅。每个官方账户独立选择单节点或前置 → 出口双节点链路，所有官方请求均经过该账户保存的链路。"
     extra={<Space wrap>
-      <Button icon={<ReloadOutlined />} loading={loading} onClick={() => void load()}>刷新</Button>
-      <Button type="primary" aria-label="添加代理节点" icon={<PlusOutlined />} disabled={!supported || saving || testing !== null} onClick={() => edit(null)}>添加代理节点</Button>
+      <Button icon={<ReloadOutlined />} disabled={busy} loading={loading} onClick={() => void load()}>刷新</Button>
+      <Button disabled={!supported || busy} onClick={() => setSubscriptionsOpen(true)}>管理订阅</Button>
+      <Button type="primary" aria-label="添加代理节点" icon={<PlusOutlined />} disabled={!supported || busy} onClick={() => edit(null)}>添加代理节点</Button>
     </Space>}>
     <Space orientation="vertical" size={16} style={{ width: '100%' }}>
       <ManagementTransportNotice supported={supported} />
@@ -141,6 +178,7 @@ export default function ProxyNodesPage() {
       <Table<ProxyNode> rowKey="id" columns={columns} dataSource={nodes} loading={loading}
         pagination={false} scroll={{ x: 1200 }} locale={{ emptyText: '暂无代理节点，请先添加并测试一个节点。' }} />
     </Space>
+    {subscriptionsOpen ? <SubscriptionManager supported={supported} onClose={() => setSubscriptionsOpen(false)} onChanged={load} /> : null}
     <Modal open={open} title={editing ? '编辑代理节点' : '添加代理节点'} destroyOnHidden
       closable={!saving} mask={{ closable: !saving }} keyboard={!saving} cancelButtonProps={{ disabled: saving }}
       onCancel={() => { if (!saving) closeEdit(); }} onOk={() => void save()} okText="保存" cancelText="取消"

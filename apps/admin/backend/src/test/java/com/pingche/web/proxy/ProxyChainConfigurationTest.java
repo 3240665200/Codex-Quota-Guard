@@ -66,4 +66,43 @@ class ProxyChainConfigurationTest {
                 .isInstanceOfSatisfying(DomainException.class, error -> assertThat(error.getCode()).isEqualTo("PROXY_CHAIN_INVALID"));
         verify(probe, times(1)).test(front, exit);
     }
+
+    @Test void chainTestsBoundConcurrentWorkAndReleaseCapacityAfterCompletion() throws Exception {
+        var nodes=mock(ProxyNodeRepository.class); var node=mock(ProxyNode.class); var probe=mock(ProxyNodeProbe.class);
+        when(nodes.findById(any())).thenReturn(Optional.of(node));when(node.isEnabled()).thenReturn(true);
+        var entered=new java.util.concurrent.CountDownLatch(2);var release=new java.util.concurrent.CountDownLatch(1);
+        when(probe.test(any(),any())).thenAnswer(call -> {entered.countDown();release.await(5,java.util.concurrent.TimeUnit.SECONDS);return new ProxyNodeProbe.Result("1.1.1.1",null,null,null);});
+        var service=new ProxyChainTestService(nodes,probe,Clock.fixed(Instant.EPOCH,ZoneOffset.UTC));
+        var workers=java.util.concurrent.Executors.newFixedThreadPool(2);
+        var first=new ProxyChainTestRequest(UUID.randomUUID(),UUID.randomUUID());
+        try {
+            var one=workers.submit(() -> service.test(first));
+            var two=workers.submit(() -> service.test(new ProxyChainTestRequest(UUID.randomUUID(),UUID.randomUUID())));
+            assertThat(entered.await(3,java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            assertThatThrownBy(() -> service.test(first))
+                    .isInstanceOfSatisfying(DomainException.class,error -> assertThat(error.getCode()).isEqualTo("PROXY_TEST_BUSY"));
+            assertThatThrownBy(() -> service.test(new ProxyChainTestRequest(UUID.randomUUID(),UUID.randomUUID())))
+                    .isInstanceOfSatisfying(DomainException.class,error -> assertThat(error.getCode()).isEqualTo("PROXY_CAPACITY_EXCEEDED"));
+            release.countDown();one.get(5,java.util.concurrent.TimeUnit.SECONDS);two.get(5,java.util.concurrent.TimeUnit.SECONDS);
+            assertThat(service.test(new ProxyChainTestRequest(null,UUID.randomUUID())).connected()).isTrue();
+        } finally {release.countDown();workers.shutdownNow();}
+    }
+
+    @Test void chainTestsBoundRecentPairsAndRejectMissingAndDisabledNodesBeforeProbing() {
+        var nodes=mock(ProxyNodeRepository.class);var node=mock(ProxyNode.class);var probe=mock(ProxyNodeProbe.class);
+        when(nodes.findById(any())).thenReturn(Optional.of(node));when(node.isEnabled()).thenReturn(true);
+        when(probe.test(any(),any())).thenReturn(new ProxyNodeProbe.Result("1.1.1.1",null,null,null));
+        var service=new ProxyChainTestService(nodes,probe,Clock.fixed(Instant.EPOCH,ZoneOffset.UTC));
+        for(int i=0;i<256;i++)service.test(new ProxyChainTestRequest(UUID.randomUUID(),UUID.randomUUID()));
+        assertThatThrownBy(() -> service.test(new ProxyChainTestRequest(UUID.randomUUID(),UUID.randomUUID())))
+                .isInstanceOfSatisfying(DomainException.class,error -> assertThat(error.getCode()).isEqualTo("PROXY_CAPACITY_EXCEEDED"));
+        var other=new ProxyChainTestService(nodes,probe,Clock.fixed(Instant.EPOCH,ZoneOffset.UTC));
+        when(node.isEnabled()).thenReturn(false);
+        assertThatThrownBy(() -> other.test(new ProxyChainTestRequest(null,UUID.randomUUID())))
+                .isInstanceOfSatisfying(DomainException.class,error -> assertThat(error.getCode()).isEqualTo("PROXY_NODE_DISABLED"));
+        when(nodes.findById(any())).thenReturn(Optional.empty());
+        assertThatThrownBy(() -> other.test(new ProxyChainTestRequest(null,UUID.randomUUID())))
+                .isInstanceOfSatisfying(DomainException.class,error -> assertThat(error.getCode()).isEqualTo("PROXY_NODE_UNAVAILABLE"));
+        verify(probe,times(256)).test(any(),any());
+    }
 }

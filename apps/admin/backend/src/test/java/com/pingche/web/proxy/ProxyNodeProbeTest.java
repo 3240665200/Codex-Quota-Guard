@@ -65,6 +65,22 @@ class ProxyNodeProbeTest {
     }
 
     @Test
+    void chainProbeUsesBothNodesWithTheCredentialFreeNodeTestPurpose() {
+        UUID front=UUID.randomUUID();
+        ProxySelector selector=mock(ProxySelector.class);
+        when(gateway.open(front,id,ManagedProxyGateway.Purpose.NODE_TEST)).thenReturn(lease);
+        when(lease.proxySelector()).thenReturn(selector);
+        var probe=new ProxyNodeProbe(gateway,new ObjectMapper(),actual -> {assertThat(actual).isSameAs(selector);return http;});
+        var upstream=response(200,"{\"success\":true,\"ip\":\"1.1.1.1\"}");
+        when(http.sendAsync(any(HttpRequest.class),any(HttpResponse.BodyHandler.class)))
+                .thenReturn(CompletableFuture.completedFuture(upstream));
+        assertThat(probe.test(front,id).egressIp()).isEqualTo("1.1.1.1");
+        verify(gateway).open(front,id,ManagedProxyGateway.Purpose.NODE_TEST);
+        verify(gateway,never()).open(id,ManagedProxyGateway.Purpose.NODE_TEST);
+        verify(lease).close();
+    }
+
+    @Test
     void closesFailedLeaseCancelsTimeoutAndBoundsStreamedBody() throws Exception {
         var probe = probe();
         CompletableFuture<HttpResponse<byte[]>> pending = mock(CompletableFuture.class);

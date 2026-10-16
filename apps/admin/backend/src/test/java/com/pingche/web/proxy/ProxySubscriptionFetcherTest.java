@@ -17,7 +17,11 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 
+@ExtendWith(OutputCaptureExtension.class)
 class ProxySubscriptionFetcherTest {
     @Test
     void limitsAllSubscriptionDownloadsToTwoAndReleasesPermitsAfterCompletion() throws Exception {
@@ -50,7 +54,7 @@ class ProxySubscriptionFetcherTest {
     }
 
     @Test
-    void fetchesFromValidatedPinnedAddressAndClosesConnection() throws Exception {
+    void fetchesFromValidatedPinnedAddressAndClosesConnection(CapturedOutput output) throws Exception {
         InetAddress address = InetAddress.getByAddress(new byte[] {8, 8, 8, 8});
         ProxyEndpointPolicy policy = new ProxyEndpointPolicy(host -> new InetAddress[] {address});
         String body = "https://proxy.example.com:443";
@@ -62,12 +66,56 @@ class ProxySubscriptionFetcherTest {
         try {
             assertThat(fetcher.fetch("https://subscription.example.com/list?token=synthetic-secret")).isEqualTo(body);
             assertThat(observed.get()).isEqualTo(address);
+            assertThat(socket.request.toString(StandardCharsets.US_ASCII))
+                    .contains("\r\nUser-Agent: Codex-Quota-Guard\r\n")
+                    .doesNotContain("\r\nAuthorization:", "\r\nCookie:");
+            assertThat(socket.closed).isTrue();
+        } finally { fetcher.destroy(); policy.destroy(); }
+        assertThat(output.getAll()).doesNotContain("synthetic-secret", "token=");
+    }
+
+    @Test
+    void fakeIpResolutionKeepsTheOriginalHostAndConnectsOnlyToThePinnedPublicAddress() throws Exception {
+        InetAddress address = InetAddress.getByName("1.1.1.1");
+        ProxyEndpointPolicy policy = new ProxyEndpointPolicy(
+                host -> new InetAddress[] {InetAddress.getByName("198.18.0.42")}, host -> new InetAddress[] {address});
+        FakeSocket socket = new FakeSocket("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+        ProxySubscriptionFetcher fetcher = new ProxySubscriptionFetcher(policy, (host, pinned, port, active) -> {
+            assertThat(host).isEqualTo("subscription.example.com");
+            assertThat(pinned).isEqualTo(address);
+            assertThat(port).isEqualTo(443);
+            active.set(socket);
+            return socket;
+        });
+        try {
+            assertThat(fetcher.fetch("https://subscription.example.com/list?token=synthetic-secret")).isEqualTo("ok");
+            assertThat(socket.request.toString(StandardCharsets.US_ASCII))
+                    .startsWith("GET /list?token=synthetic-secret HTTP/1.1\r\nHost: subscription.example.com\r\n");
             assertThat(socket.closed).isTrue();
         } finally { fetcher.destroy(); policy.destroy(); }
     }
 
     @Test
-    void refusesNonHttpsPrivateTargetsRedirectsOversizedOrTruncatedBodies() throws Exception {
+    void blockedPublicDnsAnswersNeverConnectOrExposeSubscriptionTokens() throws Exception {
+        ProxyEndpointPolicy policy = new ProxyEndpointPolicy(
+                host -> new InetAddress[] {InetAddress.getByName("198.18.0.42")},
+                host -> new InetAddress[] {InetAddress.getByName("127.0.0.1")});
+        ProxySubscriptionFetcher fetcher = new ProxySubscriptionFetcher(policy, (host, pinned, port, active) -> {
+            throw new AssertionError("Blocked DNS must not open a socket");
+        });
+        try {
+            assertThatThrownBy(() -> fetcher.fetch("https://subscription.example.com/list?token=synthetic-secret"))
+                    .isInstanceOfSatisfying(DomainException.class, failure -> {
+                        assertThat(failure.getCode()).isEqualTo("PROXY_ENDPOINT_BLOCKED");
+                        assertThat(failure.getMessage()).doesNotContain("synthetic-secret", "subscription.example.com");
+                    });
+            assertThatThrownBy(() -> fetcher.fetch("https://198.18.0.42/list"))
+                    .isInstanceOf(DomainException.class);
+        } finally { fetcher.destroy(); policy.destroy(); }
+    }
+
+    @Test
+    void refusesNonHttpsPrivateTargetsRedirectsOversizedOrTruncatedBodies(CapturedOutput output) throws Exception {
         ProxyEndpointPolicy publicPolicy = new ProxyEndpointPolicy(host -> new InetAddress[] {InetAddress.getByName("8.8.8.8")});
         for (String response : new String[] {
                 "HTTP/1.1 302 Found\r\nLocation: https://127.0.0.1/secret\r\nContent-Length: 0\r\n\r\n",
@@ -85,14 +133,16 @@ class ProxySubscriptionFetcherTest {
         ProxySubscriptionFetcher blocked = new ProxySubscriptionFetcher(privatePolicy, (host, pinned, port, active) -> { throw new AssertionError("Must not connect"); });
         try { assertThatThrownBy(() -> blocked.fetch("https://subscription.example.com/list")).isInstanceOf(DomainException.class); }
         finally { blocked.destroy(); privatePolicy.destroy(); publicPolicy.destroy(); }
+        assertThat(output.getAll()).doesNotContain("synthetic-secret", "token=");
     }
 
     private static final class FakeSocket extends Socket {
         private final byte[] response;
+        private final ByteArrayOutputStream request = new ByteArrayOutputStream();
         private boolean closed;
         FakeSocket(String response) { this.response = response.getBytes(StandardCharsets.US_ASCII); }
         @Override public InputStream getInputStream() { return new ByteArrayInputStream(response); }
-        @Override public OutputStream getOutputStream() { return new ByteArrayOutputStream(); }
+        @Override public OutputStream getOutputStream() { return request; }
         @Override public synchronized void close() { closed = true; }
     }
 }

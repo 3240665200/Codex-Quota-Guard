@@ -265,6 +265,7 @@ export interface OfficialAccountConnection {
   status: OfficialConnectionStatus;
   requestedAccountId: string | null;
   proxyNodeId: string | null;
+  frontProxyNodeId?: string | null;
   hasAuthorization: boolean;
   hasCookie: boolean;
   importedAt: string | null;
@@ -279,6 +280,7 @@ export interface OfficialConnectionInput {
   cookie?: string;
   requestedAccountId: string;
   proxyNodeId: string | null;
+  frontProxyNodeId?: string | null;
   version: number;
 }
 
@@ -328,6 +330,8 @@ export interface ProxyNode {
   port: number;
   enabled: boolean;
   hasCredentials: boolean;
+  sourceSubscriptionId?: string | null;
+  sourceMissing?: boolean;
   createdAt: string;
   updatedAt: string;
   version: number;
@@ -366,6 +370,33 @@ export function isSecureManagementContext(): boolean {
     && ['localhost', '127.0.0.1', '[::1]'].includes(hostname));
 }
 
+export interface ProxyChainInput {
+  frontProxyNodeId?: string | null;
+  proxyNodeId: string;
+}
+export interface ProxyChainTest extends ProxyConnectionTest {
+  frontProxyNodeId: string | null;
+  proxyNodeId: string;
+}
+export interface ProxySubscription {
+  id: string;
+  label: string;
+  hasUrl: boolean;
+  sourceHost: string;
+  nodeCount: number;
+  enabledNodeCount: number;
+  status: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+  refreshedAt: string | null;
+  version: number;
+}
+export interface ProxySubscriptionInput {
+  label: string;
+  url?: string;
+  version?: number;
+}
+
 export interface OfficialAuthorizationPreset {
   available: boolean;
   requestedAccountId: string | null;
@@ -376,6 +407,7 @@ export interface OfficialAuthorizationPreset {
 export interface OfficialAuthorizationPresetInput {
   version: number;
   proxyNodeId: string | null;
+  frontProxyNodeId?: string | null;
   presetRevision: string;
 }
 
@@ -434,6 +466,38 @@ export function deleteProxyNode(id: string): Promise<void> {
 
 export function testProxyNode(id: string): Promise<ProxyConnectionTest> {
   return request(`/api/v1/admin/proxy-nodes/${encodeURIComponent(id)}/test`, { method: 'POST' });
+}
+
+export function setProxyNodeEnabled(id: string, body: { enabled: boolean; version: number }): Promise<ProxyNode> {
+  return request(`/api/v1/admin/proxy-nodes/${encodeURIComponent(id)}/enabled`, { method: 'PUT', body: JSON.stringify(body) });
+}
+
+export function testProxyChain(body: ProxyChainInput): Promise<ProxyChainTest> {
+  return request('/api/v1/admin/proxy-chains/test', { method: 'POST', body: JSON.stringify(body) });
+}
+
+export function saveOfficialAccountProxyChain(id: string, body: ProxyChainInput & { version: number }): Promise<OfficialAccountConnection> {
+  return request(`/api/v1/admin/official-accounts/${encodeURIComponent(id)}/connection/proxy`, { method: 'PUT', body: JSON.stringify(body) });
+}
+
+export function listProxySubscriptions(): Promise<ProxySubscription[]> {
+  return request('/api/v1/admin/proxy-subscriptions');
+}
+
+export function createProxySubscription(body: ProxySubscriptionInput & { url: string }): Promise<ProxySubscription> {
+  return request('/api/v1/admin/proxy-subscriptions', { method: 'POST', body: JSON.stringify(body) });
+}
+
+export function updateProxySubscription(id: string, body: ProxySubscriptionInput & { version: number }): Promise<ProxySubscription> {
+  return request(`/api/v1/admin/proxy-subscriptions/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(body) });
+}
+
+export function refreshProxySubscription(id: string, version: number): Promise<ProxySubscription> {
+  return request(`/api/v1/admin/proxy-subscriptions/${encodeURIComponent(id)}/refresh`, { method: 'POST', body: JSON.stringify({ version }) });
+}
+
+export function deleteProxySubscription(id: string, version: number): Promise<void> {
+  return request(`/api/v1/admin/proxy-subscriptions/${encodeURIComponent(id)}?version=${encodeURIComponent(version)}`, { method: 'DELETE' });
 }
 
 export interface MeterDeviceStatus {

@@ -131,6 +131,40 @@ class ManagedProxyApiIntegrationTest {
                 .andExpect(status().isTooManyRequests());
     }
 
+    @Test
+    void chainTestRequiresAdminAndSupportedTransportAndDoesNotOverwriteNodeMetadata() throws Exception {
+        UUID front=createNode("Chain front"), exit=createNode("Chain exit");
+        String body=json.writeValueAsString(java.util.Map.of("frontProxyNodeId",front,"proxyNodeId",exit));
+        String path="/api/v1/admin/proxy-chains/test";
+        mvc.perform(post(path).secure(true).contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isUnauthorized()).andExpect(header().string("Cache-Control","no-store"));
+        User member=users.saveAndFlush(new User(UUID.randomUUID()+"@example.test","unused","Member"));
+        String memberToken="Bearer "+jwt.create(member.getId(),member.getRole().name(),member.getSessionVersion());
+        mvc.perform(post(path).secure(true).header("Authorization",memberToken).contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isForbidden()).andExpect(header().string("Cache-Control","no-store"));
+        mvc.perform(post(path).with(http -> {http.setScheme("ftp");return http;}).header("Authorization",adminToken).contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value("PROXY_HTTPS_REQUIRED"));
+        when(probe.test(front,exit)).thenReturn(new ProxyNodeProbe.Result("1.1.1.1","Country","Region","City"));
+        mvc.perform(post(path).secure(true).header("Authorization",adminToken).contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk()).andExpect(header().string("Cache-Control","no-store"))
+                .andExpect(jsonPath("$.connected").value(true)).andExpect(jsonPath("$.egressIp").value("1.1.1.1"))
+                .andExpect(jsonPath("$.frontProxyNodeId").value(front.toString())).andExpect(jsonPath("$.proxyNodeId").value(exit.toString()));
+        assertThat(jdbc.queryForObject("select count(*) from managed_proxy_nodes where id in (?,?) and tested_at is null and test_status='UNTESTED'",Integer.class,front,exit)).isEqualTo(2);
+        mvc.perform(post(path).secure(true).header("Authorization",adminToken).contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isTooManyRequests()).andExpect(jsonPath("$.code").value("PROXY_TEST_RATE_LIMITED"));
+        mvc.perform(post(path).secure(true).header("Authorization",adminToken).contentType(MediaType.APPLICATION_JSON).content("{\"proxyNodeId\":\""+exit+"\",\"frontProxyNodeId\":\""+exit+"\"}"))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value("PROXY_CHAIN_INVALID"));
+        mvc.perform(post(path).secure(true).header("Authorization",adminToken).contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    private UUID createNode(String label) throws Exception {
+        return UUID.fromString(json.readTree(mvc.perform(post("/api/v1/admin/proxy-nodes").secure(true)
+                        .header("Authorization",adminToken).contentType(MediaType.APPLICATION_JSON)
+                        .content(request(label,"http://proxy.example.com:8080",true)))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).path("id").asString());
+    }
+
     private String request(String label, String uri, boolean enabled) {
         URI parsed = URI.create(uri);
         var fields = new java.util.LinkedHashMap<String, Object>();

@@ -18,6 +18,7 @@ import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.net.ssl.SNIHostName;
@@ -33,6 +34,7 @@ import org.springframework.stereotype.Component;
 public class ProxySubscriptionFetcher implements DisposableBean {
     private final ProxyEndpointPolicy endpoints;
     private final SocketConnector connector;
+    private final Semaphore availableDownloads = new Semaphore(2);
     private final ScheduledExecutorService deadlines = Executors.newScheduledThreadPool(2, task -> {
         Thread thread = new Thread(task, "proxy-subscription-deadline"); thread.setDaemon(true); return thread;
     });
@@ -42,6 +44,13 @@ public class ProxySubscriptionFetcher implements DisposableBean {
     ProxySubscriptionFetcher(ProxyEndpointPolicy endpoints, SocketConnector connector) { this.endpoints = endpoints; this.connector = connector; }
 
     String fetch(String value) {
+        if (!availableDownloads.tryAcquire())
+            throw new DomainException("PROXY_SUBSCRIPTION_BUSY", "订阅下载繁忙，请稍后手动重试。", HttpStatus.CONFLICT);
+        try { return download(value); }
+        finally { availableDownloads.release(); }
+    }
+
+    private String download(String value) {
         AtomicReference<Socket> active = new AtomicReference<>();
         AtomicBoolean expired = new AtomicBoolean();
         var deadline = deadlines.schedule(() -> { expired.set(true); close(active.get()); }, 15, TimeUnit.SECONDS);
@@ -59,12 +68,15 @@ public class ProxySubscriptionFetcher implements DisposableBean {
             if (path.chars().anyMatch(c -> c < 33 || c > 126)) throw failed();
             String authority = host.contains(":") ? "[" + host + "]" : host;
             socket.getOutputStream().write(("GET " + path + " HTTP/1.1\r\nHost: " + authority
-                    + "\r\nAccept: text/plain\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
+                    + "\r\nUser-Agent: Codex-Quota-Guard\r\nAccept: text/plain\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
             socket.getOutputStream().flush();
             byte[] body = readResponse(socket.getInputStream());
             if (expired.get()) throw failed();
             return StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
                     .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(body)).toString();
+        } catch (DomainException error) {
+            if ("PROXY_ENDPOINT_BLOCKED".equals(error.getCode())) throw error;
+            throw failed();
         } catch (IOException | RuntimeException ignored) { throw failed(); }
         finally { deadline.cancel(false); close(socket); close(active.get()); }
     }

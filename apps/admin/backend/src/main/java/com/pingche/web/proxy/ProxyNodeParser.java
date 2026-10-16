@@ -94,9 +94,9 @@ public class ProxyNodeParser {
             if (Set.of("http", "https", "socks5").contains(scheme)) {
                 if (!query.isEmpty()) throw invalid();
                 if (user != null) {
-                    String[] auth = decode(user).split(":", 2);
+                    String[] auth = user.split(":", 2);
                     if (auth.length != 2) throw invalid();
-                    out.put("username", text(auth[0], 255, false)); out.put("password", text(auth[1], 4096, false));
+                    out.put("username", text(decode(auth[0]), 255, false)); out.put("password", text(decode(auth[1]), 4096, false));
                     credentials = true;
                 }
                 if (scheme.equals("https")) out.put("tls", tls("tls", host, Map.of()));

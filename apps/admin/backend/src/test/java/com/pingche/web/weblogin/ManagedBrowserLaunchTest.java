@@ -77,6 +77,20 @@ class ManagedBrowserLaunchTest {
     }
 
     @Test
+    void browserLaunchUsesTheRequestedFrontAndExitWithoutOpeningTheExitAlone() {
+        UUID front=UUID.randomUUID();
+        Fixture fixture=new Fixture();
+        when(fixture.gateway.open(front,node,ManagedProxyGateway.Purpose.BROWSER_LOGIN)).thenReturn(fixture.lease);
+        try(var browser=fixture.browser()) {
+            var session=browser.open(job,front,node);
+            assertThat(fixture.command).contains("--proxy-server=http://127.0.0.1:12345");
+            verify(fixture.gateway).open(front,node,ManagedProxyGateway.Purpose.BROWSER_LOGIN);
+            verify(fixture.gateway,never()).open(node,ManagedProxyGateway.Purpose.BROWSER_LOGIN);
+            session.close();verify(fixture.lease).close();
+        }
+    }
+
+    @Test
     void rejectsDirectOrNonLoopbackLeaseBeforeStartingAProcessAndReportsDisabledOrMissingBrowser() {
         Fixture fixture = new Fixture();
         when(fixture.lease.proxySelector()).thenReturn(ProxySelector.of(null));
@@ -121,6 +135,7 @@ class ManagedBrowserLaunchTest {
     }
     private record TestBrowser(ChromiumManagedLoginBrowser delegate) implements AutoCloseable {
         ManagedLoginBrowser.Session open(UUID job, UUID node) { return delegate.open(job, node); }
+        ManagedLoginBrowser.Session open(UUID job, UUID front, UUID node) { return delegate.open(job,front,node); }
         @Override public void close() { delegate.shutdown(); }
     }
     private static final class FakeProcess extends Process {

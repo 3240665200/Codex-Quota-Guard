@@ -165,6 +165,8 @@
 
 ## 代理节点（服务器 0.3.22）
 
+当前源码增加尚未发布的订阅管理、双节点链测试及仅修改账户代理链接口，见[订阅与前置／后置代理链 API](../proxy-subscriptions-and-chains.md#api)。以下 `0.3.22` 部分描述已发布镜像，旧 `/proxy-nodes/import` 不会取代新的持久订阅接口。
+
 以下路径同样要求 ADMIN、受管理传输策略约束，并返回 `Cache-Control: no-store`：
 
 | 方法 | 路径 | 说明 |

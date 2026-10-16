@@ -4,6 +4,8 @@
 
 当前版本：[0.3.22 发布说明与升级注意事项](releases/v0.3.22.md)。
 
+当前开发功能：[Windows 本地管理网页测试](local-admin-test.md)、[订阅与前置／后置代理链](proxy-subscriptions-and-chains.md)。
+
 ## 服务器部署
 
 - [Docker Hub 拉取部署（推荐，无需源码）](../deploy/docker/registry/README.md)

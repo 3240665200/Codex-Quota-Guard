@@ -87,4 +87,37 @@ describe('手动更新代理订阅', () => {
     expect(within(editor).getByLabelText('订阅 URL')).toHaveValue('');
     expect(screen.queryByText(/fixture-private/)).not.toBeInTheDocument();
   });
+  it.each(['http://subscription.example/list', 'https://subscription.example:8443/list', 'https://user:secret@subscription.example/list'])(
+    'rejects an unsupported subscription address before import: %s', async (url) => {
+      const dialog = await showSources();
+      fireEvent.click(within(dialog).getByRole('button', { name: '导入订阅' }));
+      const editor = await screen.findByRole('dialog', { name: '导入代理订阅' });
+      fireEvent.change(within(editor).getByLabelText('订阅名称'), { target: { value: '办公订阅' } });
+      fireEvent.change(within(editor).getByLabelText('订阅 URL'), { target: { value: url } });
+      fireEvent.click(within(editor).getByRole('button', { name: '导入并获取节点' }));
+      expect(await within(editor).findByText('请输入 HTTPS 443 订阅地址，不含用户名、密码或片段')).toBeInTheDocument();
+      expect(mocks.createProxySubscription).not.toHaveBeenCalled();
+    },
+  );
+  it('marks a changed address as awaiting manual refresh', async () => {
+    mocks.listProxySubscriptions.mockResolvedValue([{ ...source, status: 'URL_UPDATED' }]);
+    const dialog = await showSources();
+    expect(await within(dialog).findByText('地址已修改，待手动更新')).toBeInTheDocument();
+    expect(mocks.refreshProxySubscription).not.toHaveBeenCalled();
+  });
+  it('keeps the current nodes on a failed refresh and displays an explicit unsupported-format message', async () => {
+    mocks.refreshProxySubscription.mockRejectedValue({ code: 'PROXY_SUBSCRIPTION_FORMAT_UNSUPPORTED', message: 'fixture-private' });
+    const dialog = await showSources();
+    fireEvent.click(await within(dialog).findByRole('button', { name: '更新订阅 办公订阅' }));
+    expect(await within(dialog).findByText(/订阅格式或协议参数不支持.*Clash YAML/)).toBeInTheDocument();
+    expect(mocks.listProxyNodes).toHaveBeenCalledOnce();
+    expect(mocks.deleteProxyNode).not.toHaveBeenCalled();
+    expect(screen.queryByText('fixture-private')).not.toBeInTheDocument();
+  });
+  it('redacts subscription-list failures', async () => {
+    mocks.listProxySubscriptions.mockRejectedValue(new Error('https://private.example/?token=fixture-private'));
+    const dialog = await showSources();
+    expect(await within(dialog).findByText('订阅读取失败，请稍后重试。')).toBeInTheDocument();
+    expect(screen.queryByText(/fixture-private/)).not.toBeInTheDocument();
+  });
 });

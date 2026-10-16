@@ -168,16 +168,16 @@ abstract class ManagementTransportIntegrationSupport {
     List<Route> routes() {
         String connection = "{\"authorization\":\"Bearer synthetic\",\"requestedAccountId\":\"synthetic-account\",\"version\":0}";
         String confirmation = "{\"planId\":\"" + ID + "\",\"acknowledgeLogoutRisk\":true}";
-        String proxy = "{\"label\":\"Synthetic\",\"uri\":\"http://proxy.example.test:8080\",\"enabled\":true,\"version\":0}";
+        String proxy = "{\"label\":\"Synthetic\",\"protocol\":\"HTTP\",\"host\":\"proxy.example.test\",\"port\":8080,\"enabled\":true,\"version\":0}";
         return List.of(
                 route("GET", ACCOUNT + "/connection", null), route("PUT", ACCOUNT + "/connection", connection),
                 new Route(HttpMethod.DELETE, ACCOUNT + "/connection", null, 204),
                 route("POST", ACCOUNT + "/connection/refresh", null), route("GET", ACCOUNT + "/sessions", null),
-                route("POST", ACCOUNT + "/browser-login", "{\"version\":0}"),
-                route("GET", "/api/v1/admin/browser-logins", null), route("GET", BROWSER, null),
-                route("POST", BROWSER + "/claim", "{\"helperId\":\"" + ID + "\"}"),
-                route("POST", BROWSER + "/complete", "{\"helperId\":\"" + ID + "\",\"authorization\":\"Bearer synthetic\",\"requestedAccountId\":\"synthetic-account\"}"),
-                route("POST", BROWSER + "/cancel", null), route("POST", ACCOUNT + "/web-login", "{\"version\":0}"),
+                retired("POST", ACCOUNT + "/browser-login", "{\"version\":0}"),
+                retired("GET", "/api/v1/admin/browser-logins", null), retired("GET", BROWSER, null),
+                retired("POST", BROWSER + "/claim", "{\"helperId\":\"" + ID + "\"}"),
+                retired("POST", BROWSER + "/complete", "{\"helperId\":\"" + ID + "\",\"authorization\":\"Bearer synthetic\",\"requestedAccountId\":\"synthetic-account\"}"),
+                retired("POST", BROWSER + "/cancel", null), route("POST", ACCOUNT + "/web-login", "{\"version\":0}"),
                 route("GET", WEB, null), route("GET", WEB + "/frame", null),
                 new Route(HttpMethod.POST, WEB + "/input", "{\"type\":\"key\",\"key\":\"Tab\"}", 204),
                 route("POST", WEB + "/complete", null), route("POST", WEB + "/cancel", null),
@@ -188,7 +188,7 @@ abstract class ManagementTransportIntegrationSupport {
                 route("GET", USER + "/current", null), route("GET", USER + "/" + ID, null),
                 route("GET", PROXY, null), route("POST", PROXY, proxy), route("PUT", PROXY + "/" + ID, proxy),
                 new Route(HttpMethod.DELETE, PROXY + "/" + ID, null, 204),
-                route("POST", PROXY + "/import", "{\"content\":\"http://proxy.example.test:8080\"}"),
+                retired("POST", PROXY + "/import", "{\"content\":\"http://proxy.example.test:8080\"}"),
                 route("POST", PROXY + "/" + ID + "/test", null),
                 route("GET", ADMIN_BINDINGS, null), route("GET", ADMIN_BINDINGS + "/accounts/" + ID, null),
                 route("POST", ADMIN_BINDINGS + "/accounts/" + ID + "/recover", "{\"acknowledgeLateLoginRisk\":true}"),
@@ -212,5 +212,6 @@ abstract class ManagementTransportIntegrationSupport {
     }
 
     private Route route(String method, String path, String body) { return new Route(HttpMethod.valueOf(method), path, body, 200); }
+    private Route retired(String method, String path, String body) { return new Route(HttpMethod.valueOf(method), path, body, 410); }
     record Route(HttpMethod method, String path, String body, int successStatus) { }
 }

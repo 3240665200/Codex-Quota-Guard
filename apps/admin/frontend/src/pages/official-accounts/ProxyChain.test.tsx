@@ -7,7 +7,7 @@ import type { OfficialAccountResponse } from '../../services/api';
 const mocks = vi.hoisted(() => ({ getOfficialAccountConnection: vi.fn(), getOfficialAccountSessions: vi.fn(),
   listProxyNodes: vi.fn(), getOfficialAuthorizationPreset: vi.fn(), applyOfficialAuthorizationPreset: vi.fn(),
   saveOfficialAccountConnection: vi.fn(), refreshOfficialAccountConnection: vi.fn(), deleteOfficialAccountConnection: vi.fn(),
-  testProxyChain: vi.fn(), testProxyNode: vi.fn(), isSupportedManagementContext: vi.fn() }));
+  testProxyChain: vi.fn(), testProxyNode: vi.fn(), saveOfficialAccountProxyChain: vi.fn(), isSupportedManagementContext: vi.fn() }));
 vi.mock('../../services/api', () => mocks);
 vi.mock('../../services/sessionBindingsApi', () => ({ listSessionBindings: vi.fn().mockResolvedValue([]), releaseSessionBinding: vi.fn() }));
 const connection = { configured: true, encryptionReady: true, status: 'UNVERIFIED', requestedAccountId: 'workspace',
@@ -28,6 +28,7 @@ describe('每账户独立单节点与双节点链路', () => {
     mocks.getOfficialAuthorizationPreset.mockResolvedValue({ available: true, requestedAccountId: 'workspace', revision: 'revision-1' });
     mocks.applyOfficialAuthorizationPreset.mockResolvedValue({ ...connection, version: 6 });
     mocks.saveOfficialAccountConnection.mockResolvedValue({ ...connection, version: 6 });
+    mocks.saveOfficialAccountProxyChain.mockResolvedValue({ ...connection, version: 6 });
     mocks.testProxyChain.mockResolvedValue({ frontProxyNodeId: 'front', proxyNodeId: 'exit', connected: true,
       egressIp: '203.0.113.44', country: 'HK', region: null, city: null, httpStatus: 200, testedAt: '2026-10-16T00:00:00Z' });
   });
@@ -54,6 +55,7 @@ describe('每账户独立单节点与双节点链路', () => {
     await show();
     expect(screen.getByRole('button', { name: '使用预置授权' })).toBeDisabled();
     expect(screen.getByRole('button', { name: '测试完整链路' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '保存代理链' })).toBeDisabled();
     expect(mocks.testProxyChain).not.toHaveBeenCalled();
   });
   it('keeps the single-node request compatible when no front node is selected', async () => {
@@ -88,5 +90,83 @@ describe('每账户独立单节点与双节点链路', () => {
     await show();
     expect(screen.getByRole('button', { name: '保存代理链' })).toBeEnabled();
     expect(screen.queryByLabelText('官方 Authorization')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '保存代理链' }));
+    await waitFor(() => expect(mocks.saveOfficialAccountProxyChain).toHaveBeenCalledWith('account-1', {
+      frontProxyNodeId: 'front', proxyNodeId: 'exit', version: 5,
+    }));
+    expect(mocks.saveOfficialAccountConnection).not.toHaveBeenCalled();
+    expect(mocks.refreshOfficialAccountConnection).not.toHaveBeenCalled();
+    expect(await screen.findByText('代理链已保存，请重新刷新官方账户与会话。')).toBeInTheDocument();
   });
+  it('keeps an unsaved authorization draft when saving only the chain', async () => {
+    await show();
+    fireEvent.click(screen.getByRole('button', { name: '高级：手动导入授权' }));
+    const authorization = await screen.findByLabelText('官方 Authorization');
+    fireEvent.change(authorization, { target: { value: 'Bearer fixture-draft' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存代理链' }));
+    await waitFor(() => expect(mocks.saveOfficialAccountProxyChain).toHaveBeenCalledOnce());
+    expect(authorization).toHaveValue('Bearer fixture-draft');
+  });
+  it('requires saved authorization before saving only the chain', async () => {
+    mocks.getOfficialAccountConnection.mockResolvedValue({ ...connection, configured: false });
+    await show();
+    expect(screen.getByRole('button', { name: '保存代理链' })).toBeDisabled();
+  });
+  it('explicitly clears a formerly saved front node for a single-node account chain', async () => {
+    await show();
+    fireEvent.mouseDown(screen.getByRole('button', { name: 'Clear' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+    await waitFor(() => expect(screen.getByText('服务器 → 住宅出口 → 官网')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: '保存代理链' }));
+    await waitFor(() => expect(mocks.saveOfficialAccountProxyChain).toHaveBeenCalledWith('account-1', {
+      frontProxyNodeId: null, proxyNodeId: 'exit', version: 5,
+    }));
+  });
+  it('rejects a success result without an egress IP', async () => {
+    mocks.testProxyChain.mockResolvedValue({ connected: true, frontProxyNodeId: 'front', proxyNodeId: 'exit', egressIp: null });
+    await show(); fireEvent.click(screen.getByRole('button', { name: '测试完整链路' }));
+    expect(await screen.findByText('未能验证节点测试返回的出口信息，请检查节点后重新测试。')).toBeInTheDocument();
+    expect(screen.queryByText('完整链路测试成功')).not.toBeInTheDocument();
+  });
+  it('hides a previous pair result as soon as the selected chain changes', async () => {
+    await show(); fireEvent.click(screen.getByRole('button', { name: '测试完整链路' }));
+    await screen.findByText(/完整链路出口 IP/);
+    fireEvent.mouseDown(screen.getByRole('button', { name: 'Clear' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+    await waitFor(() => expect(screen.queryByText(/完整链路出口 IP/)).not.toBeInTheDocument());
+  });
+  it('sends only one authorization write when save is clicked twice before validation completes', async () => {
+    mocks.saveOfficialAccountConnection.mockImplementation(() => new Promise(() => {}));
+    await show();
+    fireEvent.click(screen.getByRole('button', { name: '高级：手动导入授权' }));
+    fireEvent.change(await screen.findByLabelText('官方 Authorization'), { target: { value: 'Bearer fixture-double' } });
+    const save = screen.getByRole('button', { name: '保存授权' });
+    fireEvent.click(save); fireEvent.click(save);
+    await waitFor(() => expect(mocks.saveOfficialAccountConnection).toHaveBeenCalledOnce());
+    expect(screen.getByRole('button', { name: '保存代理链' })).toBeDisabled();
+  });
+
+  it('keeps file import exclusive when it starts during authorization validation', async () => {
+    let reader!: FileReader;
+    vi.spyOn(FileReader.prototype, 'readAsText').mockImplementation(function (this: FileReader) {
+      reader = this;
+      Object.defineProperty(this, 'readyState', { value: FileReader.LOADING });
+    });
+    await show();
+    fireEvent.click(screen.getByRole('button', { name: '高级：手动导入授权' }));
+    fireEvent.change(await screen.findByLabelText('官方 Authorization'), { target: { value: 'Bearer fixture-before-import' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存授权' }));
+    fireEvent.change(screen.getByLabelText('本机参数文件'), { target: { files: [new File(['{}'], 'authorization.json')] } });
+    await act(async () => {});
+    expect(mocks.saveOfficialAccountConnection).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: '保存代理链' })).toBeDisabled();
+    Object.defineProperty(reader, 'result', { value: JSON.stringify({
+      requestedAccountId: 'workspace-file', authorization: 'Bearer fixture-after-import', cookie: '',
+    }) });
+    await act(async () => reader.onload?.call(reader, {} as ProgressEvent<FileReader>));
+    expect(screen.getByLabelText('官方 Authorization')).toHaveValue('Bearer fixture-after-import');
+    expect(screen.getByRole('button', { name: '保存授权' })).toBeEnabled();
+    expect(mocks.saveOfficialAccountConnection).not.toHaveBeenCalled();
+  });
+
 });

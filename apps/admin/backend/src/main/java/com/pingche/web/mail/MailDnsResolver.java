@@ -62,7 +62,7 @@ public class MailDnsResolver {
             if (addresses == null) throw failure();
             boolean fakeIp = false;
             for (InetAddress address : addresses) {
-                if (isFakeIp(address)) fakeIp = true;
+                if (isDefaultFakeIp(address)) fakeIp = true;
                 // Preserve other non-public results so the target policy rejects them without fallback.
                 else if (!MailTargetPolicy.isPublic(address)) return addresses;
             }
@@ -72,6 +72,12 @@ public class MailDnsResolver {
         } catch (RuntimeException ignored) {
             throw failure();
         }
+        return resolvePublicDns(name);
+    }
+
+    /** Bounded public lookup; callers decide whether their local DNS result permits this fallback. */
+    public InetAddress[] resolvePublicDns(String host) {
+        String name = dnsName(host);
         long deadline = System.nanoTime() + TOTAL_NANOS;
         for (String endpoint : ENDPOINTS) {
             for (int type : new int[] {1, 28}) {
@@ -201,7 +207,7 @@ public class MailDnsResolver {
         return value != null && value.isIntegralNumber() && value.toString().equals(Integer.toString(expected));
     }
 
-    private static boolean isFakeIp(InetAddress address) {
+    public static boolean isDefaultFakeIp(InetAddress address) {
         byte[] bytes = address.getAddress();
         if (bytes.length == 4)
             return (bytes[0] & 255) == 198 && ((bytes[1] & 255) == 18 || (bytes[1] & 255) == 19);

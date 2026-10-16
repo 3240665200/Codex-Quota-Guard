@@ -8,9 +8,9 @@ import ManagementTransportNotice from '../../components/ManagementTransportNotic
 import { applyOfficialAuthorizationPreset, deleteOfficialAccountConnection, getOfficialAccountConnection, getOfficialAccountSessions,
   getOfficialAuthorizationPreset,
   isSupportedManagementContext, listProxyNodes, refreshOfficialAccountConnection,
-  saveOfficialAccountConnection } from '../../services/api';
+  saveOfficialAccountConnection, saveOfficialAccountProxyChain, testProxyChain } from '../../services/api';
 import type { OfficialAccountConnection, OfficialAccountResponse, OfficialAccountSnapshot,
-  OfficialAuthorizationPreset, OfficialConnectionInput, OfficialConnectionStatus, OfficialSessionDevice, ProxyNode } from '../../services/api';
+  OfficialAuthorizationPreset, OfficialConnectionInput, OfficialConnectionStatus, OfficialSessionDevice, ProxyChainTest, ProxyNode } from '../../services/api';
 import { LOCAL_PREVIEW_PARAMETER_MAX_BYTES, parseLocalPreviewParameters } from './localPreviewParameters';
 import SessionBindingQueue from './SessionBindingQueue';
 import SessionLogoutPanel from './SessionLogoutPanel';
@@ -127,7 +127,8 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
   const [logoutBusy, setLogoutBusy] = useState(false);
   const [queueRevision, setQueueRevision] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState<'save' | 'preset' | 'refresh' | 'delete' | 'import' | null>(null);
+  const [busy, setBusy] = useState<'save' | 'preset' | 'refresh' | 'delete' | 'import' | 'chain' | 'proxy' | null>(null);
+  const [chainResult, setChainResult] = useState<{ key: string; result: ProxyChainTest } | null>(null);
   const [error, setError] = useState('');
   const [snapshotNotice, setSnapshotNotice] = useState('');
   const active = useRef(true);
@@ -137,9 +138,17 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
   const parameterFileReader = useRef<FileReader | null>(null);
   const supported = isSupportedManagementContext();
   const selectedNode = Form.useWatch('proxyNodeId', form);
-  const nodeUnavailable = !selectedNode || !nodes.some((node) => node.id === selectedNode && node.enabled);
-  const savedNodeUnavailable = !config?.proxyNodeId || !nodes.some((node) => node.id === config.proxyNodeId && node.enabled);
-  const nodeChanged = view !== 'sessions' && selectedNode !== config?.proxyNodeId;
+  const selectedFront = Form.useWatch('frontProxyNodeId', form);
+  const availableNode = (id: string | null | undefined) => Boolean(id && nodes.some((node) => node.id === id && node.enabled && !node.sourceMissing));
+  const invalidChain = (front: string | null | undefined, exit: string | null | undefined) => !availableNode(exit)
+    || Boolean(front && (!availableNode(front) || front === exit));
+  const nodeUnavailable = invalidChain(selectedFront, selectedNode);
+  const savedNodeUnavailable = invalidChain(config?.frontProxyNodeId, config?.proxyNodeId);
+  const nodeChanged = view !== 'sessions' && (selectedNode !== config?.proxyNodeId
+    || (selectedFront ?? null) !== (config?.frontProxyNodeId ?? null));
+  const chainKey = JSON.stringify([account.id, selectedFront ?? null, selectedNode ?? null]);
+  const chainLabel = ['服务器', ...(selectedFront ? [nodes.find((node) => node.id === selectedFront)?.label || '前置节点不可用'] : []),
+    nodes.find((node) => node.id === selectedNode)?.label || '请选择出口节点', '官网'].join(' → ');
   const refreshUnavailable = savedNodeUnavailable || (view !== 'sessions' && (nodeUnavailable || nodeChanged));
   const externallyLocked = loading || busy !== null || releaseBusy;
   const locked = externallyLocked || logoutBusy;
@@ -175,17 +184,18 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
     const lifetime = releaseLifetime.current;
     const file = event.currentTarget.files?.[0];
     event.currentTarget.value = '';
-    if (!file || !isCurrentLifetime(lifetime) || locked || !supported || !config?.encryptionReady) return;
+    if (!file || !isCurrentLifetime(lifetime) || lifetime.busy || locked || !supported || !config?.encryptionReady) return;
     if (!/\.(txt|json)$/i.test(file.name) || file.size > LOCAL_PREVIEW_PARAMETER_MAX_BYTES) {
       setError('请选择不超过 64 KiB 的本机 .txt 或 .json 参数文件。');
       return;
     }
-    setBusy('import'); setError('');
+    lifetime.busy = true; setBusy('import'); setError('');
     const reader = new FileReader();
     parameterFileReader.current = reader;
     const finish = () => {
       if (parameterFileReader.current !== reader) return;
       parameterFileReader.current = null;
+      lifetime.busy = false;
       if (isCurrentLifetime(lifetime)) setBusy(null);
     };
     reader.onload = () => {
@@ -213,6 +223,7 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
     const lifetime = { accountId: account.id, active: true, busy: false }; releaseLifetime.current = lifetime;
     setLoading(true); setConfig(null); setNodes([]); updateSnapshot(null); setBindings(null);
     setBusy(null); setPreset(null); setPresetNotice(''); setManualKeys([]); form.resetFields();
+    setChainResult(null);
     setError(''); setSnapshotNotice(''); setBindingNotice(''); setLogoutBusy(false);
     setReleaseTarget(null); setReleaseAcknowledged(false); setReleaseBusy(false); setReleaseError(''); setBindingRevision(0);
     let cancelled = false;
@@ -224,7 +235,7 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
           const saved = connectionResult.value;
           setConfig(saved);
           form.setFieldsValue({ authorization: '', cookie: '', requestedAccountId: saved.requestedAccountId ?? '',
-            proxyNodeId: saved.proxyNodeId, version: saved.version });
+            frontProxyNodeId: saved.frontProxyNodeId ?? null, proxyNodeId: saved.proxyNodeId, version: saved.version });
         } else setError(managedErrorMessage(connectionResult.reason, '官方授权配置读取失败，请关闭窗口后重试。'));
         if (nodesResult.status === 'fulfilled') setNodes(nodesResult.value);
         else setError(managedErrorMessage(nodesResult.reason, '代理节点列表读取失败，请关闭窗口后重试。'));
@@ -257,7 +268,7 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
     if (!isCurrentLifetime(lifetime)) return;
     if (connectionResult.status === 'fulfilled') {
       const saved = connectionResult.value; setConfig(saved);
-      form.setFieldsValue({ requestedAccountId: saved.requestedAccountId ?? '', proxyNodeId: saved.proxyNodeId, version: saved.version });
+      form.setFieldsValue({ requestedAccountId: saved.requestedAccountId ?? '', frontProxyNodeId: saved.frontProxyNodeId ?? null, proxyNodeId: saved.proxyNodeId, version: saved.version });
     } else { setConfig(null); setError(managedErrorMessage(connectionResult.reason, '登出操作后连接状态读取失败，请关闭窗口后重新打开。')); }
     if (snapshotResult.status === 'fulfilled') { updateSnapshot(snapshotResult.value); setSnapshotNotice(''); }
     else setSnapshotNotice('登出操作后旧快照已清除，尚无当前会话快照；官方实际下线可能延迟，请在官网核对。');
@@ -306,17 +317,17 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
 
   const save = async () => {
     const lifetime = releaseLifetime.current;
-    if (!isCurrentLifetime(lifetime) || locked || !config?.encryptionReady || !supported || nodeUnavailable) return;
+    if (!isCurrentLifetime(lifetime) || lifetime.busy || locked || !config?.encryptionReady || !supported || nodeUnavailable) return;
     let values: OfficialConnectionInput;
     try { values = await form.validateFields(); } catch { return; }
-    if (!isCurrentLifetime(lifetime) || lifetime.busy || !values.proxyNodeId
-      || !nodes.some((node) => node.id === values.proxyNodeId && node.enabled)) return;
+    if (!isCurrentLifetime(lifetime) || lifetime.busy || invalidChain(values.frontProxyNodeId, values.proxyNodeId)) return;
     const body: OfficialConnectionInput = {
       authorization: values.authorization.trim(), requestedAccountId: values.requestedAccountId.trim(),
       proxyNodeId: values.proxyNodeId, version: config.version,
+      ...(values.frontProxyNodeId || config.frontProxyNodeId ? { frontProxyNodeId: values.frontProxyNodeId ?? null } : {}),
       ...(values.cookie?.trim() ? { cookie: values.cookie.trim() } : {}),
     };
-    setBusy('save'); setError(''); clearSecrets();
+    lifetime.busy = true; setBusy('save'); setError(''); clearSecrets();
     try {
       const saved = await saveOfficialAccountConnection(lifetime.accountId, body);
       if (!isCurrentLifetime(lifetime)) return;
@@ -328,6 +339,7 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
     } finally {
       body.authorization = ''; delete body.cookie;
       values.authorization = ''; delete values.cookie;
+      lifetime.busy = false;
       if (isCurrentLifetime(lifetime)) { clearSecrets(); setBusy(null); }
     }
   };
@@ -340,10 +352,11 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
     try {
       const saved = await applyOfficialAuthorizationPreset(lifetime.accountId, {
         version: config.version, proxyNodeId: selectedNode, presetRevision: preset.revision,
+        ...(selectedFront || config.frontProxyNodeId ? { frontProxyNodeId: selectedFront ?? null } : {}),
       });
       if (!isCurrentLifetime(lifetime)) return;
       setConfig(saved); updateSnapshot(null);
-      form.setFieldsValue({ requestedAccountId: saved.requestedAccountId ?? '', proxyNodeId: saved.proxyNodeId, version: saved.version });
+      form.setFieldsValue({ requestedAccountId: saved.requestedAccountId ?? '', frontProxyNodeId: saved.frontProxyNodeId ?? null, proxyNodeId: saved.proxyNodeId, version: saved.version });
       setSnapshotNotice('尚无官方会话快照，请手动刷新官方账户与会话。');
       message.success('预置授权已加密保存，请手动刷新官方账户与会话');
     } catch (reason) {
@@ -354,11 +367,54 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
     }
   };
 
+  const saveChain = async () => {
+    const lifetime = releaseLifetime.current;
+    if (!isCurrentLifetime(lifetime) || locked || lifetime.busy || !supported || !config?.configured || nodeUnavailable || !selectedNode) return;
+    lifetime.busy = true; setBusy('proxy'); setError('');
+    try {
+      const saved = await saveOfficialAccountProxyChain(lifetime.accountId, { proxyNodeId: selectedNode, version: config.version,
+        ...(selectedFront || config.frontProxyNodeId ? { frontProxyNodeId: selectedFront ?? null } : {}) });
+      if (!isCurrentLifetime(lifetime)) return;
+      setConfig(saved); updateSnapshot(null);
+      form.setFieldsValue({ frontProxyNodeId: saved.frontProxyNodeId ?? null, proxyNodeId: saved.proxyNodeId, version: saved.version });
+      setSnapshotNotice('代理链已保存，请重新刷新官方账户与会话。');
+      message.success('代理链已保存，请重新刷新官方账户与会话。');
+    } catch (reason) {
+      if (isCurrentLifetime(lifetime)) setError(managedErrorMessage(reason, '代理链保存失败，请检查节点状态后重试。'));
+    } finally {
+      lifetime.busy = false;
+      if (isCurrentLifetime(lifetime)) setBusy(null);
+    }
+  };
+
+  const testChain = async () => {
+    const lifetime = releaseLifetime.current;
+    if (!isCurrentLifetime(lifetime) || locked || lifetime.busy || !supported || nodeUnavailable || !selectedNode) return;
+    const input = { proxyNodeId: selectedNode, ...(selectedFront ? { frontProxyNodeId: selectedFront } : {}) };
+    lifetime.busy = true; setBusy('chain'); setChainResult(null); setError('');
+    try {
+      const result = await testProxyChain(input);
+      if (!isCurrentLifetime(lifetime)) return;
+      if (result.proxyNodeId !== input.proxyNodeId || (result.frontProxyNodeId ?? null) !== (input.frontProxyNodeId ?? null)) {
+        setError('完整链路测试返回的节点与当前选择不一致，请重新测试。'); return;
+      }
+      if (result.connected && !result.egressIp) {
+        setError(managedErrorMessage({ code: 'PROXY_TEST_RESPONSE_INVALID' })); return;
+      }
+      setChainResult({ key: chainKey, result });
+    } catch (reason) {
+      if (isCurrentLifetime(lifetime)) setError(managedErrorMessage(reason, '完整链路测试失败，请检查前置与出口节点后重试。'));
+    } finally {
+      lifetime.busy = false;
+      if (isCurrentLifetime(lifetime)) setBusy(null);
+    }
+  };
+
   const refresh = async () => {
     const lifetime = releaseLifetime.current;
-    if (!isCurrentLifetime(lifetime) || locked || !config?.configured || !supported || refreshUnavailable) return;
+    if (!isCurrentLifetime(lifetime) || lifetime.busy || locked || !config?.configured || !supported || refreshUnavailable) return;
     setSessionSelection({ snapshot: null, ids: [] }); setSnapshotRevision((revision) => revision + 1);
-    setBusy('refresh'); setError('');
+    lifetime.busy = true; setBusy('refresh'); setError('');
     try {
       const result = await refreshOfficialAccountConnection(lifetime.accountId);
       if (isCurrentLifetime(lifetime)) { setConfig(result.connection); updateSnapshot(result); setSnapshotNotice(''); }
@@ -372,22 +428,26 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
         const saved = await getOfficialAccountConnection(lifetime.accountId);
         if (isCurrentLifetime(lifetime)) setConfig(saved);
       } catch { /* The primary refresh error already provides the actionable state. */ }
-    } finally { if (isCurrentLifetime(lifetime)) setBusy(null); }
+    } finally { lifetime.busy = false; if (isCurrentLifetime(lifetime)) setBusy(null); }
   };
 
   const remove = async () => {
     const lifetime = releaseLifetime.current;
-    if (!isCurrentLifetime(lifetime) || locked || !supported) return;
-    setBusy('delete'); setError(''); clearSecrets();
+    if (!isCurrentLifetime(lifetime) || lifetime.busy || locked || !supported) return;
+    lifetime.busy = true; setBusy('delete'); setError(''); clearSecrets();
     try {
       await deleteOfficialAccountConnection(lifetime.accountId);
       if (isCurrentLifetime(lifetime)) { message.success('保存的官方授权已删除'); close(); }
     } catch (reason) {
       if (isCurrentLifetime(lifetime)) setError(managedErrorMessage(reason, '官方授权删除失败，请稍后重试。'));
-    } finally { if (isCurrentLifetime(lifetime)) setBusy(null); }
+    } finally { lifetime.busy = false; if (isCurrentLifetime(lifetime)) setBusy(null); }
   };
 
   const missingNode = config?.proxyNodeId && !nodes.some((node) => node.id === config.proxyNodeId);
+  const missingFront = config?.frontProxyNodeId && !nodes.some((node) => node.id === config.frontProxyNodeId);
+  const nodeOption = (node: ProxyNode, otherId: string | null | undefined) => ({ value: node.id,
+    label: `${node.label} · ${node.protocol}${node.sourceMissing ? '（订阅中已移除）' : node.enabled ? '' : '（已停用）'}`,
+    disabled: !node.enabled || node.sourceMissing || node.id === otherId });
   return <><WorkspaceShell inline={inline} title={`${view === 'sessions' ? '会话管理' : view === 'authorization' ? '授权登录' : '授权与会话'} · ${account.label}`} onCancel={close}
     footer={<Space wrap>
       {config?.configured && view !== 'sessions' ? <Popconfirm title="删除保存的官方授权？"
@@ -415,18 +475,37 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
           {!loading && (view === 'sessions' ? savedNodeUnavailable : nodeUnavailable) ? <Alert type="warning" showIcon
             title="每个官方账户必须选择一个已启用的代理节点，所有官方请求均禁止直连。"
             description={<span>{nodes.some((node) => node.enabled)
-              ? '请在此账户的授权登录页选择可用节点，并重新保存授权。'
-              : '暂无已启用节点，请先添加并启用节点，再返回此账户保存授权。'} <a href="/proxy-nodes">管理代理节点</a></span>} /> : null}
+              ? `请在此账户的授权登录页选择可用节点，并保存${config?.configured ? '代理链' : '授权'}。`
+              : `暂无已启用节点，请先添加并启用节点，再返回此账户保存${config?.configured ? '代理链' : '授权'}。`} <a href="#/proxy-nodes">管理代理节点</a></span>} /> : null}
           {!loading && view !== 'sessions' && !nodeUnavailable && nodeChanged ? <Alert type="info" showIcon
-            title="节点选择尚未保存，请使用预置授权或保存授权后再刷新；只会更新当前官方账户。" /> : null}
+            title="节点选择尚未保存，请保存代理链、使用预置授权或保存授权后再刷新；只会更新当前官方账户。" /> : null}
           {view !== 'sessions' ? <Form form={form} layout="vertical" preserve={false} disabled={locked || !supported || !config?.encryptionReady}>
+            <Form.Item name="frontProxyNodeId" label="前置代理节点（可选）"
+              extra="留空使用单节点；选择后由服务器先连接前置节点，再连接后置／出口节点。两个节点必须不同且均可用。">
+              <Select virtual={false} allowClear placeholder="不使用前置节点（单节点）" options={[
+                ...nodes.map((node) => nodeOption(node, selectedNode)),
+                ...(missingFront ? [{ value: config.frontProxyNodeId!, label: '已保存的前置节点（当前不可用）', disabled: true }] : []),
+              ]} />
+            </Form.Item>
             <Form.Item name="proxyNodeId" label="访问代理节点" rules={[{ required: true, message: '请选择一个已启用的代理节点' }]}
-              extra="此选择只保存到当前官方账户。所有官方请求必须经过已保存节点，不会失败回退或自动切换出口；本机浏览器由你本机的网络设置决定出口。">
+              extra="后置／出口节点（必选）。此选择只保存到当前官方账户，所有官方请求经过保存的链路，不会失败回退或自动切换出口；本机浏览器由本机网络设置决定出口。">
               <Select virtual={false} placeholder="请选择已启用的代理节点" options={[
-                ...nodes.map((node) => ({ value: node.id, label: `${node.label} · ${node.protocol}${node.enabled ? '' : '（已停用）'}`, disabled: !node.enabled })),
+                ...nodes.map((node) => nodeOption(node, selectedFront)),
                 ...(missingNode ? [{ value: config.proxyNodeId!, label: '已保存的节点（当前不可用）', disabled: true }] : []),
               ]} />
             </Form.Item>
+            <Space orientation="vertical" size={12} style={{ width: '100%', marginBottom: 16 }}>
+              <Typography.Text strong>{chainLabel}</Typography.Text>
+              {selectedFront && selectedFront === selectedNode ? <Alert type="warning" showIcon title="前置节点与出口节点不能相同，请重新选择。" /> : null}
+              <Space wrap>
+                <Button disabled={locked || !supported || nodeUnavailable} loading={busy === 'chain'} onClick={() => void testChain()}>测试完整链路</Button>
+                <Button disabled={locked || !supported || !config?.configured || nodeUnavailable} loading={busy === 'proxy'} onClick={() => void saveChain()}>保存代理链</Button>
+              </Space>
+              <Typography.Text type="secondary">测试使用当前选择的完整链路获取实际出口，不会保存账户配置，也不会更新单节点测试结果；成功后仍需保存代理链或授权，并手动验证官方连接。</Typography.Text>
+              {chainResult?.key === chainKey ? <Alert showIcon type={chainResult.result.connected ? 'success' : 'warning'}
+                title={chainResult.result.connected ? '完整链路测试成功' : '完整链路测试失败'}
+                description={`完整链路出口 IP：${chainResult.result.egressIp || '未获取'}；地区：${[chainResult.result.country, chainResult.result.region, chainResult.result.city].filter(Boolean).join(' / ') || '未知'}；测试时间：${dateText(chainResult.result.testedAt)}`} /> : null}
+            </Space>
             <Space orientation="vertical" size={16} style={{ width: '100%' }}>
               <Card size="small" title="预置授权">
                 <Space orientation="vertical" size={12} style={{ width: '100%' }}>

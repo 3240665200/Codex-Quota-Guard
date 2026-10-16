@@ -208,7 +208,7 @@ class ClientAccessIntegrationTest {
                 .andExpect(status().isForbidden());
     }
 
-    @Test void bootstrapAndAdministrativeLoginAssistanceRemainAvailableWithoutBinding() throws Exception {
+    @Test void bootstrapAndAdministrativeAccessRemainAvailableWithoutBinding() throws Exception {
         mvc.perform(get("/api/v1/users/me").header(HttpHeaders.AUTHORIZATION, authorization)).andExpect(status().isOk());
         mvc.perform(get("/api/v1/client/login-assistance").header(HttpHeaders.AUTHORIZATION, authorization)).andExpect(status().isOk());
         mvc.perform(get("/api/v1/client/session-bindings/current").secure(true).header(HttpHeaders.AUTHORIZATION, authorization)
@@ -219,7 +219,8 @@ class ClientAccessIntegrationTest {
                 .andExpect(status().isOk());
         User admin = users.saveAndFlush(User.bootstrapAdministrator(UUID.randomUUID()+"@example.com", "unused", "Admin"));
         mvc.perform(get("/api/v1/admin/dashboard").header(HttpHeaders.AUTHORIZATION, token(admin))).andExpect(status().isOk());
-        mvc.perform(get("/api/v1/admin/browser-logins").secure(true).header(HttpHeaders.AUTHORIZATION, token(admin))).andExpect(status().isOk());
+        mvc.perform(get("/api/v1/admin/browser-logins").secure(true).header(HttpHeaders.AUTHORIZATION, token(admin)))
+                .andExpect(status().isGone()).andExpect(jsonPath("$.code").value("OFFICIAL_LOGIN_HELPER_RETIRED"));
         mvc.perform(get("/api/v1/client/quota/overview").header(HttpHeaders.AUTHORIZATION, token(admin))).andExpect(status().isForbidden());
         mvc.perform(get("/api/v1/admin/dashboard").header(HttpHeaders.AUTHORIZATION, authorization)).andExpect(status().isForbidden());
     }

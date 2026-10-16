@@ -15,6 +15,7 @@ $ErrorActionPreference='Stop'
 Import-Module (Join-Path $PSScriptRoot 'preview-lifecycle.psm1') -Force
 foreach($path in @($ConfigPath,$PreviewDirectory,$ProxyKernel)){Assert-PreviewPath $path}
 if(!(Test-Path -LiteralPath $ConfigPath -PathType Leaf)){throw 'PREVIEW_CONFIG_MISSING'}
+if(!(Test-Path -LiteralPath $ProxyKernel -PathType Leaf)){throw 'PREVIEW_PROXY_KERNEL_MISSING'}
 foreach($port in @($BackendPort,$FrontendPort)) {
     if($port -lt 1024 -or $port -gt 65535 -or @(Get-NetTCPConnection -State Listen -ErrorAction Stop|Where-Object LocalPort -eq $port).Count -gt 0){throw 'PREVIEW_PORT_UNAVAILABLE'}
 }

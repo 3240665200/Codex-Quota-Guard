@@ -1,6 +1,7 @@
 package com.pingche.web.proxy;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verify;
@@ -15,6 +16,9 @@ import com.pingche.web.user.User;
 import com.pingche.web.user.UserRepository;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -42,6 +46,7 @@ class ProxySubscriptionApiIntegrationTest {
     @Autowired UserRepository users;
     @Autowired JwtService jwt;
     @Autowired JdbcTemplate jdbc;
+    @Autowired ProxySubscriptionService subscriptions;
     @MockitoBean ProxySubscriptionFetcher fetcher;
     @MockitoBean ManagedProxyGateway gateway;
     private final ObjectMapper json = new ObjectMapper();
@@ -171,6 +176,77 @@ class ProxySubscriptionApiIntegrationTest {
         assertThat(sourceNode(id)).isEqualTo(node);
         assertThat(nodeCipher(node)).isNotEqualTo(oldCipher);
         assertThat(jdbc.queryForObject("select protocol from managed_proxy_nodes where id = ?", String.class, node)).isEqualTo("SOCKS5");
+    }
+
+    @Test
+    void inFlightRefreshCannotOverwriteAnEditAndRejectsAnotherRefresh() throws Exception {
+        JsonNode subscription = create();
+        String id = subscription.get("id").asString();
+        long version = subscription.get("version").asLong();
+        UUID node = sourceNode(id);
+        String originalCipher = nodeCipher(node);
+        CountDownLatch downloading = new CountDownLatch(1);
+        CountDownLatch completeDownload = new CountDownLatch(1);
+        when(fetcher.fetch(URL)).thenAnswer(call -> {
+            downloading.countDown();
+            assertThat(completeDownload.await(15, TimeUnit.SECONDS)).isTrue();
+            return "http://changed.example.com:8181#Stable";
+        });
+        CompletableFuture<ProxySubscriptionResponse> pending = CompletableFuture.supplyAsync(
+                () -> subscriptions.refresh(UUID.fromString(id), version));
+        try {
+            assertThat(downloading.await(10, TimeUnit.SECONDS)).isTrue();
+            assertThatThrownBy(() -> subscriptions.refresh(UUID.fromString(id), version))
+                    .isInstanceOfSatisfying(DomainException.class,
+                            failure -> assertThat(failure.getCode()).isEqualTo("PROXY_SUBSCRIPTION_BUSY"));
+            mvc.perform(put(BASE + "/" + id).secure(true).header("Authorization", token)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(json.writeValueAsString(Map.of("label", "Edited during download", "version", version))))
+                    .andExpect(status().isOk());
+        } finally {
+            completeDownload.countDown();
+        }
+        assertThatThrownBy(() -> pending.get(10, TimeUnit.SECONDS))
+                .hasRootCauseInstanceOf(DomainException.class)
+                .rootCause().satisfies(failure -> assertThat(((DomainException) failure).getCode())
+                        .isEqualTo("PROXY_SUBSCRIPTION_VERSION_CONFLICT"));
+        assertThat(nodeCipher(node)).isEqualTo(originalCipher);
+        assertThat(jdbc.queryForObject("select label from managed_proxy_subscriptions where id = cast(? as uuid)", String.class, id))
+                .isEqualTo("Edited during download");
+    }
+
+    @Test
+    void deletingASubscriptionDuringDownloadKeepsDetachedNodesAndRejectsTheStaleRefresh() throws Exception {
+        JsonNode subscription = create();
+        String id = subscription.get("id").asString();
+        long version = subscription.get("version").asLong();
+        UUID node = sourceNode(id);
+        String originalCipher = nodeCipher(node);
+        CountDownLatch downloading = new CountDownLatch(1);
+        CountDownLatch completeDownload = new CountDownLatch(1);
+        when(fetcher.fetch(URL)).thenAnswer(call -> {
+            downloading.countDown();
+            assertThat(completeDownload.await(15, TimeUnit.SECONDS)).isTrue();
+            return "http://changed.example.com:8181#Stable";
+        });
+        CompletableFuture<ProxySubscriptionResponse> pending = CompletableFuture.supplyAsync(
+                () -> subscriptions.refresh(UUID.fromString(id), version));
+        try {
+            assertThat(downloading.await(10, TimeUnit.SECONDS)).isTrue();
+            mvc.perform(delete(BASE + "/" + id).secure(true).header("Authorization", token)
+                    .param("version", Long.toString(version))).andExpect(status().isNoContent());
+        } finally {
+            completeDownload.countDown();
+        }
+        assertThatThrownBy(() -> pending.get(10, TimeUnit.SECONDS))
+                .hasRootCauseInstanceOf(DomainException.class)
+                .rootCause().satisfies(failure -> assertThat(((DomainException) failure).getCode())
+                        .isEqualTo("PROXY_SUBSCRIPTION_NOT_FOUND"));
+        assertThat(jdbc.queryForObject("select count(*) from managed_proxy_subscriptions where id = cast(? as uuid)", Long.class, id))
+                .isZero();
+        assertThat(jdbc.queryForObject("select count(*) from managed_proxy_nodes where id = ? and source_subscription_id is null", Long.class, node))
+                .isEqualTo(1);
+        assertThat(nodeCipher(node)).isEqualTo(originalCipher);
     }
 
     @Test

@@ -1,5 +1,6 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { App as AntApp } from 'antd';
+import { StrictMode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ProxyNodesPage from './index';
 import routes from '../../../config/routes';
@@ -148,4 +149,43 @@ describe('代理节点管理', () => {
     expect(mocks.listProxyNodes).toHaveBeenCalledTimes(2);
     expect(screen.getByText(/不能证明官方账户授权可用/)).toBeInTheDocument();
   });
+  it('submits a validated node only once when save is clicked twice', async () => {
+    mocks.createProxyNode.mockImplementation(() => new Promise(() => {}));
+    render(<AntApp><ProxyNodesPage /></AntApp>);
+    fireEvent.click(await screen.findByRole('button', { name: '添加代理节点' }));
+    const dialog = await screen.findByRole('dialog', { name: '添加代理节点' });
+    fireEvent.change(within(dialog).getByLabelText('节点名称'), { target: { value: '办公出口' } });
+    fireEvent.change(within(dialog).getByLabelText('服务器'), { target: { value: 'proxy.example' } });
+    fireEvent.change(within(dialog).getByLabelText('端口'), { target: { value: '8080' } });
+    const save = within(dialog).getByRole('button', { name: /^保\s*存$/ });
+    fireEvent.click(save); fireEvent.click(save);
+    await waitFor(() => expect(mocks.createProxyNode).toHaveBeenCalledOnce());
+    expect(screen.getByRole('button', { name: '删除 香港出口' })).toBeDisabled();
+    expect(screen.getByRole('switch', { name: '启停 香港出口' })).toBeDisabled();
+  });
+
+  it('blocks conflicting node actions until a delete settles', async () => {
+    mocks.deleteProxyNode.mockImplementation(() => new Promise(() => {}));
+    render(<AntApp><ProxyNodesPage /></AntApp>);
+    fireEvent.click(await screen.findByRole('button', { name: '删除 香港出口' }));
+    fireEvent.click(await screen.findByRole('button', { name: '确认删除' }));
+    await waitFor(() => expect(mocks.deleteProxyNode).toHaveBeenCalledOnce());
+    for (const name of ['添加代理节点', '编辑 香港出口', '删除 香港出口', '测试 香港出口', '管理订阅']) {
+      expect(screen.getByRole('button', { name })).toBeDisabled();
+    }
+    expect(screen.getByRole('switch', { name: '启停 香港出口' })).toBeDisabled();
+  });
+
+  it('ignores an older mount response after a newer load has completed', async () => {
+    let resolveOld!: (value: typeof node[]) => void;
+    mocks.listProxyNodes.mockReturnValueOnce(new Promise((resolve) => { resolveOld = resolve; }))
+      .mockResolvedValueOnce([{ ...node, enabled: false, label: '最新出口' }]);
+    render(<StrictMode><AntApp><ProxyNodesPage /></AntApp></StrictMode>);
+    expect(mocks.listProxyNodes).toHaveBeenCalledTimes(2);
+    expect(await screen.findByText('最新出口')).toBeInTheDocument();
+    await act(async () => { resolveOld([node]); });
+    expect(screen.getByText('最新出口')).toBeInTheDocument();
+    expect(screen.queryByText('香港出口')).not.toBeInTheDocument();
+  });
+
 });
