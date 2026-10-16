@@ -150,4 +150,64 @@ mod tests {
         other.policy = "legacy".into();
         assert!(!other.fresh_for("lease-a", 10, 100, 500));
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn evidence_channel_rejects_same_user_writable_forged_directory() {
+        let temporary = std::env::temp_dir().join(format!("guard-evidence-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&temporary).unwrap();
+        fs::write(temporary.join(FILE_NAME), b"forged native proof").unwrap();
+        assert!(ProtectedEvidenceChannel::open_directory(&temporary, &temporary).is_err());
+        fs::remove_dir_all(temporary).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn evidence_path_is_sid_scoped_and_never_uses_a_user_supplied_path() {
+        let common = Path::new(r"C:\ProgramData");
+        assert_eq!(
+            native_security::channel_directory(common, "S-1-5-21-1-2-3-1001").unwrap(),
+            common.join("CodexQuotaGuardConflictEvidence").join("S-1-5-21-1-2-3-1001")
+        );
+        for invalid in ["", "S-1-5-18", "S-1-5-21-1\\escape", "S-1-5-21-1:stream", "S-1-5-21-..", "S-1-5-21-1/escape"] {
+            assert!(native_security::channel_directory(common, invalid).is_err());
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn evidence_acl_rejects_lower_privilege_owners_and_grants() {
+        use native_security::{validate_security, AccessGrant, SecuritySummary};
+        let summary = SecuritySummary {
+            owner: "S-1-5-32-544".into(),
+            protected: true,
+            grants: vec![AccessGrant { sid: "S-1-5-18".into(), mask: 0x1f01ff, inherit_only: false },
+                AccessGrant { sid: "S-1-5-32-544".into(), mask: 0x1f01ff, inherit_only: false }],
+        };
+        assert!(validate_security(&summary, true).is_ok());
+        let mut forged = summary.clone();
+        forged.owner = "S-1-5-21-1-2-3-1001".into();
+        assert!(validate_security(&forged, true).is_err());
+        let mut writable = summary.clone();
+        writable.grants.push(AccessGrant { sid: "S-1-5-21-1-2-3-1001".into(), mask: 2, inherit_only: false });
+        assert!(validate_security(&writable, true).is_err());
+        let mut inherited = summary;
+        inherited.protected = false;
+        assert!(validate_security(&inherited, true).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn ancestor_acl_cannot_authorize_unprivileged_replacement_of_protected_root() {
+        use native_security::{validate_security, AccessGrant, SecuritySummary};
+        let mut summary = SecuritySummary {
+            owner: "S-1-5-18".into(), protected: false,
+            grants: vec![AccessGrant { sid: "S-1-5-32-545".into(), mask: 0x116, inherit_only: false }],
+        };
+        assert!(validate_security(&summary, false).is_ok());
+        for dangerous in [0x40, 0x10000, 0x40000, 0x80000, 0x10000000] {
+            summary.grants[0].mask = dangerous;
+            assert!(validate_security(&summary, false).is_err());
+        }
+    }
 }
