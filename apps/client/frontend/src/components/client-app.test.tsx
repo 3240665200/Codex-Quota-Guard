@@ -231,6 +231,8 @@ describe("ClientApp system session gate", () => {
 
     expect(await screen.findByText("启动条件尚未满足")).toBeVisible();
     expect(screen.getByText(/以管理员身份运行/)).toBeVisible();
+    expect(screen.getByText(/默认与 CC Switch 共存/)).toBeVisible();
+    expect(screen.queryByText(/运行期间，统计程序会自动强制结束/)).toBeNull();
     expect(screen.queryByText("登录 Quota Guard")).toBeNull();
     expect(invokeMock).not.toHaveBeenCalledWith("system_current");
   });

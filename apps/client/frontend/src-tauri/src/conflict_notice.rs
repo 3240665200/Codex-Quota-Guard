@@ -613,7 +613,9 @@ mod tests {
 
         assert!(text.contains("已强制结束 CC Switch（本次共 2 个进程）。"));
         assert!(text.contains("CC Switch 中未保存的修改可能丢失。"));
-        assert!(text.contains("请勿在 Quota Guard 运行期间重新打开 CC Switch"));
+        assert!(text.contains("已确认 CC Switch 接管导致官方会话信息不可读"));
+        assert!(text.contains("可继续与 CC Switch 共存"));
+        assert!(!text.contains("请勿在 Quota Guard 运行期间重新打开"));
         assert!(text.contains("已恢复 Codex 连接配置。"));
         assert!(text.contains("重启 Codex 或重新打开会话以重载连接。"));
         assert!(!text.contains("连接成功"));
