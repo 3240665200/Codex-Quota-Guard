@@ -767,6 +767,21 @@ fn is_elevated_admin() -> bool {
 mod tests {
     use super::*;
 
+    #[test]
+    fn native_evidence_never_adopts_a_public_lease_process_identity() {
+        let mut record = GuardLeaseRecord {
+            pid: 10, created_at: 100, lease_id: "held-lease".into(),
+            policy: conflict_evidence::POLICY.into(),
+        };
+        assert!(evidence_lease_matches(&record, "held-lease", 10, Some(100)));
+        assert!(!evidence_lease_matches(&record, "held-lease", 20, Some(100)));
+        assert!(!evidence_lease_matches(&record, "held-lease", 10, Some(200)));
+        assert!(!evidence_lease_matches(&record, "held-lease", 10, None));
+        assert!(!evidence_lease_matches(&record, "another-lease", 10, Some(100)));
+        record.policy = "legacy".into();
+        assert!(!evidence_lease_matches(&record, "held-lease", 10, Some(100)));
+    }
+
     fn restore_event(epoch: &str, count: u64) -> NoticeEvent {
         NoticeEvent {
             lease_id: "lease-a".to_owned(),
