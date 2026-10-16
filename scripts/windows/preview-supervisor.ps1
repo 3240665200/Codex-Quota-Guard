@@ -10,6 +10,7 @@ $request=Get-Content -LiteralPath $requestPath -Raw|ConvertFrom-Json
 $ConfigPath=$request.ConfigPath;$PreviewDirectory=$request.PreviewDirectory
 $BackendPort=[int]$request.BackendPort;$FrontendPort=[int]$request.FrontendPort
 $ProxyKernel=$request.ProxyKernel;$EnableWebLogin=[bool]$request.EnableWebLogin;$BrowserExecutable=$request.BrowserExecutable
+$AuthorizationPresetFile=if($request.PSObject.Properties['AuthorizationPresetFile']){[string]$request.AuthorizationPresetFile}else{''}
 $state=@{Schema=1;RunId=(Split-Path -Leaf $RunDirectory);Phase='STARTING';ErrorCode=$null;LaunchMode='WMI';
     Supervisor=@{Pid=$PID;CreatedUtc=[Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().ToString('o');JobFlags=[Pingche.Preview.Native]::CurrentJobFlags()};
     Backend=@{Port=$BackendPort;Launcher=$null;Listener=$null;LauncherExitCode=$null;ListenerExitCode=$null};
@@ -23,6 +24,10 @@ try {
         if($port -lt 1024 -or $port -gt 65535 -or @(Get-NetTCPConnection -State Listen -ErrorAction Stop|Where-Object LocalPort -eq $port).Count -gt 0){throw 'PREVIEW_PORT_UNAVAILABLE'}
     }
     if($BackendPort -eq $FrontendPort){throw 'PREVIEW_PORTS_MUST_DIFFER'}
+    if($AuthorizationPresetFile) {
+        if(![IO.Path]::IsPathRooted($AuthorizationPresetFile) -or !(Test-Path -LiteralPath $AuthorizationPresetFile -PathType Leaf)){throw 'PREVIEW_AUTHORIZATION_PRESET_INVALID'}
+        Assert-PreviewPath $AuthorizationPresetFile
+    }
     if($EnableWebLogin) {
         if(!$BrowserExecutable -or ![IO.Path]::IsPathRooted($BrowserExecutable) -or !(Test-Path -LiteralPath $BrowserExecutable -PathType Leaf)){throw 'PREVIEW_BROWSER_EXECUTABLE_INVALID'}
         Assert-PreviewPath $BrowserExecutable
@@ -65,6 +70,7 @@ try {
         $apiEnvironment['WEB_LOGIN_BROWSER_ENABLED']=if($EnableWebLogin){'true'}else{'false'}
         if($EnableWebLogin){$apiEnvironment['WEB_LOGIN_BROWSER_EXECUTABLE']=$BrowserExecutable}
         $apiEnvironment['WEB_LOGIN_BROWSER_HEADLESS']='true'
+        if($AuthorizationPresetFile){$apiEnvironment['OFFICIAL_AUTHORIZATION_PRESET_FILE']=$AuthorizationPresetFile}
         $apiEnvironment['JAVA_HOME']=Split-Path -Parent (Split-Path -Parent $request.Tools.Java)
         $apiEnvironment['CORS_ALLOWED_ORIGINS']="http://localhost:$FrontendPort,http://127.0.0.1:$FrontendPort"
         $backend=$job.Spawn($request.Tools.ComSpec,(New-PreviewBatchArguments $request.Tools.Maven @('-o','-f',(Join-Path $repository 'apps\admin\backend\pom.xml'),'-Dmaven.test.skip=true','spring-boot:run')),$repository,$apiEnvironment,$apiLog,$apiError)
