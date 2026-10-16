@@ -199,6 +199,9 @@ fn dormant_or_other_proxy_and_ambiguous_profiles_never_prove_cc_conflict() {
     for config in [
         DORMANT_CONFIG.to_owned(),
         PROXY_CONFIG.replace("15721", "15722"),
+        PROXY_CONFIG.replace("127.0.0.1", "[::1]"),
+        PROXY_CONFIG.replace("http://127.0.0.1", "https://127.0.0.1"),
+        PROXY_CONFIG.replace("http://127.0.0.1:15721/v1", "http://127.0.0.1:15721/v1?other=true"),
         format!("{PROXY_CONFIG}\n[profiles.other]\nmodel_provider = \"custom\"\n"),
     ] {
         let fixture = Fixture::new(&config, Some(PLACEHOLDER_AUTH));
@@ -208,6 +211,19 @@ fn dormant_or_other_proxy_and_ambiguous_profiles_never_prove_cc_conflict() {
             .unwrap();
         assert!(conflict_snapshot_at(&fixture.root).unwrap().is_none());
     }
+}
+
+#[test]
+fn conflict_snapshot_rejects_a_changed_cc_database_or_wal() {
+    let fixture = Fixture::new(PROXY_CONFIG, Some(PLACEHOLDER_AUTH));
+    fixture.db().execute("UPDATE proxy_config SET live_takeover_active = 1", []).unwrap();
+    let before = conflict_snapshot_at(&fixture.root).unwrap().unwrap();
+    fixture.db().execute("UPDATE proxy_config SET listen_port = 15722", []).unwrap();
+    assert!(!before.matches_current(&fixture.root.join(".codex")));
+    fixture.db().execute("UPDATE proxy_config SET listen_port = 15721", []).unwrap();
+    let before = conflict_snapshot_at(&fixture.root).unwrap().unwrap();
+    fs::write(fixture.root.join(".cc-switch/cc-switch.db-wal"), b"synthetic-change").unwrap();
+    assert!(!before.matches_current(&fixture.root.join(".codex")));
 }
 
 #[test]
