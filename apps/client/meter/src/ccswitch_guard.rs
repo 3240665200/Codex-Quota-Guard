@@ -218,6 +218,9 @@ fn enforce<O: GuardOps>(lease: &GuardLease, owner_sid: &str, ops: &O) -> GuardCh
                     GuardState::Clear
                 });
             }
+            if !ops.lease_current(lease)? || app.exited(0)? {
+                return Ok(GuardState::Inactive);
+            }
             // The service runs in Session 0 and cannot close the user's windows.
             // End the verified process directly, then confirm it exited.
             cc.terminate()?;
@@ -610,12 +613,13 @@ mod native {
         }
 
         fn conflict_current(&self, lease: &GuardLease, evidence: &ConflictEvidence) -> bool {
-            evidence.fresh_for(
-                &lease.lease_id.to_string(),
-                lease.pid,
-                lease.created_at,
-                epoch_seconds(),
-            ) && evidence.snapshot.matches_current(&self.codex_home)
+            evidence.snapshot.matches_current(&self.codex_home)
+                && evidence.fresh_for(
+                    &lease.lease_id.to_string(),
+                    lease.pid,
+                    lease.created_at,
+                    epoch_seconds(),
+                )
         }
 
         fn open(&self, pid: u32) -> Result<Option<Self::Process>, ()> {

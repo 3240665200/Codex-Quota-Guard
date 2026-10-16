@@ -145,7 +145,7 @@ pub(crate) enum BackendError {
     SessionStorageUnavailable,
     #[error("请先完成本设备官方会话绑定。")]
     SessionBindingRequired,
-    #[error("已确认 CC Switch 接管导致官方会话不可读，正在核实当前连接冲突。")]
+    #[error("官方会话当前使用代理凭据，无法读取官方额度；请检查 Codex 连接设置。")]
     OfficialSessionConflict,
 }
 

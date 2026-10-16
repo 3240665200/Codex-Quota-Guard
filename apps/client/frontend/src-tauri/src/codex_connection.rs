@@ -110,7 +110,7 @@ fn conflict_snapshot_at(profile: &Path) -> Result<Option<ConflictSnapshot>, &'st
     if auth.get("OPENAI_API_KEY").and_then(Json::as_str) != Some("PROXY_MANAGED")
         || auth.get("auth_mode").and_then(Json::as_str) == Some("chatgpt")
         || auth.get("tokens").is_some_and(|tokens| {
-            !tokens.is_null() && tokens.as_object().is_none_or(|tokens| !tokens.is_empty())
+            !tokens.is_null() && tokens.as_object().map_or(true, |tokens| !tokens.is_empty())
         })
         || ["access_token", "refresh_token", "id_token"]
             .iter()
@@ -143,10 +143,30 @@ fn conflict_snapshot_at(profile: &Path) -> Result<Option<ConflictSnapshot>, &'st
         "SELECT listen_address, listen_port, live_takeover_active FROM proxy_config WHERE app_type = 'codex'",
         [], |row| Ok(ProxyAddress { host: row.get(0)?, port: row.get(1)?, takeover: row.get(2)? }),
     ).optional().map_err(|_| INVALID)?;
-    if !proxy.is_some_and(|proxy| proxy.takeover && proxy_provider(provider, &proxy)) {
+    if !proxy.is_some_and(|proxy| proxy.takeover && conflict_proxy_provider(provider, &proxy)) {
         return Ok(None);
     }
     Ok(before.matches_current(&codex).then_some(before))
+}
+
+fn conflict_proxy_provider(provider: &Item, proxy: &ProxyAddress) -> bool {
+    let Some(url) = provider.get("base_url").and_then(Item::as_str) else {
+        return false;
+    };
+    let Ok(parsed) = Url::parse(url) else {
+        return false;
+    };
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    // A wildcard IPv4 listener does not prove ownership of an IPv6 endpoint,
+    // nor does a local port prove ownership of an HTTPS or remote endpoint.
+    parsed.scheme() == "http"
+        && matches!(host, "127.0.0.1" | "localhost" | "::1" | "[::1]")
+        && (host.eq_ignore_ascii_case(&proxy.host)
+            || (proxy.host == "0.0.0.0" && host == "127.0.0.1")
+            || (matches!(proxy.host.as_str(), "::" | "[::]") && matches!(host, "::1" | "[::1]")))
+        && proxy.matches(url)
 }
 
 #[cfg(windows)]

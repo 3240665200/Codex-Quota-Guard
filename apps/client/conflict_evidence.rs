@@ -95,6 +95,13 @@ pub(crate) fn read_regular(path: &Path, limit: u64) -> Result<Option<Vec<u8>>, (
         Err(_) => return Err(()),
     };
     let metadata = input.metadata().map_err(|_| ())?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes() & 0x400 != 0 {
+            return Err(());
+        }
+    }
     if !metadata.is_file() || metadata.len() > limit {
         return Err(());
     }
