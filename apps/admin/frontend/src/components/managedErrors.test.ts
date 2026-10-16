@@ -2,6 +2,18 @@ import { describe, expect, it } from 'vitest';
 import { managedErrorMessage } from './managedErrors';
 
 it.each([
+  ['PROXY_SUBSCRIPTION_FORMAT_UNSUPPORTED', /Clash YAML.*URI.*Base64/],
+  ['PROXY_SUBSCRIPTION_FAILED', /HTTPS.*443/],
+  ['PROXY_NODE_SOURCE_MISSING', /订阅.*移除/],
+  ['PROXY_NODE_SUBSCRIPTION_MANAGED', /订阅.*更新/],
+  ['PROXY_SUBSCRIPTION_VERSION_CONFLICT', /刷新.*重试/],
+])('explains subscription constraint %s without rendering private URL details', (code, expected) => {
+  const message = managedErrorMessage({ code, message: 'https://private.example/?token=fixture-private' });
+  expect(message).toMatch(expected);
+  expect(message).not.toContain('fixture-private');
+});
+
+it.each([
   ['OFFICIAL_PROXY_REQUIRED', '请为当前官方账户选择一个已启用的代理节点并重新保存授权，所有官方请求均禁止直连。'],
   ['PROXY_NODE_INVALID', '节点信息无效，请检查名称、协议、服务器、端口及用户名和密码。'],
   ['PROXY_NODE_UNAVAILABLE', '此账户保存的代理节点不可用，请检查节点状态或重新选择并保存。'],
