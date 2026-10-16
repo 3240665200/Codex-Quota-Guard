@@ -442,6 +442,20 @@ mod native_security {
         use super::*;
 
         #[test]
+        fn pinned_directory_blocks_rename_and_reparse_write_access() {
+            let directory = std::env::temp_dir().join(format!("guard-pin-{}", uuid::Uuid::new_v4()));
+            fs::create_dir(&directory).unwrap();
+            let renamed = directory.with_extension("moved");
+            let pinned = pin_directory(&directory).unwrap();
+            assert!(fs::rename(&directory, &renamed).is_err());
+            assert!(OpenOptions::new().access_mode(0x40000000)
+                .share_mode(7).custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+                .open(&directory).is_err());
+            drop(pinned);
+            fs::remove_dir(directory).unwrap();
+        }
+
+        #[test]
         fn evidence_output_is_created_with_privileged_owner_or_is_rejected() {
             let directory = std::env::temp_dir().join(format!("guard-output-{}", uuid::Uuid::new_v4()));
             fs::create_dir(&directory).unwrap();
