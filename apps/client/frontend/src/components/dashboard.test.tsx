@@ -110,42 +110,28 @@ async function renderDashboard(
 }
 
 describe("Dashboard", () => {
-  it("does not show the administrator login helper to a regular system user", async () => {
-    await renderDashboard();
-    fireEvent.click(screen.getByRole("button", { name: "设置" }));
-    await screen.findByRole("heading", { name: "启动设置" });
-    expect(screen.queryByRole("heading", { name: "官方登录助手" })).toBeNull();
-    expect(
-      invokeMock.mock.calls.some(
-        ([name]) => name === "official_login_helper_jobs",
-      ),
-    ).toBe(false);
-  });
-  it("shows the administrator helper in settings without starting a browser", async () => {
-    const original = invokeMock.getMockImplementation()!;
-    invokeMock.mockImplementation(async (name, args) => {
-      if (name === "official_login_helper_jobs") return [];
-      if (name === "official_login_helper_status")
-        return {
-          jobId: null,
-          state: "IDLE",
-          errorCode: null,
-          accountName: null,
-        };
-      return original(name, args);
-    });
-    await renderDashboard(undefined, {
-      ...session,
-      user: { ...session.user!, role: "ADMIN" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "设置" }));
-    await screen.findByRole("heading", { name: "官方登录助手" });
-    expect(
-      invokeMock.mock.calls.some(
-        ([name]) => name === "official_login_helper_start",
-      ),
-    ).toBe(false);
-  });
+  it.each(["USER", "ADMIN"])(
+    "keeps mail assistance and settings free of the retired browser helper for %s",
+    async (role) => {
+      await renderDashboard(undefined, {
+        ...session,
+        user: { ...session.user!, role },
+      });
+      for (const [page, heading] of [
+        ["设置", "启动设置"],
+        ["登录辅助", "监听登录邮件"],
+      ]) {
+        fireEvent.click(screen.getByRole("button", { name: page }));
+        await screen.findByRole("heading", { name: heading });
+        expect(screen.queryByRole("region", { name: "官方登录助手" })).toBeNull();
+        expect(
+          invokeMock.mock.calls.some(([name]) =>
+            name.startsWith("official_login_helper_"),
+          ),
+        ).toBe(false);
+      }
+    },
+  );
   it("keeps binding and login assistance identities separate when changing pages", async () => {
     const warnings = vi.spyOn(console, "error").mockImplementation(() => {});
     try {

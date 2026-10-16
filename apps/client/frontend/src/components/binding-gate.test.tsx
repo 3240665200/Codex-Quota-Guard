@@ -137,6 +137,16 @@ describe("device binding access gate", () => {
       throw new Error("unsupported");
     });
   });
+  it("keeps mail and session binding available to an unbound admin without the retired helper", async () => {
+    show("ADMIN");
+    await screen.findByRole("heading", { name: "监听登录邮件" });
+    expect(mock).toHaveBeenCalledWith("session_binding_current");
+    expect(mock).toHaveBeenCalledWith("login_assistance_info");
+    expect(screen.queryByRole("region", { name: "官方登录助手" })).toBeNull();
+    expect(
+      mock.mock.calls.some(([name]) => name.startsWith("official_login_helper_")),
+    ).toBe(false);
+  });
   it("does not reset an already verified gate when opening its saved binding record", async () => {
     access = { allowed: true, bindingId, reason: null };
     const original = mock.getMockImplementation()!;
