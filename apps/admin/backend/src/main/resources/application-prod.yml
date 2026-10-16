@@ -1,5 +1,2 @@
 server:
   forward-headers-strategy: framework
-
-app:
-  require-https: true

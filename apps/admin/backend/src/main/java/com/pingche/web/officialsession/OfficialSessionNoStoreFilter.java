@@ -15,7 +15,8 @@ import org.springframework.web.filter.OncePerRequestFilter;
 public class OfficialSessionNoStoreFilter extends OncePerRequestFilter {
     @Override protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
-        if (request.getRequestURI().matches("/api/v1/admin/official-accounts/[^/]+/(connection(?:/refresh)?|sessions|browser-login|web-login|session-logout(?:/.*)?)")
+        if (request.getRequestURI().matches("/api/v1/admin/official-accounts/[^/]+/(connection(?:/(?:refresh|preset))?|sessions|browser-login|web-login|session-logout(?:/.*)?)")
+                || request.getRequestURI().equals("/api/v1/admin/official-authorization-preset")
                 || request.getRequestURI().startsWith("/api/v1/admin/browser-logins")
                 || request.getRequestURI().startsWith("/api/v1/admin/web-logins")) {
             response.setHeader("Cache-Control", "no-store");
