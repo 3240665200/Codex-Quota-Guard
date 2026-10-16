@@ -6,4 +6,5 @@ import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface ProxyNodeRepository extends JpaRepository<ProxyNode, UUID> {
     List<ProxyNode> findAllByOrderByLabelAscIdAsc();
+    List<ProxyNode> findAllBySourceSubscriptionId(UUID sourceSubscriptionId);
 }

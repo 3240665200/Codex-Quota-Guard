@@ -19,6 +19,9 @@ public class ProxyNode {
     @Column(name = "config_cipher", nullable = false, columnDefinition = "text") private String configCipher;
     @Column(name = "has_credentials", nullable = false) private boolean hasCredentials;
     @Column(nullable = false) private boolean enabled;
+    @Column(name = "source_subscription_id") private UUID sourceSubscriptionId;
+    @Column(name = "source_node_key", length = 120) private String sourceNodeKey;
+    @Column(name = "source_missing", nullable = false) private boolean sourceMissing;
     @Column(name = "created_at", nullable = false) private Instant createdAt;
     @Column(name = "updated_at", nullable = false) private Instant updatedAt;
     @Column(name = "egress_ip", length = 45) private String egressIp;
@@ -50,6 +53,18 @@ public class ProxyNode {
     String encryptedConfiguration() { return configCipher; }
     public boolean hasCredentials() { return hasCredentials; }
     public boolean isEnabled() { return enabled; }
+    public UUID getSourceSubscriptionId() { return sourceSubscriptionId; }
+    public String getSourceNodeKey() { return sourceNodeKey; }
+    public boolean isSourceMissing() { return sourceMissing; }
+    void setEnabled(boolean enabled, Instant now) { this.enabled = enabled; this.updatedAt = now; }
+    void attachSubscription(UUID id, String key) { this.sourceSubscriptionId = id; this.sourceNodeKey = key; }
+    void sourceMissing(boolean missing, Instant now) {
+        if (this.sourceMissing != missing) { this.sourceMissing = missing; this.updatedAt = now; }
+        if (missing && enabled) setEnabled(false, now);
+    }
+    void detachSubscription(Instant now) {
+        this.sourceSubscriptionId = null; this.sourceNodeKey = null; this.sourceMissing = false; this.updatedAt = now;
+    }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
     public long getVersion() { return version; }

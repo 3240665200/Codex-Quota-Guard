@@ -43,6 +43,10 @@ public class AdminProxyNodeController {
     public ResponseEntity<Void> delete(@PathVariable UUID id, HttpServletRequest http) {
         secure(http); service.delete(id); return ResponseEntity.noContent().cacheControl(CacheControl.noStore()).build();
     }
+    @PutMapping("/{id}/enabled")
+    public ResponseEntity<ProxyNodeResponse> enabled(@PathVariable UUID id, @Valid @RequestBody ProxyNodeEnabledRequest request, HttpServletRequest http) {
+        secure(http); return noStore(service.setEnabled(id, request));
+    }
     @PostMapping("/import")
     public ResponseEntity<Void> importNodes(HttpServletRequest http) {
         secure(http);

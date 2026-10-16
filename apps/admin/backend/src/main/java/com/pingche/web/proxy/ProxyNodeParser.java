@@ -15,6 +15,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.HashSet;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.JsonNode;
@@ -143,10 +144,11 @@ public class ProxyNodeParser {
     List<ProxyNodeDefinition> parseSubscription(String input) {
         if (input == null || input.getBytes(StandardCharsets.UTF_8).length > MAX_SUBSCRIPTION_BYTES) throw invalid();
         String value = input.strip();
-        if (value.startsWith("{") || value.startsWith("[") || value.startsWith("proxies:") || value.startsWith("---")) throw unsupportedFormat();
-        if (!value.contains("://")) {
+        if (!value.matches("(?s)^[a-zA-Z][a-zA-Z0-9+.-]*://.*")) {
             try { value = decodeBase64(value.replaceAll("\\s", "")); }
-            catch (RuntimeException ignored) { throw invalid(); }
+            catch (RuntimeException ignored) { return uniqueNames(new ProxyClashParser(this, json).parse(value)); }
+            if (!value.matches("(?s)^[a-zA-Z][a-zA-Z0-9+.-]*://.*"))
+                return uniqueNames(new ProxyClashParser(this, json).parse(value));
         }
         List<ProxyNodeDefinition> nodes = new ArrayList<>();
         for (String line : value.split("\\R")) {
@@ -155,6 +157,13 @@ public class ProxyNodeParser {
             nodes.add(parse(line));
         }
         if (nodes.isEmpty()) throw invalid();
+        return uniqueNames(nodes);
+    }
+
+    private List<ProxyNodeDefinition> uniqueNames(List<ProxyNodeDefinition> nodes) {
+        Set<String> names = new HashSet<>();
+        for (ProxyNodeDefinition node : nodes) if (!names.add(node.label()))
+            throw new DomainException("PROXY_SUBSCRIPTION_DUPLICATE_NAME", "订阅中存在重复节点名称，无法安全匹配节点；请修改来源后重试。", HttpStatus.BAD_REQUEST);
         return List.copyOf(nodes);
     }
 
@@ -282,8 +291,5 @@ public class ProxyNodeParser {
     }
     private static DomainException invalid() {
         return new DomainException("PROXY_NODE_INVALID", "代理链接无效或包含不支持的参数；请使用受支持的协议变体。", HttpStatus.BAD_REQUEST);
-    }
-    private static DomainException unsupportedFormat() {
-        return new DomainException("PROXY_SUBSCRIPTION_FORMAT_UNSUPPORTED", "目前仅支持 URI 行或其 Base64 订阅，不支持 Clash YAML 或 sing-box JSON 配置。", HttpStatus.BAD_REQUEST);
     }
 }

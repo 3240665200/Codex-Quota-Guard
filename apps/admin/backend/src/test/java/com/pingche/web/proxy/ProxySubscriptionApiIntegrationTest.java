@@ -3,6 +3,9 @@ package com.pingche.web.proxy;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.doReturn;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
@@ -76,6 +79,11 @@ class ProxySubscriptionApiIntegrationTest {
         JsonNode subscription = create();
         String id = subscription.get("id").asString();
         UUID node = sourceNode(id);
+        UUID account = UUID.randomUUID();
+        jdbc.update("insert into official_accounts(id,label,estimated_total_tokens,created_at,updated_at,version) values (?,?,0,current_timestamp,current_timestamp,0)",
+                account, "Subscription binding " + account);
+        jdbc.update("insert into official_account_connections(official_account_id,requested_account_id,proxy_node_id,authorization_cipher,status,revision,imported_at,version) values (?,?,?,?,'UNVERIFIED',?,current_timestamp,0)",
+                account, "synthetic-account", node, "synthetic-unused-cipher", UUID.randomUUID());
         String originalCipher = nodeCipher(node);
         long nodeVersion = jdbc.queryForObject("select version from managed_proxy_nodes where id = ?", Long.class, node);
         mvc.perform(put("/api/v1/admin/proxy-nodes/" + node).secure(true).header("Authorization", token)
@@ -91,7 +99,12 @@ class ProxySubscriptionApiIntegrationTest {
         when(fetcher.fetch(URL)).thenReturn("socks5://other.example.com:1080#New");
         subscription = refresh(id, subscription.get("version").asLong());
         assertThat(jdbc.queryForObject("select source_missing from managed_proxy_nodes where id = ?", Boolean.class, node)).isTrue();
+        long missingVersion = jdbc.queryForObject("select version from managed_proxy_nodes where id = ?", Long.class, node);
+        mvc.perform(put("/api/v1/admin/proxy-nodes/" + node + "/enabled").secure(true).header("Authorization", token)
+                .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(Map.of("enabled", true, "version", missingVersion))))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("PROXY_NODE_SOURCE_MISSING"));
         assertThat(nodeCipher(node)).isEqualTo(originalCipher);
+        assertThat(jdbc.queryForObject("select proxy_node_id from official_account_connections where official_account_id = ?", UUID.class, account)).isEqualTo(node);
         when(fetcher.fetch(URL)).thenReturn("http://alice:synthetic-node-secret@proxy.example.com:8080#Stable");
         subscription = refresh(id, subscription.get("version").asLong());
         assertThat(jdbc.queryForObject("select source_missing from managed_proxy_nodes where id = ?", Boolean.class, node)).isFalse();
@@ -108,12 +121,19 @@ class ProxySubscriptionApiIntegrationTest {
         String id = subscription.get("id").asString();
         UUID node = sourceNode(id);
         String cipher = nodeCipher(node);
+        String subscriptionCipher = jdbc.queryForObject("select url_cipher from managed_proxy_subscriptions where id = cast(? as uuid)", String.class, id);
         when(fetcher.fetch(URL)).thenThrow(new DomainException("PROXY_SUBSCRIPTION_FAILED", "订阅获取失败。", HttpStatus.BAD_REQUEST));
         mvc.perform(post(BASE + "/" + id + "/refresh").secure(true).header("Authorization", token).contentType(MediaType.APPLICATION_JSON)
                 .content(json.writeValueAsString(Map.of("version", subscription.get("version").asLong())))).andExpect(status().isBadRequest());
         assertThat(sourceNode(id)).isEqualTo(node);
         assertThat(nodeCipher(node)).isEqualTo(cipher);
-        when(fetcher.fetch(URL)).thenReturn("http://one.example.com:80#Duplicate\nhttp://two.example.com:80#Duplicate");
+        doReturn("a".repeat(1_048_577)).when(fetcher).fetch(URL);
+        mvc.perform(post(BASE + "/" + id + "/refresh").secure(true).header("Authorization", token).contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsString(Map.of("version", subscription.get("version").asLong())))).andExpect(status().isBadRequest());
+        assertThat(jdbc.queryForObject("select url_cipher from managed_proxy_subscriptions where id = cast(? as uuid)", String.class, id)).isEqualTo(subscriptionCipher);
+        assertThat(jdbc.queryForObject("select version from managed_proxy_subscriptions where id = cast(? as uuid)", Long.class, id)).isEqualTo(subscription.get("version").asLong());
+        assertThat(nodeCipher(node)).isEqualTo(cipher);
+        doReturn("http://one.example.com:80#Duplicate\nhttp://two.example.com:80#Duplicate").when(fetcher).fetch(URL);
         mvc.perform(post(BASE + "/" + id + "/refresh").secure(true).header("Authorization", token).contentType(MediaType.APPLICATION_JSON)
                 .content(json.writeValueAsString(Map.of("version", subscription.get("version").asLong())))).andExpect(status().isBadRequest());
         assertThat(sourceNode(id)).isEqualTo(node);
@@ -129,6 +149,44 @@ class ProxySubscriptionApiIntegrationTest {
                 .andExpect(status().isOk()).andExpect(jsonPath("$.label").value("Renamed")).andExpect(jsonPath("$.url").doesNotExist());
         mvc.perform(put(BASE + "/" + id).secure(true).header("Authorization", token).contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isConflict());
+    }
+
+    @Test
+    void changingUrlWaitsForManualRefreshAndRefreshUpdatesConfigurationWithoutChangingNodeId() throws Exception {
+        JsonNode subscription = create();
+        String id = subscription.get("id").asString();
+        UUID node = sourceNode(id);
+        String oldCipher = nodeCipher(node);
+        String replacement = "https://new-subscription.example.com/list?token=synthetic-new-token";
+        String result = mvc.perform(put(BASE + "/" + id).secure(true).header("Authorization", token).contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsString(Map.of("label", "Changed URL", "url", replacement, "version", subscription.get("version").asLong()))))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("URL_UPDATED"))
+                .andReturn().getResponse().getContentAsString();
+        assertThat(result).doesNotContain("synthetic-new-token", replacement);
+        verify(fetcher, times(1)).fetch(URL);
+        verify(fetcher, times(0)).fetch(replacement);
+        assertThat(nodeCipher(node)).isEqualTo(oldCipher);
+        when(fetcher.fetch(replacement)).thenReturn("socks5://updated:synthetic-updated-password@new-proxy.example.com:1080#Stable");
+        refresh(id, json.readTree(result).get("version").asLong());
+        assertThat(sourceNode(id)).isEqualTo(node);
+        assertThat(nodeCipher(node)).isNotEqualTo(oldCipher);
+        assertThat(jdbc.queryForObject("select protocol from managed_proxy_nodes where id = ?", String.class, node)).isEqualTo("SOCKS5");
+    }
+
+    @Test
+    void invalidUrlsAndUnsupportedTransportFailBeforeFetchingAndDoNotEchoInput() throws Exception {
+        for (String url : new String[] {"http://public.example.com/list?token=synthetic-secret", "https://user:synthetic-secret@public.example.com/list",
+                "https://127.0.0.1/list", "https://localhost/list", "https://public.example.com:8443/list", "https://public.example.com/list#synthetic-secret"}) {
+            String response = mvc.perform(post(BASE).secure(true).header("Authorization", token).contentType(MediaType.APPLICATION_JSON)
+                    .content(json.writeValueAsString(Map.of("label", "Rejected", "url", url))))
+                    .andExpect(status().isBadRequest()).andExpect(header().string("Cache-Control", "no-store"))
+                    .andReturn().getResponse().getContentAsString();
+            assertThat(response).doesNotContain(url, "synthetic-secret");
+        }
+        mvc.perform(post(BASE).with(http -> { http.setScheme("ftp"); return http; }).header("Authorization", token)
+                .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(Map.of("label", "Transport", "url", URL))))
+                .andExpect(status().isForbidden());
+        verifyNoInteractions(fetcher);
     }
 
     private JsonNode create() throws Exception {

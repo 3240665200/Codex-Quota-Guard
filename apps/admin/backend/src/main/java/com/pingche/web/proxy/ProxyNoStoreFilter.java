@@ -12,7 +12,9 @@ import org.springframework.web.filter.OncePerRequestFilter;
 public class ProxyNoStoreFilter extends OncePerRequestFilter {
     @Override protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
-        if (request.getRequestURI().startsWith("/api/v1/admin/proxy-nodes")) {
+        if (request.getRequestURI().startsWith("/api/v1/admin/proxy-nodes")
+                || request.getRequestURI().startsWith("/api/v1/admin/proxy-subscriptions")
+                || request.getRequestURI().startsWith("/api/v1/admin/proxy-chains")) {
             response.setHeader("Cache-Control", "no-store"); response.setHeader("Pragma", "no-cache");
         }
         chain.doFilter(request, response);

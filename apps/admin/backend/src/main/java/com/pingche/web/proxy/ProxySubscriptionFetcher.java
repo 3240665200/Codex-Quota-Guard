@@ -47,10 +47,7 @@ public class ProxySubscriptionFetcher implements DisposableBean {
         var deadline = deadlines.schedule(() -> { expired.set(true); close(active.get()); }, 15, TimeUnit.SECONDS);
         Socket socket = null;
         try {
-            if (value == null || value.length() > 8192) throw failed();
-            URI uri = URI.create(value);
-            if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getRawUserInfo() != null || uri.getRawFragment() != null
-                    || (uri.getPort() != -1 && uri.getPort() != 443)) throw failed();
+            URI uri = subscriptionUri(value);
             String host = ProxyNodeParser.normalizeHost(uri.getHost());
             InetAddress pinned = endpoints.resolve(host, false);
             if (expired.get()) throw failed();
@@ -70,6 +67,19 @@ public class ProxySubscriptionFetcher implements DisposableBean {
                     .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(body)).toString();
         } catch (IOException | RuntimeException ignored) { throw failed(); }
         finally { deadline.cancel(false); close(socket); close(active.get()); }
+    }
+
+    static URI subscriptionUri(String value) {
+        try {
+            if (value == null || value.isBlank() || value.length() > 8192 || value.chars().anyMatch(c -> c <= 32 || c == 127)) throw failed();
+            URI uri = URI.create(value);
+            if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getRawUserInfo() != null || uri.getRawFragment() != null
+                    || (uri.getPort() != -1 && uri.getPort() != 443)) throw failed();
+            String host = ProxyNodeParser.normalizeHost(uri.getHost());
+            if (host.equals("localhost") || host.endsWith(".localhost") || host.endsWith(".local")) throw failed();
+            if ((host.matches("[0-9.]+") || host.contains(":")) && !ProxyEndpointPolicy.isPublic(InetAddress.getByName(host))) throw failed();
+            return uri;
+        } catch (IOException | RuntimeException ignored) { throw failed(); }
     }
 
     private static Socket connect(String host, InetAddress pinned, int port, AtomicReference<Socket> active) throws IOException {

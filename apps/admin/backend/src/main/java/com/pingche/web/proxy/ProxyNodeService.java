@@ -45,6 +45,8 @@ public class ProxyNodeService {
     @Transactional
     public ProxyNodeResponse update(UUID id, ProxyNodeRequest request) {
         ProxyNode node = required(id);
+        if (node.getSourceSubscriptionId() != null)
+            throw new DomainException("PROXY_NODE_SUBSCRIPTION_MANAGED", "订阅节点配置由手动更新订阅维护，请使用启用或停用操作。", HttpStatus.CONFLICT);
         if (request.version() == null || request.version() != node.getVersion())
             throw new DomainException("PROXY_NODE_VERSION_CONFLICT", "代理节点已变更，请刷新后重试。", HttpStatus.CONFLICT);
         String previous = cipher.decrypt(node.encryptedConfiguration(), id.toString());
@@ -52,6 +54,17 @@ public class ProxyNodeService {
         String encrypted = cipher.encrypt(definition.outboundJson(), id.toString());
         if (definition.outboundJson().equals(previous) && definition.protocol().equals(node.getProtocol())) definition = null;
         node.update(ProxyNodeParser.label(request.label()), definition, encrypted, request.enabled(), clock.instant());
+        return ProxyNodeResponse.from(nodes.saveAndFlush(node));
+    }
+
+    @Transactional
+    public ProxyNodeResponse setEnabled(UUID id, ProxyNodeEnabledRequest request) {
+        ProxyNode node = required(id);
+        if (request.version() == null || request.version() != node.getVersion())
+            throw new DomainException("PROXY_NODE_VERSION_CONFLICT", "代理节点已变更，请刷新后重试。", HttpStatus.CONFLICT);
+        if (Boolean.TRUE.equals(request.enabled()) && node.isSourceMissing())
+            throw new DomainException("PROXY_NODE_SOURCE_MISSING", "该节点已从订阅消失，请先手动更新订阅确认其恢复。", HttpStatus.CONFLICT);
+        node.setEnabled(Boolean.TRUE.equals(request.enabled()), clock.instant());
         return ProxyNodeResponse.from(nodes.saveAndFlush(node));
     }
 
