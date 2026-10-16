@@ -54,7 +54,7 @@ public class OfficialAuthorizationPresetService {
             throw new DomainException("OFFICIAL_PRESET_REVISION_CONFLICT", "Official authorization preset changed; reload before applying", HttpStatus.CONFLICT);
         OfficialSessionCredentials credentials = snapshot.credentials();
         return connections.save(accountId, new OfficialConnectionRequest(credentials.authorization(), credentials.cookie(),
-                credentials.requestedAccountId(), request.proxyNodeId(), request.version()));
+                credentials.requestedAccountId(), request.proxyNodeId(), request.version(), request.frontProxyNodeId()));
     }
 
     private Snapshot readSnapshot() {

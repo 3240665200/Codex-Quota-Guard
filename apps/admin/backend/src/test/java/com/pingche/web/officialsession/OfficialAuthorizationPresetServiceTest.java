@@ -44,10 +44,10 @@ class OfficialAuthorizationPresetServiceTest {
         String hash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(VALID.getBytes(StandardCharsets.UTF_8)));
         assertThat(metadata).isEqualTo(new OfficialAuthorizationPresetResponse(true, "preset-account", hash, null));
         assertThat(new JsonMapper().writeValueAsString(metadata)).doesNotContain("synthetic-preset-token", "synthetic-cookie", file.toString());
-        UUID accountId = UUID.randomUUID(), proxyId = UUID.randomUUID();
-        service.apply(accountId, new OfficialAuthorizationPresetRequest(7L, proxyId, hash));
+        UUID accountId = UUID.randomUUID(), proxyId = UUID.randomUUID(), frontId = UUID.randomUUID();
+        service.apply(accountId, new OfficialAuthorizationPresetRequest(7L, proxyId, hash, frontId));
         verify(connections).save(accountId, new OfficialConnectionRequest("Bearer synthetic-preset-token",
-                "__Secure-next-auth.session-token=synthetic-cookie", "preset-account", proxyId, 7L));
+                "__Secure-next-auth.session-token=synthetic-cookie", "preset-account", proxyId, 7L, frontId));
     }
 
     @Test

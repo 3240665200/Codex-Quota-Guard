@@ -27,7 +27,7 @@ class WebLoginServiceTest {
     ManagedLoginBrowser.Session session;
     WebLoginService service;
     BrowserLoginService desktop;
-    UUID owner = UUID.randomUUID(), account = UUID.randomUUID();
+    UUID owner = UUID.randomUUID(), account = UUID.randomUUID(), proxy = UUID.randomUUID();
     AtomicReference<Instant> now = new AtomicReference<>(Instant.parse("2026-10-15T00:00:00Z"));
     Clock clock;
 
@@ -37,6 +37,7 @@ class WebLoginServiceTest {
         jdbc.execute("create table users(id uuid primary key,role varchar(16),status varchar(16),session_version bigint not null)");
         jdbc.execute("create table official_accounts(id uuid primary key,label varchar(120))");
         jdbc.execute("create table managed_proxy_nodes(id uuid primary key,enabled boolean not null default true)");
+        jdbc.update("insert into managed_proxy_nodes(id) values (?)",proxy);
         jdbc.execute("create table official_session_logout_plans(official_account_id uuid,status varchar(32))");
         jdbc.update("insert into users values (?,'ADMIN','ACTIVE',0)",owner);
         jdbc.update("insert into official_accounts values (?,?)",account,"Synthetic account");
@@ -93,7 +94,7 @@ class WebLoginServiceTest {
         var result=service.complete(owner,job.id());
         assertThat(result.state()).isEqualTo("COMPLETED");
         var ordered=inOrder(client,connections);
-        ordered.verify(client).fetch(any(OfficialSessionCredentials.class),isNull());
+        ordered.verify(client).fetch(any(OfficialSessionCredentials.class),eq(proxy));
         ordered.verify(connections).saveVerified(eq(account),argThat(request -> request.version()==0L && request.authorization().equals("Bearer synthetic-token")),any());
         verify(connections,never()).refresh(any());
         verify(session).close();
@@ -138,14 +139,14 @@ class WebLoginServiceTest {
         var first=create();
         UUID secondAccount=UUID.randomUUID();
         jdbc.update("insert into official_accounts values (?,?)",secondAccount,"Second account");
-        assertThatThrownBy(() -> service.create(owner,secondAccount,new BrowserLoginService.StartRequest(0L,null))).isInstanceOf(DomainException.class);
+        assertThatThrownBy(() -> service.create(owner,secondAccount,new BrowserLoginService.StartRequest(0L,proxy))).isInstanceOf(DomainException.class);
         UUID secondOwner=UUID.randomUUID();
         jdbc.update("insert into users values (?,'ADMIN','ACTIVE',0)",secondOwner);
-        service.create(secondOwner,secondAccount,new BrowserLoginService.StartRequest(0L,null));
+        service.create(secondOwner,secondAccount,new BrowserLoginService.StartRequest(0L,proxy));
         UUID thirdOwner=UUID.randomUUID(),thirdAccount=UUID.randomUUID();
         jdbc.update("insert into users values (?,'ADMIN','ACTIVE',0)",thirdOwner);
         jdbc.update("insert into official_accounts values (?,?)",thirdAccount,"Third account");
-        assertThatThrownBy(() -> service.create(thirdOwner,thirdAccount,new BrowserLoginService.StartRequest(0L,null))).isInstanceOf(DomainException.class);
+        assertThatThrownBy(() -> service.create(thirdOwner,thirdAccount,new BrowserLoginService.StartRequest(0L,proxy))).isInstanceOf(DomainException.class);
         service.cancelOwner(owner);
         assertThat(service.get(owner,first.id()).state()).isEqualTo("CANCELLED");
         verify(browser,times(2)).open(any(),any());
@@ -236,7 +237,36 @@ class WebLoginServiceTest {
         verify(session).close();
     }
 
-    private WebLoginService.Job create() { return service.create(owner,account,new BrowserLoginService.StartRequest(0L,null)); }
+    @Test void browserCaptureVerificationAndAtomicSaveKeepTheSameChain() {
+        UUID front=UUID.randomUUID();
+        jdbc.update("insert into managed_proxy_nodes(id) values (?)",front);
+        when(browser.open(any(),eq(front),eq(proxy))).thenReturn(session);
+        when(client.fetch(any(),eq(front),eq(proxy))).thenReturn(snapshot());
+        var job=service.create(owner,account,new BrowserLoginService.StartRequest(0L,proxy,front));
+        assertThat(job.frontProxyNodeId()).isEqualTo(front);
+        verify(browser).open(job.id(),front,proxy);
+        assertThat(service.complete(owner,job.id()).state()).isEqualTo("COMPLETED");
+        verify(client).fetch(any(),eq(front),eq(proxy));
+        verify(connections).saveVerified(eq(account),argThat(request -> front.equals(request.frontProxyNodeId())
+                && proxy.equals(request.proxyNodeId())),any());
+        verify(client,never()).fetch(any(),eq(proxy));
+    }
+
+    @Test void absentDisabledOrDuplicateNodesCannotLaunchOrValidateCredentials() {
+        assertThatThrownBy(() -> service.create(owner,account,new BrowserLoginService.StartRequest(0L,null)))
+                .isInstanceOfSatisfying(DomainException.class,error -> assertThat(error.getCode()).isEqualTo("OFFICIAL_PROXY_REQUIRED"));
+        assertThatThrownBy(() -> service.create(owner,account,new BrowserLoginService.StartRequest(0L,proxy,proxy)))
+                .isInstanceOfSatisfying(DomainException.class,error -> assertThat(error.getCode()).isEqualTo("PROXY_CHAIN_INVALID"));
+        UUID front=UUID.randomUUID();
+        jdbc.update("insert into managed_proxy_nodes values (?,false)",front);
+        assertThatThrownBy(() -> service.create(owner,account,new BrowserLoginService.StartRequest(0L,proxy,front)))
+                .isInstanceOf(DomainException.class);
+        verify(browser,never()).open(any(),any());
+        verify(browser,never()).open(any(),any(),any());
+        verifyNoInteractions(client);
+    }
+
+    private WebLoginService.Job create() { return service.create(owner,account,new BrowserLoginService.StartRequest(0L,proxy)); }
     private OfficialSessionSnapshot snapshot() {
         return new OfficialSessionSnapshot(new OfficialAccountInfo("synthetic-user","owner@example.test","Owner","synthetic-account","Personal","plus","owner",false,true),
                 new OfficialSessions(List.of(),true));

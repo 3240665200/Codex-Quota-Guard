@@ -62,10 +62,16 @@ public final class ChromiumManagedLoginBrowser implements ManagedLoginBrowser {
         try { installedBrowser(); return true; } catch (DomainException ignored) { return false; }
     }
     @Override public Session open(UUID jobId, UUID proxyNodeId) {
+        return open(jobId, null, proxyNodeId);
+    }
+
+    @Override public Session open(UUID jobId, UUID frontProxyNodeId, UUID proxyNodeId) {
         if (!enabled) throw unavailable("WEB_LOGIN_BROWSER_DISABLED");
         if (jobId == null) throw unavailable("WEB_LOGIN_BROWSER_UNAVAILABLE");
         Path browser = installedBrowser();
-        ProxyLease proxy = proxies.open(proxyNodeId, ManagedProxyGateway.Purpose.BROWSER_LOGIN);
+        if (proxyNodeId == null) throw unavailable("OFFICIAL_PROXY_REQUIRED");
+        ProxyLease proxy = frontProxyNodeId == null ? proxies.open(proxyNodeId, ManagedProxyGateway.Purpose.BROWSER_LOGIN)
+                : proxies.open(frontProxyNodeId, proxyNodeId, ManagedProxyGateway.Purpose.BROWSER_LOGIN);
         if (proxy == null) throw unavailable("PROXY_NODE_UNAVAILABLE");
         PrivateBrowserProfile profile = null; Process process = null; OwnedSession session = null;
         try {

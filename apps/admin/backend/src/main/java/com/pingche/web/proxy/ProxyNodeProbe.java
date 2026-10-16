@@ -50,8 +50,13 @@ public class ProxyNodeProbe {
     }
 
     Result test(UUID nodeId) {
+        return test(null, nodeId);
+    }
+
+    Result test(UUID frontNodeId, UUID nodeId) {
         CompletableFuture<HttpResponse<byte[]>> pending = null;
-        try (ProxyLease lease = gateway.open(nodeId, ManagedProxyGateway.Purpose.NODE_TEST)) {
+        try (ProxyLease lease = frontNodeId == null ? gateway.open(nodeId, ManagedProxyGateway.Purpose.NODE_TEST)
+                : gateway.open(frontNodeId, nodeId, ManagedProxyGateway.Purpose.NODE_TEST)) {
             HttpRequest request = HttpRequest.newBuilder(TARGET).GET().header("Accept", "application/json")
                     .timeout(Duration.ofSeconds(12)).build();
             pending = clients.apply(lease.proxySelector()).sendAsync(request, ignored -> new LimitedBodySubscriber());

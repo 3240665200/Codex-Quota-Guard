@@ -236,8 +236,13 @@ public class OfficialSessionLogoutService {
                         || !connection(account).revision.equals(plan.revision) || !plan.bindings.equals(bindingFingerprint(account))) return null;
                 OfficialSessionWriteResult outcome;
                 try {
-                    outcome = "ALL".equals(work.plan.mode) ? client.logoutAll(credentials(work.connection), work.connection.proxy)
-                            : client.revokeSession(credentials(work.connection), work.connection.proxy, items.get(next).sessionId());
+                    if (work.connection.frontProxy == null) {
+                        outcome = "ALL".equals(work.plan.mode) ? client.logoutAll(credentials(work.connection), work.connection.proxy)
+                                : client.revokeSession(credentials(work.connection), work.connection.proxy, items.get(next).sessionId());
+                    } else {
+                        outcome = "ALL".equals(work.plan.mode) ? client.logoutAll(credentials(work.connection), work.connection.frontProxy, work.connection.proxy)
+                                : client.revokeSession(credentials(work.connection), work.connection.frontProxy, work.connection.proxy, items.get(next).sessionId());
+                    }
                 } catch (RuntimeException failure) { outcome = new OfficialSessionWriteResult("UNKNOWN", "OFFICIAL_LOGOUT_OUTCOME_UNKNOWN"); }
                 if (outcome == null) outcome = new OfficialSessionWriteResult("UNKNOWN", "OFFICIAL_LOGOUT_OUTCOME_UNKNOWN");
                 String itemStatus = "ACCEPTED".equals(outcome.status()) ? "ACCEPTED" : "REJECTED".equals(outcome.status()) ? "FAILED" : "UNKNOWN";
@@ -352,7 +357,8 @@ public class OfficialSessionLogoutService {
     }
 
     private OfficialSessionSnapshot fresh(Connection connection) {
-        OfficialSessionSnapshot result = client.fetch(credentials(connection), connection.proxy);
+        OfficialSessionSnapshot result = connection.frontProxy == null ? client.fetch(credentials(connection), connection.proxy)
+                : client.fetch(credentials(connection), connection.frontProxy, connection.proxy);
         if (result == null || result.account() == null || result.sessions() == null || !result.sessions().showSessionManager()
                 || result.sessions().devices() == null || result.sessions().devices().stream().anyMatch(Objects::isNull)
                 || !connection.requested.equals(result.account().accountId()) || result.account().userId() == null || result.account().userId().isBlank()
@@ -383,7 +389,7 @@ public class OfficialSessionLogoutService {
     }
 
     private Connection connection(UUID account) {
-        var rows = jdbc.query("select * from official_account_connections where official_account_id=? for update", (rs,n) -> new Connection(account, rs.getObject("revision", UUID.class), rs.getString("requested_account_id"), rs.getObject("proxy_node_id", UUID.class), rs.getString("authorization_cipher"), rs.getString("cookie_cipher"), rs.getString("bound_account_id"), rs.getString("bound_user_id"), rs.getObject("refresh_attempt", UUID.class), rs.getString("status")), account);
+        var rows = jdbc.query("select * from official_account_connections where official_account_id=? for update", (rs,n) -> new Connection(account, rs.getObject("revision", UUID.class), rs.getString("requested_account_id"), rs.getObject("proxy_node_id", UUID.class), rs.getString("authorization_cipher"), rs.getString("cookie_cipher"), rs.getString("bound_account_id"), rs.getString("bound_user_id"), rs.getObject("refresh_attempt", UUID.class), rs.getString("status"), rs.getObject("front_proxy_node_id", UUID.class)), account);
         if (rows.isEmpty()) throw error("OFFICIAL_LOGOUT_CONNECTION_UNAVAILABLE");
         return rows.get(0);
     }
@@ -463,7 +469,7 @@ public class OfficialSessionLogoutService {
     private DomainException error(String code) { return new DomainException(code, "Official session logout could not be safely completed", HttpStatus.CONFLICT); }
     private DomainException selectionInvalid() { return new DomainException("OFFICIAL_LOGOUT_SELECTION_INVALID", "Select between one and one hundred distinct sessions from this account", HttpStatus.BAD_REQUEST); }
     private <T> T transaction(Supplier<T> work) { return tx.execute(ignored -> work.get()); }
-    private record Connection(UUID id, UUID revision, String requested, UUID proxy, String authorization, String cookie, String boundAccount, String boundUser, UUID refreshAttempt, String status) {
+    private record Connection(UUID id, UUID revision, String requested, UUID proxy, String authorization, String cookie, String boundAccount, String boundUser, UUID refreshAttempt, String status, UUID frontProxy) {
         @Override public String toString() { return "OfficialLogoutConnection[redacted]"; }
     }
     private record Plan(UUID id, UUID owner, UUID account, String mode, String status, UUID revision, String accountKey, String userKey, String bindings, String sessions, String preview, Instant expiresAt, Instant leaseUntil) { }

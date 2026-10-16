@@ -56,19 +56,27 @@ public class WebLoginService implements AutoCloseable {
     }
 
     public record Job(UUID id, UUID officialAccountId, String accountName, String state, Instant expiresAt,
-            String errorCode, UUID proxyNodeId, String pageOrigin, boolean readyToSave) { }
+            String errorCode, UUID proxyNodeId, String pageOrigin, boolean readyToSave, UUID frontProxyNodeId) {
+        public Job(UUID id, UUID officialAccountId, String accountName, String state, Instant expiresAt,
+                String errorCode, UUID proxyNodeId, String pageOrigin, boolean readyToSave) {
+            this(id, officialAccountId, accountName, state, expiresAt, errorCode, proxyNodeId, pageOrigin, readyToSave, null);
+        }
+    }
     private record Row(UUID id, UUID owner, UUID account, String accountName, String state, Instant expiresAt,
             String errorCode, UUID proxyNode, long version, long ownerVersion) { }
     private static final class Entry {
         final UUID owner;
         final Instant expiresAt;
+        final UUID frontProxyNodeId;
         volatile ManagedLoginBrowser.Session session;
         volatile boolean closed;
         Instant nextFrame = Instant.MIN, inputWindow = Instant.MIN;
         int inputs;
         String pageOrigin;
         boolean ready;
-        Entry(UUID owner,Instant expiresAt) { this.owner=owner;this.expiresAt=expiresAt; }
+        Entry(UUID owner,Instant expiresAt,UUID frontProxyNodeId) {
+            this.owner=owner;this.expiresAt=expiresAt;this.frontProxyNodeId=frontProxyNodeId;
+        }
     }
 
     @PostConstruct
@@ -94,7 +102,11 @@ public class WebLoginService implements AutoCloseable {
             var current=connections.read(account);
             if(!current.encryptionReady()) throw failure("OFFICIAL_ENCRYPTION_UNAVAILABLE",HttpStatus.SERVICE_UNAVAILABLE);
             if(request.version()==null || request.version()!=current.version()) throw failure("OFFICIAL_CONNECTION_VERSION_CONFLICT",HttpStatus.CONFLICT);
-            if(request.proxyNodeId()!=null && jdbc.queryForObject("select count(*) from managed_proxy_nodes where id=? and enabled=true",Integer.class,request.proxyNodeId())!=1)
+            if(request.proxyNodeId()==null)throw failure("OFFICIAL_PROXY_REQUIRED",HttpStatus.BAD_REQUEST);
+            if(request.proxyNodeId().equals(request.frontProxyNodeId()))throw failure("PROXY_CHAIN_INVALID",HttpStatus.BAD_REQUEST);
+            if(jdbc.queryForObject("select count(*) from managed_proxy_nodes where id=? and enabled=true",Integer.class,request.proxyNodeId())!=1)
+                throw failure("OFFICIAL_PROXY_UNAVAILABLE",HttpStatus.BAD_REQUEST);
+            if(request.frontProxyNodeId()!=null && jdbc.queryForObject("select count(*) from managed_proxy_nodes where id=? and enabled=true",Integer.class,request.frontProxyNodeId())!=1)
                 throw failure("OFFICIAL_PROXY_UNAVAILABLE",HttpStatus.BAD_REQUEST);
             if(count("official_account_id=? and state in "+ACTIVE,account)>0
                     || count("login_method='WEB' and owner_id=? and state in "+ACTIVE,owner)>0)
@@ -108,10 +120,11 @@ public class WebLoginService implements AutoCloseable {
                     at(clock.instant().plusSeconds(600)),at(clock.instant()),ownerVersion);
             return row(owner,id,false);
         });
-        Entry entry=new Entry(owner,row.expiresAt());
+        Entry entry=new Entry(owner,row.expiresAt(),request.frontProxyNodeId());
         sessions.put(row.id(),entry);
         try {
-            var opened=browser.open(row.id(),row.proxyNode());
+            var opened=entry.frontProxyNodeId==null ? browser.open(row.id(),row.proxyNode())
+                    : browser.open(row.id(),entry.frontProxyNodeId,row.proxyNode());
             synchronized(entry) {
                 if(entry.closed) { opened.close();throw failure("BROWSER_LOGIN_NOT_ACTIVE",HttpStatus.CONFLICT); }
                 entry.session=opened;
@@ -176,7 +189,8 @@ public class WebLoginService implements AutoCloseable {
             var credentials=new OfficialSessionCredentials(captured.authorization(),captured.cookie(),captured.accountId());
             credentials.validate();
             // No stored authorization changes until this candidate has passed the official identity/session reads.
-            var snapshot=client.fetch(credentials,work.proxyNode());
+            var snapshot=entry.frontProxyNodeId==null ? client.fetch(credentials,work.proxyNode())
+                    : client.fetch(credentials,entry.frontProxyNodeId,work.proxyNode());
             if(snapshot==null || snapshot.account()==null || snapshot.sessions()==null
                     || !credentials.requestedAccountId().equals(snapshot.account().accountId())
                     || snapshot.account().userId()==null || snapshot.account().userId().isBlank())
@@ -191,7 +205,7 @@ public class WebLoginService implements AutoCloseable {
                 if(ownerVersion(owner,true)!=work.ownerVersion())throw failure("BROWSER_LOGIN_ACCESS_REVOKED",HttpStatus.FORBIDDEN);
                 if(sessions.get(id)!=entry || entry.closed)throw failure("BROWSER_LOGIN_ACCESS_REVOKED",HttpStatus.CONFLICT);
                 connections.saveVerified(work.account(),new OfficialConnectionRequest(credentials.authorization(),credentials.cookie(),
-                        credentials.requestedAccountId(),work.proxyNode(),work.version()),snapshot);
+                        credentials.requestedAccountId(),work.proxyNode(),work.version(),entry.frontProxyNodeId),snapshot);
                 jdbc.update("update official_browser_login_jobs set state='COMPLETED',error_code=null where id=?",id);
                 return null;
             });
@@ -267,7 +281,8 @@ public class WebLoginService implements AutoCloseable {
         Entry entry=sessions.get(row.id());
         String origin=null;boolean ready=false;
         if(entry!=null && active(row.state()))synchronized(entry){origin=entry.pageOrigin;ready=entry.ready;}
-        return new Job(row.id(),row.account(),row.accountName(),row.state(),row.expiresAt(),row.errorCode(),row.proxyNode(),origin,ready);
+        return new Job(row.id(),row.account(),row.accountName(),row.state(),row.expiresAt(),row.errorCode(),row.proxyNode(),origin,ready,
+                entry==null ? null : entry.frontProxyNodeId);
     }
     private Entry requireSession(UUID id) {
         Entry entry=sessions.get(id);

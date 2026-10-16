@@ -67,15 +67,12 @@ class ManagedBrowserLaunchTest {
     }
 
     @Test
-    void explicitDirectSelectionStillUsesTheRestrictedLocalBrowserGateway() {
+    void missingProxyNeverStartsABrowserOrRequestsADirectConnection() {
         Fixture fixture = new Fixture();
-        when(fixture.gateway.open(null, ManagedProxyGateway.Purpose.BROWSER_LOGIN)).thenReturn(fixture.lease);
         try (var browser = fixture.browser()) {
-            var session = browser.open(job, null);
-            assertThat(fixture.command).contains("--proxy-server=http://127.0.0.1:12345");
-            verify(fixture.gateway).open(null, ManagedProxyGateway.Purpose.BROWSER_LOGIN);
-            verify(fixture.gateway, never()).open(any());
-            session.close();
+            assertThatThrownBy(() -> browser.open(job, null)).isInstanceOf(DomainException.class);
+            assertThat(fixture.command).isNull();
+            verifyNoInteractions(fixture.gateway);
         }
     }
 

@@ -32,7 +32,9 @@ public class BrowserLoginService {
         logoutFence = new OfficialSessionLogoutFence(jdbc);
     }
 
-    public record StartRequest(@NotNull @PositiveOrZero Long version, UUID proxyNodeId) { }
+    public record StartRequest(@NotNull @PositiveOrZero Long version, UUID proxyNodeId, UUID frontProxyNodeId) {
+        public StartRequest(Long version, UUID proxyNodeId) { this(version, proxyNodeId, null); }
+    }
     public record ClaimRequest(@NotNull UUID helperId) { }
     public record CompleteRequest(@NotNull UUID helperId, @NotBlank @Size(max=16384) String authorization,
             @Size(max=32768) String cookie, @NotBlank @Size(max=160) String requestedAccountId) {
@@ -43,6 +45,8 @@ public class BrowserLoginService {
     private record Row(Job job, UUID owner, UUID helper, long version) { }
 
     public Job create(UUID owner, UUID account, StartRequest request) {
+        if (request.frontProxyNodeId() != null)
+            throw fail("OFFICIAL_LOGIN_HELPER_RETIRED", HttpStatus.GONE);
         expire();
         return tx(() -> {
             List<String> names = jdbc.query("select label from official_accounts where id=? for update", (rs,n) -> rs.getString(1), account);

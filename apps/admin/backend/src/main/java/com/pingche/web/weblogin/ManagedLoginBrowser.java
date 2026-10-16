@@ -8,6 +8,10 @@ public interface ManagedLoginBrowser {
     int HEIGHT = 768;
     boolean available();
     Session open(UUID jobId, UUID proxyNodeId);
+    default Session open(UUID jobId, UUID frontProxyNodeId, UUID proxyNodeId) {
+        if (frontProxyNodeId != null) throw new IllegalArgumentException("Proxy chains are not supported by this browser");
+        return open(jobId, proxyNodeId);
+    }
 
     interface Session extends AutoCloseable {
         Frame frame();

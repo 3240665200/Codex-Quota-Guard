@@ -57,13 +57,14 @@ public class OfficialConnectionService {
                     "Official connection changed; reload before saving", HttpStatus.CONFLICT);
             if (current != null && current.boundAccountId != null && !current.boundAccountId.equals(request.requestedAccountId()))
                 throw error("OFFICIAL_IDENTITY_CHANGE_REQUIRES_DISCONNECT", "Disconnect the saved authorization before selecting another official account", HttpStatus.CONFLICT);
-            requireProxy(request.proxyNodeId());
+            requireProxy(request.frontProxyNodeId(), request.proxyNodeId());
             OfficialAccountConnection connection = current == null ? new OfficialAccountConnection(accountId) : current;
             connection.authorizationCipher = cipher.encrypt(request.authorization(), connection.aad("authorization"));
             connection.cookieCipher = request.cookie() == null || request.cookie().isBlank() ? null
                     : cipher.encrypt(request.cookie(), connection.aad("cookie"));
             connection.requestedAccountId = request.requestedAccountId();
             connection.proxyNodeId = request.proxyNodeId();
+            connection.frontProxyNodeId = request.frontProxyNodeId();
             connection.status = "UNVERIFIED";
             connection.revision = UUID.randomUUID();
             connection.importedAt = clock.instant();
@@ -135,7 +136,8 @@ public class OfficialConnectionService {
             OfficialSessionCredentials credentials = new OfficialSessionCredentials(
                     cipher.decrypt(work.authorizationCipher(), work.aad("authorization")),
                     work.cookieCipher() == null ? null : cipher.decrypt(work.cookieCipher(), work.aad("cookie")), work.requestedAccountId());
-            OfficialSessionSnapshot snapshot = client.fetch(credentials, work.proxyNodeId());
+            OfficialSessionSnapshot snapshot = work.frontProxyNodeId() == null ? client.fetch(credentials, work.proxyNodeId())
+                    : client.fetch(credentials, work.frontProxyNodeId(), work.proxyNodeId());
             if (snapshot == null || snapshot.account() == null || snapshot.sessions() == null
                     || !work.requestedAccountId().equals(snapshot.account().accountId())
                     || snapshot.account().userId() == null || snapshot.account().userId().isBlank())
@@ -158,7 +160,7 @@ public class OfficialConnectionService {
             requireAccount(accountId, true);
             OfficialAccountConnection connection = connections.findByIdForUpdate(accountId)
                     .orElseThrow(() -> error("OFFICIAL_CONNECTION_NOT_CONFIGURED", "Import official authorization first", HttpStatus.CONFLICT));
-            requireProxy(connection.proxyNodeId);
+            requireProxy(connection.frontProxyNodeId, connection.proxyNodeId);
             if (!cipher.isReady()) throw error("OFFICIAL_ENCRYPTION_UNAVAILABLE", "Official authorization encryption is unavailable", HttpStatus.SERVICE_UNAVAILABLE);
             Instant now = clock.instant();
             if (connection.refreshLeaseUntil != null && connection.refreshLeaseUntil.isAfter(now))
@@ -170,7 +172,7 @@ public class OfficialConnectionService {
             connection.lastAttemptAt = now;
             connections.saveAndFlush(connection);
             return new RefreshWork(accountId, connection.revision, connection.refreshAttempt, connection.requestedAccountId,
-                    connection.proxyNodeId, connection.authorizationCipher, connection.cookieCipher);
+                    connection.proxyNodeId, connection.authorizationCipher, connection.cookieCipher, connection.frontProxyNodeId);
         });
     }
 
@@ -223,7 +225,7 @@ public class OfficialConnectionService {
                 false, false, null, null, null, null, 0);
         return new OfficialConnectionResponse(true, cipher.isReady(), connection.status, connection.requestedAccountId,
                 connection.proxyNodeId, connection.authorizationCipher != null, connection.cookieCipher != null, connection.importedAt,
-                connection.lastAttemptAt, connection.lastSuccessAt, connection.lastErrorCode, connection.version);
+                connection.lastAttemptAt, connection.lastSuccessAt, connection.lastErrorCode, connection.version, connection.frontProxyNodeId);
     }
 
     private void requireAccount(UUID accountId, boolean lock) {
@@ -236,6 +238,7 @@ public class OfficialConnectionService {
         return switch (code) {
             case "OFFICIAL_PROXY_REQUIRED" -> error(code, "请先为官方账户选择已启用的代理节点；禁止直连。", HttpStatus.BAD_REQUEST);
             case "OFFICIAL_PROXY_UNAVAILABLE" -> error(code, "绑定的代理节点不可用，请启用或更换节点；未回退直连。", HttpStatus.SERVICE_UNAVAILABLE);
+            case "PROXY_CHAIN_INVALID" -> error(code, "前置节点与出口节点必须不同。", HttpStatus.BAD_REQUEST);
             case "PROXY_NODE_DISABLED", "PROXY_NODE_UNAVAILABLE", "PROXY_ENDPOINT_BLOCKED", "PROXY_CAPACITY_EXCEEDED",
                     "PROXY_KERNEL_UNAVAILABLE", "PROXY_CREDENTIALS_UNAVAILABLE", "PROXY_ENCRYPTION_UNAVAILABLE" ->
                     error(code, "绑定的代理节点不可用，请检查节点及服务器代理配置；未回退直连。", HttpStatus.SERVICE_UNAVAILABLE);
@@ -252,8 +255,14 @@ public class OfficialConnectionService {
         };
     }
 
-    private void requireProxy(UUID nodeId) {
+    private void requireProxy(UUID frontNodeId, UUID nodeId) {
         if (nodeId == null) throw error("OFFICIAL_PROXY_REQUIRED", "请先为官方账户选择已启用的代理节点；禁止直连。", HttpStatus.BAD_REQUEST);
+        if (nodeId.equals(frontNodeId)) throw error("PROXY_CHAIN_INVALID", "前置节点与出口节点必须不同。", HttpStatus.BAD_REQUEST);
+        requireEnabledProxy(nodeId);
+        if (frontNodeId != null) requireEnabledProxy(frontNodeId);
+    }
+
+    private void requireEnabledProxy(UUID nodeId) {
         if (!Boolean.TRUE.equals(jdbc.queryForObject(
                 "select count(*) > 0 from managed_proxy_nodes where id = ? and enabled = true", Boolean.class, nodeId)))
             throw error("OFFICIAL_PROXY_UNAVAILABLE", "绑定的代理节点不存在或已停用，请启用或更换节点；禁止直连。", HttpStatus.BAD_REQUEST);
@@ -264,7 +273,7 @@ public class OfficialConnectionService {
     private DomainException error(String code, String message, HttpStatus status) { return new DomainException(code, message, status); }
     private <T> T inTransaction(Supplier<T> work) { return transaction.execute(ignored -> work.get()); }
     private record RefreshWork(UUID accountId, UUID revision, UUID attempt, String requestedAccountId, UUID proxyNodeId,
-            String authorizationCipher, String cookieCipher) {
+            String authorizationCipher, String cookieCipher, UUID frontProxyNodeId) {
         String aad(String field) { return "official-session:v1:" + accountId + ":" + field; }
         @Override public String toString() { return "OfficialRefreshWork[redacted]"; }
     }

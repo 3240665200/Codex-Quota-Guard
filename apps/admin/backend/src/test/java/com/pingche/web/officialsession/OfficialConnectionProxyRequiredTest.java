@@ -72,6 +72,30 @@ class OfficialConnectionProxyRequiredTest {
         verifyNoInteractions(client);
     }
 
+    @Test void saveRejectsDuplicateAndDisabledFrontAndPersistsTheIndependentFront() {
+        UUID front=UUID.randomUUID();
+        assertCode(() -> service.save(accountId,new OfficialConnectionRequest("Bearer synthetic-token",null,"synthetic-account",nodeId,0L,nodeId)),"PROXY_CHAIN_INVALID");
+        jdbc.update("insert into managed_proxy_nodes values (?,false)",front);
+        assertCode(() -> service.save(accountId,new OfficialConnectionRequest("Bearer synthetic-token",null,"synthetic-account",nodeId,0L,front)),"OFFICIAL_PROXY_UNAVAILABLE");
+        verify(connections,never()).saveAndFlush(any());
+        jdbc.update("update managed_proxy_nodes set enabled=true where id=?",front);
+        var response=service.save(accountId,new OfficialConnectionRequest("Bearer synthetic-token",null,"synthetic-account",nodeId,0L,front));
+        assertThat(response.proxyNodeId()).isEqualTo(nodeId);
+        assertThat(response.frontProxyNodeId()).isEqualTo(front);
+        verify(connections).saveAndFlush(argThat(connection -> front.equals(connection.frontProxyNodeId) && nodeId.equals(connection.proxyNodeId)));
+    }
+
+    @Test void refreshRechecksStoredFrontBeforeDecryptingCredentials() {
+        UUID front=UUID.randomUUID();
+        jdbc.update("insert into managed_proxy_nodes values (?,false)",front);
+        var connection=new OfficialAccountConnection(accountId);
+        connection.proxyNodeId=nodeId; connection.frontProxyNodeId=front;
+        when(connections.findByIdForUpdate(accountId)).thenReturn(Optional.of(connection));
+        assertCode(() -> service.refresh(accountId),"OFFICIAL_PROXY_UNAVAILABLE");
+        verify(cipher,never()).decrypt(any(),any());
+        verifyNoInteractions(client);
+    }
+
     private OfficialConnectionRequest request(UUID proxy) {
         return new OfficialConnectionRequest("Bearer synthetic-token", null, "synthetic-account", proxy, 0L);
     }

@@ -6,4 +6,8 @@ import jakarta.validation.constraints.PositiveOrZero;
 import java.util.UUID;
 
 public record OfficialAuthorizationPresetRequest(@NotNull @PositiveOrZero Long version,
-        UUID proxyNodeId, @NotNull @Pattern(regexp = "[a-f0-9]{64}") String presetRevision) {}
+        UUID proxyNodeId, @NotNull @Pattern(regexp = "[a-f0-9]{64}") String presetRevision, UUID frontProxyNodeId) {
+    public OfficialAuthorizationPresetRequest(Long version, UUID proxyNodeId, String presetRevision) {
+        this(version, proxyNodeId, presetRevision, null);
+    }
+}

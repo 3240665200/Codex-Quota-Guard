@@ -54,9 +54,13 @@ public class OfficialSessionClient {
     }
 
     OfficialSessionSnapshot fetch(OfficialSessionCredentials credentials, UUID proxyNodeId) {
+        return fetch(credentials, null, proxyNodeId);
+    }
+
+    OfficialSessionSnapshot fetch(OfficialSessionCredentials credentials, UUID frontProxyNodeId, UUID proxyNodeId) {
         if (proxyNodeId == null) throw proxyRequired();
         credentials.validate();
-        try (ProxyLease lease = proxies.open(proxyNodeId)) {
+        try (ProxyLease lease = open(frontProxyNodeId, proxyNodeId)) {
             HttpClient client = clients.apply(lease.proxySelector());
             JsonNode me = read(client, "/me", credentials);
             String userId = requiredText(me, "id", 320);
@@ -83,6 +87,11 @@ public class OfficialSessionClient {
             return new OfficialSessionSnapshot(info, sessions(read(client, "/accounts/sessions", credentials)));
         } catch (DomainException failure) { throw failure; }
         catch (RuntimeException ignored) { throw failure("OFFICIAL_UNAVAILABLE"); }
+    }
+
+    private ProxyLease open(UUID frontProxyNodeId, UUID proxyNodeId) {
+        return frontProxyNodeId == null ? proxies.open(proxyNodeId)
+                : proxies.open(frontProxyNodeId, proxyNodeId, ManagedProxyGateway.Purpose.OFFICIAL_SESSION);
     }
 
     private JsonNode read(HttpClient client, String path, OfficialSessionCredentials credentials) {
@@ -123,26 +132,34 @@ public class OfficialSessionClient {
     }
 
     OfficialSessionWriteResult logoutAll(OfficialSessionCredentials credentials, UUID proxyNodeId) {
+        return logoutAll(credentials, null, proxyNodeId);
+    }
+
+    OfficialSessionWriteResult logoutAll(OfficialSessionCredentials credentials, UUID frontProxyNodeId, UUID proxyNodeId) {
         // The official web client sends no requestBody for logout_all.
-        return write(credentials,proxyNodeId,"/accounts/logout_all",null);
+        return write(credentials,frontProxyNodeId,proxyNodeId,"/accounts/logout_all",null);
     }
 
     OfficialSessionWriteResult revokeSession(OfficialSessionCredentials credentials, UUID proxyNodeId, String sessionId) {
+        return revokeSession(credentials, null, proxyNodeId, sessionId);
+    }
+
+    OfficialSessionWriteResult revokeSession(OfficialSessionCredentials credentials, UUID frontProxyNodeId, UUID proxyNodeId, String sessionId) {
         if(sessionId==null || sessionId.isBlank() || sessionId.length()>512
                 || sessionId.chars().anyMatch(c -> c<32 || c==127)) {
             return new OfficialSessionWriteResult("REJECTED","OFFICIAL_SESSION_INVALID");
         }
-        return write(credentials,proxyNodeId,"/accounts/sessions/revoke",Map.of("session_id",sessionId));
+        return write(credentials,frontProxyNodeId,proxyNodeId,"/accounts/sessions/revoke",Map.of("session_id",sessionId));
     }
 
-    private OfficialSessionWriteResult write(OfficialSessionCredentials credentials, UUID proxyNodeId,
+    private OfficialSessionWriteResult write(OfficialSessionCredentials credentials, UUID frontProxyNodeId, UUID proxyNodeId,
             String path, Map<String,String> payload) {
         if (proxyNodeId == null) return new OfficialSessionWriteResult("REJECTED", "OFFICIAL_PROXY_REQUIRED");
         boolean dispatched=false;
         CompletableFuture<HttpResponse<byte[]>> pending=null;
         try {
             credentials.validate();
-            try(ProxyLease lease=proxies.open(proxyNodeId)) {
+            try(ProxyLease lease=open(frontProxyNodeId,proxyNodeId)) {
                 HttpClient client=clients.apply(lease.proxySelector());
                 var request=HttpRequest.newBuilder(URI.create("https://chatgpt.com/backend-api"+path))
                         .timeout(Duration.ofSeconds(10)).header("Accept","application/json")

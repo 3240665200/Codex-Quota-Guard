@@ -14,6 +14,7 @@ public class OfficialAccountConnection {
     @Id @Column(name = "official_account_id") UUID officialAccountId;
     @Column(name = "requested_account_id", nullable = false, length = 160) String requestedAccountId;
     @Column(name = "proxy_node_id") UUID proxyNodeId;
+    @Column(name = "front_proxy_node_id") UUID frontProxyNodeId;
     @Column(name = "authorization_cipher", nullable = false, columnDefinition = "text") String authorizationCipher;
     @Column(name = "cookie_cipher", columnDefinition = "text") String cookieCipher;
     @Column(name = "snapshot_cipher", columnDefinition = "text") String snapshotCipher;
