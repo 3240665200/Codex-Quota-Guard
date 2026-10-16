@@ -133,30 +133,41 @@ mod native_security {
         ffi::OsString,
         fs::{File, OpenOptions},
         mem::size_of,
-        os::windows::{ffi::{OsStrExt, OsStringExt}, fs::{MetadataExt, OpenOptionsExt}, io::{AsRawHandle, FromRawHandle}},
+        os::windows::{
+            ffi::{OsStrExt, OsStringExt},
+            fs::{MetadataExt, OpenOptionsExt},
+            io::{AsRawHandle, FromRawHandle},
+        },
         path::{Component, PathBuf},
         ptr,
     };
     use windows_sys::Win32::{
         Foundation::{CloseHandle, LocalFree, INVALID_HANDLE_VALUE},
         Security::{
-            Authorization::{ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SE_FILE_OBJECT},
-            GetAce, GetSecurityDescriptorControl, GetTokenInformation, IsValidSid,
-            ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, DACL_SECURITY_INFORMATION,
-            INHERIT_ONLY_ACE, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
-            SE_DACL_PROTECTED, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
+            Authorization::{
+                ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+                GetSecurityInfo, SE_FILE_OBJECT,
+            },
+            GetAce, GetSecurityDescriptorControl, GetTokenInformation, IsValidSid, TokenUser,
+            ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, DACL_SECURITY_INFORMATION, INHERIT_ONLY_ACE,
+            OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES,
+            SE_DACL_PROTECTED, TOKEN_QUERY, TOKEN_USER,
         },
         Storage::FileSystem::{
             CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, CREATE_NEW,
             FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
         },
-        System::{Com::CoTaskMemFree, Threading::{GetCurrentProcess, OpenProcessToken}},
-        UI::Shell::{SHGetKnownFolderPath, FOLDERID_ProgramData},
+        System::{
+            Com::CoTaskMemFree,
+            Threading::{GetCurrentProcess, OpenProcessToken},
+        },
+        UI::Shell::{FOLDERID_ProgramData, SHGetKnownFolderPath},
     };
 
     const SYSTEM: &str = "S-1-5-18";
     const ADMINS: &str = "S-1-5-32-544";
-    const TRUSTED_INSTALLER: &str = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
+    const TRUSTED_INSTALLER: &str =
+        "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
     const ROOT_NAME: &str = "CodexQuotaGuardConflictEvidence";
     // Ancestors may allow adding children (the Windows ProgramData default),
     // but cannot allow deleting/replacing existing children or changing ACLs.
@@ -199,7 +210,9 @@ mod native_security {
             return Err(());
         }
         if summary.grants.iter().any(|grant| {
-            !grant.inherit_only && !privileged(&grant.sid) && grant.sid != TRUSTED_INSTALLER
+            !grant.inherit_only
+                && !privileged(&grant.sid)
+                && grant.sid != TRUSTED_INSTALLER
                 && grant.mask & REPLACE_RIGHTS != 0
         }) {
             return Err(());
@@ -209,8 +222,13 @@ mod native_security {
 
     pub(super) fn channel_directory(common: &Path, sid: &str) -> Result<PathBuf, ()> {
         // Account SIDs only, with no filesystem metacharacters or aliases.
-        if !common.is_absolute() || sid.len() > 184 || !sid.starts_with("S-1-5-21-")
-            || sid.split('-').skip(4).any(|part| part.is_empty() || !part.bytes().all(|c| c.is_ascii_digit()))
+        if !common.is_absolute()
+            || sid.len() > 184
+            || !sid.starts_with("S-1-5-21-")
+            || sid
+                .split('-')
+                .skip(4)
+                .any(|part| part.is_empty() || !part.bytes().all(|c| c.is_ascii_digit()))
         {
             return Err(());
         }
@@ -221,15 +239,24 @@ mod native_security {
         let mut allocated = ptr::null_mut();
         // SAFETY: Known Folder is a machine path from Windows, not environment
         // variables a lower-privilege launcher could substitute.
-        if unsafe { SHGetKnownFolderPath(&FOLDERID_ProgramData, 0, ptr::null_mut(), &mut allocated) } < 0 {
+        if unsafe {
+            SHGetKnownFolderPath(&FOLDERID_ProgramData, 0, ptr::null_mut(), &mut allocated)
+        } < 0
+        {
             return Err(());
         }
         let mut length = 0;
         // SAFETY: Windows returned a NUL-terminated CoTaskMem allocation.
-        while length < 32768 && unsafe { *allocated.add(length) } != 0 { length += 1; }
-        let result = if length == 32768 { Err(()) } else {
+        while length < 32768 && unsafe { *allocated.add(length) } != 0 {
+            length += 1;
+        }
+        let result = if length == 32768 {
+            Err(())
+        } else {
             // SAFETY: Bounded by the terminator in the allocation above.
-            Ok(PathBuf::from(OsString::from_wide(unsafe { std::slice::from_raw_parts(allocated, length) })))
+            Ok(PathBuf::from(OsString::from_wide(unsafe {
+                std::slice::from_raw_parts(allocated, length)
+            })))
         };
         // SAFETY: SHGetKnownFolderPath allocated this buffer.
         unsafe { CoTaskMemFree(allocated.cast()) };
@@ -238,16 +265,26 @@ mod native_security {
 
     fn sid_text(sid: PSID) -> Result<String, ()> {
         // SAFETY: Callers pass a SID within a Windows-owned security buffer.
-        if sid.is_null() || unsafe { IsValidSid(sid) } == 0 { return Err(()); }
+        if sid.is_null() || unsafe { IsValidSid(sid) } == 0 {
+            return Err(());
+        }
         let mut text = ptr::null_mut();
         // SAFETY: Valid SID; Windows allocates the output string.
-        if unsafe { ConvertSidToStringSidW(sid, &mut text) } == 0 { return Err(()); }
+        if unsafe { ConvertSidToStringSidW(sid, &mut text) } == 0 {
+            return Err(());
+        }
         let mut length = 0;
         // SAFETY: The output is a NUL-terminated LocalAlloc string.
-        while length < 256 && unsafe { *text.add(length) } != 0 { length += 1; }
-        let result = if length == 256 { Err(()) } else {
+        while length < 256 && unsafe { *text.add(length) } != 0 {
+            length += 1;
+        }
+        let result = if length == 256 {
+            Err(())
+        } else {
             // SAFETY: length was bounded by the terminator above.
-            Ok(String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(text, length) }))
+            Ok(String::from_utf16_lossy(unsafe {
+                std::slice::from_raw_parts(text, length)
+            }))
         };
         // SAFETY: ConvertSidToStringSidW allocated this buffer.
         unsafe { LocalFree(text.cast()) };
@@ -257,15 +294,30 @@ mod native_security {
     fn current_sid() -> Result<String, ()> {
         let mut token = ptr::null_mut();
         // SAFETY: The current-process pseudo handle is valid; token is output.
-        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 { return Err(()); }
+        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+            return Err(());
+        }
         let result = (|| {
             let mut length = 0;
             // SAFETY: First call requests the token buffer length.
             unsafe { GetTokenInformation(token, TokenUser, ptr::null_mut(), 0, &mut length) };
-            if length < size_of::<TOKEN_USER>() as u32 || length > 4096 { return Err(()); }
+            if length < size_of::<TOKEN_USER>() as u32 || length > 4096 {
+                return Err(());
+            }
             let mut buffer = vec![0usize; (length as usize).div_ceil(size_of::<usize>())];
             // SAFETY: Buffer is aligned and contains at least length bytes.
-            if unsafe { GetTokenInformation(token, TokenUser, buffer.as_mut_ptr().cast(), length, &mut length) } == 0 { return Err(()); }
+            if unsafe {
+                GetTokenInformation(
+                    token,
+                    TokenUser,
+                    buffer.as_mut_ptr().cast(),
+                    length,
+                    &mut length,
+                )
+            } == 0
+            {
+                return Err(());
+            }
             // SAFETY: A successful query initializes TOKEN_USER in buffer.
             sid_text(unsafe { (*(buffer.as_ptr().cast::<TOKEN_USER>())).User.Sid })
         })();
@@ -280,36 +332,66 @@ mod native_security {
         let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
         // SAFETY: File handle is held, all output pointers are valid. Windows
         // allocates the descriptor containing the owner and ACL pointers.
-        if unsafe { GetSecurityInfo(file.as_raw_handle(), SE_FILE_OBJECT,
-            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, &mut owner,
-            ptr::null_mut(), &mut dacl, ptr::null_mut(), &mut descriptor) } != 0 {
+        if unsafe {
+            GetSecurityInfo(
+                file.as_raw_handle(),
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                &mut owner,
+                ptr::null_mut(),
+                &mut dacl,
+                ptr::null_mut(),
+                &mut descriptor,
+            )
+        } != 0
+        {
             return Err(());
         }
         let result = (|| {
-            if descriptor.is_null() || dacl.is_null() { return Err(()); }
+            if descriptor.is_null() || dacl.is_null() {
+                return Err(());
+            }
             let owner = sid_text(owner)?;
             let mut control = 0;
             let mut revision = 0;
             // SAFETY: descriptor came from a successful Windows query.
-            if unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0 { return Err(()); }
+            if unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0
+            {
+                return Err(());
+            }
             let mut grants = Vec::new();
             // SAFETY: dacl points within the descriptor allocation.
             for index in 0..u32::from(unsafe { (*dacl).AceCount }) {
                 let mut ace = ptr::null_mut();
                 // SAFETY: index is bounded by AceCount, and ace is an output.
-                if unsafe { GetAce(dacl, index, &mut ace) } == 0 || ace.is_null() { return Err(()); }
+                if unsafe { GetAce(dacl, index, &mut ace) } == 0 || ace.is_null() {
+                    return Err(());
+                }
                 // SAFETY: GetAce returns an aligned ACE_HEADER.
                 let header = unsafe { &*ace.cast::<ACE_HEADER>() };
-                if header.AceType == 1 { continue; } // Deny ACEs only remove access.
-                if header.AceType != 0 || usize::from(header.AceSize) < size_of::<ACCESS_ALLOWED_ACE>() { return Err(()); }
+                if header.AceType == 1 {
+                    continue;
+                } // Deny ACEs only remove access.
+                if header.AceType != 0
+                    || usize::from(header.AceSize) < size_of::<ACCESS_ALLOWED_ACE>()
+                {
+                    return Err(());
+                }
                 // SAFETY: Type and size match ACCESS_ALLOWED_ACE; SidStart is
                 // the first DWORD of the trailing SID in this ACE.
                 let allowed = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
                 let sid = sid_text((&allowed.SidStart as *const u32).cast_mut().cast())?;
-                grants.push(AccessGrant { sid, mask: allowed.Mask,
-                    inherit_only: u32::from(header.AceFlags) & INHERIT_ONLY_ACE != 0 });
+                grants.push(AccessGrant {
+                    sid,
+                    mask: allowed.Mask,
+                    inherit_only: u32::from(header.AceFlags) & INHERIT_ONLY_ACE != 0,
+                });
             }
-            Ok(SecuritySummary { owner, protected: control & SE_DACL_PROTECTED != 0, grants })
+            Ok(SecuritySummary {
+                owner,
+                protected: control & SE_DACL_PROTECTED != 0,
+                grants,
+            })
         })();
         // SAFETY: GetSecurityInfo allocated the descriptor using LocalAlloc.
         unsafe { LocalFree(descriptor) };
@@ -317,10 +399,21 @@ mod native_security {
     }
 
     fn create_private_output(path: &Path) -> std::io::Result<File> {
-        let sddl: Vec<_> = "O:BAG:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)".encode_utf16().chain(Some(0)).collect();
+        let sddl: Vec<_> = "O:BAG:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)"
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
         let mut descriptor = ptr::null_mut();
         // SAFETY: sddl is NUL terminated and descriptor is a valid output.
-        if unsafe { ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.as_ptr(), 1, &mut descriptor, ptr::null_mut()) } == 0 {
+        if unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                1,
+                &mut descriptor,
+                ptr::null_mut(),
+            )
+        } == 0
+        {
             return Err(std::io::Error::last_os_error());
         }
         let attributes = SECURITY_ATTRIBUTES {
@@ -331,15 +424,29 @@ mod native_security {
         let wide: Vec<_> = path.as_os_str().encode_wide().chain(Some(0)).collect();
         // SAFETY: Path and descriptor remain alive for CreateFileW. Owner and
         // DACL are assigned atomically, never inherited from the user's token.
-        let handle = unsafe { CreateFileW(wide.as_ptr(), 0x40000000 | 0x20000, 0,
-            &attributes, CREATE_NEW, FILE_FLAG_OPEN_REPARSE_POINT, ptr::null_mut()) };
+        let handle = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                0x40000000 | 0x20000,
+                0,
+                &attributes,
+                CREATE_NEW,
+                FILE_FLAG_OPEN_REPARSE_POINT,
+                ptr::null_mut(),
+            )
+        };
         let error = std::io::Error::last_os_error();
         // SAFETY: The descriptor was allocated by the SDDL conversion above.
         unsafe { LocalFree(descriptor) };
-        if handle == INVALID_HANDLE_VALUE { return Err(error); }
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(error);
+        }
         // SAFETY: We uniquely own the newly created handle.
         let output = unsafe { File::from_raw_handle(handle) };
-        if security(&output).and_then(|summary| validate_private(&summary, true)).is_err() {
+        if security(&output)
+            .and_then(|summary| validate_private(&summary, true))
+            .is_err()
+        {
             drop(output);
             let _ = fs::remove_file(path);
             return Err(std::io::ErrorKind::PermissionDenied.into());
@@ -374,43 +481,70 @@ mod native_security {
         }
 
         pub(super) fn open_directory(directory: &Path, private_root: &Path) -> Result<Self, ()> {
-            if !directory.is_absolute() || !directory.starts_with(private_root)
-                || directory.components().any(|part| matches!(part, Component::ParentDir | Component::CurDir))
-            { return Err(()); }
+            if !directory.is_absolute()
+                || !directory.starts_with(private_root)
+                || directory
+                    .components()
+                    .any(|part| matches!(part, Component::ParentDir | Component::CurDir))
+            {
+                return Err(());
+            }
             let mut ancestors: Vec<_> = directory.ancestors().collect();
             ancestors.reverse();
             let mut pinned = Vec::new();
             for path in ancestors {
                 let handle = pin_directory(path).map_err(|_| ())?;
                 let metadata = handle.metadata().map_err(|_| ())?;
-                if !metadata.is_dir() || metadata.file_attributes() & 0x400 != 0 { return Err(()); }
+                if !metadata.is_dir() || metadata.file_attributes() & 0x400 != 0 {
+                    return Err(());
+                }
                 validate_security(&security(&handle)?, path.starts_with(private_root))?;
                 pinned.push(handle);
             }
-            Ok(Self { directory: directory.into(), _pinned_directories: pinned })
+            Ok(Self {
+                directory: directory.into(),
+                _pinned_directories: pinned,
+            })
         }
 
         pub(crate) fn read(&self) -> Result<Option<Vec<u8>>, ()> {
-            let input = match OpenOptions::new().read(true).share_mode(FILE_SHARE_READ)
-                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(self.directory.join(FILE_NAME)) {
+            let input = match OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ)
+                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+                .open(self.directory.join(FILE_NAME))
+            {
                 Ok(input) => input,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
                 Err(_) => return Err(()),
             };
             let metadata = input.metadata().map_err(|_| ())?;
-            if !metadata.is_file() || metadata.file_attributes() & 0x400 != 0 || metadata.len() > 4096 { return Err(()); }
+            if !metadata.is_file()
+                || metadata.file_attributes() & 0x400 != 0
+                || metadata.len() > 4096
+            {
+                return Err(());
+            }
             validate_private(&security(&input)?, false)?;
             let mut info = BY_HANDLE_FILE_INFORMATION::default();
             // SAFETY: input is held and info points to the required output struct.
-            if unsafe { GetFileInformationByHandle(input.as_raw_handle(), &mut info) } == 0 || info.nNumberOfLinks != 1 { return Err(()); }
+            if unsafe { GetFileInformationByHandle(input.as_raw_handle(), &mut info) } == 0
+                || info.nNumberOfLinks != 1
+            {
+                return Err(());
+            }
             let mut bytes = Vec::new();
             input.take(4097).read_to_end(&mut bytes).map_err(|_| ())?;
-            if bytes.is_empty() || bytes.len() > 4096 { return Err(()); }
+            if bytes.is_empty() || bytes.len() > 4096 {
+                return Err(());
+            }
             Ok(Some(bytes))
         }
 
         pub(crate) fn take(&self) -> Result<Option<Vec<u8>>, ()> {
-            let Some(bytes) = self.read()? else { return Ok(None); };
+            let Some(bytes) = self.read()? else {
+                return Ok(None);
+            };
             fs::remove_file(self.directory.join(FILE_NAME)).map_err(|_| ())?;
             Ok(Some(bytes))
         }
@@ -419,16 +553,29 @@ mod native_security {
             let target = self.directory.join(FILE_NAME);
             match self.read() {
                 Ok(Some(bytes)) => {
-                    if serde_json::from_slice::<ConflictEvidence>(&bytes).ok().is_some_and(|pending| {
-                        pending.fresh_for(&evidence.lease_id, evidence.desktop_pid,
-                            evidence.desktop_created_at, evidence.observed_at)
-                    }) { return true; }
-                    if fs::remove_file(&target).is_err() { return false; }
-                },
-                Ok(None) => {},
+                    if serde_json::from_slice::<ConflictEvidence>(&bytes)
+                        .ok()
+                        .is_some_and(|pending| {
+                            pending.fresh_for(
+                                &evidence.lease_id,
+                                evidence.desktop_pid,
+                                evidence.desktop_created_at,
+                                evidence.observed_at,
+                            )
+                        })
+                    {
+                        return true;
+                    }
+                    if fs::remove_file(&target).is_err() {
+                        return false;
+                    }
+                }
+                Ok(None) => {}
                 Err(()) => return false,
             }
-            let temporary = self.directory.join(format!(".ccswitch-conflict-{}.tmp", uuid::Uuid::new_v4()));
+            let temporary = self
+                .directory
+                .join(format!(".ccswitch-conflict-{}.tmp", uuid::Uuid::new_v4()));
             let result = (|| -> std::io::Result<()> {
                 let mut output = create_private_output(&temporary)?;
                 serde_json::to_writer(&mut output, evidence)?;
@@ -449,21 +596,26 @@ mod native_security {
 
         #[test]
         fn pinned_directory_blocks_rename_and_reparse_write_access() {
-            let directory = std::env::temp_dir().join(format!("guard-pin-{}", uuid::Uuid::new_v4()));
+            let directory =
+                std::env::temp_dir().join(format!("guard-pin-{}", uuid::Uuid::new_v4()));
             fs::create_dir(&directory).unwrap();
             let renamed = directory.with_extension("moved");
             let pinned = pin_directory(&directory).unwrap();
             assert!(fs::rename(&directory, &renamed).is_err());
-            assert!(OpenOptions::new().access_mode(0x40000000)
-                .share_mode(7).custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
-                .open(&directory).is_err());
+            assert!(OpenOptions::new()
+                .access_mode(0x40000000)
+                .share_mode(7)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+                .open(&directory)
+                .is_err());
             drop(pinned);
             fs::remove_dir(directory).unwrap();
         }
 
         #[test]
         fn evidence_output_is_created_with_privileged_owner_or_is_rejected() {
-            let directory = std::env::temp_dir().join(format!("guard-output-{}", uuid::Uuid::new_v4()));
+            let directory =
+                std::env::temp_dir().join(format!("guard-output-{}", uuid::Uuid::new_v4()));
             fs::create_dir(&directory).unwrap();
             let output = directory.join("proof.tmp");
             match create_private_output(&output) {
@@ -474,7 +626,7 @@ mod native_security {
                     assert!(validate_security(&summary, true).is_ok());
                     drop(file);
                     fs::remove_file(&output).unwrap();
-                },
+                }
                 Err(_) => assert!(!output.exists()),
             }
             fs::remove_dir(directory).unwrap();
@@ -516,7 +668,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn evidence_channel_rejects_same_user_writable_forged_directory() {
-        let temporary = std::env::temp_dir().join(format!("guard-evidence-{}", uuid::Uuid::new_v4()));
+        let temporary =
+            std::env::temp_dir().join(format!("guard-evidence-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&temporary).unwrap();
         fs::write(temporary.join(FILE_NAME), b"forged native proof").unwrap();
         assert!(ProtectedEvidenceChannel::open_directory(&temporary, &temporary).is_err());
@@ -529,9 +682,19 @@ mod tests {
         let common = Path::new(r"C:\ProgramData");
         assert_eq!(
             native_security::channel_directory(common, "S-1-5-21-1-2-3-1001").unwrap(),
-            common.join("CodexQuotaGuardConflictEvidence").join("S-1-5-21-1-2-3-1001")
+            common
+                .join("CodexQuotaGuardConflictEvidence")
+                .join("S-1-5-21-1-2-3-1001")
         );
-        for invalid in ["", "S-1-5-18", "S-1-5-21-1\\escape", "S-1-5-21-1:stream", "S-1-5-21-..", "S-1-5-21-1/escape"] {
+        assert!(native_security::channel_directory(common, "S-1-12-1-1-2-3-4").is_ok());
+        for invalid in [
+            "",
+            "S-1-5-18",
+            "S-1-5-21-1\\escape",
+            "S-1-5-21-1:stream",
+            "S-1-5-21-..",
+            "S-1-5-21-1/escape",
+        ] {
             assert!(native_security::channel_directory(common, invalid).is_err());
         }
     }
@@ -543,15 +706,29 @@ mod tests {
         let summary = SecuritySummary {
             owner: "S-1-5-32-544".into(),
             protected: true,
-            grants: vec![AccessGrant { sid: "S-1-5-18".into(), mask: 0x1f01ff, inherit_only: false },
-                AccessGrant { sid: "S-1-5-32-544".into(), mask: 0x1f01ff, inherit_only: false }],
+            grants: vec![
+                AccessGrant {
+                    sid: "S-1-5-18".into(),
+                    mask: 0x1f01ff,
+                    inherit_only: false,
+                },
+                AccessGrant {
+                    sid: "S-1-5-32-544".into(),
+                    mask: 0x1f01ff,
+                    inherit_only: false,
+                },
+            ],
         };
         assert!(validate_security(&summary, true).is_ok());
         let mut forged = summary.clone();
         forged.owner = "S-1-5-21-1-2-3-1001".into();
         assert!(validate_security(&forged, true).is_err());
         let mut writable = summary.clone();
-        writable.grants.push(AccessGrant { sid: "S-1-5-21-1-2-3-1001".into(), mask: 2, inherit_only: false });
+        writable.grants.push(AccessGrant {
+            sid: "S-1-5-21-1-2-3-1001".into(),
+            mask: 2,
+            inherit_only: false,
+        });
         assert!(validate_security(&writable, true).is_err());
         let mut inherited = summary;
         inherited.protected = false;
@@ -563,8 +740,13 @@ mod tests {
     fn ancestor_acl_cannot_authorize_unprivileged_replacement_of_protected_root() {
         use native_security::{validate_security, AccessGrant, SecuritySummary};
         let mut summary = SecuritySummary {
-            owner: "S-1-5-18".into(), protected: false,
-            grants: vec![AccessGrant { sid: "S-1-5-32-545".into(), mask: 0x116, inherit_only: false }],
+            owner: "S-1-5-18".into(),
+            protected: false,
+            grants: vec![AccessGrant {
+                sid: "S-1-5-32-545".into(),
+                mask: 0x116,
+                inherit_only: false,
+            }],
         };
         assert!(validate_security(&summary, false).is_ok());
         for dangerous in [0x40, 0x10000, 0x40000, 0x80000, 0x10000000] {

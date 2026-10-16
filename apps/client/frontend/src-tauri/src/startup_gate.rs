@@ -334,7 +334,10 @@ impl StartupGate {
                 .is_ok_and(|channel| channel.publish(&evidence))
         }
         #[cfg(not(windows))]
-        { let _ = evidence; false }
+        {
+            let _ = evidence;
+            false
+        }
     }
 
     fn inspect_guard(&self, app: &AppHandle, lease_id: &str, retry_failed: bool) -> GateResult {
