@@ -51,6 +51,8 @@ const messages: Record<string, string> = {
   PROXY_CONNECT_TIMEOUT: '代理连接超时，请检查服务器地址、端口和节点网络后重试。',
   PROXY_TEST_RESPONSE_INVALID: '未能验证节点测试返回的出口信息，请检查节点后重新测试。',
   PROXY_SUBSCRIPTION_FORMAT_UNSUPPORTED: '订阅格式或协议参数不支持，请使用支持的 Clash YAML、V2Ray URI 列表或 Base64 内容；最多 128 个节点、1 MiB 正文。',
+  PROXY_TROJAN_TLS_CONFIRMATION_REQUIRED: '此订阅的 Trojan 节点要求跳过证书验证，请在当前订阅表单中阅读风险说明并主动勾选“允许此订阅的 Trojan 节点跳过证书验证”后重试。',
+  PROXY_TROJAN_SNI_CONFLICT: '此订阅的 Trojan 节点包含不一致的 TLS 服务器名称参数，请联系订阅提供方修正后重试。',
   PROXY_SUBSCRIPTION_FAILED: '订阅获取失败，请检查公网 HTTPS 443 地址与订阅服务；不接受跳转链接。',
   PROXY_SUBSCRIPTION_DUPLICATE_NAME: '订阅名称已存在，请使用其他名称。',
   PROXY_SUBSCRIPTION_VERSION_CONFLICT: '订阅已被其他管理员更新，请刷新列表后重试。',

@@ -80,6 +80,80 @@ class ProxyNodeParserTest {
     }
 
     @Test
+    void mapsTrojanPeerToSniAndRejectsConflictsWithoutEchoingSecrets() {
+        for (String query : List.of("peer=tls.example.com", "sni=tls.example.com&peer=TLS.example.com")) {
+            JsonNode tls = json.readTree(parser.parse("trojan://synthetic-secret@edge.example.com:443?" + query).outboundJson()).get("tls");
+            assertThat(tls.get("server_name").asString()).isEqualTo("tls.example.com");
+            assertThat(tls.get("insecure").asBoolean()).isFalse();
+        }
+        String conflicting = "trojan://synthetic-secret@edge.example.com:443?peer=peer.example.com&sni=tls.example.com";
+        assertThatThrownBy(() -> parser.parse(conflicting)).isInstanceOfSatisfying(DomainException.class, error -> {
+            assertThat(error.getCode()).isEqualTo("PROXY_TROJAN_SNI_CONFLICT");
+            assertThat(error.getMessage()).doesNotContain("synthetic-secret", "edge.example.com", "peer.example.com", "tls.example.com", conflicting);
+        });
+        assertThatThrownBy(() -> parser.parseSubscription(base64(conflicting), true))
+                .isInstanceOfSatisfying(DomainException.class,
+                        error -> assertThat(error.getCode()).isEqualTo("PROXY_TROJAN_SNI_CONFLICT"));
+    }
+
+    @Test
+    void permitsTrojanInsecureOnlyForExplicitlyAllowedSubscriptions() {
+        for (String value : List.of("1", "true")) {
+            String uri = "trojan://synthetic-secret@edge.example.com:443?allowInsecure=" + value
+                    + "&peer=tls.example.com&sni=tls.example.com#Synthetic";
+            for (Runnable parse : List.<Runnable>of(() -> parser.parse(uri), () -> parser.parseSubscription(uri),
+                    () -> parser.parseSubscription(base64(uri)), () -> parser.parseSubscription(uri, false))) {
+                assertThatThrownBy(parse::run).isInstanceOfSatisfying(DomainException.class, error -> {
+                    assertThat(error.getCode()).isEqualTo("PROXY_TROJAN_TLS_CONFIRMATION_REQUIRED");
+                    assertThat(error.getMessage()).doesNotContain("synthetic-secret", "edge.example.com", "tls.example.com", uri);
+                });
+            }
+            JsonNode config = json.readTree(parser.parseSubscription(base64(uri), true).get(0).outboundJson());
+            assertThat(config.get("tls").get("insecure").asBoolean()).isTrue();
+            assertThat(config.get("tls").get("server_name").asString()).isEqualTo("tls.example.com");
+            assertThat(config.has("peer")).isFalse();
+            assertThat(config.has("allowInsecure")).isFalse();
+        }
+        String lines = java.util.stream.IntStream.range(0, 20).mapToObj(index ->
+                "trojan://synthetic-password@edge" + index + ".example.com:443?allowInsecure=1&peer=tls.example.com&sni=tls.example.com#Synthetic" + index)
+                .collect(java.util.stream.Collectors.joining("\n"));
+        assertThat(parser.parseSubscription(base64(lines), true)).hasSize(20).allSatisfy(node -> {
+            JsonNode config = json.readTree(node.outboundJson());
+            assertThat(node.protocol()).isEqualTo("TROJAN");
+            assertThat(config.get("tls").get("insecure").asBoolean()).isTrue();
+        });
+    }
+
+    @Test
+    void keepsTrojanCertificateVerificationForFalseOrOmittedValuesAndRejectsUnknownValues() {
+        for (String query : List.of("", "?allowInsecure=0", "?allowInsecure=false")) {
+            String uri = "trojan://synthetic-secret@edge.example.com:443" + query;
+            assertThat(json.readTree(parser.parse(uri).outboundJson()).get("tls").get("insecure").asBoolean()).isFalse();
+            assertThat(json.readTree(parser.parseSubscription(uri, true).get(0).outboundJson()).get("tls").get("insecure").asBoolean()).isFalse();
+        }
+        for (String value : List.of("", "yes", "TRUE", "2", "-1", "null")) {
+            String uri = "trojan://synthetic-secret@edge.example.com:443?allowInsecure=" + value;
+            assertThatThrownBy(() -> parser.parseSubscription(uri, true)).isInstanceOfSatisfying(DomainException.class,
+                    error -> assertThat(error.getCode()).isEqualTo("PROXY_NODE_INVALID"));
+        }
+    }
+
+    @Test
+    void trojanPermissionDoesNotRelaxOtherProtocolsOrClashTlsRules() {
+        for (String invalid : List.of(
+                "vless://" + ID + "@edge.example.com:443?security=tls&allowInsecure=1",
+                "vless://" + ID + "@edge.example.com:443?security=tls&peer=tls.example.com",
+                "vmess://" + base64("{\"add\":\"edge.example.com\",\"port\":443,\"id\":\"" + ID + "\",\"allowInsecure\":1}"),
+                "trojan://synthetic-secret@edge.example.com:443?security=none&allowInsecure=1",
+                "trojan://synthetic-secret@edge.example.com:443?allowInsecure=1&allowInsecure=0",
+                "proxies: [{name: Unsafe, type: trojan, server: edge.example.com, port: 443, password: synthetic-secret, skip-cert-verify: true}]",
+                "proxies: [{name: Unsafe, type: http, server: edge.example.com, port: 443, tls: true, skip-cert-verify: true}]")) {
+            assertThatThrownBy(() -> parser.parseSubscription(invalid, true)).isInstanceOf(DomainException.class)
+                    .hasMessageNotContaining("synthetic-secret").hasMessageNotContaining("edge.example.com");
+        }
+    }
+
+    @Test
     void rejectsUnsupportedVariantsAmbiguousQueriesAndUntrustedConfigurationsWithoutEchoingInput() {
         List<String> invalid = List.of(
                 "http://proxy.example.com:8080?unknown=synthetic-secret",

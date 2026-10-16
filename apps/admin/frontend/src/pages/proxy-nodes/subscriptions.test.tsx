@@ -8,7 +8,7 @@ const mocks = vi.hoisted(() => ({ listProxyNodes: vi.fn(), createProxyNode: vi.f
   createProxySubscription: vi.fn(), updateProxySubscription: vi.fn(), refreshProxySubscription: vi.fn(), deleteProxySubscription: vi.fn(),
   isSecureManagementContext: vi.fn(), isSupportedManagementContext: vi.fn() }));
 vi.mock('../../services/api', () => mocks);
-const source = { id: 'source-1', label: '办公订阅', hasUrl: true, sourceHost: 'subscription.example', nodeCount: 1,
+const source = { id: 'source-1', label: '办公订阅', hasUrl: true, allowInsecureTrojan: false, sourceHost: 'subscription.example', nodeCount: 1,
   enabledNodeCount: 1, status: 'READY', createdAt: null, updatedAt: null, refreshedAt: null, version: 3 };
 const node = { id: 'proxy-1', label: '香港出口', protocol: 'VLESS', host: 'proxy.example', port: 443, enabled: true,
   sourceSubscriptionId: 'source-1', sourceMissing: false, version: 4, testStatus: 'UNTESTED' };
@@ -47,11 +47,13 @@ describe('手动更新代理订阅', () => {
     const editor = await screen.findByRole('dialog', { name: '导入代理订阅' });
     const url = within(editor).getByLabelText('订阅 URL');
     expect(url).toHaveAttribute('type', 'password');
+    expect(within(editor).getByRole('checkbox', { name: '允许此订阅的 Trojan 节点跳过证书验证' })).not.toBeChecked();
+    expect(within(editor).queryByText(/中间人攻击/)).not.toBeInTheDocument();
     fireEvent.change(within(editor).getByLabelText('订阅名称'), { target: { value: '办公订阅' } });
     fireEvent.change(url, { target: { value: 'https://subscription.example/list?token=fixture-private' } });
     fireEvent.click(within(editor).getByRole('button', { name: '导入并获取节点' }));
     await waitFor(() => expect(mocks.createProxySubscription).toHaveBeenCalledOnce());
-    expect(submitted).toEqual({ label: '办公订阅', url: 'https://subscription.example/list?token=fixture-private' });
+    expect(submitted).toEqual({ label: '办公订阅', url: 'https://subscription.example/list?token=fixture-private', allowInsecureTrojan: false });
     expect(write).not.toHaveBeenCalled();
     expect(mocks.refreshProxySubscription).not.toHaveBeenCalled();
     expect(screen.queryByDisplayValue(/fixture-private/)).not.toBeInTheDocument();
@@ -63,17 +65,96 @@ describe('手动更新代理订阅', () => {
     expect(within(editor).getByLabelText('订阅 URL')).toHaveValue('');
     fireEvent.change(within(editor).getByLabelText('订阅名称'), { target: { value: '备用订阅' } });
     fireEvent.click(within(editor).getByRole('button', { name: '保存订阅' }));
-    await waitFor(() => expect(mocks.updateProxySubscription).toHaveBeenCalledWith('source-1', { label: '备用订阅', version: 3 }));
+    await waitFor(() => expect(mocks.updateProxySubscription).toHaveBeenCalledWith('source-1', { label: '备用订阅', allowInsecureTrojan: false, version: 3 }));
     expect(mocks.refreshProxySubscription).not.toHaveBeenCalled();
+  });
+  it('imports Trojan compatibility only after explicit consent with its scope and risk visible', async () => {
+    let submitted: unknown;
+    mocks.createProxySubscription.mockImplementation(async (body) => { submitted = { ...body }; return source; });
+    const dialog = await showSources();
+    fireEvent.click(within(dialog).getByRole('button', { name: '导入订阅' }));
+    const editor = await screen.findByRole('dialog', { name: '导入代理订阅' });
+    expect(within(editor).getByText(/仅对本订阅 URI 中声明 allowInsecure=1\/true.*其他协议及其他订阅仍验证 TLS 证书/)).toBeInTheDocument();
+    fireEvent.click(within(editor).getByRole('checkbox', { name: '允许此订阅的 Trojan 节点跳过证书验证' }));
+    expect(await within(editor).findByText(/跳过证书验证可能遭受中间人攻击/)).toBeInTheDocument();
+    fireEvent.change(within(editor).getByLabelText('订阅名称'), { target: { value: 'Trojan 订阅' } });
+    fireEvent.change(within(editor).getByLabelText('订阅 URL'), { target: { value: 'https://subscription.example/list' } });
+    fireEvent.click(within(editor).getByRole('button', { name: '导入并获取节点' }));
+    await waitFor(() => expect(submitted).toEqual({ label: 'Trojan 订阅', url: 'https://subscription.example/list', allowInsecureTrojan: true }));
+    expect(mocks.refreshProxySubscription).not.toHaveBeenCalled();
+  });
+  it('restores a subscription consent flag and explicitly disables it when unchecked', async () => {
+    mocks.listProxySubscriptions.mockResolvedValue([{ ...source, allowInsecureTrojan: true }]);
+    const dialog = await showSources();
+    expect(await within(dialog).findByText('Trojan 兼容已开启')).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: '编辑订阅 办公订阅' }));
+    const editor = await screen.findByRole('dialog', { name: '编辑代理订阅' });
+    const checkbox = within(editor).getByRole('checkbox', { name: '允许此订阅的 Trojan 节点跳过证书验证' });
+    expect(checkbox).toBeChecked();
+    expect(within(editor).getByText(/关闭此选项会恢复此前例外节点的证书验证并停用这些节点.*账户引用/)).toBeInTheDocument();
+    fireEvent.click(checkbox);
+    await waitFor(() => {
+      expect(checkbox).not.toBeChecked();
+      expect(within(editor).queryByText(/中间人攻击/)).not.toBeInTheDocument();
+    });
+    fireEvent.click(within(editor).getByRole('button', { name: '保存订阅' }));
+    await waitFor(() => expect(mocks.updateProxySubscription).toHaveBeenCalledWith('source-1', {
+      label: '办公订阅', allowInsecureTrojan: false, version: 3,
+    }));
+  });
+  it('starts every new subscription with consent off after cancelling an enabled editor or checked draft', async () => {
+    mocks.listProxySubscriptions.mockResolvedValue([{ ...source, allowInsecureTrojan: true }]);
+    const dialog = await showSources();
+    fireEvent.click(await within(dialog).findByRole('button', { name: '编辑订阅 办公订阅' }));
+    const existingEditor = await screen.findByRole('dialog', { name: '编辑代理订阅' });
+    expect(within(existingEditor).getByRole('checkbox')).toBeChecked();
+    fireEvent.click(within(existingEditor).getByRole('button', { name: /取\s*消/ }));
+    fireEvent.click(within(dialog).getByRole('button', { name: '导入订阅' }));
+    const editor = await screen.findByRole('dialog', { name: '导入代理订阅' });
+    expect(within(editor).getByRole('checkbox')).not.toBeChecked();
+    fireEvent.click(within(editor).getByRole('checkbox'));
+    fireEvent.click(within(editor).getByRole('button', { name: /取\s*消/ }));
+    fireEvent.click(within(dialog).getByRole('button', { name: '导入订阅' }));
+    const nextEditor = await screen.findByRole('dialog', { name: '导入代理订阅' });
+    expect(within(nextEditor).getByRole('checkbox')).not.toBeChecked();
+    expect(within(nextEditor).queryByText(/中间人攻击/)).not.toBeInTheDocument();
+    expect(mocks.updateProxySubscription).not.toHaveBeenCalled();
+    expect(mocks.createProxySubscription).not.toHaveBeenCalled();
   });
   it('refreshes explicitly and removes only the subscription source', async () => {
     const dialog = await showSources();
     fireEvent.click(await within(dialog).findByRole('button', { name: '更新订阅 办公订阅' }));
     await waitFor(() => expect(mocks.refreshProxySubscription).toHaveBeenCalledWith('source-1', 3));
     fireEvent.click(within(dialog).getByRole('button', { name: '移除订阅 办公订阅' }));
+    expect(await screen.findByText('只解除订阅来源，保留所有节点与账户选择。')).toBeInTheDocument();
     fireEvent.click(await screen.findByRole('button', { name: '仅移除来源' }));
     await waitFor(() => expect(mocks.deleteProxySubscription).toHaveBeenCalledWith('source-1', 3));
     expect(mocks.deleteProxyNode).not.toHaveBeenCalled();
+  });
+  it('explains restored verification and disabled exception nodes before removing a compatible subscription', async () => {
+    mocks.listProxySubscriptions.mockResolvedValue([{ ...source, allowInsecureTrojan: true }]);
+    const dialog = await showSources();
+    fireEvent.click(await within(dialog).findByRole('button', { name: '移除订阅 办公订阅' }));
+    expect(await screen.findByText('移除来源会恢复此前例外节点的证书验证并停用这些节点，保留所有节点 ID 与账户选择。')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '仅移除来源' }));
+    await waitFor(() => expect(mocks.deleteProxySubscription).toHaveBeenCalledWith('source-1', 3));
+    expect(mocks.deleteProxyNode).not.toHaveBeenCalled();
+  });
+  it.each([
+    ['PROXY_TROJAN_TLS_CONFIRMATION_REQUIRED', /当前订阅表单.*主动勾选/],
+    ['PROXY_TROJAN_SNI_CONFLICT', /不一致的 TLS 服务器名称参数/],
+  ])('explains %s safely without automatically granting consent', async (code, expected) => {
+    mocks.createProxySubscription.mockRejectedValue({ code, message: 'https://private.example/?token=fixture-private' });
+    const dialog = await showSources();
+    fireEvent.click(within(dialog).getByRole('button', { name: '导入订阅' }));
+    const editor = await screen.findByRole('dialog', { name: '导入代理订阅' });
+    fireEvent.change(within(editor).getByLabelText('订阅名称'), { target: { value: 'Trojan 订阅' } });
+    fireEvent.change(within(editor).getByLabelText('订阅 URL'), { target: { value: 'https://subscription.example/list' } });
+    fireEvent.click(within(editor).getByRole('button', { name: '导入并获取节点' }));
+    expect(await within(editor).findByText(expected)).toBeInTheDocument();
+    expect(within(editor).getByRole('checkbox')).not.toBeChecked();
+    expect(within(editor).getByLabelText('订阅 URL')).toHaveValue('');
+    expect(screen.queryByText(/fixture-private/)).not.toBeInTheDocument();
   });
   it('clears failed secret input and never renders upstream URL tokens', async () => {
     mocks.createProxySubscription.mockRejectedValue({ code: 'UNRECOGNIZED', message: 'https://private.example/?token=fixture-private' });

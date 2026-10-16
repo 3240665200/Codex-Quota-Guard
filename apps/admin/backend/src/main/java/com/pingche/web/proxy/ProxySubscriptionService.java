@@ -15,6 +15,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ObjectNode;
 
 @Service
 public class ProxySubscriptionService {
@@ -24,14 +27,16 @@ public class ProxySubscriptionService {
     private final ProxySubscriptionFetcher fetcher;
     private final ProxySecretCipher cipher;
     private final Clock clock;
+    private final ObjectMapper json;
     private final TransactionTemplate transaction;
     private final Set<UUID> refreshing = ConcurrentHashMap.newKeySet();
 
     public ProxySubscriptionService(ProxySubscriptionRepository subscriptions, ProxyNodeRepository nodes,
             ProxyNodeParser parser, ProxySubscriptionFetcher fetcher, ProxySecretCipher cipher, Clock clock,
-            PlatformTransactionManager transactionManager) {
+            PlatformTransactionManager transactionManager, ObjectMapper json) {
         this.subscriptions = subscriptions; this.nodes = nodes; this.parser = parser;
         this.fetcher = fetcher; this.cipher = cipher; this.clock = clock;
+        this.json = json;
         this.transaction = new TransactionTemplate(transactionManager);
     }
 
@@ -46,11 +51,12 @@ public class ProxySubscriptionService {
         UUID id = UUID.randomUUID();
         String encrypted = cipher.encrypt(request.url(), cipherContext(id));
         // Download is direct and bounded. Never use an account's selected proxy, redirect, or imported configuration.
-        List<ProxyNodeDefinition> definitions = parser.parseSubscription(fetcher.fetch(request.url()));
+        boolean allowInsecureTrojan = Boolean.TRUE.equals(request.allowInsecureTrojan());
+        List<ProxyNodeDefinition> definitions = parser.parseSubscription(fetcher.fetch(request.url()), allowInsecureTrojan);
         return transaction.execute(ignored -> {
             Instant now = clock.instant();
             ProxySubscription subscription = subscriptions.saveAndFlush(new ProxySubscription(id, label, encrypted,
-                    ProxyNodeParser.normalizeHost(uri.getHost()), now));
+                    ProxyNodeParser.normalizeHost(uri.getHost()), allowInsecureTrojan, now));
             synchronize(subscription, definitions, now);
             return response(subscription);
         });
@@ -67,7 +73,10 @@ public class ProxySubscriptionService {
             encrypted = cipher.encrypt(request.url(), cipherContext(id));
             host = ProxyNodeParser.normalizeHost(uri.getHost());
         }
-        subscription.edit(ProxyNodeParser.label(request.label()), encrypted, host, clock.instant());
+        Instant now = clock.instant();
+        if (subscription.isAllowInsecureTrojan() && Boolean.FALSE.equals(request.allowInsecureTrojan()))
+            revokeInsecureTrojan(nodes.findAllBySourceSubscriptionId(id), now);
+        subscription.edit(ProxyNodeParser.label(request.label()), encrypted, host, request.allowInsecureTrojan(), now);
         return response(subscriptions.saveAndFlush(subscription));
     }
 
@@ -77,7 +86,7 @@ public class ProxySubscriptionService {
             ProxySubscription snapshot = required(id);
             checkVersion(snapshot, version);
             String url = cipher.decrypt(snapshot.encryptedUrl(), cipherContext(id));
-            List<ProxyNodeDefinition> definitions = parser.parseSubscription(fetcher.fetch(url));
+            List<ProxyNodeDefinition> definitions = parser.parseSubscription(fetcher.fetch(url), snapshot.isAllowInsecureTrojan());
             return transaction.execute(ignored -> {
                 ProxySubscription current = required(id);
                 checkVersion(current, version);
@@ -95,10 +104,36 @@ public class ProxySubscriptionService {
         ProxySubscription subscription = required(id);
         checkVersion(subscription, version);
         List<ProxyNode> existing = nodes.findAllBySourceSubscriptionId(id);
-        existing.forEach(node -> node.detachSubscription(clock.instant()));
+        Instant now = clock.instant();
+        revokeInsecureTrojan(existing, now);
+        existing.forEach(node -> node.detachSubscription(now));
         nodes.saveAllAndFlush(existing);
         subscriptions.delete(subscription);
         subscriptions.flush();
+    }
+
+    private void revokeInsecureTrojan(List<ProxyNode> existing, Instant now) {
+        for (ProxyNode node : existing) {
+            if (!node.getProtocol().equals("TROJAN")) continue;
+            String configuration = cipher.decrypt(node.encryptedConfiguration(), node.getId().toString());
+            try {
+                JsonNode outbound = json.readTree(configuration);
+                JsonNode tls = outbound == null ? null : outbound.get("tls");
+                if (tls == null || !tls.isObject()) throw new IllegalArgumentException();
+                if (!tls.path("insecure").asBoolean()) continue;
+                ((ObjectNode) tls).put("insecure", false);
+                String verifiedConfiguration = json.writeValueAsString(outbound);
+                ProxyNodeDefinition definition = new ProxyNodeDefinition(node.getLabel(), node.getProtocol(),
+                        node.getHost(), node.getPort(), verifiedConfiguration, node.hasCredentials());
+                node.update(node.getLabel(), definition,
+                        cipher.encrypt(verifiedConfiguration, node.getId().toString()), false, now);
+                nodes.save(node);
+            } catch (DomainException error) { throw error; }
+            catch (RuntimeException ignored) {
+                throw new DomainException("PROXY_CREDENTIALS_UNAVAILABLE", "代理节点凭据不可用。", HttpStatus.SERVICE_UNAVAILABLE);
+            }
+        }
+        nodes.flush();
     }
 
     private void synchronize(ProxySubscription subscription, List<ProxyNodeDefinition> definitions, Instant now) {

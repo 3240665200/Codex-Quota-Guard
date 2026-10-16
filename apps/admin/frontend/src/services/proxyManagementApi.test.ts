@@ -10,7 +10,7 @@ describe('订阅与完整代理链 API', () => {
   });
   it('manages subscriptions with explicit versioned refresh and never persists the URL', async () => {
     const write = vi.spyOn(Storage.prototype, 'setItem');
-    const input = { label: '办公订阅', url: 'https://subscription.example/list?token=fixture-only' };
+    const input = { label: '办公订阅', url: 'https://subscription.example/list?token=fixture-only', allowInsecureTrojan: false };
     for (const name of ['listProxySubscriptions', 'createProxySubscription', 'updateProxySubscription', 'refreshProxySubscription', 'deleteProxySubscription']) {
       expect(management[name]).toBeTypeOf('function');
     }
@@ -27,6 +27,17 @@ describe('订阅与完整代理链 API', () => {
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual(input);
     expect(JSON.parse(fetchMock.mock.calls[3][1].body)).toEqual({ version: 4 });
     expect(write).not.toHaveBeenCalled();
+  });
+  it('sends explicit Trojan consent changes and preserves an omitted update flag', async () => {
+    const input: api.ProxySubscriptionInput & { url: string } = {
+      label: 'Trojan 订阅', url: 'https://subscription.example/list', allowInsecureTrojan: true,
+    };
+    await api.createProxySubscription(input);
+    await api.updateProxySubscription('source/id', { label: 'Trojan 订阅', allowInsecureTrojan: false, version: 3 });
+    await api.updateProxySubscription('source/id', { label: '改名订阅', version: 4 });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual(input);
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ label: 'Trojan 订阅', allowInsecureTrojan: false, version: 3 });
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({ label: '改名订阅', version: 4 });
   });
   it('tests a pair separately from a node and uses the dedicated enable endpoint', async () => {
     expect(management.testProxyChain).toBeTypeOf('function');

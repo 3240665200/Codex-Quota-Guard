@@ -7,6 +7,8 @@ it.each([
   ['PROXY_NODE_SOURCE_MISSING', /订阅.*移除/],
   ['PROXY_NODE_SUBSCRIPTION_MANAGED', /订阅.*更新/],
   ['PROXY_SUBSCRIPTION_VERSION_CONFLICT', /刷新.*重试/],
+  ['PROXY_TROJAN_TLS_CONFIRMATION_REQUIRED', /当前订阅.*主动勾选.*Trojan.*跳过证书验证/],
+  ['PROXY_TROJAN_SNI_CONFLICT', /Trojan.*不一致.*TLS.*订阅提供方/],
 ])('explains subscription constraint %s without rendering private URL details', (code, expected) => {
   const message = managedErrorMessage({ code, message: 'https://private.example/?token=fixture-private' });
   expect(message).toMatch(expected);

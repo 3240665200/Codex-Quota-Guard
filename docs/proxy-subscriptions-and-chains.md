@@ -46,13 +46,25 @@
 
 ## API
 
+### Trojan URI 订阅兼容
+
+对于 URI 列表或 Base64 包装的 Trojan 订阅，支持 `peer` 作为 `sni` 别名；同时出现时必须一致，冲突会明确报错。`allowInsecure=0` 或 `false` 保持证书校验。
+
+如果订阅的 Trojan 链接声明 `allowInsecure=1` 或 `true`，需在该订阅的导入／编辑窗口主动勾选“允许此订阅的 Trojan 节点跳过证书验证”。新建默认关闭，设置随订阅保存，之后手动更新沿用该设置。只有当前订阅中明确声明此参数的 Trojan URI 节点会跳过节点证书校验；其它订阅、其它协议、Clash YAML、订阅下载 HTTPS 和官方站点 HTTPS 校验不受影响。
+
+这个例外会接受节点提供的任意证书，无法据此验证代理节点身份。关闭许可或移除订阅来源时，会立即在保存的配置中恢复这些节点的证书校验、停用节点并清除旧出口测试结果，保留节点 ID 和账户引用；之后手动启用不会恢复旧例外。修改订阅地址或开启许可仍需点击“更新节点”获取新配置。
+
+该适配按格式识别，不针对某个供应商 IP、路径或订阅令牌硬编码。未获许可时返回 `PROXY_TROJAN_TLS_CONFIRMATION_REQUIRED`，`peer`/`sni` 冲突返回 `PROXY_TROJAN_SNI_CONFLICT`，错误不包含原始节点链接、域名或凭据。
+
+### 管理接口
+
 下列路径均在 `/api/v1/admin` 下，仅管理员可用，敏感响应为 `Cache-Control: no-store`。
 
 | 方法 | 路径 | 内容 |
 | --- | --- | --- |
 | GET | `/proxy-subscriptions` | 订阅摘要数组，不返回 URL |
-| POST | `/proxy-subscriptions` | `{label,url}`，首次下载并导入 |
-| PUT | `/proxy-subscriptions/{id}` | `{label,url?,version}`，只修改订阅设置 |
+| POST | `/proxy-subscriptions` | `{label,url,allowInsecureTrojan?}`，首次下载并导入，许可默认 false |
+| PUT | `/proxy-subscriptions/{id}` | `{label,url?,version,allowInsecureTrojan?}`，省略许可则保持原值；关闭许可会立即撤销旧节点例外 |
 | POST | `/proxy-subscriptions/{id}/refresh` | `{version}`，手动更新 |
 | DELETE | `/proxy-subscriptions/{id}?version=n` | 保留节点并解除订阅来源 |
 | PUT | `/proxy-nodes/{id}/enabled` | `{enabled,version}`，独立启停节点 |
@@ -62,6 +74,8 @@
 原账户授权／预置请求新增可空 `frontProxyNodeId`，现有 `proxyNodeId` 仍为出口。旧单节点请求兼容；旧无状态 `/proxy-nodes/import` 仍为退役接口，新订阅使用上表接口。
 
 迁移 V32 增加账户可空前置节点引用，V33 增加加密订阅及节点来源关系，不重新初始化数据库。升级前保留数据库、原 `.env` 和全部密钥。旧应用不理解前置链，不应将切回旧应用视作网络策略等价的回滚；不要在要求前置的账户上继续运行旧请求进程。
+
+V34 仅为订阅增加默认 false 的 `allow_insecure_trojan` 列，旧订阅不会自动获得许可。订阅摘要返回 `allowInsecureTrojan` 布尔值，不返回 URL。降级到不理解该许可的旧代码前，应先在新版关闭例外并确认已保存的节点恢复校验，不能只切换旧应用后继续使用原配置。
 
 V32 历史脚本内的“部署上一版应用即可回滚”注释不能作为运行依据：保留新增列只能维持表结构兼容，旧代码仍可能忽略前置并直接连接出口。已执行迁移不要改写 SQL、执行 Flyway repair、删列或清空数据库；停止旧实例后按新版本继续修复。确需回到旧应用时，应先停止官方请求并逐账户核对单出口策略；恢复升级前备份则必须同时恢复匹配的数据库、应用和密钥。新增订阅表的降级清理也应另写经过审核的向前迁移。
 

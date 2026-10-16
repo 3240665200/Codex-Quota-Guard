@@ -1,4 +1,4 @@
-import { Alert, App as AntApp, Button, Form, Input, Modal, Popconfirm, Space, Table, Tag, Typography } from 'antd';
+import { Alert, App as AntApp, Button, Checkbox, Form, Input, Modal, Popconfirm, Space, Table, Tag, Typography } from 'antd';
 import type { TableColumnsType } from 'antd';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { managedErrorMessage } from '../../components/managedErrors';
@@ -6,7 +6,7 @@ import { createProxySubscription, deleteProxySubscription, listProxySubscription
   refreshProxySubscription, updateProxySubscription } from '../../services/api';
 import type { ProxySubscription } from '../../services/api';
 
-type SubscriptionForm = { label: string; url: string };
+type SubscriptionForm = { label: string; url: string; allowInsecureTrojan: boolean };
 const dateText = (value: string | null) => value ? new Date(value).toLocaleString('zh-CN') : '尚未更新';
 
 export default function SubscriptionManager({ supported, onClose, onChanged }: {
@@ -14,6 +14,7 @@ export default function SubscriptionManager({ supported, onClose, onChanged }: {
 }) {
   const { message } = AntApp.useApp();
   const [form] = Form.useForm<SubscriptionForm>();
+  const allowInsecureTrojan = Form.useWatch('allowInsecureTrojan', form);
   const [subscriptions, setSubscriptions] = useState<ProxySubscription[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -39,10 +40,10 @@ export default function SubscriptionManager({ supported, onClose, onChanged }: {
     return () => { active.current = false; loadRevision.current += 1; };
   }, [load]);
   const clearUrl = () => form.setFieldsValue({ url: '' });
-  const closeEditor = () => { clearUrl(); form.resetFields(); setEditorOpen(false); setFormError(''); };
+  const closeEditor = () => { clearUrl(); form.resetFields(); setEditing(null); setEditorOpen(false); setFormError(''); };
   const edit = (source: ProxySubscription | null) => {
     form.resetFields(); setEditing(source); setFormError('');
-    form.setFieldsValue({ label: source?.label ?? '', url: '' }); setEditorOpen(true);
+    form.setFieldsValue({ label: source?.label ?? '', url: '', allowInsecureTrojan: source?.allowInsecureTrojan ?? false }); setEditorOpen(true);
   };
   const save = async () => {
     if (!supported || pending.current) return;
@@ -50,7 +51,8 @@ export default function SubscriptionManager({ supported, onClose, onChanged }: {
     try { values = await form.validateFields(); } catch { return; }
     if (!active.current || pending.current) return;
     pending.current = true; setBusy(true); setFormError('');
-    const body = { label: values.label.trim(), ...(values.url?.trim() ? { url: values.url.trim() } : {}) };
+    const body = { label: values.label.trim(), allowInsecureTrojan: values.allowInsecureTrojan === true,
+      ...(values.url?.trim() ? { url: values.url.trim() } : {}) };
     clearUrl(); values.url = '';
     try {
       if (editing) await updateProxySubscription(editing.id, { ...body, version: editing.version });
@@ -83,14 +85,19 @@ export default function SubscriptionManager({ supported, onClose, onChanged }: {
     { title: '订阅名称', dataIndex: 'label' },
     { title: '来源域名', dataIndex: 'sourceHost' },
     { title: '节点', render: (_, source) => `${source.enabledNodeCount} 启用 / ${source.nodeCount} 总计` },
-    { title: '状态', render: (_, source) => <Tag color={source.status === 'URL_UPDATED' ? 'warning' : 'default'}>
-      {source.status === 'URL_UPDATED' ? '地址已修改，待手动更新' : '已保存'}</Tag> },
+    { title: '状态', render: (_, source) => <Space wrap>
+      <Tag color={source.status === 'URL_UPDATED' ? 'warning' : 'default'}>
+        {source.status === 'URL_UPDATED' ? '地址已修改，待手动更新' : '已保存'}</Tag>
+      {source.allowInsecureTrojan ? <Tag color="warning">Trojan 兼容已开启</Tag> : null}
+    </Space> },
     { title: '最近更新', render: (_, source) => dateText(source.refreshedAt) },
     { title: '操作', render: (_, source) => <Space wrap>
       <Button aria-label={`更新订阅 ${source.label}`} disabled={!supported || busy || !source.hasUrl}
         onClick={() => void change(source, 'refresh')}>更新节点</Button>
       <Button aria-label={`编辑订阅 ${source.label}`} disabled={!supported || busy} onClick={() => edit(source)}>编辑</Button>
-      <Popconfirm title={`移除订阅「${source.label}」？`} description="只解除订阅来源，保留所有节点与账户选择。"
+      <Popconfirm title={`移除订阅「${source.label}」？`} description={source.allowInsecureTrojan
+        ? '移除来源会恢复此前例外节点的证书验证并停用这些节点，保留所有节点 ID 与账户选择。'
+        : '只解除订阅来源，保留所有节点与账户选择。'}
         okText="仅移除来源" cancelText="取消" onConfirm={() => void change(source, 'remove')}>
         <Button danger aria-label={`移除订阅 ${source.label}`} disabled={!supported || busy}>移除来源</Button>
       </Popconfirm>
@@ -113,7 +120,7 @@ export default function SubscriptionManager({ supported, onClose, onChanged }: {
           pagination={false} scroll={{ x: 900 }} locale={{ emptyText: '暂无代理订阅，可导入订阅或继续手动添加节点。' }} />
       </Space> : <>
       {formError ? <Alert type="error" showIcon title={formError} /> : null}
-      <Form form={form} layout="vertical" preserve={false} disabled={busy}>
+      <Form form={form} layout="vertical" preserve={false} disabled={busy} initialValues={{ allowInsecureTrojan: false }}>
         <Form.Item name="label" label="订阅名称" rules={[{ required: true, whitespace: true, message: '请输入订阅名称' }]}>
           <Input maxLength={120} autoComplete="off" />
         </Form.Item>
@@ -128,6 +135,15 @@ export default function SubscriptionManager({ supported, onClose, onChanged }: {
           } }]}>
           <Input.Password autoComplete="new-password" maxLength={8192} visibilityToggle={false} />
         </Form.Item>
+        <Form.Item name="allowInsecureTrojan" valuePropName="checked">
+          <Checkbox>允许此订阅的 Trojan 节点跳过证书验证</Checkbox>
+        </Form.Item>
+        <Typography.Paragraph type="secondary">仅对本订阅 URI 中声明 allowInsecure=1/true 的 Trojan 节点生效；订阅下载、官方站点、其他协议及其他订阅仍验证 TLS 证书。</Typography.Paragraph>
+        {allowInsecureTrojan ? <Alert type="warning" showIcon
+          title="跳过证书验证可能遭受中间人攻击；仅在信任该订阅及节点时开启。" /> : null}
+        {editing?.allowInsecureTrojan ? <Typography.Paragraph type="secondary">
+          关闭此选项会恢复此前例外节点的证书验证并停用这些节点，保留节点 ID 与账户引用。
+        </Typography.Paragraph> : null}
       </Form>
       </>}
     </Modal>;

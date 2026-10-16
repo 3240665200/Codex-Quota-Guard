@@ -71,6 +71,10 @@ public class ProxyNodeParser {
     }
 
     ProxyNodeDefinition parse(String input) {
+        return parse(input, false);
+    }
+
+    private ProxyNodeDefinition parse(String input, boolean allowInsecureTrojan) {
         try {
             if (input == null || input.length() > 16_384) throw invalid();
             String value = input.trim();
@@ -114,8 +118,9 @@ public class ProxyNodeParser {
                 }
                 out.put("method", parts[0]); out.put("password", password); out.put("network", "tcp"); credentials = true;
             } else {
-                if (user == null || !V2_QUERY.containsAll(query.keySet())) throw invalid();
                 boolean vless = scheme.equals("vless");
+                boolean insecureTrojan = !vless && configureTrojanQuery(query, allowInsecureTrojan);
+                if (user == null || !V2_QUERY.containsAll(query.keySet())) throw invalid();
                 if (vless) {
                     out.put("uuid", uuid(decode(user)));
                     if (query.containsKey("encryption") && !query.get("encryption").equals("none")) throw invalid();
@@ -131,17 +136,26 @@ public class ProxyNodeParser {
                     if (!flow.equals("xtls-rprx-vision") || !transport.equals("tcp") || security.equals("none")) throw invalid();
                     out.put("flow", flow);
                 }
-                if (!security.equals("none")) out.put("tls", tls(security, host, query));
+                if (!security.equals("none")) {
+                    Map<String, Object> tls = tls(security, host, query);
+                    if (insecureTrojan) tls.put("insecure", true);
+                    out.put("tls", tls);
+                }
                 else if (query.keySet().stream().anyMatch(Set.of("sni", "alpn", "fp", "pbk", "sid")::contains)) throw invalid();
                 configureTransport(out, transport, query);
                 out.put("network", "tcp"); credentials = true;
             }
             return new ProxyNodeDefinition(label, scheme.equals("ss") ? "SHADOWSOCKS" : scheme.toUpperCase(Locale.ROOT),
                     host, port, json.writeValueAsString(out), credentials);
-        } catch (RuntimeException ignored) { throw invalid(); }
+        } catch (DomainException error) { throw error; }
+        catch (RuntimeException ignored) { throw invalid(); }
     }
 
     List<ProxyNodeDefinition> parseSubscription(String input) {
+        return parseSubscription(input, false);
+    }
+
+    List<ProxyNodeDefinition> parseSubscription(String input, boolean allowInsecureTrojan) {
         if (input == null || input.getBytes(StandardCharsets.UTF_8).length > MAX_SUBSCRIPTION_BYTES) throw invalid();
         String value = input.strip();
         if (!value.matches("(?s)^[a-zA-Z][a-zA-Z0-9+.-]*://.*")) {
@@ -154,10 +168,26 @@ public class ProxyNodeParser {
         for (String line : value.split("\\R")) {
             if (line.isBlank()) continue;
             if (nodes.size() == MAX_NODES) throw invalid();
-            nodes.add(parse(line));
+            nodes.add(parse(line, allowInsecureTrojan));
         }
         if (nodes.isEmpty()) throw invalid();
         return uniqueNames(nodes);
+    }
+
+    private boolean configureTrojanQuery(Map<String, String> query, boolean allowInsecureTrojan) {
+        if (query.containsKey("peer")) {
+            String peer = normalizeHost(query.remove("peer"));
+            if (query.containsKey("sni") && !peer.equals(normalizeHost(query.get("sni"))))
+                throw new DomainException("PROXY_TROJAN_SNI_CONFLICT", "Trojan 链接中的 peer 与 sni 不一致，请检查订阅来源。", HttpStatus.BAD_REQUEST);
+            query.put("sni", peer);
+        }
+        String insecure = query.remove("allowInsecure");
+        if (insecure != null) {
+            if (!Set.of("0", "false", "1", "true").contains(insecure)) throw invalid();
+            if (Set.of("1", "true").contains(insecure) && !allowInsecureTrojan)
+                throw new DomainException("PROXY_TROJAN_TLS_CONFIRMATION_REQUIRED", "订阅包含要求跳过 TLS 证书校验的 Trojan 节点，请先明确允许此订阅跳过 Trojan 证书校验。", HttpStatus.BAD_REQUEST);
+        }
+        return "1".equals(insecure) || "true".equals(insecure);
     }
 
     private List<ProxyNodeDefinition> uniqueNames(List<ProxyNodeDefinition> nodes) {

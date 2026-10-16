@@ -382,6 +382,7 @@ export interface ProxySubscription {
   id: string;
   label: string;
   hasUrl: boolean;
+  allowInsecureTrojan: boolean;
   sourceHost: string;
   nodeCount: number;
   enabledNodeCount: number;
@@ -394,6 +395,7 @@ export interface ProxySubscription {
 export interface ProxySubscriptionInput {
   label: string;
   url?: string;
+  allowInsecureTrojan?: boolean;
   version?: number;
 }
 

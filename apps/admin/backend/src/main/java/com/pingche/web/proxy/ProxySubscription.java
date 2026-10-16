@@ -15,6 +15,7 @@ public class ProxySubscription {
     @Column(nullable = false, length = 120) private String label;
     @Column(name = "url_cipher", nullable = false, columnDefinition = "text") private String urlCipher;
     @Column(name = "source_host", nullable = false, length = 253) private String sourceHost;
+    @Column(name = "allow_insecure_trojan", nullable = false) private boolean allowInsecureTrojan;
     @Column(nullable = false, length = 24) private String status;
     @Column(name = "created_at", nullable = false) private Instant createdAt;
     @Column(name = "updated_at", nullable = false) private Instant updatedAt;
@@ -23,11 +24,16 @@ public class ProxySubscription {
 
     protected ProxySubscription() { }
     ProxySubscription(UUID id, String label, String encryptedUrl, String host, Instant now) {
+        this(id, label, encryptedUrl, host, false, now);
+    }
+    ProxySubscription(UUID id, String label, String encryptedUrl, String host, boolean allowInsecureTrojan, Instant now) {
         this.id = id; this.label = label; this.urlCipher = encryptedUrl; this.sourceHost = host;
+        this.allowInsecureTrojan = allowInsecureTrojan;
         this.status = "READY"; this.createdAt = now; this.updatedAt = now; this.refreshedAt = now;
     }
-    void edit(String label, String encryptedUrl, String host, Instant now) {
+    void edit(String label, String encryptedUrl, String host, Boolean allowInsecureTrojan, Instant now) {
         this.label = label; this.updatedAt = now;
+        if (allowInsecureTrojan != null) this.allowInsecureTrojan = allowInsecureTrojan;
         if (encryptedUrl != null) { this.urlCipher = encryptedUrl; this.sourceHost = host; this.status = "URL_UPDATED"; }
     }
     void refreshed(Instant now) { this.refreshedAt = now; this.updatedAt = now; this.status = "READY"; }
@@ -35,6 +41,7 @@ public class ProxySubscription {
     public String getLabel() { return label; }
     String encryptedUrl() { return urlCipher; }
     public String getSourceHost() { return sourceHost; }
+    public boolean isAllowInsecureTrojan() { return allowInsecureTrojan; }
     public String getStatus() { return status; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
