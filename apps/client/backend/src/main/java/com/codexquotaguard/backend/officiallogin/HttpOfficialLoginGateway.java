@@ -1,6 +1,7 @@
 package com.codexquotaguard.backend.officiallogin;
 
 import com.codexquotaguard.backend.controlplane.ControlPlaneException;
+import com.codexquotaguard.backend.controlplane.ControlPlaneOrigin;
 import java.io.ByteArrayOutputStream;
 import java.net.*;
 import java.net.http.*;
@@ -32,15 +33,13 @@ final class HttpOfficialLoginGateway implements OfficialLoginGateway {
 
     HttpOfficialLoginGateway(String baseUrl, ObjectMapper mapper, HttpClient http) {
         try {
-            URI uri = URI.create(baseUrl);
-            boolean local = uri.getHost()!=null && Set.of("127.0.0.1", "[::1]", "::1").contains(uri.getHost());
-            if (!("https".equals(uri.getScheme()) || "http".equals(uri.getScheme()) && local)
-                    || uri.getHost() == null || uri.getRawUserInfo() != null || uri.getRawQuery() != null
-                    || uri.getRawFragment() != null || !(uri.getRawPath().isEmpty() || "/".equals(uri.getRawPath()))
-                    || uri.getPort() == 0 || uri.getPort() > 65535 || http.followRedirects() != HttpClient.Redirect.NEVER)
+            // Match the origin used by system login and remembered sessions.
+            // Rejecting remote HTTP here prevents the entire local backend from starting.
+            URI uri = ControlPlaneOrigin.normalize(baseUrl);
+            if (uri.getPort() == 0 || http.followRedirects() != HttpClient.Redirect.NEVER)
                 throw new IllegalArgumentException();
-            this.base = new URI(uri.getScheme(), null, uri.getHost(), uri.getPort(), "", null, null);
-        } catch (IllegalArgumentException | URISyntaxException invalid) { throw new IllegalArgumentException("A secure control-plane origin is required."); }
+            this.base = uri;
+        } catch (IllegalArgumentException invalid) { throw new IllegalArgumentException("An HTTP or HTTPS control-plane origin and a non-redirecting client are required."); }
         this.mapper = mapper; this.http = http;
     }
 
