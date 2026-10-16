@@ -4,7 +4,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.times;
@@ -53,6 +52,7 @@ import tools.jackson.databind.ObjectMapper;
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 class AdminUserLogoutIntegrationTest {
+    private UUID proxyNodeId;
     private static final Instant NOW = Instant.parse("2026-10-15T10:00:00Z");
     @Autowired MockMvc mvc;
     @Autowired UserRepository users;
@@ -72,6 +72,7 @@ class AdminUserLogoutIntegrationTest {
     private OfficialAccount account;
 
     @BeforeEach void setup() {
+        proxyNodeId = SyntheticProxyNodeFixture.insert(jdbc);
         now.set(NOW);
         when(clock.instant()).thenAnswer(call -> now.get());
         jdbc.update("delete from session_bindings");
@@ -85,8 +86,8 @@ class AdminUserLogoutIntegrationTest {
         member = users.saveAndFlush(new User("user-logout-member@example.com", "test", "Member"));
         other = users.saveAndFlush(new User("user-logout-other@example.com", "test", "Other"));
         account = account("first");
-        when(client.fetch(any(), isNull())).thenAnswer(call -> snapshot(call.getArgument(0), List.of("owned", "owned-two", "other", "unbound")));
-        when(client.revokeSession(any(), isNull(), anyString())).thenReturn(new OfficialSessionWriteResult("ACCEPTED", null));
+        when(client.fetch(any(), eq(proxyNodeId))).thenAnswer(call -> snapshot(call.getArgument(0), List.of("owned", "owned-two", "other", "unbound")));
+        when(client.revokeSession(any(), eq(proxyNodeId), anyString())).thenReturn(new OfficialSessionWriteResult("ACCEPTED", null));
     }
 
     @Test void previewIncludesOnlyThisUsersDeviceSessionsAcrossAccountsAndDoesNotLogout() throws Exception {
@@ -164,13 +165,13 @@ class AdminUserLogoutIntegrationTest {
         assertThat(jdbc.queryForObject("select status from meter_devices where id=?", String.class, meter)).isEqualTo("ACTIVE");
         mvc.perform(get("/api/v1/users/me").header(HttpHeaders.AUTHORIZATION, oldToken)).andExpect(status().isUnauthorized());
         assertThat(users.findById(other.getId()).orElseThrow().getSessionVersion()).isZero();
-        verify(client).revokeSession(any(), isNull(), eq("owned"));
-        verify(client).revokeSession(any(), isNull(), eq("owned-two"));
+        verify(client).revokeSession(any(), eq(proxyNodeId), eq("owned"));
+        verify(client).revokeSession(any(), eq(proxyNodeId), eq("owned-two"));
         verify(client, never()).revokeSession(any(), any(), eq("other"));
         verify(client, never()).logoutAll(any(), any());
         confirm(admin, plan, true).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("USER_LOGOUT_PLAN_CONSUMED"));
         read(plan).andExpect(status().isOk());
-        verify(client, times(2)).revokeSession(any(), isNull(), anyString());
+        verify(client, times(2)).revokeSession(any(), eq(proxyNodeId), anyString());
         assertThat(users.findById(member.getId()).orElseThrow().getSessionVersion()).isEqualTo(1);
     }
 
@@ -187,15 +188,15 @@ class AdminUserLogoutIntegrationTest {
         confirm(admin, plan, true).andExpect(status().isOk());
         JsonNode result = awaitResult(plan);
         assertThat(result.path("status").asString()).isEqualTo("ACCEPTED");
-        verify(client, times(1)).revokeSession(any(), isNull(), eq("owned"));
-        verify(client, never()).revokeSession(any(), isNull(), eq("other"));
-        verify(client, never()).revokeSession(any(), isNull(), eq("owned-two"));
+        verify(client, times(1)).revokeSession(any(), eq(proxyNodeId), eq("owned"));
+        verify(client, never()).revokeSession(any(), eq(proxyNodeId), eq("other"));
+        verify(client, never()).revokeSession(any(), eq(proxyNodeId), eq("owned-two"));
     }
 
     @Test void officialFailurePreservesTruthfulPerSessionResultsAndProductSuccess() throws Exception {
         binding(member, account, "owned", "ACTIVE");
         binding(member, account, "owned-two", "ACTIVE");
-        when(client.revokeSession(any(), isNull(), eq("owned"))).thenReturn(new OfficialSessionWriteResult("REJECTED", "OFFICIAL_LOGOUT_DENIED"));
+        when(client.revokeSession(any(), eq(proxyNodeId), eq("owned"))).thenReturn(new OfficialSessionWriteResult("REJECTED", "OFFICIAL_LOGOUT_DENIED"));
         String plan = preview().path("planId").asString();
         confirm(admin, plan, true).andExpect(status().isOk());
         JsonNode result = awaitResult(plan);
@@ -203,7 +204,7 @@ class AdminUserLogoutIntegrationTest {
         assertThat(result.path("systemStatus").asString()).isEqualTo("REVOKED");
         assertThat(result.toString()).contains("FAILED", "NOT_ATTEMPTED", "OFFICIAL_LOGOUT_DENIED");
         assertThat(bindingStatus("owned")).isEqualTo("ACTIVE");
-        verify(client, never()).revokeSession(any(), isNull(), eq("owned-two"));
+        verify(client, never()).revokeSession(any(), eq(proxyNodeId), eq("owned-two"));
     }
 
     @Test void unavailableAccountDoesNotPreventOtherOwnedAccountLogout() throws Exception {
@@ -217,8 +218,17 @@ class AdminUserLogoutIntegrationTest {
         confirm(admin, plan, true).andExpect(status().isOk());
         JsonNode result = awaitResult(plan);
         assertThat(result.path("status").asString()).isEqualTo("PARTIAL");
-        verify(client).revokeSession(any(), isNull(), eq("owned"));
-        verify(client, never()).revokeSession(any(), isNull(), eq("owned-two"));
+        verify(client).revokeSession(any(), eq(proxyNodeId), eq("owned"));
+        verify(client, never()).revokeSession(any(), eq(proxyNodeId), eq("owned-two"));
+    }
+
+    @Test void proxyFailureDuringPreviewIsReportedWithoutDispatchingARevoke() throws Exception {
+        binding(member, account, "owned", "ACTIVE");
+        when(client.fetch(any(), eq(proxyNodeId))).thenThrow(new com.pingche.web.auth.DomainException(
+                "PROXY_NODE_DISABLED", "Synthetic node disabled", org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE));
+        JsonNode result = preview();
+        assertThat(result.toString()).contains("PROXY_NODE_DISABLED", "NOT_ATTEMPTED");
+        verify(client, never()).revokeSession(any(), any(), anyString());
     }
 
     @Test void excludedCurrentOfficialSessionIsReportedNotAttempted() throws Exception {
@@ -226,7 +236,7 @@ class AdminUserLogoutIntegrationTest {
         doReturn(new OfficialSessionSnapshot(
                 new OfficialAccountInfo("official-owner", "owner@example.com", "Owner", "first", "Personal", "plus", "owner", false, true),
                 new OfficialSessions(List.of(new OfficialSessionInfo("row-owned", "owned", "windows", "Codex", "PC", "PC", "11", true, false, NOW, NOW, "City", "SC", "ZZ", List.of("Codex"))), true)))
-                .when(client).fetch(any(), isNull());
+                .when(client).fetch(any(), eq(proxyNodeId));
         JsonNode preview = preview();
         assertThat(preview.path("accounts").get(0).path("status").asString()).isEqualTo("NOT_ATTEMPTED");
         assertThat(preview.toString()).contains("CURRENT_SESSION");
@@ -262,14 +272,14 @@ class AdminUserLogoutIntegrationTest {
 
     @Test void unknownOfficialOutcomeIsNotClaimedSuccessfulOrRetried() throws Exception {
         binding(member, account, "owned", "ACTIVE");
-        when(client.revokeSession(any(), isNull(), eq("owned"))).thenThrow(new IllegalStateException("secret-provider-payload"));
+        when(client.revokeSession(any(), eq(proxyNodeId), eq("owned"))).thenThrow(new IllegalStateException("secret-provider-payload"));
         String plan = preview().path("planId").asString();
         confirm(admin, plan, true).andExpect(status().isOk());
         JsonNode result = awaitResult(plan);
         assertThat(result.path("status").asString()).isEqualTo("UNKNOWN");
         assertThat(result.toString()).contains("OFFICIAL_LOGOUT_OUTCOME_UNKNOWN").doesNotContain("secret-provider-payload");
         read(plan).andExpect(status().isOk());
-        verify(client, times(1)).revokeSession(any(), isNull(), eq("owned"));
+        verify(client, times(1)).revokeSession(any(), eq(proxyNodeId), eq("owned"));
     }
 
     @Test void userWithoutOfficialBindingsCanStillRevokeProductSessions() throws Exception {
@@ -387,12 +397,12 @@ class AdminUserLogoutIntegrationTest {
         confirm(admin, next, true).andExpect(status().isOk());
         mvc.perform(get(url("current")).secure(true).header(HttpHeaders.AUTHORIZATION, token(admin)))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.operation.planId").value(next));
-        verify(client, times(1)).revokeSession(any(), isNull(), eq("owned"));
+        verify(client, times(1)).revokeSession(any(), eq(proxyNodeId), eq("owned"));
     }
 
     @Test void currentKeepsUnresolvedOfficialOutcomeAheadOfNewerCompletedProductLogout() throws Exception {
         binding(member, account, "owned", "ACTIVE");
-        when(client.revokeSession(any(), isNull(), eq("owned"))).thenReturn(new OfficialSessionWriteResult("UNKNOWN", "OFFICIAL_LOGOUT_OUTCOME_UNKNOWN"));
+        when(client.revokeSession(any(), eq(proxyNodeId), eq("owned"))).thenReturn(new OfficialSessionWriteResult("UNKNOWN", "OFFICIAL_LOGOUT_OUTCOME_UNKNOWN"));
         String unresolved = preview().path("planId").asString();
         confirm(admin, unresolved, true).andExpect(status().isOk());
         assertThat(awaitResult(unresolved).path("status").asString()).isEqualTo("UNKNOWN");
@@ -402,7 +412,7 @@ class AdminUserLogoutIntegrationTest {
         mvc.perform(get(url("current")).secure(true).header(HttpHeaders.AUTHORIZATION, token(admin)))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.operation.planId").value(unresolved))
                 .andExpect(jsonPath("$.operation.status").value("UNKNOWN"));
-        verify(client, times(1)).revokeSession(any(), isNull(), eq("owned"));
+        verify(client, times(1)).revokeSession(any(), eq(proxyNodeId), eq("owned"));
     }
 
     @Test void missingSubmittedJournalRemainsUnknownAndNeverTriggersRetry() throws Exception {
@@ -420,12 +430,12 @@ class AdminUserLogoutIntegrationTest {
         confirm(admin, newer, true).andExpect(status().isOk());
         mvc.perform(get(url("current")).secure(true).header(HttpHeaders.AUTHORIZATION, token(admin)))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.operation.planId").value(plan));
-        verify(client, times(1)).revokeSession(any(), isNull(), eq("owned"));
+        verify(client, times(1)).revokeSession(any(), eq(proxyNodeId), eq("owned"));
     }
 
     private OfficialAccount account(String key) {
         OfficialAccount value = accounts.saveAndFlush(new OfficialAccount("Account " + key, 1000, null, NOW));
-        connections.save(value.getId(), new OfficialConnectionRequest("Bearer synthetic-" + key, null, key, null, 0L));
+        connections.save(value.getId(), new OfficialConnectionRequest("Bearer synthetic-" + key, null, key, proxyNodeId, 0L));
         return value;
     }
 
