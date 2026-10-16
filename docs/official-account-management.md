@@ -62,7 +62,7 @@ MANAGED_PROXY_ALLOW_PRIVATE_NODES=false
 - <https://github.com/SagerNet/sing-box/tree/v1.13.14>
 - <https://github.com/SagerNet/sing-box/blob/v1.13.14/LICENSE>
 
-服务器目标版本为 `0.3.20`，后端和网页均使用同版普通镜像，无浏览器后端。本轮构建不等于已公开推送；在线拉取前确认镜像与 `server-v0.3.20` 标签已发布。旧版标签保持不变；本次不更新桌面，数据库仍为 V30，无新增迁移。镜像拉取部署见[registry 说明](../deploy/docker/registry/README.md)，下列 `--build` 命令用于源码部署。
+当前服务器版本为 `0.3.20`，后端和网页均使用同版普通镜像，无浏览器后端。两个镜像及 `server-v0.3.20` 源码标签已发布，后端和网页的 `latest` 均指向本版本。旧版标签保持不变；本次不更新桌面，数据库仍为 V30，无新增迁移。镜像拉取部署见[registry 说明](../deploy/docker/registry/README.md)，下列 `--build` 命令用于源码部署。
 
 传输策略由现有 `app.require-https` 统一控制。基础 Compose 设置 `APP_REQUIRE_HTTPS=false`，允许 HTTP 和 HTTPS 的私有预置授权、文件导入、会话操作和代理节点管理，不再限于 localhost；HTTP 前端仅提示风险，不禁用操作。**HTTP 会明文传输本系统密码与导入的官方授权，推荐 HTTPS。** 官方上游、代理订阅与邮箱各自原有的 TLS 校验要求不变。
 

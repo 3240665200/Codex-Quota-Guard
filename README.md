@@ -29,7 +29,7 @@ Codex Quota Guard 由桌面客户端、中央 Java 服务和 Web 管理后台组
 
 桌面源码版本保持 **0.3.18**。桌面端修复重复 BOUND 通知导致的访问核验重置，并共享登录辅助 SSE 订阅以减少切页时的连接重建；前端 230 项模拟测试通过。首次真实访问请求失败的底层原因仍待复测，不能据此认定网络或服务问题全部修复。详见[0.3.18 桌面测试说明](./docs/releases/v0.3.18.md)。
 
-当前服务器目标版本为 `0.3.20`，后端与网页使用相同版本，开发、测试和发布采用同一套授权功能：可使用私有预置免手填，也可导入授权文件；无内置 Chromium 或浏览器专用镜像。打开 `https://chatgpt.com/` 不会自动读取跨站 Cookie，也不是自动 OAuth 登录。HTTP 页面保留风险提示，HTTPS overlay 可显式强制加密传输。自动绑定、30 分钟登录期限、至少间隔 10 秒的会话监测和退出流程保持不变。**本次只更新服务器，不更新桌面或新增 Windows 安装包 Release**；本轮构建不等于镜像已公开推送。桌面端须支持设备标识（0.3.14+，建议 0.3.18）。
+当前已发布服务器版本为 `0.3.20`，后端与网页使用相同版本，开发、测试和发布采用同一套授权功能：可使用私有预置免手填，也可导入授权文件；无内置 Chromium 或浏览器专用镜像。打开 `https://chatgpt.com/` 不会自动读取跨站 Cookie，也不是自动 OAuth 登录。HTTP 页面保留风险提示，HTTPS overlay 可显式强制加密传输。自动绑定、30 分钟登录期限、至少间隔 10 秒的会话监测和退出流程保持不变。**本次只更新服务器，不更新桌面或新增 Windows 安装包 Release**；后端和网页镜像均已公开发布，两个仓库的 `latest` 已同步。桌面端须支持设备标识（0.3.14+，建议 0.3.18）。
 
 客户端保留「登录辅助」：管理员可为团队关联的官方账户配置自有邮箱和最多两个精确发件地址，用户点击监听后领取一封新到登录邮件中的验证码。邮箱授权只在中央服务加密保存，官方登录仍由用户完成；详见[邮箱配置与使用说明](./docs/architecture/login-assistance.md)。
 
@@ -71,9 +71,9 @@ Codex Quota Guard 由桌面客户端、中央 Java 服务和 Web 管理后台组
 - [后端 · minjm/codex-quota-guard-backend](https://hub.docker.com/r/minjm/codex-quota-guard-backend)
 - [管理网页 · minjm/codex-quota-guard-web](https://hub.docker.com/r/minjm/codex-quota-guard-web)
 
-部署配置固定后端和网页 `0.3.20`，支持 **Linux amd64 / x86_64**，数据库使用官方 `postgres:17-alpine`。后端保留 sing-box，不含 Chromium，不需要浏览器 seccomp 或额外容器权限；HTTPS overlay 可选，详见[部署说明](./deploy/docker/registry/README.md)。私有授权通过 `./secrets:/run/secrets` 只读挂载，真实凭据不进入源码、公开镜像或公开包。Windows 桌面客户端和 Rust 统计服务仍安装在用户电脑。历史已发布版本见[0.3.19 发布记录](./docs/releases/server-v0.3.19.md)；`0.3.20` 发布状态以实际发布记录和镜像仓库为准。
+部署配置固定后端和网页 `0.3.20`，支持 **Linux amd64 / x86_64**，数据库使用官方 `postgres:17-alpine`。后端保留 sing-box，不含 Chromium，不需要浏览器 seccomp 或额外容器权限；HTTPS overlay 可选，详见[部署说明](./deploy/docker/registry/README.md)。私有授权通过 `./secrets:/run/secrets` 只读挂载，真实凭据不进入源码、公开镜像或公开包。Windows 桌面客户端和 Rust 统计服务仍安装在用户电脑。本次镜像摘要与验证范围见[0.3.20 发布记录](./docs/releases/server-v0.3.20.md)；旧版本标签保持不变。
 
-服务器准备好 **Docker Engine、Docker Compose v2.24.4+、Bash、curl 和 OpenSSL** 后，可使用提供的离线包部署。以下在线部署示例需等待 `0.3.20` 镜像与 `server-v0.3.20` 标签公开发布后使用，替换服务器 IP 和管理员邮箱：
+服务器准备好 **Docker Engine、Docker Compose v2.24.4+、Bash、curl 和 OpenSSL** 后，可使用已发布镜像或提供的离线包部署。以下配置固定在 `server-v0.3.20` 标签，替换服务器 IP 和管理员邮箱：
 
 ```bash
 (
