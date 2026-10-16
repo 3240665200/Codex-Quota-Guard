@@ -8,6 +8,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.pingche.web.auth.DomainException;
 import com.pingche.web.auth.JwtService;
+import com.pingche.web.proxy.ProxyNodeRequest;
+import com.pingche.web.proxy.ProxyNodeService;
 import com.pingche.web.quota.OfficialAccount;
 import com.pingche.web.quota.OfficialAccountRepository;
 import com.pingche.web.user.User;
@@ -31,6 +33,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 @SpringBootTest(properties={"OFFICIAL_SESSION_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        "MANAGED_PROXY_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
         "spring.datasource.url=jdbc:h2:mem:web-login-integration;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1"})
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
@@ -42,12 +45,14 @@ class WebLoginIntegrationTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired DataSource dataSource;
     @Autowired OfficialConnectionService connections;
+    @Autowired ProxyNodeService proxies;
     @Autowired WebLoginService service;
     @MockitoBean OfficialSessionClient client;
     @MockitoBean ManagedLoginBrowser browser;
     ManagedLoginBrowser.Session session;
     User admin,member;
     OfficialAccount account;
+    UUID proxyId;
 
     @BeforeEach void setup() {
         session=mock(ManagedLoginBrowser.Session.class);
@@ -59,6 +64,7 @@ class WebLoginIntegrationTest {
         admin=users.saveAndFlush(User.bootstrapAdministrator(UUID.randomUUID()+"@example.test","unused-hash","Admin"));
         member=users.saveAndFlush(new User(UUID.randomUUID()+"@example.test","unused-hash","Member"));
         account=accounts.saveAndFlush(new OfficialAccount("Synthetic account "+UUID.randomUUID(),100,member.getId(),Instant.now()));
+        proxyId=proxies.create(new ProxyNodeRequest("Synthetic proxy", "HTTP", "proxy.invalid", 8080, null, null, true, null)).id();
     }
     @AfterEach void cleanup() {service.cancelOwner(admin.getId());}
 
@@ -87,7 +93,7 @@ class WebLoginIntegrationTest {
     @Test void candidateFailureLeavesEverySavedCredentialAndSnapshotUnchanged() {
         importOld();
         var before=jdbc.queryForMap("select * from official_account_connections where official_account_id=?",account.getId());
-        var job=service.create(admin.getId(),account.getId(),new BrowserLoginService.StartRequest(connections.read(account.getId()).version(),null));
+        var job=service.create(admin.getId(),account.getId(),new BrowserLoginService.StartRequest(connections.read(account.getId()).version(),proxyId));
         when(client.fetch(any(),any())).thenThrow(new DomainException("OFFICIAL_CHALLENGE_REQUIRED","private-upstream-body",HttpStatus.BAD_GATEWAY));
         assertThat(service.complete(admin.getId(),job.id()).state()).isEqualTo("FAILED");
         assertThat(jdbc.queryForMap("select * from official_account_connections where official_account_id=?",account.getId())).isEqualTo(before);
@@ -97,7 +103,7 @@ class WebLoginIntegrationTest {
     @Test void verifiedSavePublishesSnapshotAndRotatesBindingRevisionAtomically() throws Exception {
         importOld();
         var before=jdbc.queryForMap("select * from official_account_connections where official_account_id=?",account.getId());
-        var job=service.create(admin.getId(),account.getId(),new BrowserLoginService.StartRequest(connections.read(account.getId()).version(),null));
+        var job=service.create(admin.getId(),account.getId(),new BrowserLoginService.StartRequest(connections.read(account.getId()).version(),proxyId));
         mvc.perform(get(jobUrl(job.id())+"/frame").secure(true).header("Authorization",token(admin))).andExpect(status().isOk())
                 .andExpect(jsonPath("$.pageOrigin").value("https://chatgpt.com")).andExpect(jsonPath("$.readyToSave").value(true))
                 .andExpect(jsonPath("$.cookie").doesNotExist()).andExpect(header().string("Cache-Control","no-store"));
@@ -115,20 +121,20 @@ class WebLoginIntegrationTest {
     @Test void mismatchedVerifiedUserAndConcurrentVersionChangeCannotOverwriteOldAuthorization() {
         importOld();
         var before=jdbc.queryForMap("select * from official_account_connections where official_account_id=?",account.getId());
-        var job=service.create(admin.getId(),account.getId(),new BrowserLoginService.StartRequest(connections.read(account.getId()).version(),null));
+        var job=service.create(admin.getId(),account.getId(),new BrowserLoginService.StartRequest(connections.read(account.getId()).version(),proxyId));
         when(client.fetch(any(),any())).thenReturn(snapshot("another-user"));
         assertThat(service.complete(admin.getId(),job.id()).errorCode()).isEqualTo("OFFICIAL_ACCOUNT_MISMATCH");
         assertThat(jdbc.queryForMap("select * from official_account_connections where official_account_id=?",account.getId())).isEqualTo(before);
         when(client.fetch(any(),any())).thenReturn(snapshot("synthetic-user"));
-        var next=service.create(admin.getId(),account.getId(),new BrowserLoginService.StartRequest(connections.read(account.getId()).version(),null));
-        connections.save(account.getId(),new OfficialConnectionRequest("Bearer concurrent-replacement",null,"synthetic-account",null,connections.read(account.getId()).version()));
+        var next=service.create(admin.getId(),account.getId(),new BrowserLoginService.StartRequest(connections.read(account.getId()).version(),proxyId));
+        connections.save(account.getId(),new OfficialConnectionRequest("Bearer concurrent-replacement",null,"synthetic-account",proxyId,connections.read(account.getId()).version()));
         var replacement=jdbc.queryForMap("select * from official_account_connections where official_account_id=?",account.getId());
         assertThat(service.complete(admin.getId(),next.id()).errorCode()).isEqualTo("OFFICIAL_CONNECTION_VERSION_CONFLICT");
         assertThat(jdbc.queryForMap("select * from official_account_connections where official_account_id=?",account.getId())).isEqualTo(replacement);
     }
 
     @Test void ownerIsolationAndInputValidationCoverTheLiveBrowser() throws Exception {
-        var job=service.create(admin.getId(),account.getId(),new BrowserLoginService.StartRequest(0L,null));
+        var job=service.create(admin.getId(),account.getId(),new BrowserLoginService.StartRequest(0L,proxyId));
         User other=users.saveAndFlush(User.bootstrapAdministrator(UUID.randomUUID()+"@example.test","unused-hash","Other"));
         mvc.perform(get(jobUrl(job.id())+"/frame").secure(true).header("Authorization",token(other))).andExpect(status().isNotFound());
         mvc.perform(post(jobUrl(job.id())+"/input").secure(true).header("Authorization",token(admin)).contentType(MediaType.APPLICATION_JSON)
@@ -141,7 +147,7 @@ class WebLoginIntegrationTest {
     }
 
     @Test void systemLogoutCancelsAndClosesTheOwnersBrowser() throws Exception {
-        var job=service.create(admin.getId(),account.getId(),new BrowserLoginService.StartRequest(0L,null));
+        var job=service.create(admin.getId(),account.getId(),new BrowserLoginService.StartRequest(0L,proxyId));
         mvc.perform(post("/api/v1/auth/logout").secure(true).header("Authorization",token(admin)).contentType(MediaType.APPLICATION_JSON)
                 .content("{\"refreshToken\":\"synthetic-unused-token\"}")).andExpect(status().isNoContent());
         assertThat(service.get(admin.getId(),job.id()).state()).isEqualTo("CANCELLED");
@@ -149,7 +155,7 @@ class WebLoginIntegrationTest {
     }
 
     @Test void ownerLockContentionFailsClosedWithoutWaitingWhileTheJobIsLocked() throws Exception {
-        var job=service.create(admin.getId(),account.getId(),new BrowserLoginService.StartRequest(0L,null));
+        var job=service.create(admin.getId(),account.getId(),new BrowserLoginService.StartRequest(0L,proxyId));
         CompletableFuture<WebLoginService.Job> pending=null;
         try(var connection=dataSource.getConnection()) {
             connection.setAutoCommit(false);
@@ -169,7 +175,7 @@ class WebLoginIntegrationTest {
     }
 
     private void importOld() {
-        connections.save(account.getId(),new OfficialConnectionRequest("Bearer synthetic-old",null,"synthetic-account",null,0L));
+        connections.save(account.getId(),new OfficialConnectionRequest("Bearer synthetic-old",null,"synthetic-account",proxyId,0L));
         connections.refresh(account.getId());
     }
     private OfficialSessionSnapshot snapshot(String user) {return new OfficialSessionSnapshot(new OfficialAccountInfo(user,"owner@example.test","Owner","synthetic-account","Personal","plus","owner",false,true),new OfficialSessions(List.of(),true));}
