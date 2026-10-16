@@ -38,4 +38,11 @@ describe('订阅与完整代理链 API', () => {
     expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/admin/proxy-nodes/proxy%2Fid/enabled');
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ enabled: false, version: 3 });
   });
+  it('saves only the account proxy chain without submitting authorization secrets', async () => {
+    expect(management.saveOfficialAccountProxyChain).toBeTypeOf('function');
+    await management.saveOfficialAccountProxyChain('account/id', { frontProxyNodeId: 'front', proxyNodeId: 'exit', version: 5 });
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/admin/official-accounts/account%2Fid/connection/proxy');
+    expect(fetchMock.mock.calls[0][1].method).toBe('PUT');
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ frontProxyNodeId: 'front', proxyNodeId: 'exit', version: 5 });
+  });
 });

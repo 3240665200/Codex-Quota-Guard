@@ -84,4 +84,9 @@ describe('每账户独立单节点与双节点链路', () => {
     expect(screen.queryByText(/203\.0\.113\.44/)).not.toBeInTheDocument();
     expect(screen.queryByText('fixture-private')).not.toBeInTheDocument();
   });
+  it('offers saving the proxy chain for an already authorized account without entering credentials', async () => {
+    await show();
+    expect(screen.getByRole('button', { name: '保存代理链' })).toBeEnabled();
+    expect(screen.queryByLabelText('官方 Authorization')).not.toBeInTheDocument();
+  });
 });
