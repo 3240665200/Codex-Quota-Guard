@@ -1,6 +1,6 @@
 [package]
 name = "codex-quota-guard"
-version = "0.3.18"
+version = "0.3.21"
 description = "Secure desktop shell for Codex Quota Guard"
 authors = ["Codex Quota Guard contributors"]
 edition = "2021"
