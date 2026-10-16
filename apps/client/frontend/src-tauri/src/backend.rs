@@ -960,3 +960,14 @@ mod tests {
         assert_eq!(first.len(), 32);
     }
 }
+    #[test]
+    fn only_dedicated_native_official_session_error_is_a_conflict() {
+        let body = br#"{"code":"CODEX_CC_SWITCH_SESSION_CONFLICT","message":"safe"}"#;
+        assert!(is_official_session_conflict(ApiRoute::CodexRateLimits, StatusCode::CONFLICT, body));
+        for status in [StatusCode::BAD_GATEWAY, StatusCode::SERVICE_UNAVAILABLE, StatusCode::TOO_MANY_REQUESTS, StatusCode::UNAUTHORIZED] {
+            assert!(!is_official_session_conflict(ApiRoute::CodexRateLimits, status, body));
+        }
+        assert!(!is_official_session_conflict(ApiRoute::QuotaOverview, StatusCode::CONFLICT, body));
+        assert!(!is_official_session_conflict(ApiRoute::CodexRateLimits, StatusCode::CONFLICT, br#"{"code":"NETWORK_ERROR"}"#));
+        assert!(!is_official_session_conflict(ApiRoute::CodexRateLimits, StatusCode::CONFLICT, &vec![b' '; 1025]));
+    }
