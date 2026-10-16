@@ -347,6 +347,16 @@ mod native_security {
         Ok(output)
     }
 
+    fn pin_directory(path: &Path) -> std::io::Result<File> {
+        OpenOptions::new()
+            // FILE_LIST_DIRECTORY makes this a data-access handle; metadata-
+            // only opens do not reliably enforce Windows share restrictions.
+            .access_mode(0x20000 | 0x80 | 0x1)
+            .share_mode(FILE_SHARE_READ)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+    }
+
     pub(crate) struct ProtectedEvidenceChannel {
         directory: PathBuf,
         _pinned_directories: Vec<File>,
@@ -371,11 +381,7 @@ mod native_security {
             ancestors.reverse();
             let mut pinned = Vec::new();
             for path in ancestors {
-                let handle = OpenOptions::new()
-                    .access_mode(0x20000 | 0x80) // READ_CONTROL | FILE_READ_ATTRIBUTES
-                    .share_mode(FILE_SHARE_READ)
-                    .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-                    .open(path).map_err(|_| ())?;
+                let handle = pin_directory(path).map_err(|_| ())?;
                 let metadata = handle.metadata().map_err(|_| ())?;
                 if !metadata.is_dir() || metadata.file_attributes() & 0x400 != 0 { return Err(()); }
                 validate_security(&security(&handle)?, path.starts_with(private_root))?;
