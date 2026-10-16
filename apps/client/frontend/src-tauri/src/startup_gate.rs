@@ -719,6 +719,17 @@ mod tests {
     }
 
     #[test]
+    fn compatible_cc_switch_is_never_restored_without_a_confirmed_conflict() {
+        let mut tracker = RestoreTracker::default();
+        assert_eq!(
+            tracker.restore("lease-a", None, false, || {
+                panic!("ordinary startup must not modify Codex or CC Switch settings")
+            }),
+            Ok(RestoreOutcome::Unchanged)
+        );
+    }
+
+    #[test]
     fn restores_initial_residue_once_per_lease_even_without_a_termination() {
         let mut tracker = RestoreTracker::default();
         assert_eq!(

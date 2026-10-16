@@ -696,6 +696,16 @@ mod tests {
     }
 
     #[test]
+    fn desktop_lease_and_cc_switch_process_alone_never_authorize_termination() {
+        let cc = process(20, CC_EXE, "S-1-5-21-1", 2);
+        let count = cc.terminate_count.clone();
+        let check = enforce(&lease(), "S-1-5-21-1", &ops(cc));
+        assert_eq!(count.get(), 0);
+        assert_eq!(check.state, GuardState::Clear);
+        assert_eq!(check.confirmed_termination_count, 0);
+    }
+
+    #[test]
     fn active_lease_ends_only_exact_product_for_same_user_and_session() {
         let cc = process(20, CC_EXE, "S-1-5-21-1", 2);
         let count = cc.terminate_count.clone();
