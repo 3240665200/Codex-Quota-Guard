@@ -119,14 +119,28 @@ describe('统一预置授权与本机浏览器入口', () => {
     mocks.applyOfficialAuthorizationPreset.mockResolvedValue({ ...connection, proxyNodeId: 'proxy-2', version: 6 });
     await show();
     fireEvent.mouseDown(screen.getByRole('combobox', { name: '访问代理节点' }));
-    fireEvent.click(await screen.findByText('代理二 · SOCKS5'));
-    expect(screen.getByRole('button', { name: '刷新官方账户与会话' })).toBeDisabled();
+    fireEvent.click(await screen.findByRole('option', { name: '代理二 · SOCKS5' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: '刷新官方账户与会话' })).toBeDisabled());
     expect(screen.getByText(/节点选择尚未保存/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '使用预置授权' }));
     await waitFor(() => expect(mocks.applyOfficialAuthorizationPreset).toHaveBeenCalledExactlyOnceWith('account-1', {
       version: 5, proxyNodeId: 'proxy-2', presetRevision: 'revision-1',
     }));
     await waitFor(() => expect(screen.getByRole('button', { name: '刷新官方账户与会话' })).toBeEnabled());
+  });
+
+  it('restores each account own saved node when switching accounts', async () => {
+    mocks.listProxyNodes.mockResolvedValue([{ id: 'proxy-1', label: '代理一', protocol: 'HTTP', enabled: true },
+      { id: 'proxy-2', label: '代理二', protocol: 'SOCKS5', enabled: true }]);
+    const view = await show();
+    mocks.getOfficialAccountConnection.mockResolvedValue({ ...connection, proxyNodeId: 'proxy-2', version: 9 });
+    mocks.applyOfficialAuthorizationPreset.mockResolvedValue({ ...connection, proxyNodeId: 'proxy-2', version: 10 });
+    await act(async () => view.rerender(ui('account-2')));
+    await waitFor(() => expect(screen.getByRole('button', { name: '使用预置授权' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: '使用预置授权' }));
+    await waitFor(() => expect(mocks.applyOfficialAuthorizationPreset).toHaveBeenCalledExactlyOnceWith('account-2', {
+      version: 9, proxyNodeId: 'proxy-2', presetRevision: 'revision-1',
+    }));
   });
 
   it.each(['OFFICIAL_PRESET_REVISION_CONFLICT', 'OFFICIAL_CONNECTION_VERSION_CONFLICT'])('shows a safe %s without retrying or replacing credentials', async (code) => {

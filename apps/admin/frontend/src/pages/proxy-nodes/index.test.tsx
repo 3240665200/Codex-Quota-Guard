@@ -66,7 +66,7 @@ describe('代理节点管理', () => {
     expect(within(dialog).getByLabelText('用户名（可选）')).toHaveValue('');
     expect(within(dialog).getByLabelText('密码（可选）')).toHaveValue('');
     expect(within(dialog).getByLabelText('服务器')).toHaveValue('proxy.example');
-    expect(within(dialog).getByLabelText('端口')).toHaveValue(1080);
+    expect(within(dialog).getByLabelText('端口')).toHaveValue('1080');
     fireEvent.change(within(dialog).getByLabelText('节点名称'), { target: { value: '备用出口' } });
     fireEvent.click(within(dialog).getByRole('button', { name: /^保\s*存$/ }));
     await waitFor(() => expect(mocks.updateProxyNode).toHaveBeenCalledWith('proxy-1', {

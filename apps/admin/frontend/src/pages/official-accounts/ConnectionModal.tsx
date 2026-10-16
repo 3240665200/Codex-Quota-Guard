@@ -137,6 +137,10 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
   const parameterFileReader = useRef<FileReader | null>(null);
   const supported = isSupportedManagementContext();
   const selectedNode = Form.useWatch('proxyNodeId', form);
+  const nodeUnavailable = !selectedNode || !nodes.some((node) => node.id === selectedNode && node.enabled);
+  const savedNodeUnavailable = !config?.proxyNodeId || !nodes.some((node) => node.id === config.proxyNodeId && node.enabled);
+  const nodeChanged = view !== 'sessions' && selectedNode !== config?.proxyNodeId;
+  const refreshUnavailable = savedNodeUnavailable || (view !== 'sessions' && (nodeUnavailable || nodeChanged));
   const externallyLocked = loading || busy !== null || releaseBusy;
   const locked = externallyLocked || logoutBusy;
   const selectedSessionIds = sessionSelection.snapshot === snapshot ? sessionSelection.ids : [];
@@ -207,7 +211,7 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
   useEffect(() => {
     active.current = true;
     const lifetime = { accountId: account.id, active: true, busy: false }; releaseLifetime.current = lifetime;
-    setLoading(true); setConfig(null); updateSnapshot(null); setBindings(null);
+    setLoading(true); setConfig(null); setNodes([]); updateSnapshot(null); setBindings(null);
     setBusy(null); setPreset(null); setPresetNotice(''); setManualKeys([]); form.resetFields();
     setError(''); setSnapshotNotice(''); setBindingNotice(''); setLogoutBusy(false);
     setReleaseTarget(null); setReleaseAcknowledged(false); setReleaseBusy(false); setReleaseError(''); setBindingRevision(0);
@@ -302,13 +306,14 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
 
   const save = async () => {
     const lifetime = releaseLifetime.current;
-    if (!isCurrentLifetime(lifetime) || locked || !config?.encryptionReady || !supported) return;
+    if (!isCurrentLifetime(lifetime) || locked || !config?.encryptionReady || !supported || nodeUnavailable) return;
     let values: OfficialConnectionInput;
     try { values = await form.validateFields(); } catch { return; }
-    if (!isCurrentLifetime(lifetime) || lifetime.busy) return;
+    if (!isCurrentLifetime(lifetime) || lifetime.busy || !values.proxyNodeId
+      || !nodes.some((node) => node.id === values.proxyNodeId && node.enabled)) return;
     const body: OfficialConnectionInput = {
       authorization: values.authorization.trim(), requestedAccountId: values.requestedAccountId.trim(),
-      proxyNodeId: values.proxyNodeId || null, version: config.version,
+      proxyNodeId: values.proxyNodeId, version: config.version,
       ...(values.cookie?.trim() ? { cookie: values.cookie.trim() } : {}),
     };
     setBusy('save'); setError(''); clearSecrets();
@@ -334,7 +339,7 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
     lifetime.busy = true; setBusy('preset'); setError(''); clearSecrets();
     try {
       const saved = await applyOfficialAuthorizationPreset(lifetime.accountId, {
-        version: config.version, proxyNodeId: selectedNode || null, presetRevision: preset.revision,
+        version: config.version, proxyNodeId: selectedNode, presetRevision: preset.revision,
       });
       if (!isCurrentLifetime(lifetime)) return;
       setConfig(saved); updateSnapshot(null);
@@ -351,7 +356,7 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
 
   const refresh = async () => {
     const lifetime = releaseLifetime.current;
-    if (!isCurrentLifetime(lifetime) || locked || !config?.configured || !supported) return;
+    if (!isCurrentLifetime(lifetime) || locked || !config?.configured || !supported || refreshUnavailable) return;
     setSessionSelection({ snapshot: null, ids: [] }); setSnapshotRevision((revision) => revision + 1);
     setBusy('refresh'); setError('');
     try {
@@ -383,7 +388,6 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
   };
 
   const missingNode = config?.proxyNodeId && !nodes.some((node) => node.id === config.proxyNodeId);
-  const nodeUnavailable = selectedNode && !nodes.some((node) => node.id === selectedNode && node.enabled);
   return <><WorkspaceShell inline={inline} title={`${view === 'sessions' ? '会话管理' : view === 'authorization' ? '授权登录' : '授权与会话'} · ${account.label}`} onCancel={close}
     footer={<Space wrap>
       {config?.configured && view !== 'sessions' ? <Popconfirm title="删除保存的官方授权？"
@@ -391,7 +395,7 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
         okText="确认删除" cancelText="取消" onConfirm={() => void remove()}>
         <Button danger disabled={locked || !supported} loading={busy === 'delete'}>删除保存的授权</Button>
       </Popconfirm> : null}
-      <Button disabled={locked || !supported || !config?.configured} loading={busy === 'refresh'} onClick={() => void refresh()}>刷新官方账户与会话</Button>
+      <Button disabled={locked || !supported || !config?.configured || refreshUnavailable} loading={busy === 'refresh'} onClick={() => void refresh()}>刷新官方账户与会话</Button>
       {!inline ? <Button onClick={close}>关闭</Button> : null}
     </Space>}>
     <Space orientation="vertical" size={16} style={{ width: '100%' }}>
@@ -408,14 +412,21 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
             { key: 'success', label: '最近成功', children: dateText(config.lastSuccessAt) },
           ]} /> : null}
           {config?.lastErrorCode ? <Alert type="warning" showIcon title={managedErrorMessage({ code: config.lastErrorCode }, '最近一次官方读取未成功，请检查授权和代理配置。')} /> : null}
+          {!loading && (view === 'sessions' ? savedNodeUnavailable : nodeUnavailable) ? <Alert type="warning" showIcon
+            title="每个官方账户必须选择一个已启用的代理节点，所有官方请求均禁止直连。"
+            description={<span>{nodes.some((node) => node.enabled)
+              ? '请在此账户的授权登录页选择可用节点，并重新保存授权。'
+              : '暂无已启用节点，请先添加并启用节点，再返回此账户保存授权。'} <a href="/proxy-nodes">管理代理节点</a></span>} /> : null}
+          {!loading && view !== 'sessions' && !nodeUnavailable && nodeChanged ? <Alert type="info" showIcon
+            title="节点选择尚未保存，请使用预置授权或保存授权后再刷新；只会更新当前官方账户。" /> : null}
           {view !== 'sessions' ? <Form form={form} layout="vertical" preserve={false} disabled={locked || !supported || !config?.encryptionReady}>
-            <Form.Item name="proxyNodeId" label="访问代理节点" extra="后台读取官方账户使用此节点或直连；本机浏览器使用你本机的网络设置。不会失败回退或自动切换出口。">
-              <Select virtual={false} allowClear placeholder="直连（不使用代理）" options={[
+            <Form.Item name="proxyNodeId" label="访问代理节点" rules={[{ required: true, message: '请选择一个已启用的代理节点' }]}
+              extra="此选择只保存到当前官方账户。所有官方请求必须经过已保存节点，不会失败回退或自动切换出口；本机浏览器由你本机的网络设置决定出口。">
+              <Select virtual={false} placeholder="请选择已启用的代理节点" options={[
                 ...nodes.map((node) => ({ value: node.id, label: `${node.label} · ${node.protocol}${node.enabled ? '' : '（已停用）'}`, disabled: !node.enabled })),
                 ...(missingNode ? [{ value: config.proxyNodeId!, label: '已保存的节点（当前不可用）', disabled: true }] : []),
               ]} />
             </Form.Item>
-            {nodeUnavailable ? <Alert type="warning" showIcon title="当前代理节点不可用，请明确选择其他节点或清空为直连，再重新保存授权。" /> : null}
             <Space orientation="vertical" size={16} style={{ width: '100%' }}>
               <Card size="small" title="预置授权">
                 <Space orientation="vertical" size={12} style={{ width: '100%' }}>
@@ -428,9 +439,9 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
                     || !preset?.available || !preset.revision} loading={busy === 'preset'} onClick={() => void applyPreset()}>使用预置授权</Button>
                 </Space>
               </Card>
-              <Alert type="info" showIcon title="在本机浏览器登录官网"
+              <Alert type="info" showIcon title="仅打开官方网站"
                 description={<Space orientation="vertical" size={8}>
-                  <span>将在本机浏览器的新标签页打开 ChatGPT。外部登录不会自动读取跨站 Cookie，也不会自动保存本系统授权；完成后可使用预置授权或导入你自己的授权文件。</span>
+                  <span>此按钮只在本机浏览器的新标签页打开 ChatGPT，不会自动读取跨站 Cookie 或回传授权。登录后可使用私有扩展导出自己的授权文件，再点击“从本机参数文件填入”并明确保存；也可继续使用预置授权。</span>
                   <Button disabled={locked || !supported}
                     onClick={() => { if (!locked && supported) window.open('https://chatgpt.com/', '_blank', 'noopener,noreferrer'); }}>在本机浏览器打开官方登录</Button>
                 </Space>} />
@@ -477,7 +488,7 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
           {supported ? <SessionLogoutPanel key={account.id} accountId={account.id}
             contextVersion={JSON.stringify([config?.version ?? null, bindingRevision, snapshotRevision, selectedSessionIds])}
             selectedSessionIds={selectedSessionIds}
-            disabled={externallyLocked} allowPreview={Boolean(config?.configured)} onBusyChange={(value) => {
+            disabled={externallyLocked} allowPreview={Boolean(config?.configured) && !refreshUnavailable} onBusyChange={(value) => {
               if (active.current && currentAccountId.current === account.id) setLogoutBusy(value);
             }} onSettled={reloadAfterLogout} /> : null}
           {supported ? <SessionBindingQueue key={`${account.id}:${queueRevision}`} accountId={account.id} disabled={locked} /> : null}

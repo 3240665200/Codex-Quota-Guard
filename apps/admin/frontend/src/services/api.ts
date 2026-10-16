@@ -331,10 +331,33 @@ export interface ProxyNode {
   createdAt: string;
   updatedAt: string;
   version: number;
+  egressIp: string | null;
+  country: string | null;
+  region: string | null;
+  city: string | null;
+  testedAt: string | null;
+  testStatus: 'UNTESTED' | 'CONNECTED' | 'FAILED';
 }
-export interface ProxyNodeInput { label: string; uri?: string; enabled: boolean; version?: number }
-export type ProxyImportInput = { content: string; subscriptionUrl?: never } | { subscriptionUrl: string; content?: never };
-export interface ProxyConnectionTest { connected: boolean; httpStatus: number | null; status: string }
+export interface ProxyNodeInput {
+  label: string;
+  protocol: 'HTTP' | 'HTTPS' | 'SOCKS5';
+  host: string;
+  port: number;
+  username?: string;
+  password?: string;
+  enabled: boolean;
+  version?: number;
+}
+export interface ProxyConnectionTest {
+  connected: boolean;
+  httpStatus: number | null;
+  status: 'CONNECTED' | 'FAILED';
+  egressIp: string | null;
+  country: string | null;
+  region: string | null;
+  city: string | null;
+  testedAt: string;
+}
 
 export function isSecureManagementContext(): boolean {
   if (typeof window === 'undefined') return false;
@@ -397,7 +420,7 @@ export function listProxyNodes(): Promise<ProxyNode[]> {
   return request('/api/v1/admin/proxy-nodes');
 }
 
-export function createProxyNode(body: ProxyNodeInput & { uri: string }): Promise<ProxyNode> {
+export function createProxyNode(body: ProxyNodeInput): Promise<ProxyNode> {
   return request('/api/v1/admin/proxy-nodes', { method: 'POST', body: JSON.stringify(body) });
 }
 
@@ -407,10 +430,6 @@ export function updateProxyNode(id: string, body: ProxyNodeInput): Promise<Proxy
 
 export function deleteProxyNode(id: string): Promise<void> {
   return request(`/api/v1/admin/proxy-nodes/${encodeURIComponent(id)}`, { method: 'DELETE' });
-}
-
-export function importProxyNodes(body: ProxyImportInput): Promise<{ nodes: ProxyNode[]; importedCount: number }> {
-  return request('/api/v1/admin/proxy-nodes/import', { method: 'POST', body: JSON.stringify(body) });
 }
 
 export function testProxyNode(id: string): Promise<ProxyConnectionTest> {

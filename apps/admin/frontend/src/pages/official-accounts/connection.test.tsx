@@ -164,6 +164,18 @@ describe('官方账户授权与只读会话', () => {
     expect(within(dialog).getByRole('button', { name: '保存授权' })).toBeDisabled();
   });
 
+  it('blocks official refresh and logout previews in the sessions page when the saved node is unavailable', async () => {
+    mocks.listProxyNodes.mockResolvedValue([]);
+    render(<AntApp><ConnectionModal account={{ id: 'account-1', label: '研发账户' } as OfficialAccountResponse}
+      onClose={vi.fn()} view="sessions" inline /></AntApp>);
+    await screen.findByText('official@example.com');
+    expect(screen.getByRole('button', { name: '刷新官方账户与会话' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '登出所有会话' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '登出所有未绑定会话' })).toBeDisabled();
+    expect(screen.getByRole('link', { name: '管理代理节点' })).toHaveAttribute('href', '/proxy-nodes');
+    expect(mocks.refreshOfficialAccountConnection).not.toHaveBeenCalled();
+  });
+
   it('allows saving authorization over remote HTTP while warning about plaintext transport', async () => {
     mocks.isSecureManagementContext.mockReturnValue(false);
     const dialog = await openConnection();
