@@ -133,6 +133,39 @@ class OfficialSessionIntegrationTest {
     }
 
     @Test
+    void proxyOnlyEndpointPersistsFrontKeepsEncryptedAuthorizationAndRequiresFreshVersion() throws Exception {
+        save("Bearer synthetic-access", "official-account-one", 0);
+        Map<String,Object> before=jdbc.queryForMap("select * from official_account_connections where official_account_id=?",account.getId());
+        UUID front=SyntheticProxyNodeFixture.insert(jdbc);
+        String request=mapper.writeValueAsString(Map.of("proxyNodeId",proxyNodeId,"frontProxyNodeId",front,"version",0));
+        mvc.perform(put(connectionUrl()+"/proxy").secure(true).contentType(MediaType.APPLICATION_JSON).content(request))
+                .andExpect(status().isUnauthorized()).andExpect(header().string("Cache-Control","no-store"));
+        mvc.perform(put(connectionUrl()+"/proxy").secure(true).header(HttpHeaders.AUTHORIZATION,token(member)).contentType(MediaType.APPLICATION_JSON).content(request))
+                .andExpect(status().isForbidden());
+        String result=mvc.perform(put(connectionUrl()+"/proxy").secure(true).header(HttpHeaders.AUTHORIZATION,token(admin))
+                        .contentType(MediaType.APPLICATION_JSON).content(request))
+                .andExpect(status().isOk()).andExpect(header().string("Cache-Control","no-store"))
+                .andExpect(jsonPath("$.frontProxyNodeId").value(front.toString())).andExpect(jsonPath("$.proxyNodeId").value(proxyNodeId.toString()))
+                .andExpect(jsonPath("$.status").value("UNVERIFIED")).andReturn().getResponse().getContentAsString();
+        assertThat(result).doesNotContain("synthetic-access","authorizationCipher","cookieCipher");
+        Map<String,Object> after=jdbc.queryForMap("select * from official_account_connections where official_account_id=?",account.getId());
+        assertThat(after.get("authorization_cipher")).isEqualTo(before.get("authorization_cipher"));
+        assertThat(after.get("cookie_cipher")).isEqualTo(before.get("cookie_cipher"));
+        assertThat(after.get("imported_at")).isEqualTo(before.get("imported_at"));
+        assertThat(after.get("revision")).isNotEqualTo(before.get("revision"));
+        mvc.perform(put(connectionUrl()+"/proxy").secure(true).header(HttpHeaders.AUTHORIZATION,token(admin)).contentType(MediaType.APPLICATION_JSON).content(request))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("OFFICIAL_CONNECTION_VERSION_CONFLICT"));
+        when(client.fetch(any(OfficialSessionCredentials.class),eq(front),eq(proxyNodeId))).thenReturn(snapshot());
+        mvc.perform(post(connectionUrl()+"/refresh").secure(true).header(HttpHeaders.AUTHORIZATION,token(admin)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.connection.frontProxyNodeId").value(front.toString()));
+        org.mockito.Mockito.verify(client).fetch(any(OfficialSessionCredentials.class),eq(front),eq(proxyNodeId));
+        org.mockito.Mockito.verify(client,org.mockito.Mockito.never()).fetch(any(OfficialSessionCredentials.class),eq(proxyNodeId));
+        assertThat(jdbc.queryForObject("select count(*) from information_schema.table_constraints where table_name='official_account_connections' and constraint_type='FOREIGN KEY'",Integer.class)).isGreaterThanOrEqualTo(3);
+        assertThat(org.assertj.core.api.Assertions.catchThrowable(() -> jdbc.update("delete from managed_proxy_nodes where id=?",front)))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+    }
+
+    @Test
     void refreshPublishesSafeVerifiedSnapshotAndGetDoesNotRefetch() throws Exception {
         save("Bearer synthetic-access", "official-account-one", 0);
         String refreshed = mvc.perform(post(connectionUrl() + "/refresh").secure(true).header(HttpHeaders.AUTHORIZATION, token(admin)))

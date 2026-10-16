@@ -49,6 +49,13 @@ public class OfficialConnectionController {
         return ResponseEntity.noContent().cacheControl(CacheControl.noStore()).build();
     }
 
+    @PutMapping("/connection/proxy")
+    public ResponseEntity<OfficialConnectionResponse> updateProxy(@PathVariable UUID id,
+            @Valid @RequestBody OfficialConnectionProxyRequest request, HttpServletRequest http) {
+        requireAllowedTransport(http);
+        return noStore(service.updateProxy(id, request));
+    }
+
     @PostMapping("/connection/refresh")
     public ResponseEntity<OfficialConnectionRefreshResponse> refresh(@PathVariable UUID id, HttpServletRequest http) {
         requireAllowedTransport(http);

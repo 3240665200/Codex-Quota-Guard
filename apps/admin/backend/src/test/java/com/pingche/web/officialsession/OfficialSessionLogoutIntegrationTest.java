@@ -158,6 +158,21 @@ class OfficialSessionLogoutIntegrationTest {
     }
 
     @Test
+    void chainLogoutKeepsTheFrontForEveryFreshReadAndTheFinalWrite() throws Exception {
+        UUID front=SyntheticProxyNodeFixture.insert(jdbc);
+        connections.save(account.getId(),new OfficialConnectionRequest("Bearer synthetic-logout",null,"official-one",proxyNodeId,
+                connections.read(account.getId()).version(),front));
+        when(client.fetch(any(OfficialSessionCredentials.class),eq(front),eq(proxyNodeId))).thenReturn(snapshot(List.of(device("s-one",false,false))));
+        when(client.logoutAll(any(OfficialSessionCredentials.class),eq(front),eq(proxyNodeId))).thenReturn(new OfficialSessionWriteResult("ACCEPTED",null));
+        String plan=preview("ALL").path("planId").asString();
+        confirm(admin,plan,true).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("ACCEPTED"));
+        verify(client,org.mockito.Mockito.atLeastOnce()).fetch(any(OfficialSessionCredentials.class),eq(front),eq(proxyNodeId));
+        verify(client).logoutAll(any(OfficialSessionCredentials.class),eq(front),eq(proxyNodeId));
+        verify(client,org.mockito.Mockito.never()).fetch(any(OfficialSessionCredentials.class),eq(proxyNodeId));
+        verify(client,org.mockito.Mockito.never()).logoutAll(any(OfficialSessionCredentials.class),eq(proxyNodeId));
+    }
+
+    @Test
     void unboundPreservesActiveBindingsAndDoesNotExpandToNewSessions() throws Exception {
         binding("bound");
         UUID revision = jdbc.queryForObject("select revision from official_account_connections where official_account_id=?", UUID.class, account.getId());

@@ -255,6 +255,28 @@ public class OfficialConnectionService {
         };
     }
 
+    public OfficialConnectionResponse updateProxy(UUID accountId, OfficialConnectionProxyRequest request) {
+        return inTransaction(() -> {
+            requireAccount(accountId, true);
+            OfficialAccountConnection connection = connections.findByIdForUpdate(accountId)
+                    .orElseThrow(() -> error("OFFICIAL_CONNECTION_NOT_CONFIGURED", "Import official authorization first", HttpStatus.CONFLICT));
+            if (request.version() == null || request.version() != connection.version)
+                throw error("OFFICIAL_CONNECTION_VERSION_CONFLICT", "Official connection changed; reload before saving", HttpStatus.CONFLICT);
+            requireProxy(request.frontProxyNodeId(), request.proxyNodeId());
+            connection.proxyNodeId = request.proxyNodeId();
+            connection.frontProxyNodeId = request.frontProxyNodeId();
+            connection.revision = UUID.randomUUID();
+            connection.status = "UNVERIFIED";
+            connection.snapshotCipher = null;
+            connection.lastAttemptAt = null;
+            connection.lastSuccessAt = null;
+            connection.lastErrorCode = null;
+            connection.refreshAttempt = null;
+            connection.refreshLeaseUntil = null;
+            return response(connections.saveAndFlush(connection));
+        });
+    }
+
     private void requireProxy(UUID frontNodeId, UUID nodeId) {
         if (nodeId == null) throw error("OFFICIAL_PROXY_REQUIRED", "请先为官方账户选择已启用的代理节点；禁止直连。", HttpStatus.BAD_REQUEST);
         if (nodeId.equals(frontNodeId)) throw error("PROXY_CHAIN_INVALID", "前置节点与出口节点必须不同。", HttpStatus.BAD_REQUEST);
