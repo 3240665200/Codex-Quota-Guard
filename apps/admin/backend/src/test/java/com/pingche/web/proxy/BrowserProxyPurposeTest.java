@@ -14,6 +14,9 @@ class BrowserProxyPurposeTest {
         var pinned = InetAddress.getByAddress(new byte[]{8,8,8,8});
         var legacy = config.build(node, pinned, 12345);
         var browser = config.build(node, pinned, 12345, ManagedProxyGateway.Purpose.BROWSER_LOGIN);
+        var probe = config.build(node, pinned, 12345, ManagedProxyGateway.Purpose.NODE_TEST);
+        assertThat(probe.path("route").path("rules").get(0).path("domain").toString()).isEqualTo("[\"ipwho.is\"]");
+        assertThat(probe.toString()).doesNotContain("chatgpt.com", "auth.openai.com", "\"direct\"");
         assertThat(legacy.path("route").path("rules").get(0).path("domain").size()).isEqualTo(1);
         assertThat(browser.path("route").path("rules").get(0).path("domain").toString())
                 .contains("auth.openai.com", "chatgpt.com", "challenges.cloudflare.com").doesNotContain("google.com", "localhost");

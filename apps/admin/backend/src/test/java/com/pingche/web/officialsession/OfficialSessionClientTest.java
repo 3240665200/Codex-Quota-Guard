@@ -11,9 +11,7 @@ import static org.mockito.Mockito.when;
 import com.pingche.web.auth.DomainException;
 import com.pingche.web.proxy.ManagedProxyGateway;
 import com.pingche.web.proxy.ProxyLease;
-import java.net.Proxy;
 import java.net.ProxySelector;
-import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
@@ -34,6 +32,7 @@ import org.junit.jupiter.api.Test;
 import tools.jackson.databind.ObjectMapper;
 
 class OfficialSessionClientTest {
+    private static final UUID NODE_ID = UUID.randomUUID();
     static final String ME = """
             {"id":"official-user-one","email":"owner@example.com","name":"Owner","unwanted_secret":"private-profile"}
             """;
@@ -60,11 +59,15 @@ class OfficialSessionClientTest {
     void fetchesOnlyThreeFixedReadEndpointsAndMatchesAccountFieldInsteadOfMapKey() {
         HttpClient http = mock(HttpClient.class);
         ManagedProxyGateway proxy = mock(ManagedProxyGateway.class);
+        ProxyLease lease = mock(ProxyLease.class);
+        ProxySelector selector = mock(ProxySelector.class);
+        when(proxy.open(NODE_ID)).thenReturn(lease);
+        when(lease.proxySelector()).thenReturn(selector);
         List<HttpRequest> requests = success(http);
         AtomicReference<ProxySelector> selected = new AtomicReference<>();
         OfficialSessionClient client = new OfficialSessionClient(new ObjectMapper(), proxy,
-                selector -> { selected.set(selector); return http; });
-        OfficialSessionSnapshot result = client.fetch(credentials(), null);
+                actual -> { selected.set(actual); return http; });
+        OfficialSessionSnapshot result = client.fetch(credentials(), NODE_ID);
 
         assertThat(requests).extracting(request -> request.uri().toString()).containsExactly(
                 "https://chatgpt.com/backend-api/me",
@@ -76,8 +79,9 @@ class OfficialSessionClientTest {
             assertThat(request.headers().firstValue("Cookie")).contains("__Secure-next-auth.session-token.0=private-cookie");
             assertThat(request.headers().firstValue("ChatGPT-Account-ID")).contains("official-account-one");
         }
-        assertThat(selected.get().select(URI.create("https://chatgpt.com"))).containsExactly(Proxy.NO_PROXY);
-        verifyNoInteractions(proxy);
+        assertThat(selected.get()).isSameAs(selector);
+        verify(proxy).open(NODE_ID);
+        verify(lease).close();
         assertThat(result.account().accountId()).isEqualTo("official-account-one");
         assertThat(result.account().userId()).isEqualTo("official-user-one");
         assertThat(result.account().activeSubscription()).isTrue();
@@ -100,7 +104,7 @@ class OfficialSessionClientTest {
             HttpClient http = mock(HttpClient.class);
             List<HttpRequest> requests = success(http, "{\"accounts\":{" + entries + "}}", SESSIONS);
 
-            OfficialSessionSnapshot result = client(http).fetch(credentials(), null);
+            OfficialSessionSnapshot result = client(http).fetch(credentials(), NODE_ID);
 
             assertThat(result.account().accountId()).isEqualTo("official-account-one");
             assertThat(result.sessions().devices()).hasSize(2);
@@ -127,7 +131,7 @@ class OfficialSessionClientTest {
                 .replace("\"last_signed_in_timestamp_second\":1791964800", "\"last_signed_in_timestamp_second\":1791964800.0")
                 .replace("\"session_created_at_seconds\":1791878400", "\"session_created_at_seconds\":1791878400.123456"));
 
-        OfficialSessionInfo device = client(http).fetch(credentials(), null).sessions().devices().get(0);
+        OfficialSessionInfo device = client(http).fetch(credentials(), NODE_ID).sessions().devices().get(0);
 
         assertThat(device.lastSignedInAt()).isEqualTo(Instant.ofEpochSecond(1791964800));
         assertThat(device.sessionCreatedAt()).isEqualTo(Instant.ofEpochSecond(1791878400, 123456000));
@@ -228,8 +232,8 @@ class OfficialSessionClientTest {
             return CompletableFuture.completedFuture(response(200, "{\"success\":true}"));
         });
         OfficialSessionClient client = client(http);
-        assertThat(client.logoutAll(credentials(), null).status()).isEqualTo("ACCEPTED");
-        assertThat(client.revokeSession(credentials(), null, "synthetic-session").status()).isEqualTo("ACCEPTED");
+        assertThat(client.logoutAll(credentials(), NODE_ID).status()).isEqualTo("ACCEPTED");
+        assertThat(client.revokeSession(credentials(), NODE_ID, "synthetic-session").status()).isEqualTo("ACCEPTED");
         assertThat(requests).extracting(request -> request.uri().toString()).containsExactly(
                 "https://chatgpt.com/backend-api/accounts/logout_all",
                 "https://chatgpt.com/backend-api/accounts/sessions/revoke");
@@ -258,7 +262,7 @@ class OfficialSessionClientTest {
             HttpResponse<byte[]> upstream=response(status,status==204?"":"{\"success\":true,\"private\":\"secret-marker\"}");
             when(http.sendAsync(any(HttpRequest.class),any(HttpResponse.BodyHandler.class)))
                     .thenReturn(CompletableFuture.completedFuture(upstream));
-            OfficialSessionWriteResult result=client(http).logoutAll(credentials(),null);
+            OfficialSessionWriteResult result=client(http).logoutAll(credentials(),NODE_ID);
             assertThat(result.status()).isEqualTo(status==200||status==204?"ACCEPTED":status==401||status==403||status==429?"REJECTED":"UNKNOWN");
             assertThat(result.toString()).doesNotContain("secret-marker","synthetic-access","private-cookie");
             verify(http).sendAsync(any(HttpRequest.class),any(HttpResponse.BodyHandler.class));
@@ -267,7 +271,7 @@ class OfficialSessionClientTest {
             HttpClient http=mock(HttpClient.class);
             HttpResponse<byte[]> upstream=response(200,body);
             when(http.sendAsync(any(HttpRequest.class),any(HttpResponse.BodyHandler.class))).thenReturn(CompletableFuture.completedFuture(upstream));
-            assertThat(client(http).logoutAll(credentials(),null).status()).isEqualTo("UNKNOWN");
+            assertThat(client(http).logoutAll(credentials(),NODE_ID).status()).isEqualTo("UNKNOWN");
             verify(http).sendAsync(any(HttpRequest.class),any(HttpResponse.BodyHandler.class));
         }
     }
@@ -278,12 +282,12 @@ class OfficialSessionClientTest {
         CompletableFuture<HttpResponse<byte[]>> pending=mock(CompletableFuture.class);
         when(pending.get(10,TimeUnit.SECONDS)).thenThrow(new TimeoutException());
         when(http.sendAsync(any(HttpRequest.class),any(HttpResponse.BodyHandler.class))).thenReturn(pending);
-        assertThat(client(http).logoutAll(credentials(),null).status()).isEqualTo("UNKNOWN");
+        assertThat(client(http).logoutAll(credentials(),NODE_ID).status()).isEqualTo("UNKNOWN");
         verify(pending).cancel(true);
         verify(http).sendAsync(any(HttpRequest.class),any(HttpResponse.BodyHandler.class));
         HttpClient noRequest=mock(HttpClient.class);
         for(String invalid : new String[]{null,"", " ","x\r\ninvalid","x".repeat(513)})
-            assertThat(client(noRequest).revokeSession(credentials(),null,invalid).status()).isEqualTo("REJECTED");
+            assertThat(client(noRequest).revokeSession(credentials(),NODE_ID,invalid).status()).isEqualTo("REJECTED");
         verifyNoInteractions(noRequest);
     }
 
@@ -304,11 +308,15 @@ class OfficialSessionClientTest {
     }
 
     private OfficialSessionClient client(HttpClient http) {
-        return new OfficialSessionClient(new ObjectMapper(), mock(ManagedProxyGateway.class), ignored -> http);
+        ManagedProxyGateway gateway = mock(ManagedProxyGateway.class);
+        ProxyLease lease = mock(ProxyLease.class);
+        when(gateway.open(NODE_ID)).thenReturn(lease);
+        when(lease.proxySelector()).thenReturn(mock(ProxySelector.class));
+        return new OfficialSessionClient(new ObjectMapper(), gateway, ignored -> http);
     }
 
     private void assertFailure(HttpClient http, String code) {
-        assertThatThrownBy(() -> client(http).fetch(credentials(), null)).isInstanceOfSatisfying(DomainException.class, error -> {
+        assertThatThrownBy(() -> client(http).fetch(credentials(), NODE_ID)).isInstanceOfSatisfying(DomainException.class, error -> {
             assertThat(error.getCode()).isEqualTo(code);
             assertThat(error.getMessage()).doesNotContain("private-token", "synthetic-access", "private-cookie");
             assertThat(error.getCause()).isNull();

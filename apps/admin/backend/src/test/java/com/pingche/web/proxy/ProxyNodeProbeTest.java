@@ -53,12 +53,14 @@ class ProxyNodeProbeTest {
         for (String body : List.of("<html>private-token</html>", "{\"success\":false,\"message\":\"private-token\"}",
                 "{\"success\":true,\"ip\":\"127.0.0.1\"}", "{\"success\":true,\"ip\":\"attacker.example.com\"}")) {
             var probe = probe();
+            HttpResponse<byte[]> upstream = response(200, body);
             when(http.sendAsync(any(HttpRequest.class), any(HttpResponse.BodyHandler.class)))
-                    .thenReturn(CompletableFuture.completedFuture(response(200, body)));
+                    .thenReturn(CompletableFuture.completedFuture(upstream));
             assertThatThrownBy(() -> probe.test(id)).isInstanceOf(DomainException.class).hasMessageNotContaining("private-token");
         }
+        HttpResponse<byte[]> redirected = response(302, "");
         when(http.sendAsync(any(HttpRequest.class), any(HttpResponse.BodyHandler.class)))
-                .thenReturn(CompletableFuture.completedFuture(response(302, "")));
+                .thenReturn(CompletableFuture.completedFuture(redirected));
         assertThatThrownBy(() -> probe().test(id)).isInstanceOf(DomainException.class);
     }
 

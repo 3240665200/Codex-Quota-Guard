@@ -255,7 +255,7 @@ public class AdminUserLogoutService {
     private AccountPreview unavailable(UUID account, String label, List<String> sessions, String code) {
         return new AccountPreview(account, label, null, "NOT_ATTEMPTED", sessions, List.of(), List.of(), code);
     }
-    private String safeCode(String code) { return code != null && code.matches("(?:OFFICIAL|USER_LOGOUT)_[A-Z0-9_]{1,75}") ? code : "USER_LOGOUT_UNAVAILABLE"; }
+    private String safeCode(String code) { return code != null && code.matches("(?:OFFICIAL|PROXY|USER_LOGOUT)_[A-Z0-9_]{1,75}") ? code : "USER_LOGOUT_UNAVAILABLE"; }
     private DomainException conflict(String code) { return new DomainException(code, "User logout could not be safely completed; refresh the preview or read the existing result", HttpStatus.CONFLICT); }
     private static OffsetDateTime at(Instant value) { return value.atOffset(ZoneOffset.UTC); }
     private record ScopeBinding(UUID id, UUID account, String session, UUID revision, UUID currentRevision, String label) { }

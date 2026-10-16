@@ -21,6 +21,12 @@ public class ProxyNode {
     @Column(nullable = false) private boolean enabled;
     @Column(name = "created_at", nullable = false) private Instant createdAt;
     @Column(name = "updated_at", nullable = false) private Instant updatedAt;
+    @Column(name = "egress_ip", length = 45) private String egressIp;
+    @Column(length = 120) private String country;
+    @Column(length = 120) private String region;
+    @Column(length = 120) private String city;
+    @Column(name = "tested_at") private Instant testedAt;
+    @Column(name = "test_status", nullable = false, length = 24) private String testStatus = "UNTESTED";
     @Version @Column(nullable = false) private long version;
 
     protected ProxyNode() { }
@@ -33,6 +39,7 @@ public class ProxyNode {
         if (definition != null) {
             protocol = definition.protocol(); host = definition.host(); port = definition.port();
             hasCredentials = definition.hasCredentials(); configCipher = encrypted;
+            egressIp = null; country = null; region = null; city = null; testedAt = null; testStatus = "UNTESTED";
         }
     }
     public UUID getId() { return id; }
@@ -46,5 +53,19 @@ public class ProxyNode {
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
     public long getVersion() { return version; }
+    void recordTest(ProxyNodeProbe.Result result, Instant now) {
+        testedAt = now;
+        testStatus = result == null ? "FAILED" : "CONNECTED";
+        egressIp = result == null ? null : result.egressIp();
+        country = result == null ? null : result.country();
+        region = result == null ? null : result.region();
+        city = result == null ? null : result.city();
+    }
+    public String getEgressIp() { return egressIp; }
+    public String getCountry() { return country; }
+    public String getRegion() { return region; }
+    public String getCity() { return city; }
+    public Instant getTestedAt() { return testedAt; }
+    public String getTestStatus() { return testStatus; }
     @Override public String toString() { return "ProxyNode[id=" + id + "]"; }
 }

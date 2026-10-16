@@ -43,6 +43,7 @@ import tools.jackson.databind.ObjectMapper;
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 class OfficialAuthorizationPresetIntegrationTest {
+    private UUID proxyNodeId;
     private static final String METADATA = "/api/v1/admin/official-authorization-preset";
     private static final String VALID = "{\"requestedAccountId\":\"preset-account\",\"authorization\":\"Bearer fake-preset-secret\",\"cookie\":\"__Secure-next-auth.session-token=fake-cookie-secret\"}";
     private static final Path PRESET = createPreset();
@@ -62,6 +63,7 @@ class OfficialAuthorizationPresetIntegrationTest {
     }
     @AfterAll static void removePreset() throws IOException { Files.deleteIfExists(PRESET); }
     @BeforeEach void setup() throws IOException {
+        proxyNodeId = SyntheticProxyNodeFixture.insert(jdbc);
         Files.writeString(PRESET, VALID);
         jdbc.update("delete from official_account_connections");
         accounts.deleteAll();
@@ -162,7 +164,7 @@ class OfficialAuthorizationPresetIntegrationTest {
                 .andExpect(status().isOk());
     }
     private long version() { return jdbc.queryForObject("select version from official_account_connections where official_account_id=?", Long.class, account.getId()); }
-    private String body(long version, String revision) { return mapper.writeValueAsString(Map.of("version", version, "presetRevision", revision)); }
+    private String body(long version, String revision) { return mapper.writeValueAsString(Map.of("version", version, "presetRevision", revision, "proxyNodeId", proxyNodeId)); }
     private String token(User user) { return "Bearer " + jwt.create(user.getId(), user.getRole().name(), user.getSessionVersion()); }
     private String url() { return "/api/v1/admin/official-accounts/" + account.getId() + "/connection/preset"; }
     private static Path createPreset() {

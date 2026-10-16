@@ -2,7 +2,7 @@ package com.pingche.web.officialsession;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
@@ -56,6 +56,7 @@ import tools.jackson.databind.ObjectMapper;
 @ActiveProfiles("test")
 @ExtendWith(OutputCaptureExtension.class)
 class OfficialSessionIntegrationTest {
+    private UUID proxyNodeId;
     private static final Instant NOW = Instant.parse("2026-10-14T10:00:00Z");
     @Autowired MockMvc mvc;
     @Autowired OfficialAccountRepository accounts;
@@ -75,6 +76,7 @@ class OfficialSessionIntegrationTest {
 
     @BeforeEach
     void setup() {
+        proxyNodeId = SyntheticProxyNodeFixture.insert(jdbc);
         now.set(NOW);
         when(clock.instant()).thenAnswer(call -> now.get());
         if (jdbc.queryForObject("select count(*) from information_schema.tables where table_name = 'official_account_connections'", Integer.class) > 0)
@@ -89,7 +91,7 @@ class OfficialSessionIntegrationTest {
         team = new Team("Session team", "", Team.Status.ACTIVE, 100, 100, NOW);
         team.updateTokenLimits(null, null, 1234L, account.getId(), NOW);
         team = teams.saveAndFlush(team);
-        when(client.fetch(any(OfficialSessionCredentials.class), isNull())).thenReturn(snapshot());
+        when(client.fetch(any(OfficialSessionCredentials.class), eq(proxyNodeId))).thenReturn(snapshot());
     }
 
     @Test
@@ -150,7 +152,7 @@ class OfficialSessionIntegrationTest {
         mvc.perform(get(sessionsUrl()).secure(true).header(HttpHeaders.AUTHORIZATION, token(admin)))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.account.email").value("owner@example.com"))
                 .andExpect(jsonPath("$.sessions.devices.length()").value(1));
-        org.mockito.Mockito.verify(client, org.mockito.Mockito.times(1)).fetch(any(OfficialSessionCredentials.class), isNull());
+        org.mockito.Mockito.verify(client, org.mockito.Mockito.times(1)).fetch(any(OfficialSessionCredentials.class), eq(proxyNodeId));
     }
 
     @Test
@@ -167,7 +169,7 @@ class OfficialSessionIntegrationTest {
         mvc.perform(delete(connectionUrl()).secure(true).header(HttpHeaders.AUTHORIZATION, token(admin)))
                 .andExpect(status().isNoContent()).andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"));
         save("Bearer second-account", "different-official-account", 0);
-        org.mockito.Mockito.verify(client, org.mockito.Mockito.times(1)).fetch(any(OfficialSessionCredentials.class), isNull());
+        org.mockito.Mockito.verify(client, org.mockito.Mockito.times(1)).fetch(any(OfficialSessionCredentials.class), eq(proxyNodeId));
         assertThat(accounts.findById(account.getId())).isPresent();
     }
 
@@ -192,7 +194,7 @@ class OfficialSessionIntegrationTest {
     @Test
     void challengeIsDistinguishedFromInvalidCredentialsAndPreservedForThePage() throws Exception {
         save("Bearer synthetic-access", "official-account-one", 0);
-        when(client.fetch(any(OfficialSessionCredentials.class), isNull())).thenThrow(
+        when(client.fetch(any(OfficialSessionCredentials.class), eq(proxyNodeId))).thenThrow(
                 new DomainException("OFFICIAL_CHALLENGE_REQUIRED", "Verification required", HttpStatus.BAD_GATEWAY));
         mvc.perform(post(connectionUrl() + "/refresh").secure(true).header(HttpHeaders.AUTHORIZATION, token(admin)))
                 .andExpect(status().isBadGateway()).andExpect(jsonPath("$.code").value("OFFICIAL_CHALLENGE_REQUIRED"));
@@ -206,7 +208,7 @@ class OfficialSessionIntegrationTest {
         save("Bearer synthetic-access", "official-account-one", 0);
         refresh();
         now.set(NOW.plusSeconds(11));
-        when(client.fetch(any(OfficialSessionCredentials.class), isNull())).thenThrow(
+        when(client.fetch(any(OfficialSessionCredentials.class), eq(proxyNodeId))).thenThrow(
                 new DomainException("OFFICIAL_ACCESS_BLOCKED", "Official access is blocked", HttpStatus.BAD_GATEWAY));
         mvc.perform(post(connectionUrl() + "/refresh").secure(true).header(HttpHeaders.AUTHORIZATION, token(admin)))
                 .andExpect(status().isBadGateway()).andExpect(jsonPath("$.code").value("OFFICIAL_ACCESS_BLOCKED"));
@@ -220,7 +222,7 @@ class OfficialSessionIntegrationTest {
     @Test
     void unexpectedProviderExceptionNeverLeaksIntoResponseOrLogs(CapturedOutput output) throws Exception {
         save("Bearer synthetic-access", "official-account-one", 0);
-        when(client.fetch(any(OfficialSessionCredentials.class), isNull())).thenThrow(new IllegalStateException("private-upstream-credential-body"));
+        when(client.fetch(any(OfficialSessionCredentials.class), eq(proxyNodeId))).thenThrow(new IllegalStateException("private-upstream-credential-body"));
         String response = mvc.perform(post(connectionUrl() + "/refresh").secure(true).header(HttpHeaders.AUTHORIZATION, token(admin)))
                 .andExpect(status().isBadGateway()).andExpect(jsonPath("$.code").value("OFFICIAL_UNAVAILABLE"))
                 .andReturn().getResponse().getContentAsString();
@@ -234,14 +236,14 @@ class OfficialSessionIntegrationTest {
         refresh();
         mvc.perform(post(connectionUrl() + "/refresh").secure(true).header(HttpHeaders.AUTHORIZATION, token(admin)))
                 .andExpect(status().isTooManyRequests()).andExpect(jsonPath("$.code").value("OFFICIAL_REFRESH_RATE_LIMITED"));
-        org.mockito.Mockito.verify(client, org.mockito.Mockito.times(1)).fetch(any(OfficialSessionCredentials.class), isNull());
+        org.mockito.Mockito.verify(client, org.mockito.Mockito.times(1)).fetch(any(OfficialSessionCredentials.class), eq(proxyNodeId));
     }
 
     @Test
     void inFlightOldAuthorizationCannotRepopulateSnapshotAfterReplacement() throws Exception {
         save("Bearer synthetic-access", "official-account-one", 0);
         CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);
-        when(client.fetch(any(OfficialSessionCredentials.class), isNull())).thenAnswer(call -> {
+        when(client.fetch(any(OfficialSessionCredentials.class), eq(proxyNodeId))).thenAnswer(call -> {
             entered.countDown();
             assertThat(release.await(5, TimeUnit.SECONDS)).isTrue();
             return snapshot();
@@ -293,7 +295,7 @@ class OfficialSessionIntegrationTest {
     }
 
     private String body(String authorization, String requestedId, long version) {
-        return mapper.writeValueAsString(Map.of("authorization", authorization, "requestedAccountId", requestedId, "version", version));
+        return mapper.writeValueAsString(Map.of("authorization", authorization, "requestedAccountId", requestedId, "proxyNodeId", proxyNodeId, "version", version));
     }
     private String token(User user) { return "Bearer " + jwt.create(user.getId(), user.getRole().name(), user.getSessionVersion()); }
     private String connectionUrl() { return "/api/v1/admin/official-accounts/" + account.getId() + "/connection"; }

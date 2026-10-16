@@ -44,8 +44,9 @@ public class AdminProxyNodeController {
         secure(http); service.delete(id); return ResponseEntity.noContent().cacheControl(CacheControl.noStore()).build();
     }
     @PostMapping("/import")
-    public ResponseEntity<ProxyNodeService.ImportResult> importNodes(@Valid @RequestBody ProxyImportRequest request, HttpServletRequest http) {
-        secure(http); return noStore(service.importNodes(request));
+    public ResponseEntity<Void> importNodes(HttpServletRequest http) {
+        secure(http);
+        throw new DomainException("PROXY_IMPORT_RETIRED", "订阅导入已停用，请填写主机和端口添加节点。", HttpStatus.GONE);
     }
     @PostMapping("/{id}/test")
     public ResponseEntity<ProxyNodeService.TestResult> test(@PathVariable UUID id, HttpServletRequest http) {

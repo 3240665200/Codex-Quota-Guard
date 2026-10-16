@@ -57,9 +57,7 @@ public class OfficialConnectionService {
                     "Official connection changed; reload before saving", HttpStatus.CONFLICT);
             if (current != null && current.boundAccountId != null && !current.boundAccountId.equals(request.requestedAccountId()))
                 throw error("OFFICIAL_IDENTITY_CHANGE_REQUIRES_DISCONNECT", "Disconnect the saved authorization before selecting another official account", HttpStatus.CONFLICT);
-            if (request.proxyNodeId() != null && !Boolean.TRUE.equals(jdbc.queryForObject(
-                    "select count(*) > 0 from managed_proxy_nodes where id = ? and enabled = true", Boolean.class, request.proxyNodeId())))
-                throw error("OFFICIAL_PROXY_UNAVAILABLE", "Selected proxy node is unavailable", HttpStatus.BAD_REQUEST);
+            requireProxy(request.proxyNodeId());
             OfficialAccountConnection connection = current == null ? new OfficialAccountConnection(accountId) : current;
             connection.authorizationCipher = cipher.encrypt(request.authorization(), connection.aad("authorization"));
             connection.cookieCipher = request.cookie() == null || request.cookie().isBlank() ? null
@@ -160,6 +158,7 @@ public class OfficialConnectionService {
             requireAccount(accountId, true);
             OfficialAccountConnection connection = connections.findByIdForUpdate(accountId)
                     .orElseThrow(() -> error("OFFICIAL_CONNECTION_NOT_CONFIGURED", "Import official authorization first", HttpStatus.CONFLICT));
+            requireProxy(connection.proxyNodeId);
             if (!cipher.isReady()) throw error("OFFICIAL_ENCRYPTION_UNAVAILABLE", "Official authorization encryption is unavailable", HttpStatus.SERVICE_UNAVAILABLE);
             Instant now = clock.instant();
             if (connection.refreshLeaseUntil != null && connection.refreshLeaseUntil.isAfter(now))
@@ -235,6 +234,13 @@ public class OfficialConnectionService {
 
     private DomainException safeFailure(String code) {
         return switch (code) {
+            case "OFFICIAL_PROXY_REQUIRED" -> error(code, "请先为官方账户选择已启用的代理节点；禁止直连。", HttpStatus.BAD_REQUEST);
+            case "OFFICIAL_PROXY_UNAVAILABLE" -> error(code, "绑定的代理节点不可用，请启用或更换节点；未回退直连。", HttpStatus.SERVICE_UNAVAILABLE);
+            case "PROXY_NODE_DISABLED", "PROXY_NODE_UNAVAILABLE", "PROXY_ENDPOINT_BLOCKED", "PROXY_CAPACITY_EXCEEDED",
+                    "PROXY_KERNEL_UNAVAILABLE", "PROXY_CREDENTIALS_UNAVAILABLE", "PROXY_ENCRYPTION_UNAVAILABLE" ->
+                    error(code, "绑定的代理节点不可用，请检查节点及服务器代理配置；未回退直连。", HttpStatus.SERVICE_UNAVAILABLE);
+            case "PROXY_CONNECT_TIMEOUT" -> error(code, "代理连接超时，请检查绑定节点；未回退直连。", HttpStatus.GATEWAY_TIMEOUT);
+            case "PROXY_CONNECTION_FAILED" -> error(code, "代理连接失败，请检查绑定节点；未回退直连。", HttpStatus.BAD_GATEWAY);
             case "OFFICIAL_AUTH_REQUIRED" -> error(code, "Official authorization must be renewed", HttpStatus.BAD_GATEWAY);
             case "OFFICIAL_CHALLENGE_REQUIRED" -> error(code, "The official website requires browser verification; this HTTP connection cannot read account sessions", HttpStatus.BAD_GATEWAY);
             case "OFFICIAL_ACCESS_BLOCKED" -> error(code, "Official access is blocked; complete any required verification on the official website", HttpStatus.BAD_GATEWAY);
@@ -244,6 +250,13 @@ public class OfficialConnectionService {
             case "OFFICIAL_CREDENTIALS_UNAVAILABLE" -> error(code, "Official authorization is unavailable", HttpStatus.SERVICE_UNAVAILABLE);
             default -> error("OFFICIAL_UNAVAILABLE", "Official service is unavailable", HttpStatus.BAD_GATEWAY);
         };
+    }
+
+    private void requireProxy(UUID nodeId) {
+        if (nodeId == null) throw error("OFFICIAL_PROXY_REQUIRED", "请先为官方账户选择已启用的代理节点；禁止直连。", HttpStatus.BAD_REQUEST);
+        if (!Boolean.TRUE.equals(jdbc.queryForObject(
+                "select count(*) > 0 from managed_proxy_nodes where id = ? and enabled = true", Boolean.class, nodeId)))
+            throw error("OFFICIAL_PROXY_UNAVAILABLE", "绑定的代理节点不存在或已停用，请启用或更换节点；禁止直连。", HttpStatus.BAD_REQUEST);
     }
 
     private DomainException noSnapshot() { return error("OFFICIAL_SNAPSHOT_UNAVAILABLE", "Refresh the official connection to obtain a verified session snapshot", HttpStatus.CONFLICT); }

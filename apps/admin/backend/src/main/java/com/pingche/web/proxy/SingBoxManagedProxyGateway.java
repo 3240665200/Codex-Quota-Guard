@@ -29,10 +29,9 @@ public class SingBoxManagedProxyGateway implements ManagedProxyGateway {
 
     @Override public ProxyLease open(UUID nodeId, Purpose purpose) {
         if (purpose == null) throw unavailable();
-        if (nodeId == null && purpose == Purpose.BROWSER_LOGIN) return runner.open(configuration::buildDirectBrowser, purpose);
         if (nodeId == null) throw unavailable();
         ProxyNode node = nodes.findById(nodeId).orElseThrow(this::unavailable);
-        if (!node.isEnabled()) throw unavailable();
+        if (!node.isEnabled()) throw new DomainException("PROXY_NODE_DISABLED", "绑定的代理节点已停用，请启用或更换节点；未回退直连。", HttpStatus.SERVICE_UNAVAILABLE);
         String plaintext = cipher.decrypt(node.encryptedConfiguration(), node.getId().toString());
         ProxyNodeDefinition definition = new ProxyNodeDefinition(node.getLabel(), node.getProtocol(), node.getHost(),
                 node.getPort(), plaintext, node.hasCredentials());

@@ -35,6 +35,40 @@ public class ProxyNodeParser {
 
     public ProxyNodeParser(ObjectMapper json) { this.json = json; }
 
+    ProxyNodeDefinition parse(ProxyNodeRequest request, String previousConfiguration) {
+        if (request == null || request.protocol() == null || !Set.of("HTTP", "HTTPS", "SOCKS5").contains(request.protocol())
+                || request.port() == null || request.port() < 1 || request.port() > 65535 || request.enabled() == null) throw invalidFields();
+        String host = normalizeHost(request.host() == null ? null : request.host().trim());
+        String username = request.username();
+        String password = request.password();
+        if (username == null && password == null && previousConfiguration != null) {
+            JsonNode previous = json.readTree(previousConfiguration);
+            username = previous.has("username") ? previous.get("username").asString() : null;
+            password = previous.has("username") && previous.has("password") ? previous.get("password").asString() : null;
+        }
+        if ((username == null) != (password == null)) throw invalidFields();
+        boolean authenticated = username != null && (!username.isEmpty() || !password.isEmpty());
+        Map<String, Object> outbound = new LinkedHashMap<>();
+        outbound.put("type", request.protocol().equals("SOCKS5") ? "socks" : "http");
+        outbound.put("server", host);
+        outbound.put("server_port", request.port());
+        if (authenticated) {
+            outbound.put("username", text(username, 255, false));
+            outbound.put("password", text(password, 4096, false));
+        }
+        if (request.protocol().equals("HTTPS")) outbound.put("tls", tls("tls", host, Map.of()));
+        if (request.protocol().equals("SOCKS5")) {
+            outbound.put("version", "5");
+            outbound.put("network", "tcp");
+        }
+        return new ProxyNodeDefinition(label(request.label()), request.protocol(), host, request.port(),
+                json.writeValueAsString(outbound), authenticated);
+    }
+
+    private static DomainException invalidFields() {
+        return new DomainException("PROXY_NODE_INVALID", "请检查代理协议、主机、端口及成对填写的用户名和密码。", HttpStatus.BAD_REQUEST);
+    }
+
     ProxyNodeDefinition parse(String input) {
         try {
             if (input == null || input.length() > 16_384) throw invalid();

@@ -7,9 +7,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.net.Proxy;
 import java.net.ProxySelector;
-import java.net.SocketAddress;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -39,10 +37,6 @@ import tools.jackson.databind.ObjectMapper;
 @Component
 public class OfficialSessionClient {
     private static final int MAX_BODY = 1_048_576;
-    private static final ProxySelector DIRECT = new ProxySelector() {
-        @Override public List<Proxy> select(URI uri) { return List.of(Proxy.NO_PROXY); }
-        @Override public void connectFailed(URI uri, SocketAddress address, IOException failure) { }
-    };
     private final ObjectMapper mapper;
     private final ManagedProxyGateway proxies;
     private final Function<ProxySelector, HttpClient> clients;
@@ -60,9 +54,10 @@ public class OfficialSessionClient {
     }
 
     OfficialSessionSnapshot fetch(OfficialSessionCredentials credentials, UUID proxyNodeId) {
+        if (proxyNodeId == null) throw proxyRequired();
         credentials.validate();
-        try (ProxyLease lease = proxyNodeId == null ? null : proxies.open(proxyNodeId)) {
-            HttpClient client = clients.apply(lease == null ? DIRECT : lease.proxySelector());
+        try (ProxyLease lease = proxies.open(proxyNodeId)) {
+            HttpClient client = clients.apply(lease.proxySelector());
             JsonNode me = read(client, "/me", credentials);
             String userId = requiredText(me, "id", 320);
             JsonNode accounts = read(client, "/accounts/check/v4-2023-04-27", credentials).get("accounts");
@@ -142,12 +137,13 @@ public class OfficialSessionClient {
 
     private OfficialSessionWriteResult write(OfficialSessionCredentials credentials, UUID proxyNodeId,
             String path, Map<String,String> payload) {
+        if (proxyNodeId == null) return new OfficialSessionWriteResult("REJECTED", "OFFICIAL_PROXY_REQUIRED");
         boolean dispatched=false;
         CompletableFuture<HttpResponse<byte[]>> pending=null;
         try {
             credentials.validate();
-            try(ProxyLease lease=proxyNodeId==null?null:proxies.open(proxyNodeId)) {
-                HttpClient client=clients.apply(lease==null?DIRECT:lease.proxySelector());
+            try(ProxyLease lease=proxies.open(proxyNodeId)) {
+                HttpClient client=clients.apply(lease.proxySelector());
                 var request=HttpRequest.newBuilder(URI.create("https://chatgpt.com/backend-api"+path))
                         .timeout(Duration.ofSeconds(10)).header("Accept","application/json")
                         .header("Content-Type","application/json").header("Authorization",credentials.authorization())
@@ -185,6 +181,8 @@ public class OfficialSessionClient {
             }
         } catch(InterruptedException ignored) {
             Thread.currentThread().interrupt();return uncertainWrite();
+        } catch(DomainException failure) {
+            return dispatched ? uncertainWrite() : new OfficialSessionWriteResult("REJECTED", failure.getCode());
         } catch(ExecutionException|TimeoutException|RuntimeException ignored) {
             return dispatched?uncertainWrite():new OfficialSessionWriteResult("REJECTED","OFFICIAL_LOGOUT_NOT_SENT");
         } finally { if(pending!=null && !pending.isDone())pending.cancel(true); }
@@ -253,6 +251,10 @@ public class OfficialSessionClient {
     }
 
     private DomainException invalidResponse() { return failure("OFFICIAL_RESPONSE_INVALID"); }
+
+    private DomainException proxyRequired() {
+        return new DomainException("OFFICIAL_PROXY_REQUIRED", "请先为官方账户选择已启用的代理节点；禁止直连。", HttpStatus.BAD_REQUEST);
+    }
 
     private DomainException failure(String code) {
         String message = switch (code) {

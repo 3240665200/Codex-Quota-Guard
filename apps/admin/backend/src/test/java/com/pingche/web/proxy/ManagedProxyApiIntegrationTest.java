@@ -1,6 +1,9 @@
 package com.pingche.web.proxy;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -10,6 +13,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.pingche.web.auth.JwtService;
+import com.pingche.web.auth.DomainException;
+import java.net.URI;
+import java.util.UUID;
 import com.pingche.web.user.User;
 import com.pingche.web.user.UserRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -18,6 +24,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
+import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -37,6 +44,7 @@ class ManagedProxyApiIntegrationTest {
     @Autowired JwtService jwt;
     @Autowired JdbcTemplate jdbc;
     @MockitoBean ManagedProxyGateway gateway;
+    @MockitoBean ProxyNodeProbe probe;
     private final ObjectMapper json = new ObjectMapper();
     private String adminToken;
 
@@ -66,7 +74,7 @@ class ManagedProxyApiIntegrationTest {
         String cipher = jdbc.queryForObject("select config_cipher from managed_proxy_nodes where id = cast(? as uuid)", String.class, id);
         assertThat(cipher).doesNotContain("synthetic-secret", "alice");
         mvc.perform(put("/api/v1/admin/proxy-nodes/" + id).secure(true).header("Authorization", adminToken)
-                        .contentType(MediaType.APPLICATION_JSON).content("{\"label\":\"Renamed\",\"uri\":\"\",\"enabled\":false,\"version\":" + node.get("version").asLong() + "}"))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"label\":\"Renamed\",\"protocol\":\"HTTP\",\"host\":\"proxy.example.com\",\"port\":8080,\"enabled\":false,\"version\":" + node.get("version").asLong() + "}"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.enabled").value(false));
         assertThat(jdbc.queryForObject("select config_cipher from managed_proxy_nodes where id = cast(? as uuid)", String.class, id)).isEqualTo(cipher);
         mvc.perform(delete("/api/v1/admin/proxy-nodes/" + id).secure(true).header("Authorization", adminToken))
@@ -74,21 +82,65 @@ class ManagedProxyApiIntegrationTest {
     }
 
     @Test
-    void subscriptionImportIsAtomicAndDoesNotEchoRejectedInput() throws Exception {
+    void subscriptionImportIsRetiredAndDoesNotEchoRejectedInputOrFetchAnything() throws Exception {
         long before = nodeCount();
         String response = mvc.perform(post("/api/v1/admin/proxy-nodes/import").secure(true).header("Authorization", adminToken)
                         .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(java.util.Map.of("content",
                                 "http://proxy.example.com:8080\nss://synthetic-invalid-secret"))))
-                .andExpect(status().isBadRequest()).andReturn().getResponse().getContentAsString();
+                .andExpect(status().isGone()).andExpect(jsonPath("$.code").value("PROXY_IMPORT_RETIRED"))
+                .andReturn().getResponse().getContentAsString();
         assertThat(response).doesNotContain("synthetic-invalid-secret");
         assertThat(nodeCount()).isEqualTo(before);
         mvc.perform(post("/api/v1/admin/proxy-nodes/import").secure(true).header("Authorization", adminToken)
                         .contentType(MediaType.APPLICATION_JSON).content("{\"content\":\"https://proxy.example.com:443#Imported\"}"))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.importedCount").value(1));
+                .andExpect(status().isGone());
+        verifyNoInteractions(gateway, probe);
+    }
+
+    @Test
+    void testPersistsActualExitAndConfigurationChangesInvalidateIt() throws Exception {
+        JsonNode created = json.readTree(mvc.perform(post("/api/v1/admin/proxy-nodes").secure(true)
+                        .header("Authorization", adminToken).contentType(MediaType.APPLICATION_JSON)
+                        .content(request("Exit test", "socks5://proxy.example.com:1080", true)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.testStatus").value("UNTESTED"))
+                .andReturn().getResponse().getContentAsString());
+        UUID id = UUID.fromString(created.get("id").asString());
+        when(probe.test(id)).thenReturn(new ProxyNodeProbe.Result("8.8.8.8", "United States", null, null));
+        mvc.perform(post("/api/v1/admin/proxy-nodes/" + id + "/test").secure(true).header("Authorization", adminToken))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.connected").value(true))
+                .andExpect(jsonPath("$.egressIp").value("8.8.8.8")).andExpect(jsonPath("$.testedAt").exists());
+        assertThat(jdbc.queryForObject("select egress_ip from managed_proxy_nodes where id = ?", String.class, id)).isEqualTo("8.8.8.8");
+        long version = jdbc.queryForObject("select version from managed_proxy_nodes where id = ?", Long.class, id);
+        mvc.perform(put("/api/v1/admin/proxy-nodes/" + id).secure(true).header("Authorization", adminToken)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"label\":\"Changed\",\"protocol\":\"SOCKS5\",\"host\":\"other.example.com\",\"port\":1080,\"enabled\":true,\"version\":" + version + "}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.testStatus").value("UNTESTED"))
+                .andExpect(jsonPath("$.egressIp").isEmpty()).andExpect(jsonPath("$.testedAt").isEmpty());
+    }
+
+    @Test
+    void failedTestPersistsFailureAndDoesNotRetainAStaleEgress() throws Exception {
+        JsonNode node = json.readTree(mvc.perform(post("/api/v1/admin/proxy-nodes").secure(true).header("Authorization", adminToken)
+                        .contentType(MediaType.APPLICATION_JSON).content(request("Failure", "http://proxy.example.com:8080", true)))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+        UUID id = UUID.fromString(node.get("id").asString());
+        when(probe.test(id)).thenThrow(new DomainException("PROXY_CONNECT_TIMEOUT", "代理测试超时。", HttpStatus.GATEWAY_TIMEOUT));
+        mvc.perform(post("/api/v1/admin/proxy-nodes/" + id + "/test").secure(true).header("Authorization", adminToken))
+                .andExpect(status().isGatewayTimeout()).andExpect(jsonPath("$.code").value("PROXY_CONNECT_TIMEOUT"));
+        assertThat(jdbc.queryForObject("select test_status from managed_proxy_nodes where id = ?", String.class, id)).isEqualTo("FAILED");
+        mvc.perform(post("/api/v1/admin/proxy-nodes/" + id + "/test").secure(true).header("Authorization", adminToken))
+                .andExpect(status().isTooManyRequests());
     }
 
     private String request(String label, String uri, boolean enabled) {
-        return json.writeValueAsString(java.util.Map.of("label", label, "uri", uri, "enabled", enabled));
+        URI parsed = URI.create(uri);
+        var fields = new java.util.LinkedHashMap<String, Object>();
+        fields.put("label", label); fields.put("protocol", parsed.getScheme().toUpperCase(java.util.Locale.ROOT));
+        fields.put("host", parsed.getHost()); fields.put("port", parsed.getPort()); fields.put("enabled", enabled);
+        if (parsed.getUserInfo() != null) {
+            String[] credentials = parsed.getUserInfo().split(":", 2);
+            fields.put("username", credentials[0]); fields.put("password", credentials[1]);
+        }
+        return json.writeValueAsString(fields);
     }
 
     private long nodeCount() {

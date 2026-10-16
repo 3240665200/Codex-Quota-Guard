@@ -56,6 +56,7 @@ import tools.jackson.databind.ObjectMapper;
 @DirtiesContext(classMode=DirtiesContext.ClassMode.AFTER_CLASS)
 @ExtendWith(OutputCaptureExtension.class)
 class OfficialSessionLogoutLivenessTest {
+    private UUID proxyNodeId;
     @LocalServerPort int port;
     @Autowired ConfigurableApplicationContext context;
     @Autowired DataSource dataSource;
@@ -75,6 +76,7 @@ class OfficialSessionLogoutLivenessTest {
     private String officialAccountKey;
 
     @BeforeEach void setup() throws Exception {
+        proxyNodeId = SyntheticProxyNodeFixture.insert(jdbc);
         try(var connection=dataSource.getConnection()) {
             assertThat(connection.getMetaData().getURL()).startsWith("jdbc:h2:mem:official-logout-liveness");
         }
@@ -83,15 +85,15 @@ class OfficialSessionLogoutLivenessTest {
         officialAccountKey="synthetic-account-"+UUID.randomUUID();
         managementAuthorization="Bearer "+jwt.create(admin.getId(),admin.getRole().name(),admin.getSessionVersion());
         connections.save(account.getId(),new OfficialConnectionRequest("Bearer synthetic-provider-token",
-                "__Secure-next-auth.session-token=synthetic-provider-cookie",officialAccountKey,null,0L));
-        when(official.fetch(any(OfficialSessionCredentials.class),isNull())).thenAnswer(call -> snapshot());
+                "__Secure-next-auth.session-token=synthetic-provider-cookie",officialAccountKey,proxyNodeId,0L));
+        when(official.fetch(any(OfficialSessionCredentials.class),eq(proxyNodeId))).thenAnswer(call -> snapshot());
         assertAdministrationStillAvailable();
     }
 
     @AfterEach void waitForOwnWorkers() {awaitWorkersIdle();}
 
     @Test void fiveAcceptedUnboundRevocationsLeaveTheSameManagementSessionAndHttpServerAlive(CapturedOutput output) throws Exception {
-        when(official.revokeSession(any(),isNull(),anyString())).thenReturn(new OfficialSessionWriteResult("ACCEPTED",null));
+        when(official.revokeSession(any(),eq(proxyNodeId),anyString())).thenReturn(new OfficialSessionWriteResult("ACCEPTED",null));
         UUID plan=preview();
         JsonNode result=confirmAndAwait(plan,"ACCEPTED");
         assertThat(result.path("results").size()).isEqualTo(5);
@@ -99,7 +101,7 @@ class OfficialSessionLogoutLivenessTest {
         assertThat(result.path("requiresReauthorization").asBoolean()).isFalse();
         assertThat(jdbc.queryForObject("select status from official_account_connections where official_account_id=?",String.class,account.getId())).isEqualTo("UNVERIFIED");
         assertThat(users.findById(admin.getId()).orElseThrow().getSessionVersion()).isEqualTo(admin.getSessionVersion());
-        verify(official,times(5)).revokeSession(any(),isNull(),anyString());
+        verify(official,times(5)).revokeSession(any(),eq(proxyNodeId),anyString());
         verify(official,never()).logoutAll(any(),any());
         assertAdministrationStillAvailable();
         assertThat(request("POST",url("confirm"),Map.of("planId",plan,"acknowledgeLogoutRisk",true)).statusCode()).isEqualTo(409);
@@ -112,13 +114,13 @@ class OfficialSessionLogoutLivenessTest {
     @ParameterizedTest
     @ValueSource(strings={"OFFICIAL_AUTH_REQUIRED","OFFICIAL_ACCESS_BLOCKED"})
     void official401And403RejectionsDoNotInvalidateManagementOrStopTheServer(String code) throws Exception {
-        when(official.revokeSession(any(),isNull(),anyString())).thenReturn(new OfficialSessionWriteResult("REJECTED",code));
+        when(official.revokeSession(any(),eq(proxyNodeId),anyString())).thenReturn(new OfficialSessionWriteResult("REJECTED",code));
         UUID plan=preview();
         JsonNode result=confirmAndAwait(plan,"FAILED");
         assertThat(result.path("results").get(0).path("errorCode").asString()).isEqualTo(code);
         assertThat(result.path("results").get(0).path("status").asString()).isEqualTo("FAILED");
         assertThat(result.path("requiresReauthorization").asBoolean()).isFalse();
-        verify(official,times(1)).revokeSession(any(),isNull(),anyString());
+        verify(official,times(1)).revokeSession(any(),eq(proxyNodeId),anyString());
         assertThat(request("POST",url("confirm"),Map.of("planId",plan,"acknowledgeLogoutRisk",true)).statusCode()).isEqualTo(409);
         assertAdministrationStillAvailable();
     }
@@ -127,7 +129,7 @@ class OfficialSessionLogoutLivenessTest {
     @ValueSource(strings={"OFFICIAL_AUTH_REQUIRED","OFFICIAL_ACCESS_BLOCKED"})
     void officialAuthenticationReadFailuresLeaveTheHttpServiceAvailable(String code,CapturedOutput output) throws Exception {
         UUID plan=preview();
-        when(official.fetch(any(),isNull())).thenThrow(new DomainException(code,"private-upstream-provider-body",HttpStatus.BAD_GATEWAY));
+        when(official.fetch(any(),eq(proxyNodeId))).thenThrow(new DomainException(code,"private-upstream-provider-body",HttpStatus.BAD_GATEWAY));
         JsonNode result=confirmAndAwait(plan,"FAILED");
         assertThat(result.path("results").get(0).path("status").asString()).isEqualTo("NOT_ATTEMPTED");
         verify(official,never()).revokeSession(any(),any(),any());
@@ -139,12 +141,12 @@ class OfficialSessionLogoutLivenessTest {
     @Test void executingAndUnknownRemainFencedWhileManagementRequestsContinueToSucceed() throws Exception {
         UUID plan=preview();
         CountDownLatch entered=new CountDownLatch(1),release=new CountDownLatch(1);
-        when(official.fetch(any(),isNull())).thenAnswer(call -> {
+        when(official.fetch(any(),eq(proxyNodeId))).thenAnswer(call -> {
             entered.countDown();
             if(!release.await(5,TimeUnit.SECONDS))throw new IllegalStateException("synthetic-provider-timeout");
             return snapshot();
         });
-        when(official.revokeSession(any(),isNull(),anyString())).thenReturn(new OfficialSessionWriteResult("UNKNOWN","OFFICIAL_LOGOUT_OUTCOME_UNKNOWN"));
+        when(official.revokeSession(any(),eq(proxyNodeId),anyString())).thenReturn(new OfficialSessionWriteResult("UNKNOWN","OFFICIAL_LOGOUT_OUTCOME_UNKNOWN"));
         try {
             assertThat(request("POST",url("confirm"),Map.of("planId",plan,"acknowledgeLogoutRisk",true)).statusCode()).isEqualTo(200);
             assertThat(entered.await(3,TimeUnit.SECONDS)).isTrue();
@@ -155,7 +157,7 @@ class OfficialSessionLogoutLivenessTest {
         awaitResult(plan,"UNKNOWN");
         assertFenced();
         assertAdministrationStillAvailable();
-        verify(official,times(1)).revokeSession(any(),isNull(),anyString());
+        verify(official,times(1)).revokeSession(any(),eq(proxyNodeId),anyString());
     }
 
     @Test void unexpectedWorkerFailureRetainsTheFenceWithoutClosingTheHttpServer(CapturedOutput output) throws Exception {

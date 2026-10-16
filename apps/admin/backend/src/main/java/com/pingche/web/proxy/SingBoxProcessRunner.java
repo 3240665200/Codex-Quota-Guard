@@ -166,7 +166,11 @@ public class SingBoxProcessRunner implements DisposableBean {
                 @Override public List<Proxy> select(URI uri) {
                     if (closed.get() || !process.isAlive()) throw new IllegalStateException("Proxy lease is unavailable");
                     if (uri == null || !"https".equalsIgnoreCase(uri.getScheme())
-                            || !(purpose == ManagedProxyGateway.Purpose.BROWSER_LOGIN ? OfficialDomainPolicy.allowed(uri.toString()) : "chatgpt.com".equalsIgnoreCase(uri.getHost()))
+                            || !(switch (purpose) {
+                                case BROWSER_LOGIN -> OfficialDomainPolicy.allowed(uri.toString());
+                                case NODE_TEST -> ProxyNodeProbe.TARGET.equals(uri);
+                                case OFFICIAL_SESSION -> "chatgpt.com".equalsIgnoreCase(uri.getHost());
+                            })
                             || (uri.getPort() != -1 && uri.getPort() != 443) || uri.getUserInfo() != null)
                         throw new IllegalArgumentException("Proxy target is not permitted");
                     return List.of(local);

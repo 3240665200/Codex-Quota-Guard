@@ -458,7 +458,7 @@ public class OfficialSessionLogoutService {
             jdbc.update("update session_bindings set status='INVALIDATED',active_device_id=null,active_session_id=null,ended_at=? where official_account_id=? and status='ACTIVE'", at(clock.instant()), account);
         }
     }
-    private String safeCode(String value) { return value != null && value.matches("OFFICIAL_[A-Z0-9_]{1,55}") ? value : "OFFICIAL_LOGOUT_REJECTED"; }
+    private String safeCode(String value) { return value != null && value.matches("(?:OFFICIAL|PROXY)_[A-Z0-9_]{1,55}") ? value : "OFFICIAL_LOGOUT_REJECTED"; }
     private static OffsetDateTime at(Instant value) { return value.atOffset(ZoneOffset.UTC); }
     private DomainException error(String code) { return new DomainException(code, "Official session logout could not be safely completed", HttpStatus.CONFLICT); }
     private DomainException selectionInvalid() { return new DomainException("OFFICIAL_LOGOUT_SELECTION_INVALID", "Select between one and one hundred distinct sessions from this account", HttpStatus.BAD_REQUEST); }
