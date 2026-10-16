@@ -132,23 +132,22 @@ mod native_security {
     use std::{
         ffi::OsString,
         fs::{File, OpenOptions},
-        io::Write,
         mem::size_of,
-        os::windows::{ffi::OsStringExt, fs::{MetadataExt, OpenOptionsExt}, io::AsRawHandle},
+        os::windows::{ffi::{OsStrExt, OsStringExt}, fs::{MetadataExt, OpenOptionsExt}, io::{AsRawHandle, FromRawHandle}},
         path::{Component, PathBuf},
         ptr,
     };
     use windows_sys::Win32::{
-        Foundation::{CloseHandle, LocalFree},
+        Foundation::{CloseHandle, LocalFree, INVALID_HANDLE_VALUE},
         Security::{
-            Authorization::{ConvertSidToStringSidW, GetSecurityInfo, SE_FILE_OBJECT},
+            Authorization::{ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SE_FILE_OBJECT},
             GetAce, GetSecurityDescriptorControl, GetTokenInformation, IsValidSid,
             ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, DACL_SECURITY_INFORMATION,
             INHERIT_ONLY_ACE, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
-            SE_DACL_PROTECTED, TOKEN_QUERY, TOKEN_USER, TokenUser,
+            SE_DACL_PROTECTED, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
         },
         Storage::FileSystem::{
-            GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+            CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, CREATE_NEW,
             FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
         },
         System::{Com::CoTaskMemFree, Threading::{GetCurrentProcess, OpenProcessToken}},
@@ -317,6 +316,37 @@ mod native_security {
         result
     }
 
+    fn create_private_output(path: &Path) -> std::io::Result<File> {
+        let sddl: Vec<_> = "O:BAG:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)".encode_utf16().chain(Some(0)).collect();
+        let mut descriptor = ptr::null_mut();
+        // SAFETY: sddl is NUL terminated and descriptor is a valid output.
+        if unsafe { ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.as_ptr(), 1, &mut descriptor, ptr::null_mut()) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor,
+            bInheritHandle: 0,
+        };
+        let wide: Vec<_> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        // SAFETY: Path and descriptor remain alive for CreateFileW. Owner and
+        // DACL are assigned atomically, never inherited from the user's token.
+        let handle = unsafe { CreateFileW(wide.as_ptr(), 0x40000000 | 0x20000, 0,
+            &attributes, CREATE_NEW, FILE_FLAG_OPEN_REPARSE_POINT, ptr::null_mut()) };
+        let error = std::io::Error::last_os_error();
+        // SAFETY: The descriptor was allocated by the SDDL conversion above.
+        unsafe { LocalFree(descriptor) };
+        if handle == INVALID_HANDLE_VALUE { return Err(error); }
+        // SAFETY: We uniquely own the newly created handle.
+        let output = unsafe { File::from_raw_handle(handle) };
+        if security(&output).and_then(|summary| validate_private(&summary, true)).is_err() {
+            drop(output);
+            let _ = fs::remove_file(path);
+            return Err(std::io::ErrorKind::PermissionDenied.into());
+        }
+        Ok(output)
+    }
+
     pub(crate) struct ProtectedEvidenceChannel {
         directory: PathBuf,
         _pinned_directories: Vec<File>,
@@ -394,7 +424,7 @@ mod native_security {
             }
             let temporary = self.directory.join(format!(".ccswitch-conflict-{}.tmp", uuid::Uuid::new_v4()));
             let result = (|| -> std::io::Result<()> {
-                let mut output = OpenOptions::new().create_new(true).write(true).open(&temporary)?;
+                let mut output = create_private_output(&temporary)?;
                 serde_json::to_writer(&mut output, evidence)?;
                 output.sync_all()?;
                 drop(output);
