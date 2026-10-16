@@ -17,6 +17,12 @@ Meter 是 Windows SCM 管理的独立进程。首次登录仅用于登记设备�
 
 journal 上限为 64 MiB。损坏、写入失败、身份不匹配或达到上限会明确报错并保留已有文件，不自动删除记录。隔离记录需要人工核对；当前没有自动历史补录或跨用户迁移功能。
 
+## CC Switch 共存
+
+默认允许 CC Switch 与客户端同时运行，普通启动或退出不恢复 Codex 配置。仅在本地官方 `account/read` 成功返回非 ChatGPT 账户、当前凭据只有 `PROXY_MANAGED` 标记且没有 ChatGPT tokens，并且选中的 Codex provider 精确指向 CC Switch SQLite 记录中的活动 HTTP 接管地址时，桌面原生端才生成短时冲突证据。网络、RPC、服务、登录和限流错误不会授权停止进程。
+
+证据绑定当前桌面 lease、PID、创建时间及配置、凭据和 SQLite/WAL 指纹，有效期 15 秒且只能消费一次。Meter 在停止前再次核对证据、文件指纹，以及同一 Windows 用户和会话中的进程 PID、创建时间、文件名和产品身份；无法证明时保留共存。只有确认冲突进程已退出后，桌面端才尝试恢复可识别的连接配置并显示提醒。自定义目录、profile、含糊的地址或正在变化的配置均不会触发自动停止。
+
 ## 可观测范围与验证
 
 当前采集官方本地 `sessions/**/*.jsonl` 中完整的 `token_usage_record`，保留可用的 input、cached input、cache write、output、reasoning output、model 和 reasoning effort 分项。无法观测官方没有写入这些记录的请求；不能承诺追踪所有实际网络请求。初次配对前的历史活动不自动计费。
