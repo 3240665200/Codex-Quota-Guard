@@ -120,6 +120,294 @@ fn fingerprint(path: &Path, limit: u64) -> Result<Option<String>, ()> {
     Ok(read_regular(path, limit)?.map(|bytes| format!("{:x}", Sha256::digest(bytes))))
 }
 
+#[cfg(windows)]
+pub(crate) use native_security::ProtectedEvidenceChannel;
+
+/// This is a privilege boundary, not a secret. Only elevated administrators and
+/// SYSTEM may publish evidence. Keep all directory handles pinned through each
+/// read/write, so an unprivileged junction/rename cannot redirect a checked path.
+#[cfg(windows)]
+mod native_security {
+    use super::*;
+    use std::{
+        ffi::OsString,
+        fs::{File, OpenOptions},
+        io::Write,
+        mem::size_of,
+        os::windows::{ffi::OsStringExt, fs::{MetadataExt, OpenOptionsExt}, io::AsRawHandle},
+        path::{Component, PathBuf},
+        ptr,
+    };
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, LocalFree},
+        Security::{
+            Authorization::{ConvertSidToStringSidW, GetSecurityInfo, SE_FILE_OBJECT},
+            GetAce, GetSecurityDescriptorControl, GetTokenInformation, IsValidSid,
+            ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, DACL_SECURITY_INFORMATION,
+            INHERIT_ONLY_ACE, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+            SE_DACL_PROTECTED, TOKEN_QUERY, TOKEN_USER, TokenUser,
+        },
+        Storage::FileSystem::{
+            GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+        },
+        System::{Com::CoTaskMemFree, Threading::{GetCurrentProcess, OpenProcessToken}},
+        UI::Shell::{SHGetKnownFolderPath, FOLDERID_ProgramData},
+    };
+
+    const SYSTEM: &str = "S-1-5-18";
+    const ADMINS: &str = "S-1-5-32-544";
+    const TRUSTED_INSTALLER: &str = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
+    const ROOT_NAME: &str = "CodexQuotaGuardConflictEvidence";
+    // Ancestors may allow adding children (the Windows ProgramData default),
+    // but cannot allow deleting/replacing existing children or changing ACLs.
+    const REPLACE_RIGHTS: u32 = 0x40 | 0x10000 | 0x40000 | 0x80000 | 0x10000000;
+
+    #[derive(Clone)]
+    pub(super) struct AccessGrant {
+        pub(super) sid: String,
+        pub(super) mask: u32,
+        pub(super) inherit_only: bool,
+    }
+
+    #[derive(Clone)]
+    pub(super) struct SecuritySummary {
+        pub(super) owner: String,
+        pub(super) protected: bool,
+        pub(super) grants: Vec<AccessGrant>,
+    }
+
+    fn privileged(sid: &str) -> bool {
+        matches!(sid, SYSTEM | ADMINS)
+    }
+
+    fn validate_private(summary: &SecuritySummary, directory: bool) -> Result<(), ()> {
+        if !privileged(&summary.owner)
+            || (directory && !summary.protected)
+            || summary.grants.is_empty()
+            || summary.grants.iter().any(|grant| !privileged(&grant.sid))
+        {
+            return Err(());
+        }
+        Ok(())
+    }
+
+    pub(super) fn validate_security(summary: &SecuritySummary, private: bool) -> Result<(), ()> {
+        if private {
+            return validate_private(summary, true);
+        }
+        if !privileged(&summary.owner) && summary.owner != TRUSTED_INSTALLER {
+            return Err(());
+        }
+        if summary.grants.iter().any(|grant| {
+            !grant.inherit_only && !privileged(&grant.sid) && grant.sid != TRUSTED_INSTALLER
+                && grant.mask & REPLACE_RIGHTS != 0
+        }) {
+            return Err(());
+        }
+        Ok(())
+    }
+
+    pub(super) fn channel_directory(common: &Path, sid: &str) -> Result<PathBuf, ()> {
+        // Account SIDs only, with no filesystem metacharacters or aliases.
+        if !common.is_absolute() || sid.len() > 184 || !sid.starts_with("S-1-5-21-")
+            || sid.split('-').skip(4).any(|part| part.is_empty() || !part.bytes().all(|c| c.is_ascii_digit()))
+        {
+            return Err(());
+        }
+        Ok(common.join(ROOT_NAME).join(sid))
+    }
+
+    fn common_data() -> Result<PathBuf, ()> {
+        let mut allocated = ptr::null_mut();
+        // SAFETY: Known Folder is a machine path from Windows, not environment
+        // variables a lower-privilege launcher could substitute.
+        if unsafe { SHGetKnownFolderPath(&FOLDERID_ProgramData, 0, ptr::null_mut(), &mut allocated) } < 0 {
+            return Err(());
+        }
+        let mut length = 0;
+        // SAFETY: Windows returned a NUL-terminated CoTaskMem allocation.
+        while length < 32768 && unsafe { *allocated.add(length) } != 0 { length += 1; }
+        let result = if length == 32768 { Err(()) } else {
+            // SAFETY: Bounded by the terminator in the allocation above.
+            Ok(PathBuf::from(OsString::from_wide(unsafe { std::slice::from_raw_parts(allocated, length) })))
+        };
+        // SAFETY: SHGetKnownFolderPath allocated this buffer.
+        unsafe { CoTaskMemFree(allocated.cast()) };
+        result
+    }
+
+    fn sid_text(sid: PSID) -> Result<String, ()> {
+        // SAFETY: Callers pass a SID within a Windows-owned security buffer.
+        if sid.is_null() || unsafe { IsValidSid(sid) } == 0 { return Err(()); }
+        let mut text = ptr::null_mut();
+        // SAFETY: Valid SID; Windows allocates the output string.
+        if unsafe { ConvertSidToStringSidW(sid, &mut text) } == 0 { return Err(()); }
+        let mut length = 0;
+        // SAFETY: The output is a NUL-terminated LocalAlloc string.
+        while length < 256 && unsafe { *text.add(length) } != 0 { length += 1; }
+        let result = if length == 256 { Err(()) } else {
+            // SAFETY: length was bounded by the terminator above.
+            Ok(String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(text, length) }))
+        };
+        // SAFETY: ConvertSidToStringSidW allocated this buffer.
+        unsafe { LocalFree(text.cast()) };
+        result
+    }
+
+    fn current_sid() -> Result<String, ()> {
+        let mut token = ptr::null_mut();
+        // SAFETY: The current-process pseudo handle is valid; token is output.
+        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 { return Err(()); }
+        let result = (|| {
+            let mut length = 0;
+            // SAFETY: First call requests the token buffer length.
+            unsafe { GetTokenInformation(token, TokenUser, ptr::null_mut(), 0, &mut length) };
+            if length < size_of::<TOKEN_USER>() as u32 || length > 4096 { return Err(()); }
+            let mut buffer = vec![0usize; (length as usize).div_ceil(size_of::<usize>())];
+            // SAFETY: Buffer is aligned and contains at least length bytes.
+            if unsafe { GetTokenInformation(token, TokenUser, buffer.as_mut_ptr().cast(), length, &mut length) } == 0 { return Err(()); }
+            // SAFETY: A successful query initializes TOKEN_USER in buffer.
+            sid_text(unsafe { (*(buffer.as_ptr().cast::<TOKEN_USER>())).User.Sid })
+        })();
+        // SAFETY: token was successfully opened above.
+        unsafe { CloseHandle(token) };
+        result
+    }
+
+    fn security(file: &File) -> Result<SecuritySummary, ()> {
+        let mut owner: PSID = ptr::null_mut();
+        let mut dacl: *mut ACL = ptr::null_mut();
+        let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
+        // SAFETY: File handle is held, all output pointers are valid. Windows
+        // allocates the descriptor containing the owner and ACL pointers.
+        if unsafe { GetSecurityInfo(file.as_raw_handle(), SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, &mut owner,
+            ptr::null_mut(), &mut dacl, ptr::null_mut(), &mut descriptor) } != 0 {
+            return Err(());
+        }
+        let result = (|| {
+            if descriptor.is_null() || dacl.is_null() { return Err(()); }
+            let owner = sid_text(owner)?;
+            let mut control = 0;
+            let mut revision = 0;
+            // SAFETY: descriptor came from a successful Windows query.
+            if unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0 { return Err(()); }
+            let mut grants = Vec::new();
+            // SAFETY: dacl points within the descriptor allocation.
+            for index in 0..u32::from(unsafe { (*dacl).AceCount }) {
+                let mut ace = ptr::null_mut();
+                // SAFETY: index is bounded by AceCount, and ace is an output.
+                if unsafe { GetAce(dacl, index, &mut ace) } == 0 || ace.is_null() { return Err(()); }
+                // SAFETY: GetAce returns an aligned ACE_HEADER.
+                let header = unsafe { &*ace.cast::<ACE_HEADER>() };
+                if header.AceType == 1 { continue; } // Deny ACEs only remove access.
+                if header.AceType != 0 || usize::from(header.AceSize) < size_of::<ACCESS_ALLOWED_ACE>() { return Err(()); }
+                // SAFETY: Type and size match ACCESS_ALLOWED_ACE; SidStart is
+                // the first DWORD of the trailing SID in this ACE.
+                let allowed = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
+                let sid = sid_text((&allowed.SidStart as *const u32).cast_mut().cast())?;
+                grants.push(AccessGrant { sid, mask: allowed.Mask,
+                    inherit_only: u32::from(header.AceFlags) & INHERIT_ONLY_ACE != 0 });
+            }
+            Ok(SecuritySummary { owner, protected: control & SE_DACL_PROTECTED != 0, grants })
+        })();
+        // SAFETY: GetSecurityInfo allocated the descriptor using LocalAlloc.
+        unsafe { LocalFree(descriptor) };
+        result
+    }
+
+    pub(crate) struct ProtectedEvidenceChannel {
+        directory: PathBuf,
+        _pinned_directories: Vec<File>,
+    }
+
+    impl ProtectedEvidenceChannel {
+        pub(crate) fn for_owner_sid(sid: &str) -> Result<Self, ()> {
+            let common = common_data()?;
+            let directory = channel_directory(&common, sid)?;
+            Self::open_directory(&directory, &common.join(ROOT_NAME))
+        }
+
+        pub(crate) fn for_current_user() -> Result<Self, ()> {
+            Self::for_owner_sid(&current_sid()?)
+        }
+
+        pub(super) fn open_directory(directory: &Path, private_root: &Path) -> Result<Self, ()> {
+            if !directory.is_absolute() || !directory.starts_with(private_root)
+                || directory.components().any(|part| matches!(part, Component::ParentDir | Component::CurDir))
+            { return Err(()); }
+            let mut ancestors: Vec<_> = directory.ancestors().collect();
+            ancestors.reverse();
+            let mut pinned = Vec::new();
+            for path in ancestors {
+                let handle = OpenOptions::new()
+                    .access_mode(0x20000 | 0x80) // READ_CONTROL | FILE_READ_ATTRIBUTES
+                    .share_mode(FILE_SHARE_READ)
+                    .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+                    .open(path).map_err(|_| ())?;
+                let metadata = handle.metadata().map_err(|_| ())?;
+                if !metadata.is_dir() || metadata.file_attributes() & 0x400 != 0 { return Err(()); }
+                validate_security(&security(&handle)?, path.starts_with(private_root))?;
+                pinned.push(handle);
+            }
+            Ok(Self { directory: directory.into(), _pinned_directories: pinned })
+        }
+
+        pub(crate) fn read(&self) -> Result<Option<Vec<u8>>, ()> {
+            let input = match OpenOptions::new().read(true).share_mode(FILE_SHARE_READ)
+                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(self.directory.join(FILE_NAME)) {
+                Ok(input) => input,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(_) => return Err(()),
+            };
+            let metadata = input.metadata().map_err(|_| ())?;
+            if !metadata.is_file() || metadata.file_attributes() & 0x400 != 0 || metadata.len() > 4096 { return Err(()); }
+            validate_private(&security(&input)?, false)?;
+            let mut info = BY_HANDLE_FILE_INFORMATION::default();
+            // SAFETY: input is held and info points to the required output struct.
+            if unsafe { GetFileInformationByHandle(input.as_raw_handle(), &mut info) } == 0 || info.nNumberOfLinks != 1 { return Err(()); }
+            let mut bytes = Vec::new();
+            input.take(4097).read_to_end(&mut bytes).map_err(|_| ())?;
+            if bytes.is_empty() || bytes.len() > 4096 { return Err(()); }
+            Ok(Some(bytes))
+        }
+
+        pub(crate) fn take(&self) -> Result<Option<Vec<u8>>, ()> {
+            let Some(bytes) = self.read()? else { return Ok(None); };
+            fs::remove_file(self.directory.join(FILE_NAME)).map_err(|_| ())?;
+            Ok(Some(bytes))
+        }
+
+        pub(crate) fn publish(&self, evidence: &ConflictEvidence) -> bool {
+            let target = self.directory.join(FILE_NAME);
+            match self.read() {
+                Ok(Some(bytes)) => {
+                    if serde_json::from_slice::<ConflictEvidence>(&bytes).ok().is_some_and(|pending| {
+                        pending.fresh_for(&evidence.lease_id, evidence.desktop_pid,
+                            evidence.desktop_created_at, evidence.observed_at)
+                    }) { return true; }
+                    if fs::remove_file(&target).is_err() { return false; }
+                },
+                Ok(None) => {},
+                Err(()) => return false,
+            }
+            let temporary = self.directory.join(format!(".ccswitch-conflict-{}.tmp", uuid::Uuid::new_v4()));
+            let result = (|| -> std::io::Result<()> {
+                let mut output = OpenOptions::new().create_new(true).write(true).open(&temporary)?;
+                serde_json::to_writer(&mut output, evidence)?;
+                output.sync_all()?;
+                drop(output);
+                // Atomic create-if-absent; the reader also rejects multiple
+                // hard links until the temporary link has been removed.
+                fs::hard_link(&temporary, &target)
+            })();
+            let removed = fs::remove_file(&temporary).is_ok();
+            result.is_ok() && removed
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

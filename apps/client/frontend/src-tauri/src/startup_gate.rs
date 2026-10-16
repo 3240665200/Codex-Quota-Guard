@@ -328,44 +328,13 @@ impl StartupGate {
             observed_at: unix_seconds(),
             snapshot: after,
         };
-        let Some(parent) = lease.path.parent() else {
-            return false;
-        };
-        let target = parent.join(conflict_evidence::FILE_NAME);
-        if let Ok(Some(bytes)) = conflict_evidence::read_regular(&target, 4096) {
-            if serde_json::from_slice::<ConflictEvidence>(&bytes)
-                .ok()
-                .is_some_and(|pending| {
-                    pending.fresh_for(
-                        &evidence.lease_id,
-                        evidence.desktop_pid,
-                        evidence.desktop_created_at,
-                        unix_seconds(),
-                    )
-                })
-            {
-                return true;
-            }
-            if fs::remove_file(&target).is_err() {
-                return false;
-            }
-        } else if target.exists() {
-            return false;
+        #[cfg(windows)]
+        {
+            conflict_evidence::ProtectedEvidenceChannel::for_current_user()
+                .is_ok_and(|channel| channel.publish(&evidence))
         }
-        let temporary = parent.join(format!(".ccswitch-conflict-{}.tmp", Uuid::new_v4()));
-        let result = (|| -> std::io::Result<()> {
-            let mut output = OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&temporary)?;
-            serde_json::to_writer(&mut output, &evidence)?;
-            output.sync_all()?;
-            drop(output);
-            // Atomic create-if-absent; never replace another live request.
-            fs::hard_link(&temporary, &target)
-        })();
-        let _ = fs::remove_file(&temporary);
-        result.is_ok()
+        #[cfg(not(windows))]
+        { let _ = evidence; false }
     }
 
     fn inspect_guard(&self, app: &AppHandle, lease_id: &str, retry_failed: bool) -> GateResult {

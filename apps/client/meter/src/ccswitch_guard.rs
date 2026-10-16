@@ -267,6 +267,7 @@ pub(super) fn check(config: &MeterConfig) -> GuardCheck {
         &WindowsOps {
             status_file: config.status_file.clone(),
             codex_home: config.codex_home.clone(),
+            owner_sid: owner_sid.to_owned(),
         },
     )
 }
@@ -274,6 +275,7 @@ pub(super) fn check(config: &MeterConfig) -> GuardCheck {
 struct WindowsOps {
     status_file: PathBuf,
     codex_home: PathBuf,
+    owner_sid: String,
 }
 
 #[derive(Default)]
@@ -292,14 +294,13 @@ impl ConsumedRequests {
     }
 }
 
-fn claim_conflict(status_file: &Path) -> Option<ConflictEvidence> {
+fn claim_conflict(owner_sid: &str) -> Option<ConflictEvidence> {
     static CONSUMED: std::sync::Mutex<ConsumedRequests> =
         std::sync::Mutex::new(ConsumedRequests(std::collections::VecDeque::new()));
-    let path = status_file.parent()?.join(conflict_evidence::FILE_NAME);
-    let bytes = conflict_evidence::read_regular(&path, 4096).ok()??;
+    let channel = conflict_evidence::ProtectedEvidenceChannel::for_owner_sid(owner_sid).ok()?;
+    let bytes = channel.take().ok()??;
     // Consume before process inspection. Failure, stale identity or changed
     // files all require a new official RPC observation rather than a retry.
-    fs::remove_file(&path).ok()?;
     let evidence: ConflictEvidence = serde_json::from_slice(&bytes).ok()?;
     CONSUMED
         .lock()
@@ -609,7 +610,7 @@ mod native {
         }
 
         fn take_conflict(&self, _lease: &GuardLease) -> Option<ConflictEvidence> {
-            claim_conflict(&self.status_file)
+            claim_conflict(&self.owner_sid)
         }
 
         fn conflict_current(&self, lease: &GuardLease, evidence: &ConflictEvidence) -> bool {
