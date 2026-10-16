@@ -2,7 +2,7 @@
 
 将整个目录上传到 x86_64 Linux 服务器。服务器需要 Docker Engine、Docker Compose v2.24.4+、Bash、OpenSSL、sha256sum；不需要 Java、Node.js、Maven，也不需要从镜像仓库拉取应用。
 
-后端和管理网页统一使用 `0.3.20`，后端保留 sing-box，不含 Chromium，也没有 `-browser` 变体。离线包与开发、测试采用相同授权功能，私有授权预置是单独的运行时文件，不进入 `images.tar`。
+后端和管理网页统一使用 `0.3.22`，后端保留 sing-box，不含 Chromium，也没有 `-browser` 变体。离线包与开发、测试采用相同授权功能，私有授权预置是单独的运行时文件，不进入 `images.tar`；公开包不包含浏览器扩展或真实授权。
 
 ## 首次部署
 
@@ -44,7 +44,7 @@ bash start.sh stop
 
 升级前先 `backup`，保留旧版本镜像、数据库备份和对应 `.env`。新版本解压到另一个目录，校验导入新镜像后，安全复制原 `.env` 与私有预置文件，使用同一固定 Compose 项目名和数据库卷启动。保留所有原有密钥及其值，不能重新生成 JWT、邮箱、官方会话或代理加密密钥，也不要更改 PostgreSQL 主版本后直接复用旧卷。
 
-从 `0.3.18/0.3.19` 升级没有新增数据库迁移，仍为 V30。移除启动命令中的 `-f compose.web-login.yaml` 和旧 `-browser` 镜像引用；HTTPS 部署继续使用原 `compose.https.yaml`、证书和 HTTPS `PUBLIC_ORIGIN`。HTTPS overlay 仅显式强制传输加密，授权预置和文件导入功能相同。直接使用 Compose 前先创建 `secrets` 目录，并将启动参数保留为 `--no-build --pull never`。
+从 `0.3.18/0.3.19/0.3.20` 升级到 `0.3.22` 会新增 V31 代理出口测试元数据，不改写已有代理凭据。官方账户必须先选择已启用代理节点；缺失、禁用或故障均拒绝官方请求，不回退直连。节点使用名称、HTTP／HTTPS／SOCKS5、主机、端口和可选认证字段添加，订阅导入已停用。移除启动命令中的 `-f compose.web-login.yaml` 和旧 `-browser` 镜像引用；HTTPS 部署继续使用原 `compose.https.yaml`、证书和 HTTPS `PUBLIC_ORIGIN`。HTTPS overlay 仅显式强制传输加密，授权预置和手工文件导入功能相同。直接使用 Compose 前先创建 `secrets` 目录，并将启动参数保留为 `--no-build --pull never`。详细升级步骤见[拉取部署说明](../registry/README.md#升级到-0322)。
 
 `backup` 备份数据库和 `.env`；私有预置文件、证书和 overlay 需另行加密备份。不要将私有预置与公开离线包混发。
 

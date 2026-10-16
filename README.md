@@ -27,9 +27,9 @@
 
 Codex Quota Guard 由桌面客户端、中央 Java 服务和 Web 管理后台组成。用户在**官方 Codex 应用或 CLI 自行登录**，桌面端不替换本机 `auth.json`。管理员可使用运行时私有授权预置或导入授权文件，验证官方账户后加密保存限定凭据。网页通过用户自己的浏览器打开官网，服务器镜像不安装浏览器。HTTP 与 HTTPS 都可用，推荐 HTTPS 保护密码与授权。Windows 统计程序从本机可读取的 Codex 会话日志采集 Token 事件，上报中央服务；管理员在后台配置团队与个人额度、查看用量和设备状态。
 
-桌面源码版本保持 **0.3.18**。桌面端修复重复 BOUND 通知导致的访问核验重置，并共享登录辅助 SSE 订阅以减少切页时的连接重建；前端 230 项模拟测试通过。首次真实访问请求失败的底层原因仍待复测，不能据此认定网络或服务问题全部修复。详见[0.3.18 桌面测试说明](./docs/releases/v0.3.18.md)。
+当前版本为 **0.3.22**，包含 Windows x64 桌面客户端、中央后端与管理网页；独立统计程序版本为 **0.2.4**。桌面端修复 HTTP／HTTPS 服务器地址访问，移除旧官方登录助手，并调整 CC Switch 冲突判定为默认共存。变更、验证范围与升级说明见[0.3.22 发布说明](./docs/releases/v0.3.22.md)。
 
-当前已发布服务器版本为 `0.3.20`，后端与网页使用相同版本，开发、测试和发布采用同一套授权功能：可使用私有预置免手填，也可导入授权文件；无内置 Chromium 或浏览器专用镜像。打开 `https://chatgpt.com/` 不会自动读取跨站 Cookie，也不是自动 OAuth 登录。HTTP 页面保留风险提示，HTTPS overlay 可显式强制加密传输。自动绑定、30 分钟登录期限、至少间隔 10 秒的会话监测和退出流程保持不变。**本次只更新服务器，不更新桌面或新增 Windows 安装包 Release**；后端和网页镜像均已公开发布，两个仓库的 `latest` 已同步。桌面端须支持设备标识（0.3.14+，建议 0.3.18）。
+后端与网页使用相同的 `0.3.22` 版本。每个官方账户必须绑定一个已启用代理节点；没有节点或节点故障时拒绝官方请求，不回退直连。代理页面通过名称、协议、主机、端口及可选用户名／密码添加 HTTP、HTTPS、SOCKS5 节点，测试可查看出口 IP、国家、地区和城市，订阅导入已停用。授权仍可使用运行时私有预置或手工导入文件；公开发布不包含浏览器扩展、个人授权文件或自动 Cookie 采集功能。打开 `https://chatgpt.com/` 不会自动读取跨站 Cookie，也不会自动完成 OAuth。HTTP 页面保留风险提示，HTTPS overlay 可显式强制加密传输。
 
 客户端保留「登录辅助」：管理员可为团队关联的官方账户配置自有邮箱和最多两个精确发件地址，用户点击监听后领取一封新到登录邮件中的验证码。邮箱授权只在中央服务加密保存，官方登录仍由用户完成；详见[邮箱配置与使用说明](./docs/architecture/login-assistance.md)。
 
@@ -71,16 +71,16 @@ Codex Quota Guard 由桌面客户端、中央 Java 服务和 Web 管理后台组
 - [后端 · minjm/codex-quota-guard-backend](https://hub.docker.com/r/minjm/codex-quota-guard-backend)
 - [管理网页 · minjm/codex-quota-guard-web](https://hub.docker.com/r/minjm/codex-quota-guard-web)
 
-部署配置固定后端和网页 `0.3.20`，支持 **Linux amd64 / x86_64**，数据库使用官方 `postgres:17-alpine`。后端保留 sing-box，不含 Chromium，不需要浏览器 seccomp 或额外容器权限；HTTPS overlay 可选，详见[部署说明](./deploy/docker/registry/README.md)。私有授权通过 `./secrets:/run/secrets` 只读挂载，真实凭据不进入源码、公开镜像或公开包。Windows 桌面客户端和 Rust 统计服务仍安装在用户电脑。本次镜像摘要与验证范围见[0.3.20 发布记录](./docs/releases/server-v0.3.20.md)；旧版本标签保持不变。
+部署配置固定后端和网页 `0.3.22`，支持 **Linux amd64 / x86_64**，数据库使用官方 `postgres:17-alpine`。后端保留 sing-box，不含 Chromium，也没有浏览器变体，不需要浏览器 seccomp 或额外容器权限；HTTPS overlay 可选，详见[部署说明](./deploy/docker/registry/README.md)。私有授权通过 `./secrets:/run/secrets` 只读挂载，真实凭据不进入源码、公开镜像或公开包。Windows 桌面客户端和 Rust 统计服务仍安装在用户电脑。版本范围见[0.3.22 发布说明](./docs/releases/v0.3.22.md)；旧版本标签保持不变。
 
-服务器准备好 **Docker Engine、Docker Compose v2.24.4+、Bash、curl 和 OpenSSL** 后，可使用已发布镜像或提供的离线包部署。以下配置固定在 `server-v0.3.20` 标签，替换服务器 IP 和管理员邮箱：
+服务器准备好 **Docker Engine、Docker Compose v2.24.4+、Bash、curl 和 OpenSSL** 后，可使用镜像或配套离线包部署。以下配置固定在 `v0.3.22` 标签，替换服务器 IP 和管理员邮箱：
 
 ```bash
 (
   set -e
   mkdir codex-quota-guard-server
   cd codex-quota-guard-server
-  qg_base="https://raw.githubusercontent.com/3240665200/Codex-Quota-Guard/server-v0.3.20/deploy/docker"
+  qg_base="https://raw.githubusercontent.com/3240665200/Codex-Quota-Guard/v0.3.22/deploy/docker"
   curl -fSL --fail-early --remote-name-all \
     "$qg_base/registry/compose.yaml" \
     "$qg_base/registry/start.sh" \
@@ -92,23 +92,23 @@ Codex Quota Guard 由桌面客户端、中央 Java 服务和 Web 管理后台组
 )
 ```
 
-以上下载地址固定到 `server-v0.3.20` 服务器源码标签，只下载 5 个小文件，不下载整个项目；已有同名目录时会停止，避免覆盖旧部署。初始化会提示设置管理员密码，保存独立密钥到 `.env` 并创建空 `secrets` 目录；预置文件不存在时服务仍可启动，管理员可导入授权文件。启动后，**管理网页和桌面客户端都使用 `http://服务器IP:8080`**。基础 Compose 的 `APP_REQUIRE_HTTPS=false` 允许 HTTP 和 HTTPS 官方管理操作；启用 HTTPS overlay 后则强制 HTTPS。按需放行网站入口端口，不要单独开放数据库或后端端口。
+以上下载地址固定到 `v0.3.22` 源码标签，只下载 5 个小文件，不下载整个项目；已有同名目录时会停止，避免覆盖旧部署。初始化会提示设置管理员密码，保存独立密钥到 `.env` 并创建空 `secrets` 目录；预置文件不存在时服务仍可启动，管理员可手工导入授权文件。启动后，**管理网页和桌面客户端都使用 `http://服务器IP:8080`**。基础 Compose 的 `APP_REQUIRE_HTTPS=false` 允许 HTTP 和 HTTPS 官方管理操作；启用 HTTPS overlay 后则强制 HTTPS。按需放行网站入口端口，不要单独开放数据库或后端端口。
 
 > [!WARNING]
 > HTTP 会明文传输密码、系统令牌和导入的官方授权，推荐使用 HTTPS。允许 HTTP 不改变上游官方 TLS 校验、鉴权或密钥加密。新部署不会带入原电脑的用户和流水，需要另行迁移数据库。升级前先备份，保留原 `.env` 和数据库卷，**不要执行 `docker compose down -v`**。`latest` 后续可能变化，生产部署建议固定版本。
 
 进入 `codex-quota-guard-server` 目录后，可用 `bash start.sh status` 查看状态、`bash start.sh logs backend` 查看日志、`bash start.sh backup` 备份、`bash start.sh stop` 停止并保留数据。
 
-从 `0.3.18/0.3.19` 升级到 `0.3.20` **没有新增数据库迁移**，桌面无需更新；备份后同时更新后端和网页，移除旧命令的 `-f compose.web-login.yaml`，保留所选 HTTP/HTTPS 配置，详见[升级步骤](./deploy/docker/registry/README.md#从-0318-或-0319-升级)。从 `0.3.11` 升级仍会执行 **V22–V30**；必须在 V29 前停止所有旧应用写入进程，保留 PostgreSQL 运行以备份数据库与原 `.env`，并合并密钥映射。不要重新初始化、替换已有密钥或删除数据库卷；跨迁移回退不能只换旧镜像，见[旧版本升级说明](./deploy/docker/registry/README.md#从-0311-或更早版本升级)。
+从 `0.3.18/0.3.19/0.3.20` 升级到 `0.3.22` 会新增 **V31 代理测试元数据迁移**，不改写已有代理凭据。先备份并保留原 `.env`、数据库卷和全部密钥，同时更新后端与网页，建议升级桌面至 `0.3.22`；在发起任何官方账户请求前，先为该账户选择已启用代理节点。旧浏览器 overlay 不再使用，保留所选 HTTP/HTTPS 配置，详见[升级步骤](./deploy/docker/registry/README.md#升级到-0322)。从 `0.3.11` 升级会执行 **V22–V31**，V29 前必须停止全部旧应用写入进程；不要重新初始化或删除数据库卷，见[旧版本升级说明](./deploy/docker/registry/README.md#从-0311-或更早版本升级)。
 
 详细说明：[Docker Hub 拉取部署](./deploy/docker/registry/README.md) · [离线镜像部署](./deploy/docker/offline/README.md) · [从源码构建镜像](./deploy/docker/README.md)。
 
 ## 快速开始
 
-桌面安装包面向 **Windows x64**，包含本地 Java 运行时、WebView2 离线安装器和 Rust 统计程序；用户电脑**不需要**安装 Java、Maven、Node.js、pnpm 或 Rust。0.3.18 目前有本地测试包，本次未上传新的安装包 Release。
+桌面安装包面向 **Windows x64**，包含本地 Java 运行时、WebView2 离线安装器和 Rust 统计程序；用户电脑**不需要**安装 Java、Maven、Node.js、pnpm 或 Rust。请从 [GitHub Releases](https://github.com/3240665200/Codex-Quota-Guard/releases/latest) 下载并核对 `0.3.22` 安装包。
 
 1. 部署中央 Java API、PostgreSQL 和管理后台。Linux 服务器推荐使用上面的 [Docker 镜像部署](#docker-服务器部署)，默认支持 IP + HTTP；管理员创建系统用户、团队并设置额度。手动部署见[管理端后端文档](./apps/admin/backend/README.md)。
-2. 安装与服务器配套的桌面版本；服务器 0.3.20 继续使用桌面 0.3.14+，建议使用经验证的 0.3.18 包。[GitHub Releases](https://github.com/3240665200/Codex-Quota-Guard/releases/latest) 仍提供既有公开安装包，请核对版本，不能将该链接视为 0.3.18 安装包已发布。在登录页的“服务器设置”中保存中央服务地址，例如 `https://your-server.example.com` 或 `http://<服务器 IP>:8080`。保存后从**系统托盘菜单退出客户端**，不要只关闭窗口。`0.0.0.0` 是监听地址，不能作为其他电脑的连接地址。
+2. 安装与服务器配套的 `0.3.22` 桌面版本。在登录页的“服务器设置”中保存中央服务地址，例如 `https://your-server.example.com` 或 `http://<服务器 IP>:8080`。保存后从**系统托盘菜单退出客户端**，不要只关闭窗口。`0.0.0.0` 是监听地址，不能作为其他电脑的连接地址。
 3. 以**管理员身份运行安装后的桌面程序**，让客户端安装、升级并启动 `CodexQuotaGuardMeter` Windows 服务；然后登录 Quota Guard **系统账户**完成设备配对。0.2.20 起每次启动都要求管理员权限，启动检查页也可保存服务器地址并重试。
 4. 在客户端「登录辅助」申请绑定，按引导取得登录名额后，在该电脑的**官方 Codex 应用或 CLI** 中自行登录对应官方账户。等待中央后台自动识别并保存绑定，当前访问核验允许后再查看官方额度、个人/团队用量、逐笔流水和统计程序状态；绑定记录保存不等于访问核验已通过。
 
@@ -194,8 +194,8 @@ scripts/       启动、打包与诊断脚本
 - 统计只覆盖**本机可读取且格式受支持**的 Codex 会话日志；ChatGPT 桌面聊天、其他设备或自定义日志位置不保证计入。首次配对只建立旧日志游标，不追溯旧用量；未配对或上报失败时显示的 `0 Token` 不代表真实用量为零。
 - 统计程序有独立于桌面客户端的版本号；升级统计程序不会自动补齐旧版本未采集的流水或 Token 分项。
 - Windows 常驻服务已实现；macOS/Linux 尚无对应常驻服务安装器和已发布安装包，当前桌面启动门禁会明确提示平台暂不支持。拥有设备管理员/root 权限的人仍可停止服务或修改本机日志。
-- 0.2.20 新增 Windows CC Switch 冲突守卫：桌面客户端通过管理员门禁且保持运行时，统计服务强制结束与客户端同一 SID、同一 SessionId 且被精确识别为 CC Switch 的进程；未保存的更改可能丢失。关闭窗口保留托盘时继续检测，从托盘退出后停止检测，统计服务继续运行。新版桌面端在确认退出后自动检查 Codex 连接，仅使用标准用户目录中的 CC Switch 备份或明确选中的原供应商配置，局部恢复可识别的接管残留，保留现有 OAuth 登录与其他设置；恢复来源不可靠、自定义目录或写入失败会明确阻止启动并支持“重新检查”。配置恢复不能代替官方账户归属校验，当前聊天若仍报错，需重启 Codex 或重新打开会话以重载连接。
-- 新版桌面端配合统计程序 0.2.2 会在强制结束 CC Switch 后弹出需确认的 Windows 提示框，托盘状态下也会提醒；提示区分连接配置已恢复、无需修改和恢复失败。累计事件避免前端轮询漏掉短暂状态，同一事件去重，连续事件可合并显示进程数。首次启动也会检查上次退出留下的接管配置。本次恢复功能需重新打包并升级桌面端；已使用统计程序 0.2.2 的电脑无需为此单独升级统计程序，旧安装包不会因源码修改自动获得此功能。
+- `0.3.22` 桌面端与 `0.2.4` 统计程序默认允许 CC Switch 共存。只有当前账户明确使用 API Key、处于 `PROXY_MANAGED` 且没有 OAuth，同时本机活动 CC Switch 数据库记录证明正在接管 Codex，才构成冲突。统计服务还需核验受保护 `ProgramData` 证据及同一 SID／SessionId 的精确进程身份，才会结束冲突进程并弹出提示；未保存内容可能丢失。普通网络失败、仅安装或运行 CC Switch 不会触发结束进程。
+- 冲突后的连接修复仅使用可验证的标准目录备份或明确选中的原供应商配置，保留现有 OAuth 与其他设置。来源不可靠、自定义目录或写入失败时会阻止继续启动并支持“重新检查”。修复不能代替官方账户归属校验，Codex 可能需要重启或重新打开会话以重载连接。
 - 管理员“强制下线系统账户”只撤销 **Quota Guard 系统会话**，不会退出官方 Codex；“强制下线所有账户”和官方会话登出需分别预览并明确确认目标。个人额度用尽不能强制停止官方 Codex 的请求。
 - 模型费用基于可配置的单价与已采集的 Token 分项估算；内置价格是 [CC Switch](https://github.com/farion1231/cc-switch) 的固定版本快照，**不是实时官方报价**。详见[统计与定价口径](./docs/architecture/usage-pricing.md)。
 

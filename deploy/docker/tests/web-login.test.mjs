@@ -25,8 +25,8 @@ test('source and registry deployments expose the same runtime-only private prese
   assert.match(source, /source: \.\/secrets\s+target: \/run\/secrets\s+read_only: true\s+bind:\s+create_host_path: false/);
   const base = JSON.parse(read('registry/compose.yaml'));
   const backend = base.services.backend;
-  assert.equal(backend.image, 'minjm/codex-quota-guard-backend:0.3.20');
-  assert.equal(base.services.web.image, 'minjm/codex-quota-guard-web:0.3.20');
+  assert.equal(backend.image, 'minjm/codex-quota-guard-backend:0.3.22');
+  assert.equal(base.services.web.image, 'minjm/codex-quota-guard-web:0.3.22');
   assert.equal(backend.platform, 'linux/amd64');
   assert.equal(base.services.web.platform, 'linux/amd64');
   assert.equal(backend.environment.OFFICIAL_AUTHORIZATION_PRESET_FILE, '/run/secrets/official-authorization.json');
@@ -100,8 +100,8 @@ if (process.env.COMPOSE_BINARY) {
       else {
         assert.equal(backend.build, undefined);
         assert.equal(config.services.web.build, undefined);
-        assert.equal(backend.image, 'minjm/codex-quota-guard-backend:0.3.20');
-        assert.equal(config.services.web.image, 'minjm/codex-quota-guard-web:0.3.20');
+        assert.equal(backend.image, 'minjm/codex-quota-guard-backend:0.3.22');
+        assert.equal(config.services.web.image, 'minjm/codex-quota-guard-web:0.3.22');
       }
     });
   }

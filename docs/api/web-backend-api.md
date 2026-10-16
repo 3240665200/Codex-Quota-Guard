@@ -147,7 +147,7 @@
 
 管理员选中登出复用 `POST /admin/official-accounts/{id}/session-logout/preview`，请求 `{ "mode": "SELECTED", "sessionIds": ["官方会话ID"] }`。选中列表为 1–100 个唯一、非空、最长 512 字符的 ID，后台从本账户新鲜快照核验范围；不接受把其他模式与非空选择混用。确认仍使用现有 `/session-logout/confirm` 的 `planId` 与 `acknowledgeLogoutRisk: true`，不会重新从前端接收或扩大目标。执行状态、单次确认、未知结果核对和不自动重试规则与其他模式一致。
 
-## 官方连接与私有授权预置（服务器 0.3.20）
+## 官方连接与私有授权预置（服务器 0.3.22）
 
 以下接口要求 ADMIN，均返回 `Cache-Control: no-store`。开发、测试和发布使用相同实现；基础部署允许 HTTP/HTTPS，可选 HTTPS overlay 显式强制 HTTPS。不按浏览器页面的协议隐藏授权业务。
 
@@ -159,9 +159,22 @@
 | POST | `/admin/official-accounts/{id}/connection/refresh` | 刷新官方连接与会话快照 |
 | GET | `/admin/official-accounts/{id}/sessions` | 查询官方会话快照 |
 
-`version` 是非负连接版本，`proxyNodeId` 可空，`presetRevision` 为 GET 返回的 64 位小写十六进制 SHA-256。POST 会重新读取预置，修订号已变化返回 409 `OFFICIAL_PRESET_REVISION_CONFLICT`；不允许用较早页面确认无提示保存替换后的文件。保存沿用原有管理员权限、账户身份、代理选择和乐观版本校验，失败保留原授权。
+`version` 是非负连接版本，`proxyNodeId` 必须选择已启用节点，官方账户代理模式为 `REQUIRED`；缺失、禁用或故障均拒绝官方请求，不回退直连。`presetRevision` 为 GET 返回的 64 位小写十六进制 SHA-256。POST 会重新读取预置，修订号已变化返回 409 `OFFICIAL_PRESET_REVISION_CONFLICT`；不允许用较早页面确认无提示保存替换后的文件。保存沿用原有管理员权限、账户身份、代理选择和乐观版本校验，失败保留原授权。
 
 预置文件仅由 `OFFICIAL_AUTHORIZATION_PRESET_FILE` 指定，最多 65536 原始字节，必须是 UTF-8 JSON：`requestedAccountId`、`authorization` 必需，`cookie` 可选。缺失配置、文件缺失／不可读、格式错误不会阻止服务启动；GET 返回安全的不可用状态。POST 对未配置返回 409 `OFFICIAL_PRESET_NOT_CONFIGURED`，不可读或非法文件返回 503 `OFFICIAL_PRESET_UNAVAILABLE`／`OFFICIAL_PRESET_INVALID`。该接口不自动完成 OAuth，也不能通过打开官网跨站读取 Cookie。格式、权限和用户操作见[官方账户说明](../official-account-management.md)。
+
+## 代理节点（服务器 0.3.22）
+
+以下路径同样要求 ADMIN、受管理传输策略约束，并返回 `Cache-Control: no-store`：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET/POST | `/admin/proxy-nodes` | 读取节点摘要或按结构化字段创建节点 |
+| PUT/DELETE | `/admin/proxy-nodes/{id}` | 按版本更新或删除节点 |
+| POST | `/admin/proxy-nodes/{id}/test` | 经该节点请求固定 HTTPS 出口检测地址，保存出口和测试状态；不携带官方凭据 |
+| POST | `/admin/proxy-nodes/import` | 已停用，返回 410 `PROXY_IMPORT_RETIRED` |
+
+创建／更新请求为 `{label, protocol, host, port, username?, password?, enabled, version?}`。`protocol` 仅为 `HTTP`、`HTTPS`、`SOCKS5`，`port` 为 1–65535；不接收 URI、订阅或自定义测试 URL。列表只返回 `hasCredentials`，不回显用户名、密码或加密配置。V31 新增 `egressIp`、`country`、`region`、`city`、`testedAt`、`testStatus`，测试成功只证明固定出口服务可达，不代表官方授权或会话接口已验证。
 
 ## 官方额度安全摘要
 
