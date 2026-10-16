@@ -1,6 +1,7 @@
 use crate::{
     backend::BackendState,
     codex_connection::{self, RestoreOutcome},
+    conflict_evidence::{self, ConflictEvidence, ConflictSnapshot},
     conflict_notice::{ConflictNotices, NoticeEvent, RestoreNotice},
     meter_service, tray,
 };
@@ -104,6 +105,12 @@ impl RestoreTracker {
             self.latest_event = None;
         }
         let effective_event = event.cloned().or_else(|| self.latest_event.clone());
+        if !effective_event
+            .as_ref()
+            .is_some_and(|event| event.count > 0 && event.last_terminated_at.is_some())
+        {
+            return Ok(RestoreOutcome::Unchanged);
+        }
         let (epoch, count) = effective_event
             .as_ref()
             .map_or(("initial", 0), |event| (event.epoch.as_str(), event.count));
@@ -136,6 +143,7 @@ struct GuardLeaseRecord {
     pid: u32,
     created_at: u64,
     lease_id: String,
+    policy: String,
 }
 
 struct GuardLease {
@@ -223,6 +231,7 @@ impl StartupGate {
             pid: std::process::id(),
             created_at,
             lease_id: Uuid::new_v4().to_string(),
+            policy: conflict_evidence::POLICY.to_owned(),
         };
         if let Some(existing) = read_lease(&path) {
             if existing.lease_id != record.lease_id && process_is_same(&existing) {
@@ -239,6 +248,7 @@ impl StartupGate {
             pid: record.pid,
             created_at: record.created_at,
             lease_id: record.lease_id.clone(),
+            policy: record.policy.clone(),
         };
         let writer = thread::spawn(move || {
             while writer_alive.load(Ordering::Acquire) {
@@ -273,6 +283,89 @@ impl StartupGate {
                 .load(Ordering::Acquire)
                 .then(|| lease.id.clone())
         })
+    }
+
+    /// Called only after the native official RPC's dedicated response, never
+    /// through a renderer command that could submit a termination request.
+    pub(crate) fn record_official_session_conflict(
+        &self,
+        _app: &AppHandle,
+        before: &ConflictSnapshot,
+    ) -> bool {
+        let Ok(_operation) = self.operation.lock() else {
+            return false;
+        };
+        if self.closed.load(Ordering::Acquire) || !self.ready.load(Ordering::Acquire) {
+            return false;
+        }
+        let Some(after) = codex_connection::conflict_snapshot() else {
+            return false;
+        };
+        if &after != before {
+            return false;
+        }
+        let Ok(held) = self.lease.lock() else {
+            return false;
+        };
+        let Some(lease) = held.as_ref() else {
+            return false;
+        };
+        if !lease.healthy.load(Ordering::Acquire) {
+            return false;
+        }
+        let Some(record) = read_lease(&lease.path) else {
+            return false;
+        };
+        if record.lease_id != lease.id || record.policy != conflict_evidence::POLICY {
+            return false;
+        }
+        let evidence = ConflictEvidence {
+            policy: conflict_evidence::POLICY.to_owned(),
+            request_id: Uuid::new_v4().to_string(),
+            lease_id: record.lease_id,
+            desktop_pid: record.pid,
+            desktop_created_at: record.created_at,
+            observed_at: unix_seconds(),
+            snapshot: after,
+        };
+        let Some(parent) = lease.path.parent() else {
+            return false;
+        };
+        let target = parent.join(conflict_evidence::FILE_NAME);
+        if let Ok(Some(bytes)) = conflict_evidence::read_regular(&target, 4096) {
+            if serde_json::from_slice::<ConflictEvidence>(&bytes)
+                .ok()
+                .is_some_and(|pending| {
+                    pending.fresh_for(
+                        &evidence.lease_id,
+                        evidence.desktop_pid,
+                        evidence.desktop_created_at,
+                        unix_seconds(),
+                    )
+                })
+            {
+                return true;
+            }
+            if fs::remove_file(&target).is_err() {
+                return false;
+            }
+        } else if target.exists() {
+            return false;
+        }
+        let temporary = parent.join(format!(".ccswitch-conflict-{}.tmp", Uuid::new_v4()));
+        let result = (|| -> std::io::Result<()> {
+            let mut output = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&temporary)?;
+            serde_json::to_writer(&mut output, &evidence)?;
+            output.sync_all()?;
+            drop(output);
+            // Atomic create-if-absent; never replace another live request.
+            fs::hard_link(&temporary, &target)
+        })();
+        let _ = fs::remove_file(&temporary);
+        result.is_ok()
     }
 
     fn inspect_guard(&self, app: &AppHandle, lease_id: &str, retry_failed: bool) -> GateResult {
@@ -333,15 +426,9 @@ impl StartupGate {
                     RestoreNotice::Failed(error)
                 }
             };
-            notice
-                .get_or_insert_with(|| NoticeEvent {
-                    lease_id: lease_id.to_owned(),
-                    epoch: "initial-restore".to_owned(),
-                    count: 0,
-                    last_terminated_at: None,
-                    recovery: RestoreNotice::Pending,
-                })
-                .recovery = recovery;
+            if let Some(notice) = notice.as_mut() {
+                notice.recovery = recovery;
+            }
         }
         if self.closed.load(Ordering::Acquire)
             || held
@@ -730,15 +817,15 @@ mod tests {
     }
 
     #[test]
-    fn restores_initial_residue_once_per_lease_even_without_a_termination() {
+    fn startup_and_new_lease_leave_compatible_settings_unchanged() {
         let mut tracker = RestoreTracker::default();
         assert_eq!(
-            tracker.restore("lease-a", None, false, || Ok(RestoreOutcome::Restored)),
-            Ok(RestoreOutcome::Restored)
+            tracker.restore("lease-a", None, false, || panic!("no conflict")),
+            Ok(RestoreOutcome::Unchanged)
         );
         assert_eq!(
             tracker.restore("lease-a", None, true, || panic!("already restored")),
-            Ok(RestoreOutcome::Restored)
+            Ok(RestoreOutcome::Unchanged)
         );
         assert_eq!(
             tracker.restore("lease-b", None, false, || Ok(RestoreOutcome::Unchanged)),
@@ -987,12 +1074,14 @@ mod tests {
             pid: 1,
             created_at: 10,
             lease_id: Uuid::new_v4().to_string(),
+            policy: conflict_evidence::POLICY.into(),
         };
         write_lease(&path, &first).unwrap();
         let second = GuardLeaseRecord {
             pid: 2,
             created_at: 20,
             lease_id: Uuid::new_v4().to_string(),
+            policy: conflict_evidence::POLICY.into(),
         };
         write_lease(&path, &second).unwrap();
         assert_eq!(read_lease(&path).unwrap().lease_id, second.lease_id);

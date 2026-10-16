@@ -183,7 +183,10 @@ fn assert_mirror(doc: &DocumentMut, id: &str) {
 fn conflict_snapshot_requires_selected_provider_active_takeover_and_proxy_only_auth() {
     let fixture = Fixture::new(PROXY_CONFIG, Some(PLACEHOLDER_AUTH));
     assert!(conflict_snapshot_at(&fixture.root).unwrap().is_none());
-    fixture.db().execute("UPDATE proxy_config SET live_takeover_active = 1", []).unwrap();
+    fixture
+        .db()
+        .execute("UPDATE proxy_config SET live_takeover_active = 1", [])
+        .unwrap();
     let snapshot = conflict_snapshot_at(&fixture.root).unwrap().unwrap();
     assert!(snapshot.matches_current(&fixture.root.join(".codex")));
     fs::write(fixture.auth(), OAUTH).unwrap();
@@ -199,7 +202,10 @@ fn dormant_or_other_proxy_and_ambiguous_profiles_never_prove_cc_conflict() {
         format!("{PROXY_CONFIG}\n[profiles.other]\nmodel_provider = \"custom\"\n"),
     ] {
         let fixture = Fixture::new(&config, Some(PLACEHOLDER_AUTH));
-        fixture.db().execute("UPDATE proxy_config SET live_takeover_active = 1", []).unwrap();
+        fixture
+            .db()
+            .execute("UPDATE proxy_config SET live_takeover_active = 1", [])
+            .unwrap();
         assert!(conflict_snapshot_at(&fixture.root).unwrap().is_none());
     }
 }

@@ -55,7 +55,7 @@ function SessionError({
 }
 
 const guardExplanation =
-  "CC Switch 可改变 Codex 的请求路由，影响用量归属。Quota Guard 运行期间，统计程序会自动强制结束当前 Windows 用户会话中的 CC Switch，未保存的更改可能丢失。确认退出后会检查并恢复 Codex 中可识别的 CC Switch 连接配置。恢复后若当前聊天仍报错，请重启 Codex 或重新打开会话以重载连接。";
+  "Quota Guard 默认与 CC Switch 共存。仅在确认 CC Switch 接管导致官方会话信息不可读时，统计程序才会停止当前 Windows 用户会话中核实过的 CC Switch，并提示处理结果；未保存更改可能丢失。确认停止后会恢复可识别的连接配置。普通网络、登录或服务错误不会触发停止。恢复后若当前聊天仍报错，请重启 Codex 或重新打开会话以重载连接。";
 
 function StartupGatePage({
   result,
@@ -103,8 +103,8 @@ function StartupGatePage({
             : state === "UNSUPPORTED"
               ? "当前平台暂不支持 Windows 统计程序门禁。"
               : state === "GUARD_ERROR"
-                ? "无法确认 CC Switch 已关闭，或统计服务无法核实守护状态。请手动退出 CC Switch 后重试。"
-                : "正在验证管理员权限、统计程序、CC Switch 状态与 Codex 连接配置…";
+                ? "统计服务无法核实当前客户端的检查状态，请检查统计程序后重试。"
+                : "正在验证管理员权限与统计程序状态…";
   return (
     <main className="relative flex min-h-screen items-center justify-center bg-background px-6 py-12">
       <ThemeSwitcher compact className="absolute right-6 top-5" />
@@ -307,7 +307,7 @@ export function ClientApp() {
         <span role="status">
           {ccSwitchStopped ? "已停止 CC Switch。" : ""}
           {codexConnectionRestored ? "已恢复 Codex 连接配置。" : ""}
-          运行期间会强制结束 CC Switch，未保存更改可能丢失。
+          默认与 CC Switch 共存，仅在确认官方会话冲突时停止并提醒。
         </span>
         <span className="ml-2 text-primary">查看说明</span>
       </summary>

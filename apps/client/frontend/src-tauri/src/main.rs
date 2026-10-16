@@ -4,6 +4,8 @@ mod assistance_stream;
 mod autostart;
 mod backend;
 mod codex_connection;
+#[path = "../../../conflict_evidence.rs"]
+mod conflict_evidence;
 mod conflict_notice;
 mod meter_service;
 mod package_check;
@@ -228,11 +230,26 @@ async fn usage_pair(state: State<'_, BackendState>) -> CommandResult<Value> {
 }
 
 #[tauri::command]
-async fn codex_rate_limits(state: State<'_, BackendState>) -> CommandResult<Value> {
-    state
-        .json(Method::GET, ApiRoute::CodexRateLimits)
+async fn codex_rate_limits(
+    app: tauri::AppHandle,
+    state: State<'_, BackendState>,
+) -> CommandResult<Value> {
+    let before = tauri::async_runtime::spawn_blocking(codex_connection::conflict_snapshot)
         .await
-        .map_err(command_error)
+        .ok()
+        .flatten();
+    let result = state.json(Method::GET, ApiRoute::CodexRateLimits).await;
+    if matches!(result, Err(backend::BackendError::OfficialSessionConflict)) {
+        if let Some(before) = before {
+            let app = app.clone();
+            let _ = tauri::async_runtime::spawn_blocking(move || {
+                app.state::<startup_gate::StartupGate>()
+                    .record_official_session_conflict(&app, &before)
+            })
+            .await;
+        }
+    }
+    result.map_err(command_error)
 }
 
 #[tauri::command]

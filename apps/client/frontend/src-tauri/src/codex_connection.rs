@@ -1,6 +1,7 @@
 //! Restore only CC Switch-owned connection settings after the guard has
 //! confirmed its exit. Never replace the user's whole config or roll back OAuth
 //! tokens, and never write to the CC Switch database.
+use crate::conflict_evidence::ConflictSnapshot;
 use reqwest::Url;
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::Value as Json;
@@ -30,32 +31,122 @@ pub(crate) enum RestoreOutcome {
 pub(crate) fn restore() -> Result<RestoreOutcome, &'static str> {
     #[cfg(windows)]
     {
-        let profile = known_folder(&windows_sys::Win32::UI::Shell::FOLDERID_Profile)?;
-        let roaming = known_folder(&windows_sys::Win32::UI::Shell::FOLDERID_RoamingAppData)?;
-        let paths = roaming.join("com.ccswitch.desktop/app_paths.json");
-        if let Some(bytes) = read_optional(&paths)? {
-            let paths: Json = serde_json::from_slice(&bytes).map_err(|_| CUSTOM_PATH)?;
-            if paths
-                .get("app_config_dir_override")
-                .and_then(Json::as_str)
-                .is_some_and(|path| {
-                    !path.is_empty() && Path::new(path) != profile.join(".cc-switch")
-                })
-            {
-                return Err(CUSTOM_PATH);
-            }
-        }
-        if std::env::var_os("CODEX_HOME")
-            .is_some_and(|path| !path.is_empty() && Path::new(&path) != profile.join(".codex"))
-        {
-            return Err(CUSTOM_PATH);
-        }
-        restore_at(&profile)
+        restore_at(&default_profile()?)
     }
     #[cfg(not(windows))]
     {
         Ok(RestoreOutcome::Unchanged)
     }
+}
+
+#[cfg(windows)]
+fn default_profile() -> Result<PathBuf, &'static str> {
+    let profile = known_folder(&windows_sys::Win32::UI::Shell::FOLDERID_Profile)?;
+    let roaming = known_folder(&windows_sys::Win32::UI::Shell::FOLDERID_RoamingAppData)?;
+    let paths = roaming.join("com.ccswitch.desktop/app_paths.json");
+    if let Some(bytes) = read_optional(&paths)? {
+        let paths: Json = serde_json::from_slice(&bytes).map_err(|_| CUSTOM_PATH)?;
+        if paths
+            .get("app_config_dir_override")
+            .and_then(Json::as_str)
+            .is_some_and(|path| !path.is_empty() && Path::new(path) != profile.join(".cc-switch"))
+        {
+            return Err(CUSTOM_PATH);
+        }
+    }
+    if std::env::var_os("CODEX_HOME")
+        .is_some_and(|path| !path.is_empty() && Path::new(&path) != profile.join(".codex"))
+    {
+        return Err(CUSTOM_PATH);
+    }
+    Ok(profile)
+}
+
+/// Capture before the official RPC, then require exactly the same snapshot
+/// after its dedicated conflict response. Failure or ambiguity grants nothing.
+pub(crate) fn conflict_snapshot() -> Option<ConflictSnapshot> {
+    #[cfg(windows)]
+    {
+        conflict_snapshot_at(&default_profile().ok()?)
+            .ok()
+            .flatten()
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+fn conflict_snapshot_at(profile: &Path) -> Result<Option<ConflictSnapshot>, &'static str> {
+    let codex = profile.join(".codex");
+    let Some(before) = ConflictSnapshot::capture(&codex) else {
+        return Ok(None);
+    };
+    let Some(config) = read_optional(&codex.join("config.toml"))? else {
+        return Ok(None);
+    };
+    let config = parse_config(&config)?;
+    // A profile or legacy root endpoint may change effective selection in
+    // ways we cannot prove here; never infer ownership from a dormant table.
+    if config.get("profiles").is_some()
+        || config.get("profile").is_some()
+        || config.get("openai_base_url").is_some()
+    {
+        return Ok(None);
+    }
+    let Some(selected) = config.get("model_provider").and_then(Item::as_str) else {
+        return Ok(None);
+    };
+    let Some(provider) = config
+        .get("model_providers")
+        .and_then(|providers| providers.get(selected))
+    else {
+        return Ok(None);
+    };
+    let Some(auth) = read_optional(&codex.join("auth.json"))? else {
+        return Ok(None);
+    };
+    let auth: Json = serde_json::from_slice(&auth).map_err(|_| INVALID)?;
+    if auth.get("OPENAI_API_KEY").and_then(Json::as_str) != Some("PROXY_MANAGED")
+        || auth.get("auth_mode").and_then(Json::as_str) == Some("chatgpt")
+        || auth.get("tokens").is_some_and(|tokens| {
+            !tokens.is_null() && tokens.as_object().is_none_or(|tokens| !tokens.is_empty())
+        })
+        || ["access_token", "refresh_token", "id_token"]
+            .iter()
+            .any(|key| auth.get(key).is_some_and(|value| !value.is_null()))
+    {
+        return Ok(None);
+    }
+    let cc_home = profile.join(".cc-switch");
+    let settings = read_optional(&cc_home.join("settings.json"))?
+        .map(|bytes| serde_json::from_slice::<Json>(&bytes).map_err(|_| INVALID))
+        .transpose()?;
+    if settings
+        .as_ref()
+        .and_then(|settings| settings.get("codexConfigDir"))
+        .and_then(Json::as_str)
+        .is_some_and(|path| !path.is_empty() && Path::new(path) != codex)
+    {
+        return Ok(None);
+    }
+    let db_path = cc_home.join("cc-switch.db");
+    validate_path(&db_path)?;
+    let db = Connection::open_with_flags(
+        &db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|_| INVALID)?;
+    db.busy_timeout(Duration::from_millis(250))
+        .map_err(|_| INVALID)?;
+    let proxy = db.query_row(
+        "SELECT listen_address, listen_port, live_takeover_active FROM proxy_config WHERE app_type = 'codex'",
+        [], |row| Ok(ProxyAddress { host: row.get(0)?, port: row.get(1)?, takeover: row.get(2)? }),
+    ).optional().map_err(|_| INVALID)?;
+    if !proxy.is_some_and(|proxy| proxy.takeover && proxy_provider(provider, &proxy)) {
+        return Ok(None);
+    }
+    Ok(before.matches_current(&codex).then_some(before))
 }
 
 #[cfg(windows)]

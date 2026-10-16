@@ -145,6 +145,8 @@ pub(crate) enum BackendError {
     SessionStorageUnavailable,
     #[error("请先完成本设备官方会话绑定。")]
     SessionBindingRequired,
+    #[error("已确认 CC Switch 接管导致官方会话不可读，正在核实当前连接冲突。")]
+    OfficialSessionConflict,
 }
 
 /// The token deliberately has no Debug implementation, and is never exposed
@@ -335,7 +337,25 @@ impl BackendState {
             .map_err(|_| BackendError::Unavailable)?;
 
         if !response.status().is_success() {
-            return Err(classify_response(route, response.status()));
+            let status = response.status();
+            if route == ApiRoute::CodexRateLimits && status == StatusCode::CONFLICT {
+                let mut response = response;
+                let mut bytes = Vec::new();
+                while let Some(chunk) = response
+                    .chunk()
+                    .await
+                    .map_err(|_| BackendError::Unavailable)?
+                {
+                    if bytes.len() + chunk.len() > 1024 {
+                        return Err(BackendError::InvalidResponse);
+                    }
+                    bytes.extend_from_slice(&chunk);
+                }
+                if is_official_session_conflict(route, status, &bytes) {
+                    return Err(BackendError::OfficialSessionConflict);
+                }
+            }
+            return Err(classify_response(route, status));
         }
 
         response
@@ -423,6 +443,17 @@ impl BackendState {
         self.assistance_streams.stop(id);
         Ok(())
     }
+}
+
+fn is_official_session_conflict(route: ApiRoute, status: StatusCode, bytes: &[u8]) -> bool {
+    route == ApiRoute::CodexRateLimits
+        && status == StatusCode::CONFLICT
+        && bytes.len() <= 1024
+        && serde_json::from_slice::<Value>(bytes)
+            .ok()
+            .is_some_and(|body| {
+                body.get("code").and_then(Value::as_str) == Some("CODEX_CC_SWITCH_SESSION_CONFLICT")
+            })
 }
 
 fn classify_response(route: ApiRoute, status: StatusCode) -> BackendError {
@@ -960,14 +991,39 @@ mod tests {
         assert_eq!(first.len(), 32);
     }
 }
-    #[test]
-    fn only_dedicated_native_official_session_error_is_a_conflict() {
-        let body = br#"{"code":"CODEX_CC_SWITCH_SESSION_CONFLICT","message":"safe"}"#;
-        assert!(is_official_session_conflict(ApiRoute::CodexRateLimits, StatusCode::CONFLICT, body));
-        for status in [StatusCode::BAD_GATEWAY, StatusCode::SERVICE_UNAVAILABLE, StatusCode::TOO_MANY_REQUESTS, StatusCode::UNAUTHORIZED] {
-            assert!(!is_official_session_conflict(ApiRoute::CodexRateLimits, status, body));
-        }
-        assert!(!is_official_session_conflict(ApiRoute::QuotaOverview, StatusCode::CONFLICT, body));
-        assert!(!is_official_session_conflict(ApiRoute::CodexRateLimits, StatusCode::CONFLICT, br#"{"code":"NETWORK_ERROR"}"#));
-        assert!(!is_official_session_conflict(ApiRoute::CodexRateLimits, StatusCode::CONFLICT, &vec![b' '; 1025]));
+#[test]
+fn only_dedicated_native_official_session_error_is_a_conflict() {
+    let body = br#"{"code":"CODEX_CC_SWITCH_SESSION_CONFLICT","message":"safe"}"#;
+    assert!(is_official_session_conflict(
+        ApiRoute::CodexRateLimits,
+        StatusCode::CONFLICT,
+        body
+    ));
+    for status in [
+        StatusCode::BAD_GATEWAY,
+        StatusCode::SERVICE_UNAVAILABLE,
+        StatusCode::TOO_MANY_REQUESTS,
+        StatusCode::UNAUTHORIZED,
+    ] {
+        assert!(!is_official_session_conflict(
+            ApiRoute::CodexRateLimits,
+            status,
+            body
+        ));
     }
+    assert!(!is_official_session_conflict(
+        ApiRoute::QuotaOverview,
+        StatusCode::CONFLICT,
+        body
+    ));
+    assert!(!is_official_session_conflict(
+        ApiRoute::CodexRateLimits,
+        StatusCode::CONFLICT,
+        br#"{"code":"NETWORK_ERROR"}"#
+    ));
+    assert!(!is_official_session_conflict(
+        ApiRoute::CodexRateLimits,
+        StatusCode::CONFLICT,
+        &vec![b' '; 1025]
+    ));
+}

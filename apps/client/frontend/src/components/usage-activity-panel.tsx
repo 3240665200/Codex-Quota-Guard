@@ -320,7 +320,7 @@ function explainError(code: string | null | undefined) {
     case "METER_LOG_WRITE_FAILED":
       return "服务日志无法写入，请检查 ProgramData 目录权限和磁盘空间。";
     case "METER_CC_SWITCH_GUARD_FAILED":
-      return "无法确认 CC Switch 冲突已解除，请退出 CC Switch 并检查统计程序。";
+      return "无法核实客户端冲突检查状态，请检查统计程序后重试。";
     case "METER_GUARD_THREAD_UNAVAILABLE":
     case "METER_GUARD_CHECK_UNAVAILABLE":
     case "METER_GUARD_CHECK_STALE":

@@ -14,6 +14,9 @@ mod outbox;
 use audit::{AuditKind, AuditLog};
 #[cfg(windows)]
 mod ccswitch_guard;
+#[cfg(windows)]
+#[path = "../../conflict_evidence.rs"]
+mod conflict_evidence;
 
 const MAX_RECORD_BYTES: usize = 4 * 1024 * 1024;
 const MAX_GUARD_STATUS_BYTES: usize = 4096;

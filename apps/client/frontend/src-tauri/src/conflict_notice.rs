@@ -406,7 +406,7 @@ fn notice_text(batch: &NoticeBatch) -> String {
         RestoreNotice::Failed(error) => format!("Codex 连接配置恢复失败：{error}\r\n请打开 Quota Guard，处理上述问题后点击“重新检查”。"),
         RestoreNotice::Pending => "尚未确认 CC Switch 已全部退出，暂未恢复 Codex 连接配置。请打开 Quota Guard 查看守护状态并重试。".to_owned(),
     };
-    format!("{termination}{recovery}\r\n\r\n请勿在 Quota Guard 运行期间重新打开 CC Switch，以免再次改变 Codex 请求路由。")
+    format!("已确认 CC Switch 接管导致官方会话信息不可读。\r\n\r\n{termination}{recovery}\r\n\r\n可继续与 CC Switch 共存；请先调整其 Codex 接管设置，避免再次发生相同冲突。")
 }
 
 #[cfg(not(windows))]

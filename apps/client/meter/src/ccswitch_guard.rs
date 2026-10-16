@@ -2,7 +2,10 @@
 //! process for the configured user holds the lease. All process actions are
 //! behind `GuardOps` so policy tests never inspect or terminate host processes.
 
-use crate::{epoch_seconds, MeterConfig};
+use crate::{
+    conflict_evidence::{self, ConflictEvidence},
+    epoch_seconds, MeterConfig,
+};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Read;
@@ -75,6 +78,7 @@ struct GuardLease {
     pid: u32,
     created_at: u64, // raw Windows FILETIME, in 100 ns units
     lease_id: Uuid,
+    policy: String,
 }
 
 fn read_lease(status_file: &Path) -> Result<Option<GuardLease>, ()> {
@@ -104,13 +108,17 @@ fn read_lease(status_file: &Path) -> Result<Option<GuardLease>, ()> {
         return Err(());
     }
     let lease: GuardLease = serde_json::from_slice(&bytes).map_err(|_| ())?;
-    if lease.pid == 0 || lease.created_at == 0 || lease.lease_id.is_nil() {
+    if lease.pid == 0
+        || lease.created_at == 0
+        || lease.lease_id.is_nil()
+        || lease.policy != conflict_evidence::POLICY
+    {
         return Err(());
     }
     Ok(Some(lease))
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct ProcessIdentity {
     pid: u32,
     created_at: u64,
@@ -139,6 +147,8 @@ trait GuardOps {
     fn lease_current(&self, lease: &GuardLease) -> Result<bool, ()>;
     fn open(&self, pid: u32) -> Result<Option<Self::Process>, ()>;
     fn cc_candidates(&self) -> Result<Vec<u32>, ()>;
+    fn take_conflict(&self, lease: &GuardLease) -> Option<ConflictEvidence>;
+    fn conflict_current(&self, lease: &GuardLease, evidence: &ConflictEvidence) -> bool;
 }
 
 fn enforce<O: GuardOps>(lease: &GuardLease, owner_sid: &str, ops: &O) -> GuardCheck {
@@ -169,11 +179,20 @@ fn enforce<O: GuardOps>(lease: &GuardLease, owner_sid: &str, ops: &O) -> GuardCh
         {
             return Err(());
         }
+        // A live desktop and a CC process are compatible by default. Only a
+        // fresh native official-session observation can authorize this loop.
+        let Some(evidence) = ops.take_conflict(lease) else {
+            return Ok(GuardState::Clear);
+        };
+        if !ops.conflict_current(lease, &evidence) {
+            return Ok(GuardState::Clear);
+        }
         let mut terminated = false;
         for pid in ops.cc_candidates()? {
             let Some(cc) = ops.open(pid)? else { continue };
             let cc_id = cc.identity()?;
             if cc_id.pid != pid
+                || cc_id.created_at == 0
                 || !exact_exe(&cc_id.image, CC_EXE)
                 || cc_id.owner_sid != owner_sid
                 || cc_id.session_id != app_id.session_id
@@ -182,13 +201,22 @@ fn enforce<O: GuardOps>(lease: &GuardLease, owner_sid: &str, ops: &O) -> GuardCh
                 continue;
             }
             // A same-name executable with missing or different product identity
-            // must never be killed. The unresolved conflict blocks reporting.
+            // must never be killed, even with an otherwise valid observation.
             if !cc.product_names()?.iter().any(|name| name == CC_PRODUCT) {
                 return Err(());
             }
             detected = true;
             if !ops.lease_current(lease)? || app.exited(0)? {
                 return Ok(GuardState::Inactive);
+            }
+            // Revalidate right before each irreversible action. The held
+            // process handle and its identity also prevent PID reuse.
+            if !ops.conflict_current(lease, &evidence) || cc.identity()? != cc_id {
+                return Ok(if terminated {
+                    GuardState::Terminated
+                } else {
+                    GuardState::Clear
+                });
             }
             // The service runs in Session 0 and cannot close the user's windows.
             // End the verified process directly, then confirm it exited.
@@ -235,12 +263,46 @@ pub(super) fn check(config: &MeterConfig) -> GuardCheck {
         owner_sid,
         &WindowsOps {
             status_file: config.status_file.clone(),
+            codex_home: config.codex_home.clone(),
         },
     )
 }
 
 struct WindowsOps {
     status_file: PathBuf,
+    codex_home: PathBuf,
+}
+
+#[derive(Default)]
+struct ConsumedRequests(std::collections::VecDeque<(String, u64)>);
+
+impl ConsumedRequests {
+    fn consume(&mut self, evidence: &ConflictEvidence, now: u64) -> bool {
+        self.0
+            .retain(|(_, at)| now.saturating_sub(*at) <= conflict_evidence::MAX_AGE_SECONDS);
+        if self.0.len() >= 256 || self.0.iter().any(|(id, _)| id == &evidence.request_id) {
+            return false;
+        }
+        self.0
+            .push_back((evidence.request_id.clone(), evidence.observed_at));
+        true
+    }
+}
+
+fn claim_conflict(status_file: &Path) -> Option<ConflictEvidence> {
+    static CONSUMED: std::sync::Mutex<ConsumedRequests> =
+        std::sync::Mutex::new(ConsumedRequests(std::collections::VecDeque::new()));
+    let path = status_file.parent()?.join(conflict_evidence::FILE_NAME);
+    let bytes = conflict_evidence::read_regular(&path, 4096).ok()??;
+    // Consume before process inspection. Failure, stale identity or changed
+    // files all require a new official RPC observation rather than a retry.
+    fs::remove_file(&path).ok()?;
+    let evidence: ConflictEvidence = serde_json::from_slice(&bytes).ok()?;
+    CONSUMED
+        .lock()
+        .ok()?
+        .consume(&evidence, epoch_seconds())
+        .then_some(evidence)
 }
 
 mod native {
@@ -543,6 +605,19 @@ mod native {
             Ok(read_lease(&self.status_file)?.as_ref() == Some(lease))
         }
 
+        fn take_conflict(&self, _lease: &GuardLease) -> Option<ConflictEvidence> {
+            claim_conflict(&self.status_file)
+        }
+
+        fn conflict_current(&self, lease: &GuardLease, evidence: &ConflictEvidence) -> bool {
+            evidence.fresh_for(
+                &lease.lease_id.to_string(),
+                lease.pid,
+                lease.created_at,
+                epoch_seconds(),
+            ) && evidence.snapshot.matches_current(&self.codex_home)
+        }
+
         fn open(&self, pid: u32) -> Result<Option<Self::Process>, ()> {
             // SAFETY: Query and wait rights only; no termination from this open.
             let handle = unsafe {
@@ -619,10 +694,15 @@ mod tests {
         on_product: Option<Rc<dyn Fn()>>,
         terminate_count: Rc<Cell<u32>>,
         exit_after_terminate: bool,
+        creation_override: Rc<Cell<Option<u64>>>,
     }
     impl GuardProcess for MockProcess {
         fn identity(&self) -> Result<ProcessIdentity, ()> {
-            Ok(self.id.clone())
+            let mut id = self.id.clone();
+            if let Some(created_at) = self.creation_override.get() {
+                id.created_at = created_at;
+            }
+            Ok(id)
         }
         fn product_names(&self) -> Result<Vec<String>, ()> {
             if let Some(on_product) = &self.on_product {
@@ -645,6 +725,9 @@ mod tests {
         processes: BTreeMap<u32, MockProcess>,
         candidates: Vec<u32>,
         lease_current: Rc<Cell<bool>>,
+        conflict: bool,
+        fingerprint_current: Rc<Cell<bool>>,
+        claimed: Cell<bool>,
     }
     impl GuardOps for MockOps {
         type Process = MockProcess;
@@ -656,6 +739,26 @@ mod tests {
         }
         fn cc_candidates(&self) -> Result<Vec<u32>, ()> {
             Ok(self.candidates.clone())
+        }
+        fn take_conflict(&self, lease: &GuardLease) -> Option<ConflictEvidence> {
+            if !self.conflict || self.claimed.replace(true) {
+                return None;
+            }
+            Some(serde_json::from_value(serde_json::json!({
+                "policy": conflict_evidence::POLICY, "requestId": Uuid::new_v4().to_string(),
+                "leaseId": lease.lease_id.to_string(), "desktopPid": lease.pid,
+                "desktopCreatedAt": lease.created_at, "observedAt": epoch_seconds(),
+                "snapshot": { "configSha256": "a", "authSha256": "b", "ccDbSha256": "c", "ccWalSha256": null }
+            })).unwrap())
+        }
+        fn conflict_current(&self, lease: &GuardLease, evidence: &ConflictEvidence) -> bool {
+            self.fingerprint_current.get()
+                && evidence.fresh_for(
+                    &lease.lease_id.to_string(),
+                    lease.pid,
+                    lease.created_at,
+                    epoch_seconds(),
+                )
         }
     }
     fn process(pid: u32, exe: &str, sid: &str, session_id: u32) -> MockProcess {
@@ -678,6 +781,7 @@ mod tests {
             on_product: None,
             terminate_count: Rc::new(Cell::new(0)),
             exit_after_terminate: true,
+            creation_override: Rc::new(Cell::new(None)),
         }
     }
     fn lease() -> GuardLease {
@@ -685,6 +789,7 @@ mod tests {
             pid: 10,
             created_at: 110,
             lease_id: Uuid::new_v4(),
+            policy: conflict_evidence::POLICY.into(),
         }
     }
     fn ops(cc: MockProcess) -> MockOps {
@@ -692,6 +797,9 @@ mod tests {
             processes: BTreeMap::from([(10, process(10, DESKTOP_EXE, "S-1-5-21-1", 2)), (20, cc)]),
             candidates: vec![20],
             lease_current: Rc::new(Cell::new(true)),
+            conflict: true,
+            fingerprint_current: Rc::new(Cell::new(true)),
+            claimed: Cell::new(false),
         }
     }
 
@@ -699,14 +807,16 @@ mod tests {
     fn desktop_lease_and_cc_switch_process_alone_never_authorize_termination() {
         let cc = process(20, CC_EXE, "S-1-5-21-1", 2);
         let count = cc.terminate_count.clone();
-        let check = enforce(&lease(), "S-1-5-21-1", &ops(cc));
+        let mut mock = ops(cc);
+        mock.conflict = false;
+        let check = enforce(&lease(), "S-1-5-21-1", &mock);
         assert_eq!(count.get(), 0);
         assert_eq!(check.state, GuardState::Clear);
         assert_eq!(check.confirmed_termination_count, 0);
     }
 
     #[test]
-    fn active_lease_ends_only_exact_product_for_same_user_and_session() {
+    fn confirmed_conflict_ends_only_exact_product_for_same_user_and_session() {
         let cc = process(20, CC_EXE, "S-1-5-21-1", 2);
         let count = cc.terminate_count.clone();
         let check = enforce(&lease(), "S-1-5-21-1", &ops(cc));
@@ -715,6 +825,72 @@ mod tests {
         assert_eq!(check.confirmed_termination_count, 1);
         assert!(check.last_terminated_at.is_some());
         assert_eq!(count.get(), 1);
+    }
+
+    #[test]
+    fn changed_fingerprint_during_product_check_never_ends_cc() {
+        let mut cc = process(20, CC_EXE, "S-1-5-21-1", 2);
+        let count = cc.terminate_count.clone();
+        let mut mock = ops(cc.clone());
+        let current = mock.fingerprint_current.clone();
+        cc.on_product = Some(Rc::new(move || current.set(false)));
+        mock.processes.insert(20, cc);
+        let check = enforce(&lease(), "S-1-5-21-1", &mock);
+        assert_eq!(count.get(), 0);
+        assert_eq!(check.state, GuardState::Clear);
+    }
+
+    #[test]
+    fn a_claimed_observation_is_never_reused_for_a_restarted_cc() {
+        let cc = process(20, CC_EXE, "S-1-5-21-1", 2);
+        let count = cc.terminate_count.clone();
+        let running = cc.exits.clone();
+        let mock = ops(cc);
+        let lease = lease();
+        assert_eq!(
+            enforce(&lease, "S-1-5-21-1", &mock).state,
+            GuardState::Terminated
+        );
+        running.set(false);
+        assert_eq!(
+            enforce(&lease, "S-1-5-21-1", &mock).state,
+            GuardState::Clear
+        );
+        assert_eq!(count.get(), 1);
+    }
+
+    #[test]
+    fn changed_process_creation_time_never_authorizes_termination() {
+        let mut cc = process(20, CC_EXE, "S-1-5-21-1", 2);
+        let count = cc.terminate_count.clone();
+        let created = cc.creation_override.clone();
+        cc.on_product = Some(Rc::new(move || created.set(Some(999))));
+        let check = enforce(&lease(), "S-1-5-21-1", &ops(cc));
+        assert_eq!(check.state, GuardState::Clear);
+        assert_eq!(count.get(), 0);
+    }
+
+    #[test]
+    fn missing_request_does_not_inspect_an_unrelated_same_name_product() {
+        let mut cc = process(20, CC_EXE, "S-1-5-21-1", 2);
+        cc.product = Err(());
+        let count = cc.terminate_count.clone();
+        let mut mock = ops(cc);
+        mock.conflict = false;
+        assert_eq!(
+            enforce(&lease(), "S-1-5-21-1", &mock).state,
+            GuardState::Clear
+        );
+        assert_eq!(count.get(), 0);
+    }
+
+    #[test]
+    fn replayed_request_ids_are_rejected_even_when_republished() {
+        let mock = ops(process(20, CC_EXE, "S-1-5-21-1", 2));
+        let proof = mock.take_conflict(&lease()).unwrap();
+        let mut consumed = ConsumedRequests::default();
+        assert!(consumed.consume(&proof, epoch_seconds()));
+        assert!(!consumed.consume(&proof, epoch_seconds()));
     }
 
     #[test]

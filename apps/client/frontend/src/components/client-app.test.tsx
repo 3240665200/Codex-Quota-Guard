@@ -321,7 +321,7 @@ describe("ClientApp system session gate", () => {
     renderClientApp();
     expect(await screen.findByText(/已停止 CC Switch/)).toBeVisible();
     expect(toast.warning).not.toHaveBeenCalled();
-    expect(screen.getByText(/未保存更改可能丢失/)).toBeVisible();
+    expect(screen.getByText(/仅在确认官方会话冲突时停止并提醒/)).toBeVisible();
   });
 
   it("blocks session requests on restore failure and retries recovery explicitly", async () => {

@@ -961,13 +961,15 @@ describe("Dashboard", () => {
 
   it("keeps the conflict notice outside the scrolling workspace on every page", async () => {
     const user = (await import("@testing-library/user-event")).default.setup();
-    await renderDashboard("运行期间会强制结束 CC Switch，未保存更改可能丢失。");
+    await renderDashboard(
+      "默认与 CC Switch 共存，仅在确认官方会话冲突时停止并提醒。",
+    );
     const notice = screen.getByRole("complementary", { name: "运行注意事项" });
     expect(notice).toBeVisible();
     expect(notice.closest(".cqg-workspace-scroll")).toBeNull();
     await user.click(screen.getByRole("button", { name: "消耗流水" }));
     expect(notice).toBeVisible();
-    expect(notice).toHaveTextContent("未保存更改可能丢失");
+    expect(notice).toHaveTextContent("仅在确认官方会话冲突时停止并提醒");
   });
 
   it("shows a useful error state when the local service is unavailable", async () => {
