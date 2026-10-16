@@ -29,7 +29,7 @@ vi.mock('../../services/sessionBindingQueueApi', () => ({ getSessionBindingQueue
   recoverSessionBindingQueue: mocks.recoverSessionBindingQueue }));
 
 const connection = { configured: true, encryptionReady: true, status: 'CONNECTED', requestedAccountId: 'workspace-1',
-  proxyNodeId: null, hasAuthorization: true, hasCookie: true, importedAt: null, lastAttemptAt: null,
+  proxyNodeId: 'proxy-1', hasAuthorization: true, hasCookie: true, importedAt: null, lastAttemptAt: null,
   lastSuccessAt: null, lastErrorCode: null, version: 5 };
 const snapshot = { connection, account: { email: 'official@example.test' },
   sessions: { showSessionManager: true, devices: [{ renderId: 'row-1', sessionId: 'session-1',
@@ -69,7 +69,7 @@ describe('官方网页登录与设备绑定入口', () => {
     mocks.getOfficialAuthorizationPreset.mockResolvedValue({ available: true, requestedAccountId: 'workspace-1', revision: 'preset-1', errorCode: null });
     mocks.applyOfficialAuthorizationPreset.mockResolvedValue({ ...connection, version: 6, status: 'UNVERIFIED' });
     mocks.getOfficialAccountConnection.mockResolvedValue(connection);
-    mocks.listProxyNodes.mockResolvedValue([]); mocks.getOfficialAccountSessions.mockResolvedValue(snapshot);
+    mocks.listProxyNodes.mockResolvedValue([{ id: 'proxy-1', label: '工作区出口', protocol: 'HTTP', enabled: true }]); mocks.getOfficialAccountSessions.mockResolvedValue(snapshot);
     mocks.listSessionBindings.mockResolvedValue([binding]);
     mocks.releaseSessionBinding.mockResolvedValue(undefined);
     mocks.getSessionLogoutCurrent.mockResolvedValue({ operation: null });
@@ -108,7 +108,7 @@ describe('官方网页登录与设备绑定入口', () => {
     const dialog = await show();
     fireEvent.click(within(dialog).getByRole('button', { name: '使用预置授权' }));
     await waitFor(() => expect(within(dialog).queryByText('official@example.test')).not.toBeInTheDocument());
-    expect(mocks.applyOfficialAuthorizationPreset).toHaveBeenCalledWith('account-1', { version: 5, proxyNodeId: null, presetRevision: 'preset-1' });
+    expect(mocks.applyOfficialAuthorizationPreset).toHaveBeenCalledWith('account-1', { version: 5, proxyNodeId: 'proxy-1', presetRevision: 'preset-1' });
     expect(mocks.getOfficialAccountConnection).toHaveBeenCalledOnce();
     expect(mocks.listSessionBindings).toHaveBeenCalledOnce();
     expect(mocks.refreshOfficialAccountConnection).not.toHaveBeenCalled();

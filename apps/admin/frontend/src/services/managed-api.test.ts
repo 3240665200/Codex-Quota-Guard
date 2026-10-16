@@ -13,7 +13,6 @@ interface ManagedApi {
   createProxyNode(body: Record<string, unknown>): Promise<unknown>;
   updateProxyNode(id: string, body: Record<string, unknown>): Promise<unknown>;
   deleteProxyNode(id: string): Promise<void>;
-  importProxyNodes(body: Record<string, unknown>): Promise<unknown>;
   testProxyNode(id: string): Promise<unknown>;
 }
 const managed = api as unknown as ManagedApi;
@@ -72,22 +71,25 @@ describe('官方授权与代理节点 API', () => {
     expect(write).not.toHaveBeenCalled();
   });
 
-  it('uses proxy CRUD and explicit import endpoints without placing secrets in URLs', async () => {
+  it('uses explicit proxy fields and a saved-node test without subscription or URI APIs', async () => {
     expect(managed.listProxyNodes).toBeTypeOf('function');
     await managed.listProxyNodes();
-    await managed.createProxyNode({ label: '出口', uri: 'socks5://fixture:secret@proxy.example:1080', enabled: true });
-    await managed.updateProxyNode('proxy/id', { label: '新名称', enabled: false, version: 3 });
-    await managed.importProxyNodes({ subscriptionUrl: 'https://subscriptions.example/fixture' });
+    const body = { label: '出口', protocol: 'SOCKS5', host: 'proxy.example', port: 1080,
+      username: 'fixture', password: 'fixture-secret', enabled: true };
+    await managed.createProxyNode(body);
+    await managed.updateProxyNode('proxy/id', { label: '新名称', protocol: 'HTTP', host: 'proxy.example', port: 8080, enabled: false, version: 3 });
     await managed.testProxyNode('proxy/id');
     await managed.deleteProxyNode('proxy/id');
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
       '/api/v1/admin/proxy-nodes', '/api/v1/admin/proxy-nodes',
-      '/api/v1/admin/proxy-nodes/proxy%2Fid', '/api/v1/admin/proxy-nodes/import',
+      '/api/v1/admin/proxy-nodes/proxy%2Fid',
       '/api/v1/admin/proxy-nodes/proxy%2Fid/test',
       '/api/v1/admin/proxy-nodes/proxy%2Fid',
     ]);
-    expect(fetchMock.mock.calls.map(([, options]) => options.method ?? 'GET')).toEqual(['GET', 'POST', 'PUT', 'POST', 'POST', 'DELETE']);
+    expect(fetchMock.mock.calls.map(([, options]) => options.method ?? 'GET')).toEqual(['GET', 'POST', 'PUT', 'POST', 'DELETE']);
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual(body);
     expect(JSON.parse(fetchMock.mock.calls[2][1].body)).not.toHaveProperty('uri');
-    expect(fetchMock.mock.calls[4][1].body).toBeUndefined();
+    expect(fetchMock.mock.calls[3][1].body).toBeUndefined();
+    expect(api).not.toHaveProperty('importProxyNodes');
   });
 });

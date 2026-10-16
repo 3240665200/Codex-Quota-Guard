@@ -87,10 +87,46 @@ describe('统一预置授权与本机浏览器入口', () => {
     fireEvent.click(screen.getByRole('button', { name: '在本机浏览器打开官方登录' }));
     expect(open).toHaveBeenCalledExactlyOnceWith('https://chatgpt.com/', '_blank', 'noopener,noreferrer');
     expect(screen.getByText(/不会自动读取.*Cookie/)).toBeInTheDocument();
+    expect(screen.getByText('仅打开官方网站')).toBeInTheDocument();
+    expect(screen.getByText(/私有扩展.*导出.*从本机参数文件填入/)).toBeInTheDocument();
     expect(mocks.startOfficialWebLogin).not.toHaveBeenCalled();
     expect(mocks.refreshOfficialAccountConnection).not.toHaveBeenCalled();
     expect(mocks.getOfficialAccountConnection).toHaveBeenCalledOnce();
     expect(mocks.confirmSessionLogout).not.toHaveBeenCalled();
+  });
+
+  it.each(['missing', 'disabled', 'unselected'] as const)('requires an enabled account-specific node when %s', async (reason) => {
+    if (reason === 'missing') mocks.listProxyNodes.mockResolvedValue([]);
+    if (reason === 'disabled') mocks.listProxyNodes.mockResolvedValue([{ id: 'proxy-1', label: '代理一', protocol: 'HTTP', enabled: false }]);
+    if (reason === 'unselected') mocks.getOfficialAccountConnection.mockResolvedValue({ ...connection, proxyNodeId: null });
+    render(ui());
+    await waitFor(() => expect(screen.getByRole('button', { name: '从本机参数文件填入' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: '高级：手动导入授权' }));
+    expect(screen.getByRole('button', { name: '使用预置授权' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '保存授权' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '刷新官方账户与会话' })).toBeDisabled();
+    expect(screen.getByRole('link', { name: '管理代理节点' })).toHaveAttribute('href', '/proxy-nodes');
+    expect(screen.getByText(/每个官方账户必须选择一个已启用的代理节点/)).toBeInTheDocument();
+    expect(screen.queryByText('直连（不使用代理）')).not.toBeInTheDocument();
+    expect(mocks.applyOfficialAuthorizationPreset).not.toHaveBeenCalled();
+    expect(mocks.saveOfficialAccountConnection).not.toHaveBeenCalled();
+    expect(mocks.refreshOfficialAccountConnection).not.toHaveBeenCalled();
+  });
+
+  it('keeps a newly selected node unsaved until applying authorization and prevents refresh through the old node', async () => {
+    mocks.listProxyNodes.mockResolvedValue([{ id: 'proxy-1', label: '代理一', protocol: 'HTTP', enabled: true },
+      { id: 'proxy-2', label: '代理二', protocol: 'SOCKS5', enabled: true }]);
+    mocks.applyOfficialAuthorizationPreset.mockResolvedValue({ ...connection, proxyNodeId: 'proxy-2', version: 6 });
+    await show();
+    fireEvent.mouseDown(screen.getByRole('combobox', { name: '访问代理节点' }));
+    fireEvent.click(await screen.findByText('代理二 · SOCKS5'));
+    expect(screen.getByRole('button', { name: '刷新官方账户与会话' })).toBeDisabled();
+    expect(screen.getByText(/节点选择尚未保存/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '使用预置授权' }));
+    await waitFor(() => expect(mocks.applyOfficialAuthorizationPreset).toHaveBeenCalledExactlyOnceWith('account-1', {
+      version: 5, proxyNodeId: 'proxy-2', presetRevision: 'revision-1',
+    }));
+    await waitFor(() => expect(screen.getByRole('button', { name: '刷新官方账户与会话' })).toBeEnabled());
   });
 
   it.each(['OFFICIAL_PRESET_REVISION_CONFLICT', 'OFFICIAL_CONNECTION_VERSION_CONFLICT'])('shows a safe %s without retrying or replacing credentials', async (code) => {

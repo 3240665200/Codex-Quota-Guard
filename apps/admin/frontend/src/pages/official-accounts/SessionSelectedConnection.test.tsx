@@ -20,7 +20,7 @@ vi.mock('./BrowserLoginPanel', () => ({ default: () => <span>登录辅助入口<
 vi.mock('./SessionBindingQueue', () => ({ default: () => null }));
 
 const connection = { configured: true, encryptionReady: true, status: 'CONNECTED', requestedAccountId: 'workspace-1',
-  proxyNodeId: null, hasAuthorization: true, hasCookie: true, version: 5 };
+  proxyNodeId: 'proxy-1', hasAuthorization: true, hasCookie: true, version: 5 };
 const snapshot = { connection, account: { email: 'selected@example.test' }, fetchedAt: '2026-10-15T00:00:00Z',
   sessions: { showSessionManager: true, devices: [
     { renderId: 'row-1', sessionId: 'session-1', displayName: '绑定设备', applications: [], currentDevice: false, trustedDevice: false },
@@ -51,7 +51,8 @@ describe('会话表手动勾选登出范围', () => {
     vi.clearAllMocks(); mocks.isSecureManagementContext.mockReturnValue(true);
     mocks.isSupportedManagementContext.mockReturnValue(true);
     mocks.getOfficialAuthorizationPreset.mockResolvedValue({ available: false, requestedAccountId: null, revision: null, errorCode: null });
-    mocks.getOfficialAccountConnection.mockResolvedValue(connection); mocks.listProxyNodes.mockResolvedValue([]);
+    mocks.getOfficialAccountConnection.mockResolvedValue(connection);
+    mocks.listProxyNodes.mockResolvedValue([{ id: 'proxy-1', label: '工作区出口', protocol: 'HTTP', enabled: true }]);
     mocks.getOfficialAccountSessions.mockResolvedValue(snapshot); mocks.listSessionBindings.mockResolvedValue([binding]);
     mocks.getSessionLogoutCurrent.mockResolvedValue({ operation: null }); mocks.releaseSessionBinding.mockResolvedValue(undefined);
     mocks.refreshOfficialAccountConnection.mockResolvedValue({ ...snapshot, fetchedAt: '2026-10-15T00:01:00Z' });
