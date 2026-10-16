@@ -14,7 +14,17 @@ usage() {
     '服务名：backend、web、postgres；stop 保留数据库，不提供删除数据命令。'
 }
 
+prepare_secrets_directory() {
+  local secrets_dir="$deploy_dir/secrets"
+  [[ ! -L "$secrets_dir" ]] || fail 'secrets 目录不能是符号链接。'
+  if [[ ! -e "$secrets_dir" ]]; then mkdir -m 700 -- "$secrets_dir"; fi
+  [[ -d "$secrets_dir" ]] || fail 'secrets 必须是目录。'
+  # Existing files, permissions and owners belong to the operator. Do not read,
+  # generate or chmod/chown the optional private authorization preset.
+}
+
 initialize() {
+  prepare_secrets_directory
   if [[ -e "$env_file" || -L "$env_file" ]]; then
     printf '%s\n' '配置已存在，保留原密码与密钥，不会重新生成。'
     return
@@ -123,6 +133,7 @@ esac
 check_runtime
 case "$command_name" in
   up)
+    prepare_secrets_directory
     compose up -d --build --wait --wait-timeout 240
     compose ps
     printf '%s\n' '服务已启动，请通过 .env 中的 PUBLIC_ORIGIN 访问后台，客户端也填写同一地址。'

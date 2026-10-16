@@ -31,6 +31,7 @@
         "JWT_SECRET": "${JWT_SECRET:?JWT secret is required}",
         "MAIL_ASSISTANCE_ENCRYPTION_KEY": "${MAIL_ASSISTANCE_ENCRYPTION_KEY:?Preserve the mailbox encryption key}",
         "OFFICIAL_SESSION_ENCRYPTION_KEY": "${OFFICIAL_SESSION_ENCRYPTION_KEY:-}",
+        "OFFICIAL_AUTHORIZATION_PRESET_FILE": "/run/secrets/official-authorization.json",
         "MANAGED_PROXY_ENCRYPTION_KEY": "${MANAGED_PROXY_ENCRYPTION_KEY:-}",
         "MANAGED_PROXY_MAX_PROCESSES": "${MANAGED_PROXY_MAX_PROCESSES:-4}",
         "MANAGED_PROXY_ALLOW_PRIVATE_NODES": "${MANAGED_PROXY_ALLOW_PRIVATE_NODES:-false}",
@@ -69,7 +70,16 @@
       "tmpfs": [
         "/tmp:rw,noexec,nosuid,size=128m"
       ],
-      "image": "minjm/codex-quota-guard-backend:0.3.19",
+      "volumes": [
+        {
+          "type": "bind",
+          "source": "./secrets",
+          "target": "/run/secrets",
+          "read_only": true,
+          "bind": { "create_host_path": false }
+        }
+      ],
+      "image": "minjm/codex-quota-guard-backend:0.3.20",
       "platform": "linux/amd64",
       "pull_policy": "missing"
     },
@@ -165,7 +175,7 @@
       "tmpfs": [
         "/tmp:rw,noexec,nosuid,size=64m"
       ],
-      "image": "minjm/codex-quota-guard-web:0.3.19",
+      "image": "minjm/codex-quota-guard-web:0.3.20",
       "platform": "linux/amd64",
       "pull_policy": "missing"
     }

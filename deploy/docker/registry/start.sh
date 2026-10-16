@@ -25,6 +25,9 @@ compose() {
 start_services() {
   require_file "$env_file"
   require_file "$compose_file"
+  [[ ! -L "$bundle_dir/secrets" ]] || fail 'secrets 目录不能是符号链接。'
+  if [[ ! -e "$bundle_dir/secrets" ]]; then mkdir -m 700 -- "$bundle_dir/secrets"; fi
+  [[ -d "$bundle_dir/secrets" ]] || fail 'secrets 必须是目录。'
   command -v docker >/dev/null || fail '未安装 Docker Engine。'
   docker info >/dev/null 2>&1 || fail 'Docker 未运行或当前用户无权访问。'
   docker compose version --short >/dev/null || fail '需要 Docker Compose v2 插件。'

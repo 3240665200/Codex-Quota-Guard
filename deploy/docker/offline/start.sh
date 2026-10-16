@@ -100,6 +100,9 @@ verify_compose_images() {
 start_services() {
   require_file "$env_file"
   require_file "$compose_file"
+  [[ ! -L "$bundle_dir/secrets" ]] || fail 'secrets 目录不能是符号链接。'
+  if [[ ! -e "$bundle_dir/secrets" ]]; then mkdir -m 700 -- "$bundle_dir/secrets"; fi
+  [[ -d "$bundle_dir/secrets" ]] || fail 'secrets 必须是目录。'
   read_image_manifest
   require_docker
   docker compose version --short >/dev/null || fail '需要 Docker Compose v2 插件。'

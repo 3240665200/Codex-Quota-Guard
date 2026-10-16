@@ -1,0 +1,2 @@
+# Runtime-only official authorization presets; never publish real credentials.
+secrets/

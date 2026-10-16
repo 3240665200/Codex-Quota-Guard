@@ -50,6 +50,7 @@ services:
       MAIL_ASSISTANCE_ENCRYPTION_KEY: ${MAIL_ASSISTANCE_ENCRYPTION_KEY:?Preserve the mailbox encryption key}
       # Preserve existing keys. Missing official-session keys also prevent new bindings.
       OFFICIAL_SESSION_ENCRYPTION_KEY: ${OFFICIAL_SESSION_ENCRYPTION_KEY:-}
+      OFFICIAL_AUTHORIZATION_PRESET_FILE: /run/secrets/official-authorization.json
       MANAGED_PROXY_ENCRYPTION_KEY: ${MANAGED_PROXY_ENCRYPTION_KEY:-}
       MANAGED_PROXY_MAX_PROCESSES: ${MANAGED_PROXY_MAX_PROCESSES:-4}
       MANAGED_PROXY_ALLOW_PRIVATE_NODES: ${MANAGED_PROXY_ALLOW_PRIVATE_NODES:-false}
@@ -64,6 +65,13 @@ services:
       postgres:
         condition: service_healthy
     networks: [database, application]
+    volumes:
+      - type: bind
+        source: ./secrets
+        target: /run/secrets
+        read_only: true
+        bind:
+          create_host_path: false
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=128m
