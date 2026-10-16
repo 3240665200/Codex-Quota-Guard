@@ -27,7 +27,7 @@ describe('代理节点管理', () => {
       egressIp: node.egressIp, country: node.country, region: node.region, city: node.city, testedAt: node.testedAt });
   });
 
-  it('lists node endpoint, egress location and test state without import or subscription controls', async () => {
+  it('lists node endpoint, egress location and test state with a subscription management entry', async () => {
     expect(routes).toContainEqual(expect.objectContaining({ path: '/proxy-nodes', access: 'canAdmin', name: '代理节点' }));
     render(<AntApp><ProxyNodesPage /></AntApp>);
     expect(await screen.findByText('香港出口')).toBeInTheDocument();
@@ -35,7 +35,7 @@ describe('代理节点管理', () => {
     expect(screen.getByText('203.0.113.7')).toBeInTheDocument();
     expect(screen.getByText('HK / Hong Kong / Central')).toBeInTheDocument();
     expect(screen.getByText('测试成功')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /导入|订阅/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '管理订阅' })).toBeInTheDocument();
     expect(screen.queryByText(/VLESS.*VMess.*Trojan.*SS/)).not.toBeInTheDocument();
   });
 
