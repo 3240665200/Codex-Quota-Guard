@@ -146,6 +146,19 @@ struct GuardLeaseRecord {
     policy: String,
 }
 
+fn evidence_lease_matches(
+    record: &GuardLeaseRecord,
+    held_id: &str,
+    current_pid: u32,
+    current_created_at: Option<u64>,
+) -> bool {
+    record.lease_id == held_id
+        && record.policy == conflict_evidence::POLICY
+        && record.pid == current_pid
+        && current_created_at
+            .is_some_and(|created_at| created_at != 0 && created_at == record.created_at)
+}
+
 struct GuardLease {
     id: String,
     path: PathBuf,
@@ -316,7 +329,9 @@ impl StartupGate {
         let Some(record) = read_lease(&lease.path) else {
             return false;
         };
-        if record.lease_id != lease.id || record.policy != conflict_evidence::POLICY {
+        // The lease file is user writable. It may withdraw permission, but it
+        // cannot choose the identity placed inside a privileged native proof.
+        if !evidence_lease_matches(&record, &lease.id, std::process::id(), process_created_at()) {
             return false;
         }
         let evidence = ConflictEvidence {
@@ -770,16 +785,38 @@ mod tests {
     #[test]
     fn native_evidence_never_adopts_a_public_lease_process_identity() {
         let mut record = GuardLeaseRecord {
-            pid: 10, created_at: 100, lease_id: "held-lease".into(),
+            pid: 10,
+            created_at: 100,
+            lease_id: "held-lease".into(),
             policy: conflict_evidence::POLICY.into(),
         };
         assert!(evidence_lease_matches(&record, "held-lease", 10, Some(100)));
-        assert!(!evidence_lease_matches(&record, "held-lease", 20, Some(100)));
-        assert!(!evidence_lease_matches(&record, "held-lease", 10, Some(200)));
+        assert!(!evidence_lease_matches(
+            &record,
+            "held-lease",
+            20,
+            Some(100)
+        ));
+        assert!(!evidence_lease_matches(
+            &record,
+            "held-lease",
+            10,
+            Some(200)
+        ));
         assert!(!evidence_lease_matches(&record, "held-lease", 10, None));
-        assert!(!evidence_lease_matches(&record, "another-lease", 10, Some(100)));
+        assert!(!evidence_lease_matches(
+            &record,
+            "another-lease",
+            10,
+            Some(100)
+        ));
         record.policy = "legacy".into();
-        assert!(!evidence_lease_matches(&record, "held-lease", 10, Some(100)));
+        assert!(!evidence_lease_matches(
+            &record,
+            "held-lease",
+            10,
+            Some(100)
+        ));
     }
 
     fn restore_event(epoch: &str, count: u64) -> NoticeEvent {
