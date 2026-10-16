@@ -91,6 +91,20 @@ function Set-MeterServerInConfig($Configuration, [string]$Url) {
     return $Configuration
 }
 
+# Import only the installer helpers; its dot-source guard prevents service writes.
+. (Join-Path $PSScriptRoot 'install-meter-service.ps1') -ServerUrl $ServerUrl -ExpectedUserSid $ExpectedUserSid
+
+function Initialize-MeterStartupConflictEvidence([bool]$IsAdmin, [string]$UserSid) {
+    if (-not $IsAdmin) { return $false }
+    try {
+        Initialize-MeterConflictEvidenceDirectory $UserSid | Out-Null
+        return $true
+    } catch {
+        Write-Warning ('Conflict evidence channel is unavailable; automatic conflict cleanup is disabled. ' + $_.Exception.Message)
+        return $false
+    }
+}
+
 # Dot-sourcing exposes the pure startup policy to tests without changing services.
 if ($MyInvocation.InvocationName -eq '.') { return }
 
@@ -157,8 +171,9 @@ if ($service -and $bundledHash) {
     }
 }
 $action = Get-MeterStartupAction $state $installedUrl $ServerUrl $installedHash $bundledHash $verifiedInstalledHash
+Initialize-MeterStartupConflictEvidence $isAdmin $currentSid | Out-Null
 if ($action -eq 'READY') {
-    if ($bundledIdentity -and $verifiedInstalledHash -eq $bundledHash -and
+    if ($isAdmin -and $bundledIdentity -and $verifiedInstalledHash -eq $bundledHash -and
         [string]$connection.binaryVersion -ne $bundledIdentity.binaryVersion) {
         Write-MeterConnection $connectionFile $ServerUrl $bundledIdentity
     }

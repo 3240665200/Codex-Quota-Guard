@@ -130,6 +130,246 @@ function Resolve-MeterOwnerSid([string]$CurrentSid, [string]$ExistingSid) {
     return $CurrentSid
 }
 
+function Get-MeterEvidenceCommonApplicationData {
+    # Environment variables are writable by the launching user, including during UAC.
+    $directory = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+    if (-not $directory -or $directory -notmatch '^[A-Za-z]:\\') {
+        throw 'Windows CommonApplicationData must be an available local directory.'
+    }
+    return [IO.Path]::GetFullPath($directory).TrimEnd([char]'\')
+}
+
+function Get-MeterConflictEvidencePath([string]$UserSid) {
+    if (-not $UserSid -or $UserSid -notmatch '^S-1-(?:\d+-)+\d+$') {
+        throw 'The conflict evidence owner SID is invalid.'
+    }
+    $parsedSid = [Security.Principal.SecurityIdentifier]::new($UserSid)
+    if ($parsedSid.Value -cne $UserSid) { throw 'The conflict evidence owner SID is not canonical.' }
+    $directory = Join-Path (Get-MeterEvidenceCommonApplicationData) 'CodexQuotaGuardConflictEvidence'
+    return Join-Path (Join-Path $directory $UserSid) 'ccswitch-conflict-evidence.json'
+}
+
+function Assert-MeterEvidenceDirectorySecurity([string]$Sddl) {
+    $security = [Security.AccessControl.RawSecurityDescriptor]::new($Sddl)
+    $trusted = @('S-1-5-18', 'S-1-5-32-544')
+    if (-not $security.Owner -or $security.Owner.Value -notin $trusted -or
+        -not ([int]$security.ControlFlags -band 0x1000) -or
+        $null -eq $security.DiscretionaryAcl -or $security.DiscretionaryAcl.Count -ne 2) {
+        throw 'The conflict evidence directory has an untrusted owner or ACL.'
+    }
+    $seen = @{}
+    foreach ($ace in $security.DiscretionaryAcl) {
+        if ($ace -isnot [Security.AccessControl.CommonAce] -or $ace.IsCallback -or
+            $ace.AceQualifier -ne [Security.AccessControl.AceQualifier]::AccessAllowed -or
+            [int]$ace.AceFlags -ne 3 -or $ace.AccessMask -ne 0x1f01ff -or
+            $ace.SecurityIdentifier.Value -notin $trusted -or $seen.ContainsKey($ace.SecurityIdentifier.Value)) {
+            throw 'The conflict evidence directory ACL must grant only SYSTEM and Administrators full control.'
+        }
+        $seen[$ace.SecurityIdentifier.Value] = $true
+    }
+}
+
+function Assert-MeterEvidenceAncestorSecurity([string]$Sddl) {
+    $security = [Security.AccessControl.RawSecurityDescriptor]::new($Sddl)
+    $trusted = @('S-1-5-18', 'S-1-5-32-544',
+        'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+    if (-not $security.Owner -or $security.Owner.Value -notin $trusted -or $null -eq $security.DiscretionaryAcl) {
+        throw 'The conflict evidence ancestor has an untrusted owner or ACL.'
+    }
+    foreach ($ace in $security.DiscretionaryAcl) {
+        if ($ace -isnot [Security.AccessControl.CommonAce] -or $ace.IsCallback) {
+            throw 'The conflict evidence ancestor has an unsupported ACL.'
+        }
+        if ($ace.AceQualifier -eq [Security.AccessControl.AceQualifier]::AccessAllowed -and
+            -not ([int]$ace.AceFlags -band 8) -and
+            $ace.SecurityIdentifier.Value -notin $trusted -and ($ace.AccessMask -band 0x100d0040)) {
+            throw 'The conflict evidence ancestor allows an untrusted principal to replace or change it.'
+        }
+    }
+}
+
+function Initialize-MeterEvidenceNative {
+    if ('CodexQuotaGuard.MeterEvidenceNative' -as [type]) { return }
+    Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+namespace CodexQuotaGuard {
+    public static class MeterEvidenceNative {
+        [StructLayout(LayoutKind.Sequential)]
+        private struct SecurityAttributes {
+            public int Length;
+            public IntPtr Descriptor;
+            [MarshalAs(UnmanagedType.Bool)] public bool InheritHandle;
+        }
+        [StructLayout(LayoutKind.Sequential)]
+        private struct AttributeTagInfo { public uint Attributes; public uint ReparseTag; }
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern SafeFileHandle CreateFileW(string name, uint access, uint share,
+            IntPtr attributes, uint creation, uint flags, IntPtr template);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool CreateDirectoryW(string path, ref SecurityAttributes attributes);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetFileInformationByHandleEx(SafeFileHandle handle, int infoClass,
+            out AttributeTagInfo information, uint size);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern uint GetFinalPathNameByHandleW(SafeFileHandle handle, StringBuilder path,
+            uint length, uint flags);
+        [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool ConvertStringSecurityDescriptorToSecurityDescriptorW(string sddl,
+            uint revision, out IntPtr descriptor, out uint size);
+        [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool ConvertSecurityDescriptorToStringSecurityDescriptorW(IntPtr descriptor,
+            uint revision, uint information, out IntPtr sddl, out uint size);
+        [DllImport("advapi32.dll")]
+        private static extern uint GetSecurityInfo(SafeFileHandle handle, int type, uint information,
+            out IntPtr owner, out IntPtr group, out IntPtr dacl, out IntPtr sacl, out IntPtr descriptor);
+        [DllImport("kernel32.dll")] private static extern IntPtr LocalFree(IntPtr memory);
+        public static SafeFileHandle OpenDirectory(string path) {
+            // LIST_DIRECTORY makes the pin participate in rename/delete sharing checks.
+            // Attribute-only opens bypass sharing; ancestors also retain pinned children.
+            SafeFileHandle handle = CreateFileW(path, 0x00020081, 1, IntPtr.Zero, 3,
+                0x02200000, IntPtr.Zero); // LIST_DIRECTORY | READ_CONTROL | READ_ATTRIBUTES; OPEN_REPARSE_POINT.
+            if (handle.IsInvalid) {
+                int error = Marshal.GetLastWin32Error(); handle.Dispose();
+                throw new Win32Exception(error, "Could not pin conflict evidence directory: " + path);
+            }
+            return handle;
+        }
+        public static uint Attributes(SafeFileHandle handle) {
+            AttributeTagInfo information;
+            if (!GetFileInformationByHandleEx(handle, 9, out information, 8))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            return information.Attributes;
+        }
+        public static string FinalPath(SafeFileHandle handle) {
+            StringBuilder path = new StringBuilder(512);
+            uint length = GetFinalPathNameByHandleW(handle, path, (uint)path.Capacity, 0);
+            if (length == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
+            if (length >= path.Capacity) {
+                path = new StringBuilder((int)length + 1);
+                length = GetFinalPathNameByHandleW(handle, path, (uint)path.Capacity, 0);
+                if (length == 0 || length >= path.Capacity) throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+            string result = path.ToString();
+            return result.StartsWith(@"\\?\", StringComparison.Ordinal) ? result.Substring(4) : result;
+        }
+        public static string SecurityDescriptor(SafeFileHandle handle) {
+            IntPtr owner, group, dacl, sacl, descriptor;
+            uint error = GetSecurityInfo(handle, 1, 5, out owner, out group, out dacl, out sacl, out descriptor);
+            if (error != 0) throw new Win32Exception((int)error);
+            try {
+                IntPtr sddl; uint size;
+                if (!ConvertSecurityDescriptorToStringSecurityDescriptorW(descriptor, 1, 5, out sddl, out size))
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                try { return Marshal.PtrToStringUni(sddl); } finally { LocalFree(sddl); }
+            } finally { LocalFree(descriptor); }
+        }
+        public static void CreateProtectedDirectory(string path) {
+            IntPtr descriptor; uint size;
+            if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    "O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)", 1, out descriptor, out size))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            try {
+                SecurityAttributes attributes = new SecurityAttributes();
+                attributes.Length = Marshal.SizeOf(typeof(SecurityAttributes));
+                attributes.Descriptor = descriptor;
+                if (!CreateDirectoryW(path, ref attributes)) {
+                    int error = Marshal.GetLastWin32Error();
+                    // Existing names are subsequently pinned and validated, never repaired.
+                    if (error != 183) throw new Win32Exception(error, "Could not create protected conflict evidence directory.");
+                }
+            } finally { LocalFree(descriptor); }
+        }
+    }
+}
+'@
+}
+
+function Open-MeterEvidenceDirectory([string]$Path) {
+    Initialize-MeterEvidenceNative
+    return [CodexQuotaGuard.MeterEvidenceNative]::OpenDirectory($Path)
+}
+function Get-MeterEvidenceDirectoryAttributes($Handle) {
+    return [CodexQuotaGuard.MeterEvidenceNative]::Attributes($Handle)
+}
+function Get-MeterEvidenceDirectorySddl($Handle) {
+    return [CodexQuotaGuard.MeterEvidenceNative]::SecurityDescriptor($Handle)
+}
+function Get-MeterEvidenceDirectoryPath($Handle) {
+    return [CodexQuotaGuard.MeterEvidenceNative]::FinalPath($Handle)
+}
+function Get-MeterEvidenceChildDirectories([string]$Path) {
+    return [IO.Directory]::GetDirectories($Path)
+}
+function Assert-MeterEvidencePinnedPath($Handle, [string]$ExpectedPath) {
+    $actual = (Get-MeterEvidenceDirectoryPath $Handle).TrimEnd([char]'\')
+    if (-not $actual.Equals([IO.Path]::GetFullPath($ExpectedPath).TrimEnd([char]'\'), [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'The conflict evidence directory handle resolves through a different path.'
+    }
+}
+function Open-MeterEvidenceCommonDataAnchor([string]$CommonDirectory) {
+    # Sharing flags alone do not stop metadata-only junction conversion of an
+    # empty directory. Keep an existing trusted child pinned before the first create.
+    foreach ($child in @(Get-MeterEvidenceChildDirectories $CommonDirectory)) {
+        $anchor = $null
+        try {
+            $anchor = Open-MeterEvidenceDirectory $child
+            Assert-MeterEvidencePinnedPath $anchor $child
+            $attributes = Get-MeterEvidenceDirectoryAttributes $anchor
+            if (($attributes -band 0x400) -or -not ($attributes -band 0x10)) { throw 'Unsafe anchor.' }
+            Assert-MeterEvidenceAncestorSecurity (Get-MeterEvidenceDirectorySddl $anchor)
+            return $anchor
+        } catch {
+            if ($anchor) { $anchor.Dispose() }
+        }
+    }
+    throw 'Windows CommonApplicationData has no trusted directory child to pin safely.'
+}
+function New-MeterEvidenceProtectedDirectory([string]$Path) {
+    Initialize-MeterEvidenceNative
+    [CodexQuotaGuard.MeterEvidenceNative]::CreateProtectedDirectory($Path)
+}
+
+function Initialize-MeterConflictEvidenceDirectory([string]$UserSid) {
+    $evidencePath = Get-MeterConflictEvidencePath $UserSid
+    $userDirectory = [IO.Path]::GetDirectoryName($evidencePath)
+    $rootDirectory = [IO.Path]::GetDirectoryName($userDirectory)
+    $commonDirectory = [IO.Path]::GetDirectoryName($rootDirectory)
+    $volume = [IO.Path]::GetPathRoot($commonDirectory)
+    $ancestors = @($volume)
+    $component = $volume
+    foreach ($name in $commonDirectory.Substring($volume.Length).Split([char]'\')) {
+        if ($name) { $component = Join-Path $component $name; $ancestors += $component }
+    }
+    $pins = [Collections.Generic.List[object]]::new()
+    try {
+        foreach ($directory in @($ancestors) + @($rootDirectory, $userDirectory)) {
+            $isChannelDirectory = $directory -eq $rootDirectory -or $directory -eq $userDirectory
+            if ($isChannelDirectory) { New-MeterEvidenceProtectedDirectory $directory }
+            $pin = Open-MeterEvidenceDirectory $directory
+            $pins.Add($pin)
+            Assert-MeterEvidencePinnedPath $pin $directory
+            $attributes = Get-MeterEvidenceDirectoryAttributes $pin
+            if (($attributes -band 0x400) -or -not ($attributes -band 0x10)) {
+                throw 'The conflict evidence directory chain contains a reparse point or non-directory.'
+            }
+            $sddl = Get-MeterEvidenceDirectorySddl $pin
+            if ($isChannelDirectory) { Assert-MeterEvidenceDirectorySecurity $sddl }
+            else { Assert-MeterEvidenceAncestorSecurity $sddl }
+            if ($directory -eq $commonDirectory) {
+                $anchor = Open-MeterEvidenceCommonDataAnchor $commonDirectory
+                $pins.Add($anchor)
+            }
+        }
+        return $evidencePath
+    } finally {
+        for ($index = $pins.Count - 1; $index -ge 0; $index--) { $pins[$index].Dispose() }
+    }
+}
+
 # Loading these helpers for regression checks never touches a service or config.
 if ($MyInvocation.InvocationName -eq '.') { return }
 
@@ -249,6 +489,12 @@ if ($service) {
         [Guid]::Parse((Get-Content -LiteralPath $deviceIdFile -Raw).Trim()) -ne $existing.deviceId) {
         throw 'This meter service belongs to another Windows profile or device.'
     }
+}
+try {
+    Initialize-MeterConflictEvidenceDirectory (Resolve-MeterOwnerSid $identity.User.Value '') | Out-Null
+} catch {
+    # Evidence is optional: unsafe/missing channels disable automatic conflict cleanup.
+    Write-Warning ('Conflict evidence channel is unavailable; automatic conflict cleanup is disabled. ' + $_.Exception.Message)
 }
 $setupStage = 'PREPARE_FILES'
 $setupReason = ''
