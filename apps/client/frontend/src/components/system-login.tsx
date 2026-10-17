@@ -35,6 +35,8 @@ export function SystemLoginPage({
     queryKey: ["server-config"],
     queryFn: api.serverConfig,
     retry: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
   useEffect(() => {
     if (serverConfigQuery.data) {
@@ -49,7 +51,9 @@ export function SystemLoginPage({
     onSuccess: (config) => {
       setServerUrl(config.url);
       setNeedsRestart(true);
-      toast.success("服务器地址已保存，请从系统托盘退出客户端后重新启动。");
+      toast.success(
+        "服务器与统计程序地址已同步，请从托盘退出并重新启动，然后登录。",
+      );
     },
     onError: (error) => toast.error(getApiErrorMessage(error)),
   });
@@ -70,6 +74,7 @@ export function SystemLoginPage({
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (saveServerMutation.isPending) return;
     if (needsRestart) {
       toast.error(
         "服务器地址已更改，请从系统托盘退出客户端后重新启动，再登录。",
@@ -172,7 +177,11 @@ export function SystemLoginPage({
                 <Button
                   type="submit"
                   className="mt-2 w-full"
-                  disabled={loginMutation.isPending || needsRestart}
+                  disabled={
+                    loginMutation.isPending ||
+                    saveServerMutation.isPending ||
+                    needsRestart
+                  }
                 >
                   {loginMutation.isPending ? (
                     <LoaderCircle
@@ -193,6 +202,7 @@ export function SystemLoginPage({
                   className="w-full justify-start"
                   onClick={() => setShowServerSettings((shown) => !shown)}
                   aria-expanded={showServerSettings}
+                  disabled={saveServerMutation.isPending}
                 >
                   <Settings2 data-icon="inline-start" />
                   服务器设置
@@ -209,6 +219,9 @@ export function SystemLoginPage({
                       autoCapitalize="none"
                       spellCheck={false}
                       value={serverUrl}
+                      disabled={
+                        saveServerMutation.isPending || loginMutation.isPending
+                      }
                       onChange={(event) => setServerUrl(event.target.value)}
                       placeholder="http://192.168.0.102:8080"
                       className="h-10 rounded-md border bg-background px-3 text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring"
@@ -223,17 +236,25 @@ export function SystemLoginPage({
                       variant="outline"
                       disabled={
                         saveServerMutation.isPending ||
-                        serverConfigQuery.isPending
+                        serverConfigQuery.isPending ||
+                        loginMutation.isPending
                       }
                       onClick={() => saveServerMutation.mutate()}
                     >
                       {saveServerMutation.isPending
-                        ? "保存中…"
+                        ? "正在同步统计程序…"
                         : "保存服务器地址"}
                     </Button>
-                    {needsRestart ? (
+                    {needsRestart &&
+                    !saveServerMutation.isPending &&
+                    !saveServerMutation.isError ? (
                       <p role="status" className="text-sm text-primary">
-                        已保存。请从系统托盘退出客户端后重新启动，再登录系统。
+                        服务器与统计程序地址已同步，请从托盘退出并重新启动，然后登录。
+                      </p>
+                    ) : null}
+                    {saveServerMutation.isError ? (
+                      <p role="alert" className="text-sm text-destructive">
+                        {getApiErrorMessage(saveServerMutation.error)}
                       </p>
                     ) : null}
                     {serverConfigQuery.isError ? (

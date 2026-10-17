@@ -127,6 +127,7 @@ describe("ClientApp system session gate", () => {
     listenMock.mockResolvedValue(vi.fn());
     vi.mocked(toast.warning).mockClear();
     vi.mocked(toast.success).mockClear();
+    vi.mocked(toast.error).mockClear();
     invokeMock.mockImplementation(async (command) => {
       switch (command) {
         case "system_access":
@@ -260,8 +261,67 @@ describe("ClientApp system session gate", () => {
     expect(invokeMock).toHaveBeenCalledWith("server_config_save", {
       config: { url: "http://192.168.0.102:8080" },
     });
-    expect(await screen.findByText(/点击“重新检查”以应用新地址/)).toBeVisible();
+    expect(await screen.findByText(/服务器与统计程序地址已同步/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "重新检查" })).toBeDisabled();
     expect(invokeMock).not.toHaveBeenCalledWith("system_current");
+  });
+
+  it("locks startup settings and retry while the meter address is syncing", async () => {
+    const user = userEvent.setup();
+    let completeSave!: (config: { url: string }) => void;
+    const pendingSave = new Promise<{ url: string }>((resolve) => {
+      completeSave = resolve;
+    });
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command, args) => {
+      if (command === "startup_gate_check") {
+        return { state: "METER_UNAVAILABLE", ccSwitchTerminated: false };
+      }
+      if (command === "server_config_save") return pendingSave;
+      return original(command, args);
+    });
+    renderClientApp();
+
+    const address = await screen.findByLabelText("中央服务器地址");
+    await waitFor(() => expect(address).toHaveValue("http://127.0.0.1:8080"));
+    await user.clear(address);
+    await user.type(address, "https://next.example.com");
+    await user.click(screen.getByRole("button", { name: "保存地址" }));
+
+    expect(address).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "正在同步统计程序…" }),
+    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: "重新检查" })).toBeDisabled();
+    expect(screen.queryByText(/地址已同步/)).not.toBeInTheDocument();
+
+    await act(async () => completeSave({ url: "https://next.example.com" }));
+    expect(await screen.findByText(/地址已同步/)).toBeVisible();
+    expect(address).toHaveValue("https://next.example.com");
+    expect(screen.getByRole("button", { name: "重新检查" })).toBeDisabled();
+  });
+
+  it("keeps startup retry available when meter address synchronization fails", async () => {
+    const user = userEvent.setup();
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command, args) => {
+      if (command === "startup_gate_check") {
+        return { state: "METER_UNAVAILABLE", ccSwitchTerminated: false };
+      }
+      if (command === "server_config_save") {
+        throw new Error(
+          "服务器地址未保存。同步统计程序地址需要管理员授权，取消授权后地址不会保存。",
+        );
+      }
+      return original(command, args);
+    });
+    renderClientApp();
+    await user.click(await screen.findByRole("button", { name: "保存地址" }));
+
+    expect(await screen.findByText(/服务器地址未保存/)).toBeVisible();
+    expect(screen.queryByText(/地址已同步/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重新检查" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "保存地址" })).toBeEnabled();
   });
 
   it("requires the product system account before rendering the dashboard", async () => {
@@ -519,9 +579,103 @@ describe("ClientApp system session gate", () => {
         },
       });
     });
-    expect(
-      await screen.findByText(/从系统托盘退出客户端后重新启动/),
-    ).toBeVisible();
+    expect(await screen.findByText(/从托盘退出并重新启动/)).toBeVisible();
     expect(screen.getByRole("button", { name: "登录系统" })).toBeDisabled();
+  });
+
+  it("prevents login or another edit until meter synchronization finishes", async () => {
+    const user = userEvent.setup();
+    let completeSave!: (config: { url: string }) => void;
+    const pendingSave = new Promise<{ url: string }>((resolve) => {
+      completeSave = resolve;
+    });
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command, args) =>
+      command === "server_config_save" ? pendingSave : original(command, args),
+    );
+    renderClientApp();
+    await user.click(await screen.findByRole("button", { name: "服务器设置" }));
+    const address = screen.getByLabelText("服务器地址");
+    await waitFor(() => expect(address).toHaveValue("http://127.0.0.1:8080"));
+    await user.clear(address);
+    await user.type(address, "https://next.example.com");
+    await user.click(screen.getByRole("button", { name: "保存服务器地址" }));
+
+    expect(address).toBeDisabled();
+    expect(screen.getByRole("button", { name: "登录系统" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "正在同步统计程序…" }),
+    ).toBeDisabled();
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(screen.queryByText(/地址已同步/)).not.toBeInTheDocument();
+
+    await act(async () => completeSave({ url: "https://next.example.com" }));
+    expect(await screen.findByText(/地址已同步/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "登录系统" })).toBeDisabled();
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "system_login",
+      expect.anything(),
+    );
+  });
+
+  it("shows a cancelled synchronization as an error and allows saving again", async () => {
+    const user = userEvent.setup();
+    const original = invokeMock.getMockImplementation()!;
+    let rejected = true;
+    invokeMock.mockImplementation(async (command, args) => {
+      if (command === "server_config_save" && rejected) {
+        throw new Error(
+          "服务器地址未保存。同步统计程序地址需要管理员授权，取消授权后地址不会保存。",
+        );
+      }
+      return original(command, args);
+    });
+    renderClientApp();
+    await user.click(await screen.findByRole("button", { name: "服务器设置" }));
+    await user.click(screen.getByRole("button", { name: "保存服务器地址" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "服务器地址未保存",
+    );
+    expect(screen.queryByText(/地址已同步/)).not.toBeInTheDocument();
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "登录系统" })).toBeEnabled();
+    expect(screen.getByLabelText("服务器地址")).toBeEnabled();
+
+    rejected = false;
+    await user.click(screen.getByRole("button", { name: "保存服务器地址" }));
+    expect(await screen.findByText(/地址已同步/)).toBeVisible();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("keeps server synchronization disabled while a login is in progress", async () => {
+    const user = userEvent.setup();
+    let completeLogin!: (session: typeof signedIn) => void;
+    const pendingLogin = new Promise<typeof signedIn>((resolve) => {
+      completeLogin = resolve;
+    });
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command, args) =>
+      command === "system_login" ? pendingLogin : original(command, args),
+    );
+    renderClientApp();
+    await user.click(await screen.findByRole("button", { name: "服务器设置" }));
+    await user.type(screen.getByLabelText("系统账号"), "alice@example.com");
+    await user.type(screen.getByLabelText("密码"), "password");
+    await user.click(screen.getByRole("button", { name: "登录系统" }));
+
+    expect(
+      screen.getByRole("button", { name: "保存服务器地址" }),
+    ).toBeDisabled();
+    expect(screen.getByLabelText("服务器地址")).toBeDisabled();
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "server_config_save",
+      expect.anything(),
+    );
+
+    await act(async () => completeLogin(signedIn));
+    expect(
+      await screen.findByRole("heading", { name: "个人 Token" }),
+    ).toBeVisible();
   });
 });

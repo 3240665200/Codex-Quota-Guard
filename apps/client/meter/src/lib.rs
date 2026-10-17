@@ -11,7 +11,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod audit;
 mod outbox;
+mod server_state;
 use audit::{AuditKind, AuditLog};
+pub use server_state::prepare_server_state;
 #[cfg(windows)]
 mod ccswitch_guard;
 #[cfg(windows)]
@@ -33,6 +35,8 @@ pub struct MeterConfig {
     pub codex_home: PathBuf,
     pub pairing_inbox: PathBuf,
     pub state_dir: PathBuf,
+    #[serde(default)]
+    pub log_dir: Option<PathBuf>,
     pub status_file: PathBuf,
     pub device_id: uuid::Uuid,
     #[serde(default)]
@@ -41,22 +45,15 @@ pub struct MeterConfig {
 
 impl MeterConfig {
     pub fn validate(&self) -> Result<(), String> {
-        let url = reqwest::Url::parse(&self.server_url).map_err(|_| "METER_SERVER_URL_INVALID")?;
-        if url.host_str().is_none() || !matches!(url.scheme(), "http" | "https") {
-            return Err("METER_SERVER_URL_INVALID".into());
-        }
-        if !url.username().is_empty()
-            || url.password().is_some()
-            || url.query().is_some()
-            || url.fragment().is_some()
-            || url.path() != "/"
-        {
-            return Err("METER_SERVER_URL_INVALID".into());
-        }
+        normalized_server_origin(&self.server_url).ok_or("METER_SERVER_URL_INVALID")?;
         if !self.codex_home.is_absolute()
             || !self.pairing_inbox.is_absolute()
             || !self.state_dir.is_absolute()
             || !self.status_file.is_absolute()
+            || self
+                .log_dir
+                .as_ref()
+                .is_some_and(|path| !path.is_absolute())
         {
             return Err("METER_PATH_INVALID".into());
         }
@@ -74,11 +71,28 @@ impl MeterConfig {
     }
 }
 
+fn normalized_server_origin(value: &str) -> Option<String> {
+    let url = reqwest::Url::parse(value).ok()?;
+    if url.host_str().is_none()
+        || !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || url.path() != "/"
+    {
+        return None;
+    }
+    Some(url.origin().ascii_serialization())
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PairingInbox {
     device_id: uuid::Uuid,
     device_token: String,
+    #[serde(default)]
+    server_origin: Option<String>,
     #[serde(default)]
     user_id: Option<uuid::Uuid>,
 }
@@ -108,6 +122,13 @@ pub fn consume_pairing(config: &MeterConfig) -> Result<bool, String> {
         serde_json::from_slice(&bytes).map_err(|_| "METER_PAIRING_INVALID")?;
     if pairing.device_id != config.device_id || !valid_meter_token(&pairing.device_token) {
         return Err("METER_PAIRING_INVALID".into());
+    }
+    let pairing_origin = pairing
+        .server_origin
+        .as_deref()
+        .and_then(normalized_server_origin);
+    if pairing_origin.is_none() || pairing_origin != normalized_server_origin(&config.server_url) {
+        return Err("METER_PAIRING_SERVER_MISMATCH".into());
     }
     let credential = MeterCredential {
         device_id: pairing.device_id,
@@ -302,6 +323,14 @@ pub struct ScanOutcome {
 }
 
 pub fn scan(codex_home: &Path, previous: &ScanState) -> Result<ScanOutcome, String> {
+    scan_with_boundary(codex_home, previous, None)
+}
+
+fn scan_with_boundary(
+    codex_home: &Path,
+    previous: &ScanState,
+    mut incomplete_records: Option<&mut Vec<server_state::IncompleteRecord>>,
+) -> Result<ScanOutcome, String> {
     let sessions = codex_home.join("sessions");
     let mut next_state = previous.clone();
     next_state.sanitize_metadata_caches();
@@ -311,6 +340,9 @@ pub fn scan(codex_home: &Path, previous: &ScanState) -> Result<ScanOutcome, Stri
     }
 
     for file in session_files(&sessions)? {
+        if incomplete_records.is_some() {
+            server_state::check_path(&file)?;
+        }
         let key = file
             .strip_prefix(&sessions)
             .map_err(|_| "SESSION_PATH_INVALID")?
@@ -358,7 +390,20 @@ pub fn scan(codex_home: &Path, previous: &ScanState) -> Result<ScanOutcome, Stri
             let bytes = reader
                 .read_until(b'\n', &mut line)
                 .map_err(|_| "SESSION_READ_UNAVAILABLE")?;
-            if bytes == 0 || !line.ends_with(b"\n") {
+            if bytes == 0 {
+                break;
+            }
+            if !line.ends_with(b"\n") {
+                if let Some(records) = &mut incomplete_records {
+                    records.push(server_state::IncompleteRecord {
+                        file: key.clone(),
+                        offset: complete_offset,
+                        bytes: line,
+                    });
+                    // A partial row that began before the server boundary must
+                    // never become a new owner's event when its suffix arrives.
+                    complete_offset = complete_offset.saturating_add(bytes as u64);
+                }
                 break;
             }
             complete_offset = complete_offset.saturating_add(bytes as u64);
@@ -1367,7 +1412,10 @@ impl MeterRuntime {
             .timeout(Duration::from_secs(10))
             .build()
             .map_err(|_| "METER_HTTP_UNAVAILABLE")?;
-        let audit = AuditLog::new(&config.state_dir)?;
+        let audit = match config.log_dir.as_deref() {
+            Some(directory) => AuditLog::in_directory(directory)?,
+            None => AuditLog::new(&config.state_dir)?,
+        };
         audit.append(AuditKind::ServiceStarted, None, 0, false)?;
         let guard = GuardSupervisor::start(&config, &audit, checker, guard_interval)?;
         Ok(Self {
@@ -2300,6 +2348,7 @@ mod tests {
             status_file: root.path().join("status.json"),
             device_id: uuid::Uuid::new_v4(),
             owner_user_sid: None,
+            log_dir: None,
         };
         for url in [
             "http://149.88.90.196:8080",
@@ -2333,13 +2382,14 @@ mod tests {
             status_file: root.path().join("status.json"),
             device_id: uuid::Uuid::new_v4(),
             owner_user_sid: None,
+            log_dir: None,
         };
         let token = "A".repeat(43);
         fs::write(
             &config.pairing_inbox,
             format!(
-                "{{\"deviceId\":\"{}\",\"deviceToken\":\"{}\"}}",
-                config.device_id, token,
+                "{{\"deviceId\":\"{}\",\"deviceToken\":\"{}\",\"serverOrigin\":\"{}\"}}",
+                config.device_id, token, config.server_url,
             ),
         )
         .unwrap();
@@ -2353,6 +2403,372 @@ mod tests {
                 .device_token,
             token
         );
+    }
+
+    #[test]
+    fn pairing_from_another_or_missing_server_preserves_inbox_and_existing_credential() {
+        let root = TestDir::new();
+        let config = MeterConfig {
+            server_url: "https://meter.example.com".into(),
+            codex_home: root.path().join(".codex"),
+            pairing_inbox: root.path().join("pairing.json"),
+            state_dir: root.path().join("state"),
+            status_file: root.path().join("status.json"),
+            device_id: uuid::Uuid::new_v4(),
+            owner_user_sid: None,
+            log_dir: None,
+        };
+        save_credential(
+            &config.state_dir,
+            &MeterCredential {
+                device_id: config.device_id,
+                device_token: "A".repeat(43),
+                user_id: Some(uuid::Uuid::from_u128(1)),
+                owner_verified: true,
+            },
+        )
+        .unwrap();
+        let credential_before = fs::read(credential_file(&config.state_dir)).unwrap();
+        for origin in [
+            None,
+            Some("https://other.example.com"),
+            Some("https://meter.example.com/api"),
+            Some("https://secret@meter.example.com"),
+            Some("invalid"),
+        ] {
+            let mut inbox = serde_json::json!({
+                "deviceId": config.device_id, "deviceToken": "B".repeat(43),
+            });
+            if let Some(origin) = origin {
+                inbox["serverOrigin"] = origin.into();
+            }
+            let bytes = serde_json::to_vec(&inbox).unwrap();
+            fs::write(&config.pairing_inbox, &bytes).unwrap();
+            assert_eq!(
+                consume_pairing(&config).unwrap_err(),
+                "METER_PAIRING_SERVER_MISMATCH"
+            );
+            assert_eq!(fs::read(&config.pairing_inbox).unwrap(), bytes);
+            assert_eq!(
+                fs::read(credential_file(&config.state_dir)).unwrap(),
+                credential_before
+            );
+        }
+        fs::write(
+            &config.pairing_inbox,
+            serde_json::json!({
+                "deviceId": config.device_id, "deviceToken": "B".repeat(43),
+                "serverOrigin": "https://METER.example.com:443/",
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(consume_pairing(&config).unwrap());
+        assert!(!config.pairing_inbox.exists());
+        assert_eq!(
+            load_credential(&config.state_dir)
+                .unwrap()
+                .unwrap()
+                .device_token,
+            "B".repeat(43)
+        );
+    }
+
+    fn server_state_fixture() -> (TestDir, MeterConfig, PathBuf, PathBuf) {
+        let root = TestDir::new();
+        let config = MeterConfig {
+            server_url: "http://127.0.0.1:18080".into(),
+            codex_home: root.path().join(".codex"),
+            pairing_inbox: root.path().join("pairing.json"),
+            state_dir: root.path().join("state"),
+            status_file: root.path().join("status.json"),
+            device_id: uuid::Uuid::new_v4(),
+            owner_user_sid: None,
+            log_dir: None,
+        };
+        fs::create_dir_all(config.codex_home.join("sessions")).unwrap();
+        fs::create_dir_all(&config.state_dir).unwrap();
+        let config_path = root.path().join("meter-config.json");
+        fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+        let target = root.path().join("new-context");
+        (root, config, config_path, target)
+    }
+
+    #[test]
+    fn server_state_preparation_preserves_empty_old_journal_and_unknown_owner_gap() {
+        let (_root, mut config, config_path, target) = server_state_fixture();
+        let log = config.codex_home.join("sessions/run.jsonl");
+        let history = record("old", 10);
+        fs::write(&log, &history).unwrap();
+        let mut journal = outbox::Outbox::capture(
+            &config,
+            &ScanState::default(),
+            Some(uuid::Uuid::from_u128(1)),
+            || Ok(()),
+        )
+        .unwrap();
+        journal
+            .acknowledge(&config, &journal.pending.clone())
+            .unwrap();
+        save_state(
+            &config.state_dir.join("scan-state.json"),
+            journal.scan_state(),
+        )
+        .unwrap();
+        fs::write(
+            credential_file(&config.state_dir),
+            b"private-old-credential-do-not-copy",
+        )
+        .unwrap();
+        let outbox_before = fs::read(config.state_dir.join("usage-outbox.json")).unwrap();
+        let state_before = fs::read(config.state_dir.join("scan-state.json")).unwrap();
+        let gap = record("unknown-gap", 42);
+        let partial = record("cross-boundary", 17);
+        let split = partial.len() / 2;
+        let source_bytes = history + &gap + &partial[..split];
+        fs::write(&log, &source_bytes).unwrap();
+        // Repair the legacy state in which an installer already changed origin.
+        config.server_url = "http://127.0.0.1:19090".into();
+        let config_before = serde_json::to_vec(&config).unwrap();
+        fs::write(&config_path, &config_before).unwrap();
+
+        prepare_server_state(&config_path, &target).unwrap();
+        assert_eq!(fs::read(&config_path).unwrap(), config_before);
+        assert_eq!(
+            fs::read(config.state_dir.join("usage-outbox.json")).unwrap(),
+            outbox_before
+        );
+        assert_eq!(
+            fs::read(target.join("archived-outbox.json")).unwrap(),
+            outbox_before
+        );
+        assert_eq!(
+            fs::read(config.state_dir.join("scan-state.json")).unwrap(),
+            state_before
+        );
+        assert_eq!(fs::read(&log).unwrap(), source_bytes.as_bytes());
+        assert_eq!(
+            fs::read(credential_file(&config.state_dir)).unwrap(),
+            b"private-old-credential-do-not-copy"
+        );
+        assert!(!credential_file(&target).exists());
+        let unknown: serde_json::Value =
+            serde_json::from_slice(&fs::read(target.join("unknown-usage.json")).unwrap()).unwrap();
+        assert!(unknown["userId"].is_null());
+        assert_eq!(unknown["serverOrigin"], "http://127.0.0.1:18080");
+        assert_eq!(unknown["events"].as_array().unwrap().len(), 1);
+        assert_eq!(unknown["events"][0]["totalTokens"], 42);
+        assert_eq!(
+            unknown["incompleteRecords"][0]["bytes"],
+            serde_json::json!(partial[..split].as_bytes())
+        );
+        let baseline = load_state(&target.join("scan-state.json"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            baseline.files["run.jsonl"].offset,
+            source_bytes.len() as u64
+        );
+        fs::write(
+            &log,
+            source_bytes + &partial[split..] + &record("after-boundary", 9),
+        )
+        .unwrap();
+        let after = scan(&config.codex_home, &baseline).unwrap();
+        assert_eq!(after.events.len(), 1);
+        assert_eq!(after.events[0].total_tokens, 9);
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&fs::read(target.join("server-state-prepared.json")).unwrap())
+                .unwrap();
+        assert_eq!(metadata["sourceServerOrigin"], "http://127.0.0.1:18080");
+        assert_eq!(metadata["sourceConfigServerOrigin"], config.server_url);
+        assert_eq!(metadata["credentialCopied"], false);
+    }
+
+    #[test]
+    fn server_state_preparation_archives_pending_and_quarantine_bytes_without_reassignment() {
+        let (_root, config, config_path, target) = server_state_fixture();
+        fs::write(
+            config.codex_home.join("sessions/run.jsonl"),
+            record("old-pending", 20),
+        )
+        .unwrap();
+        outbox::Outbox::capture(
+            &config,
+            &ScanState::default(),
+            Some(uuid::Uuid::from_u128(1)),
+            || Ok(()),
+        )
+        .unwrap();
+        let path = config.state_dir.join("usage-outbox.json");
+        let mut journal: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        journal["quarantined"] = serde_json::json!([{
+            "userId": null, "events": journal["pending"].clone(), "errorCode": null,
+        }]);
+        let bytes = serde_json::to_vec(&journal).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        prepare_server_state(&config_path, &target).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert_eq!(
+            fs::read(target.join("archived-outbox.json")).unwrap(),
+            bytes
+        );
+        assert!(!target.join("usage-outbox.json").exists());
+    }
+
+    #[test]
+    fn server_state_preparation_without_journal_does_not_invent_an_origin() {
+        let (_root, config, config_path, target) = server_state_fixture();
+        let log = config.codex_home.join("sessions/run.jsonl");
+        let old = record("old", 10);
+        fs::write(&log, &old).unwrap();
+        save_state(
+            &config.state_dir.join("scan-state.json"),
+            &baseline_codex_home(&config.codex_home).unwrap(),
+        )
+        .unwrap();
+        let original = fs::read(config.state_dir.join("scan-state.json")).unwrap();
+        fs::write(&log, old + &record("unknown", 8)).unwrap();
+        prepare_server_state(&config_path, &target).unwrap();
+        let unknown: serde_json::Value =
+            serde_json::from_slice(&fs::read(target.join("unknown-usage.json")).unwrap()).unwrap();
+        assert!(unknown["serverOrigin"].is_null());
+        assert!(unknown["userId"].is_null());
+        assert_eq!(unknown["events"][0]["totalTokens"], 8);
+        assert!(!target.join("archived-outbox.json").exists());
+        assert_eq!(
+            fs::read(config.state_dir.join("scan-state.json")).unwrap(),
+            original
+        );
+        assert_eq!(
+            fs::read(target.join("archived-scan-state.json")).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn server_state_preparation_without_any_cursor_establishes_a_nonbilling_baseline() {
+        let (_root, config, config_path, target) = server_state_fixture();
+        fs::write(
+            config.codex_home.join("sessions/run.jsonl"),
+            record("old", 10),
+        )
+        .unwrap();
+        prepare_server_state(&config_path, &target).unwrap();
+        let baseline = load_state(&target.join("scan-state.json"))
+            .unwrap()
+            .unwrap();
+        assert!(scan(&config.codex_home, &baseline)
+            .unwrap()
+            .events
+            .is_empty());
+        assert!(fs::read_dir(&config.state_dir).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn server_state_preparation_rejects_other_device_profile_and_damaged_journal() {
+        let (_root, config, config_path, target) = server_state_fixture();
+        outbox::Outbox::capture(&config, &ScanState::default(), None, || Ok(())).unwrap();
+        let outbox_path = config.state_dir.join("usage-outbox.json");
+        let before = fs::read(&outbox_path).unwrap();
+        let mut device = config.clone();
+        device.device_id = uuid::Uuid::new_v4();
+        let mut profile = config.clone();
+        profile.codex_home = config.codex_home.join("other");
+        for changed in [device, profile] {
+            fs::write(&config_path, serde_json::to_vec(&changed).unwrap()).unwrap();
+            assert_eq!(
+                prepare_server_state(&config_path, &target).unwrap_err(),
+                "METER_OUTBOX_IDENTITY_MISMATCH"
+            );
+            assert!(!target.exists());
+            assert_eq!(fs::read(&outbox_path).unwrap(), before);
+        }
+        fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+        fs::write(&outbox_path, b"damaged-private-journal").unwrap();
+        assert_eq!(
+            prepare_server_state(&config_path, &target).unwrap_err(),
+            "METER_OUTBOX_INVALID"
+        );
+        assert!(!target.exists());
+        assert_eq!(fs::read(&outbox_path).unwrap(), b"damaged-private-journal");
+    }
+
+    #[test]
+    fn server_state_preparation_never_reuses_an_existing_directory() {
+        let (_root, _config, config_path, target) = server_state_fixture();
+        fs::create_dir(&target).unwrap();
+        assert_eq!(
+            prepare_server_state(&config_path, &target).unwrap_err(),
+            "METER_SERVER_STATE_TARGET_EXISTS"
+        );
+        fs::write(target.join("must-survive.txt"), b"not-owned-by-preparation").unwrap();
+        assert_eq!(
+            prepare_server_state(&config_path, &target).unwrap_err(),
+            "METER_SERVER_STATE_TARGET_EXISTS"
+        );
+        assert_eq!(
+            fs::read(target.join("must-survive.txt")).unwrap(),
+            b"not-owned-by-preparation"
+        );
+    }
+
+    #[test]
+    fn server_state_preparation_rejects_a_reparse_destination_parent() {
+        let (root, mut config, config_path, target) = server_state_fixture();
+        let actual = root.path().join("actual");
+        let link = root.path().join("linked");
+        fs::create_dir(&actual).unwrap();
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            let result = std::process::Command::new("cmd.exe")
+                .args(["/D", "/C", "mklink", "/J"])
+                .arg(&link)
+                .arg(&actual)
+                .creation_flags(0x08000000)
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "could not create the synthetic junction"
+            );
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&actual, &link).unwrap();
+        let result = prepare_server_state(&config_path, &link.join("new-context"));
+        config.state_dir = link.clone();
+        fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+        let source_result = prepare_server_state(&config_path, &target);
+        #[cfg(windows)]
+        fs::remove_dir(&link).unwrap();
+        #[cfg(unix)]
+        fs::remove_file(&link).unwrap();
+        assert_eq!(result.unwrap_err(), "METER_SERVER_STATE_PATH_UNSAFE");
+        assert_eq!(source_result.unwrap_err(), "METER_SERVER_STATE_PATH_UNSAFE");
+        assert!(!target.exists());
+        assert!(fs::read_dir(&actual).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn configured_log_directory_stays_stable_when_the_server_context_changes() {
+        let (root, mut config, _config_path, _target) = server_state_fixture();
+        let old_state = config.state_dir.clone();
+        config.log_dir = Some(old_state.join("logs"));
+        config.state_dir = root.path().join("new-context");
+        let mut runtime = MeterRuntime::new_for_test(config.clone()).unwrap();
+        assert_eq!(runtime.tick().state, "BASELINE_READY");
+        let content = fs::read_to_string(old_state.join("logs/meter.jsonl")).unwrap();
+        assert!(content.contains("SERVICE_STARTED"));
+        assert!(content.contains("BASELINE_READY"));
+        assert!(!config.state_dir.join("logs").exists());
+        config.log_dir = Some(PathBuf::from("relative-logs"));
+        assert_eq!(config.validate().unwrap_err(), "METER_PATH_INVALID");
+        let mut legacy = serde_json::to_value(&config).unwrap();
+        legacy.as_object_mut().unwrap().remove("logDir");
+        let legacy: MeterConfig = serde_json::from_value(legacy).unwrap();
+        assert!(legacy.log_dir.is_none());
     }
 
     #[test]
@@ -2375,13 +2791,15 @@ mod tests {
             status_file: root.path().join("status.json"),
             device_id: uuid::Uuid::new_v4(),
             owner_user_sid: None,
+            log_dir: None,
         };
         fs::write(
             &config.pairing_inbox,
             format!(
-                "{{\"deviceId\":\"{}\",\"deviceToken\":\"{}\"}}",
+                "{{\"deviceId\":\"{}\",\"deviceToken\":\"{}\",\"serverOrigin\":\"{}\"}}",
                 config.device_id,
-                "A".repeat(43)
+                "A".repeat(43),
+                config.server_url,
             ),
         )
         .unwrap();
@@ -2432,13 +2850,15 @@ mod tests {
             status_file: root.path().join("status.json"),
             device_id,
             owner_user_sid: None,
+            log_dir: None,
         };
         fs::write(
             &config.pairing_inbox,
             format!(
-                "{{\"deviceId\":\"{}\",\"deviceToken\":\"{}\"}}",
+                "{{\"deviceId\":\"{}\",\"deviceToken\":\"{}\",\"serverOrigin\":\"{}\"}}",
                 config.device_id,
-                "B".repeat(43)
+                "B".repeat(43),
+                config.server_url,
             ),
         )
         .unwrap();
@@ -2492,6 +2912,7 @@ mod tests {
             status_file: root.path().join("status.json"),
             device_id: uuid::Uuid::new_v4(),
             owner_user_sid: None,
+            log_dir: None,
         };
         save_state(
             &config.state_dir.join("scan-state.json"),
@@ -2616,6 +3037,7 @@ mod tests {
             status_file: root.path().join("status.json"),
             device_id,
             owner_user_sid: None,
+            log_dir: None,
         };
         let credential = MeterCredential {
             device_id,
@@ -2657,6 +3079,7 @@ mod tests {
             status_file: root.path().join("status.json"),
             device_id: uuid::Uuid::new_v4(),
             owner_user_sid: None,
+            log_dir: None,
         };
         fs::create_dir_all(config.codex_home.join("sessions")).unwrap();
         save_state(
@@ -2717,6 +3140,7 @@ mod tests {
             status_file: root.path().join("status.json"),
             device_id: uuid::Uuid::new_v4(),
             owner_user_sid: None,
+            log_dir: None,
         };
         fs::create_dir_all(config.codex_home.join("sessions")).unwrap();
         let log = config.codex_home.join("sessions/run.jsonl");
@@ -2800,6 +3224,7 @@ mod tests {
             status_file: root.path().join("status.json"),
             device_id: uuid::Uuid::new_v4(),
             owner_user_sid: None,
+            log_dir: None,
         };
         fs::create_dir_all(config.codex_home.join("sessions")).unwrap();
         fs::write(
@@ -2865,6 +3290,7 @@ mod tests {
             status_file: root.path().join("status.json"),
             device_id: uuid::Uuid::new_v4(),
             owner_user_sid: None,
+            log_dir: None,
         };
         fs::create_dir_all(config.codex_home.join("sessions")).unwrap();
         fs::write(
@@ -2908,6 +3334,7 @@ mod tests {
             status_file: root.path().join("status.json"),
             device_id: uuid::Uuid::new_v4(),
             owner_user_sid: None,
+            log_dir: None,
         };
         fs::create_dir_all(&config.state_dir).unwrap();
         let path = config.state_dir.join("usage-outbox.json");
@@ -2946,6 +3373,7 @@ mod tests {
             status_file: root.path().join("status.json"),
             device_id,
             owner_user_sid: None,
+            log_dir: None,
         };
         fs::create_dir_all(config.codex_home.join("sessions")).unwrap();
         fs::write(
@@ -2997,6 +3425,7 @@ mod tests {
             status_file: root.path().join("status.json"),
             device_id: uuid::Uuid::new_v4(),
             owner_user_sid: None,
+            log_dir: None,
         };
         let mut runtime = MeterRuntime::new_for_test(config).unwrap();
         assert_eq!(runtime.tick().state, "BASELINE_READY");
@@ -3028,6 +3457,7 @@ mod tests {
             status_file: root.path().join("status.json"),
             device_id: uuid::Uuid::new_v4(),
             owner_user_sid: None,
+            log_dir: None,
         };
         let runtime = MeterRuntime::new_for_test(config).unwrap();
         runtime.shutdown().unwrap();
@@ -3048,6 +3478,7 @@ mod tests {
             status_file: root.path().join("status.json"),
             device_id: uuid::Uuid::new_v4(),
             owner_user_sid: None,
+            log_dir: None,
         };
         fs::write(&config.pairing_inbox, "private-canary-not-json").unwrap();
         let mut runtime = MeterRuntime::new_for_test(config).unwrap();
@@ -3072,6 +3503,7 @@ mod tests {
             status_file: root.path().join("status.json"),
             device_id: uuid::Uuid::new_v4(),
             owner_user_sid: None,
+            log_dir: None,
         };
         let mut runtime = MeterRuntime::new_for_test(config).unwrap();
         fs::remove_dir_all(root.path().join("state/logs")).unwrap();
@@ -3130,6 +3562,7 @@ mod tests {
             status_file: root.path().join("blocked/status.json"),
             device_id: uuid::Uuid::new_v4(),
             owner_user_sid: None,
+            log_dir: None,
         };
         let mut runtime = MeterRuntime::new_for_test(config).unwrap();
 
@@ -3153,6 +3586,7 @@ mod tests {
             status_file: root.path().join("status.json"),
             device_id: uuid::Uuid::new_v4(),
             owner_user_sid: None,
+            log_dir: None,
         };
         let guard = GuardSnapshot::new(
             "CLEAR",
@@ -3216,6 +3650,7 @@ mod tests {
             status_file: root.path().join("status.json"),
             device_id: uuid::Uuid::new_v4(),
             owner_user_sid: None,
+            log_dir: None,
         };
         let runtime = MeterRuntime::new_for_test(config).unwrap();
         fs::remove_dir_all(root.path().join("state/logs")).unwrap();
@@ -3340,6 +3775,7 @@ mod tests {
             status_file: root.path().join("status.json"),
             device_id,
             owner_user_sid: None,
+            log_dir: None,
         };
         let mut runtime =
             MeterRuntime::new_with_guard_checker(config, checker, Duration::from_millis(20))
@@ -3446,6 +3882,7 @@ mod tests {
             status_file: root.path().join("status.json"),
             device_id,
             owner_user_sid: None,
+            log_dir: None,
         };
         let mut runtime = MeterRuntime::new_for_test(config).unwrap();
         let status = runtime.tick();
@@ -3510,6 +3947,7 @@ mod tests {
             status_file: root.path().join("status.json"),
             device_id: uuid::Uuid::new_v4(),
             owner_user_sid: None,
+            log_dir: None,
         };
         let credential = MeterCredential {
             device_id: config.device_id,

@@ -529,6 +529,10 @@ describe("UsageActivityPanel", () => {
       "METER_PAIRING_OWNER_MISMATCH",
       /授权账户与待传用量归属不一致.*暂停.*管理员/,
     ],
+    [
+      "METER_PAIRING_SERVER_MISMATCH",
+      /配对授权与当前服务器不一致.*暂停.*保留.*服务器地址.*重新登录配对/,
+    ],
     ["METER_RENEWAL_INVALID", /设备续期结果未通过校验.*保留.*版本.*管理员/],
     [
       "METER_EVENT_OUTSIDE_REPORT_WINDOW",

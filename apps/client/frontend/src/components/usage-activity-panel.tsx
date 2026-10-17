@@ -305,6 +305,8 @@ function explainError(code: string | null | undefined) {
       return "部分用量无法确认归属，已隔离保留，后续有效用量仍会继续上报。请联系管理员核对，不能直接计入新账户。";
     case "METER_PAIRING_OWNER_MISMATCH":
       return "设备授权账户与待传用量归属不一致，已暂停上传并保留记录。请联系管理员核对账户后重新配对。";
+    case "METER_PAIRING_SERVER_MISMATCH":
+      return "配对授权与当前服务器不一致，已暂停上传并保留授权和用量记录。请确认服务器地址后重新登录配对。";
     case "METER_RENEWAL_INVALID":
       return "设备续期结果未通过校验，待传用量已保留。请确认后台与统计程序版本匹配，联系管理员核对后重新配对。";
     case "METER_EVENT_OUTSIDE_REPORT_WINDOW":

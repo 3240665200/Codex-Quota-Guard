@@ -72,12 +72,14 @@ function Write-MeterConnection([string]$Path, [string]$Url, $Identity) {
 }
 
 function Get-MeterStartupAction([string]$State, [string]$InstalledUrl, [string]$SelectedUrl,
-        [string]$InstalledHash = '', [string]$BundledHash = '', [string]$VerifiedInstalledHash = '') {
+        [string]$InstalledHash = '', [string]$BundledHash = '', [string]$VerifiedInstalledHash = '',
+        [bool]$IdentityMismatch = $false) {
     if (-not $State) { return 'INSTALL' }
     if (-not $InstalledUrl) { return 'CONFIGURE' }
     if ($BundledHash -and (($VerifiedInstalledHash -and $VerifiedInstalledHash -ne $BundledHash) -or
             (-not $VerifiedInstalledHash -and $InstalledHash -ne $BundledHash))) { return 'UPGRADE' }
     if ($InstalledUrl -ne $SelectedUrl) { return 'CONFIGURE' }
+    if ($IdentityMismatch) { return 'CONFIGURE' }
     if ($State -eq 'Running') { return 'READY' }
     return 'START'
 }
@@ -170,7 +172,16 @@ if ($service -and $bundledHash) {
         # installation record until the elevated installer can verify it.
     }
 }
-$action = Get-MeterStartupAction $state $installedUrl $ServerUrl $installedHash $bundledHash $verifiedInstalledHash
+$identityMismatch = $false
+$publicStatusPath = Join-Path $appData 'meter-status.json'
+if (Test-Path -LiteralPath $publicStatusPath -PathType Leaf) {
+    try {
+        if ((Get-Item -LiteralPath $publicStatusPath).Length -le 4096) {
+            $identityMismatch = (Get-Content -LiteralPath $publicStatusPath -Raw | ConvertFrom-Json).errorCode -eq 'METER_OUTBOX_IDENTITY_MISMATCH'
+        }
+    } catch { }
+}
+$action = Get-MeterStartupAction $state $installedUrl $ServerUrl $installedHash $bundledHash $verifiedInstalledHash $identityMismatch
 Initialize-MeterStartupConflictEvidence $isAdmin $currentSid | Out-Null
 if ($action -eq 'READY') {
     if ($isAdmin -and $bundledIdentity -and $verifiedInstalledHash -eq $bundledHash -and
@@ -214,11 +225,13 @@ if (-not $isAdmin) {
 
 if ($action -eq 'INSTALL') {
     $installer = Join-Path $PSScriptRoot 'install-meter-service.ps1'
+    $global:LASTEXITCODE = 0
     if (Test-Path -LiteralPath $bundledBinary -PathType Leaf) {
         & $installer -ServerUrl $ServerUrl -BinaryPath $bundledBinary -ExpectedUserSid $ExpectedUserSid
     } else {
         & $installer -ServerUrl $ServerUrl -ExpectedUserSid $ExpectedUserSid
     }
+    if ($LASTEXITCODE -ne 0) { throw 'Meter installation failed; the selected server was not committed.' }
 } else {
     $registered = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
     if ($registered.PathName -notmatch '^\s*"?(.+?quota-guard-meter\.exe)"?\s+service\s+--config\s+(?:"([^"]+)"|(.+?))\s*$') {
@@ -237,25 +250,12 @@ if ($action -eq 'INSTALL') {
     if ($statusDirectory -ne [IO.Path]::GetFullPath($appData)) {
         throw 'This meter service belongs to a different Windows profile.'
     }
-    if ($action -eq 'UPGRADE') {
+    if ($action -in @('UPGRADE', 'CONFIGURE')) {
+        $global:LASTEXITCODE = 0
         & (Join-Path $PSScriptRoot 'install-meter-service.ps1') -ServerUrl $ServerUrl -BinaryPath $bundledBinary -ExpectedUserSid $ExpectedUserSid
-        Write-Host 'Meter service executable updated.'
-    } else {
-        $oldConfig = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
-        if ((Normalize-MeterServerUrl ([string]$oldConfig.serverUrl)) -ne $ServerUrl) {
-            if ($service.Status -ne 'Stopped') {
-                Stop-Service -Name $serviceName -ErrorAction Stop
-                $service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(20))
-            }
-            try {
-                [IO.File]::WriteAllText($configPath, ($config | ConvertTo-Json -Compress),
-                    [Text.UTF8Encoding]::new($false))
-            } catch {
-                Start-Service -Name $serviceName -ErrorAction SilentlyContinue
-                throw
-            }
-            Write-Host "Meter server address updated: $ServerUrl"
-        }
+        if ($LASTEXITCODE -ne 0) { throw 'Meter synchronization failed; the previous configuration was retained.' }
+        Write-Host 'Meter service and selected server were synchronized.'
+        return
     }
     $service.Refresh()
     if ($service.Status -eq 'StopPending') {

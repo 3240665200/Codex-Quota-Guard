@@ -29,6 +29,19 @@ fn is_sha256_hex(hash: &str) -> bool {
     hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+fn status_requires_identity_repair(bytes: &[u8]) -> bool {
+    bytes.len() <= 4096
+        && serde_json::from_slice::<serde_json::Value>(bytes)
+            .ok()
+            .and_then(|status| {
+                status
+                    .get("errorCode")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|code| code == "METER_OUTBOX_IDENTITY_MISMATCH")
+            })
+            .unwrap_or(false)
+}
+
 fn setup_failure_message(bytes: &[u8]) -> Option<String> {
     if bytes.len() > 4096 {
         return None;
@@ -48,6 +61,7 @@ fn setup_failure_message(bytes: &[u8]) -> Option<String> {
             | "EXISTING_SERVICE_CHECK"
             | "BINARY_CHECK"
             | "PREPARE_FILES"
+            | "SERVER_STATE_PREPARE"
             | "STAGE_BINARY"
             | "SERVICE_STOP"
             | "REPLACE_BINARY"
@@ -78,6 +92,9 @@ fn setup_failure_message(bytes: &[u8]) -> Option<String> {
         ),
         "BUNDLED_BINARY_MISSING" => Some("安装包中的统计程序未找到，请重新安装完整安装包。"),
         "EXISTING_CONFIGURATION_INVALID" => Some("无法读取现有统计程序配置，请检查服务安装目录。"),
+        "SERVER_STATE_PREPARE_FAILED" => {
+            Some("无法为目标服务器准备独立统计状态，请检查服务目录权限后重试。")
+        }
         "WINDOWS_PROFILE_MISMATCH" => {
             Some("现有统计程序属于其他 Windows 用户或设备，不能直接改绑。")
         }
@@ -95,6 +112,7 @@ fn setup_failure_message(bytes: &[u8]) -> Option<String> {
         "EXISTING_SERVICE_CHECK" => "现有统计程序配置无法读取，请检查服务安装目录。",
         "BINARY_CHECK" => "统计程序无法在这台电脑运行，请重新安装最新版客户端。",
         "PREPARE_FILES" => "无法准备统计程序文件，请检查安装目录权限与设备绑定。",
+        "SERVER_STATE_PREPARE" => "无法为目标服务器准备独立统计状态，请检查服务目录权限后重试。",
         "STAGE_BINARY" => "无法准备新版统计程序文件，旧版未受影响。",
         "SERVICE_STOP" => "无法停止旧版统计程序，请检查 Windows 服务状态。",
         "REPLACE_BINARY" => "无法替换旧版统计程序，请检查安装目录权限。",
@@ -282,16 +300,26 @@ fn ensure_with(ops: &impl ServiceOps) -> MeterStartOutcome {
     }
 }
 
-#[cfg(windows)]
 pub(crate) fn ensure_running_or_install(app: &tauri::AppHandle) -> MeterStartOutcome {
+    ensure_running_or_install_for_server(app, &crate::server_config::load(app).url)
+}
+
+#[cfg(windows)]
+pub(crate) fn ensure_running_or_install_for_server(
+    app: &tauri::AppHandle,
+    server_url: &str,
+) -> MeterStartOutcome {
     ensure_with_install(
         &windows::WindowsServiceOps,
-        &windows::WindowsInstaller::new(app),
+        &windows::WindowsInstaller::new(app, server_url),
     )
 }
 
 #[cfg(not(windows))]
-pub(crate) fn ensure_running_or_install(_app: &tauri::AppHandle) -> MeterStartOutcome {
+pub(crate) fn ensure_running_or_install_for_server(
+    _app: &tauri::AppHandle,
+    _server_url: &str,
+) -> MeterStartOutcome {
     MeterStartOutcome::Unsupported
 }
 
@@ -348,10 +376,10 @@ mod windows {
     }
 
     impl WindowsInstaller {
-        pub(super) fn new(app: &AppHandle) -> Self {
+        pub(super) fn new(app: &AppHandle, server_url: &str) -> Self {
             Self {
                 app: app.clone(),
-                server_url: crate::server_config::load(app).url,
+                server_url: server_url.to_owned(),
             }
         }
 
@@ -460,7 +488,7 @@ mod windows {
     }
 
     pub(super) fn version_status(app: &AppHandle) -> MeterVersionStatus {
-        let installer = WindowsInstaller::new(app);
+        let installer = WindowsInstaller::new(app, &crate::server_config::load(app).url);
         let bundled = installer.resource("quota-guard-meter.exe");
         let bundled_version = bundled.as_deref().and_then(binary_version);
         let bundled_hash = bundled.as_deref().and_then(sha256_file_hex);
@@ -610,6 +638,16 @@ mod windows {
             let Ok(directory) = self.app.path().app_data_dir() else {
                 return true;
             };
+            let status_file = directory.join("meter-status.json");
+            if fs::symlink_metadata(&status_file)
+                .ok()
+                .is_some_and(|metadata| metadata.is_file() && metadata.len() <= 4096)
+                && fs::read(status_file)
+                    .ok()
+                    .is_some_and(|bytes| super::status_requires_identity_repair(&bytes))
+            {
+                return true;
+            }
             let file = directory.join("meter-connection.json");
             let Ok(metadata) = fs::symlink_metadata(&file) else {
                 return true;
@@ -1019,6 +1057,7 @@ mod tests {
         bundled: bool,
         needs_configuration: bool,
         connection: Option<(Vec<u8>, String, String)>,
+        status: Option<Vec<u8>>,
         admin: bool,
         install_succeeds: bool,
         elevated_result: Result<bool, ()>,
@@ -1033,6 +1072,7 @@ mod tests {
                 bundled: true,
                 needs_configuration: false,
                 connection: None,
+                status: None,
                 admin: true,
                 install_succeeds: true,
                 elevated_result: Err(()),
@@ -1050,6 +1090,13 @@ mod tests {
         fn needs_configuration(&self) -> bool {
             if self.installed.get() {
                 return false;
+            }
+            if self
+                .status
+                .as_deref()
+                .is_some_and(status_requires_identity_repair)
+            {
+                return true;
             }
             self.connection
                 .as_ref()
@@ -1380,6 +1427,38 @@ mod tests {
         assert_eq!(installer.installs.get(), 0);
     }
 
+    #[test]
+    fn identity_mismatch_repairs_even_the_current_url_and_binary() {
+        let running = FakeOps::new(ServiceState::Running);
+        let url = "https://next.example.com";
+        let hash = "0123456789abcdef".repeat(4);
+        let mut installer = FakeInstaller::ready();
+        installer.connection = Some((connection_bytes(url, Some(&hash)), url.to_owned(), hash));
+        installer.status =
+            Some(br#"{"state":"ERROR","errorCode":"METER_OUTBOX_IDENTITY_MISMATCH"}"#.to_vec());
+
+        assert_eq!(
+            ensure_with_install(&running, &installer),
+            MeterStartOutcome::Installed
+        );
+        assert_eq!(installer.installs.get(), 1);
+    }
+
+    #[test]
+    fn public_status_only_triggers_repair_for_the_known_identity_error() {
+        assert!(status_requires_identity_repair(
+            br#"{"errorCode":"METER_OUTBOX_IDENTITY_MISMATCH"}"#
+        ));
+        for status in [
+            br#"{"state":"UNPAIRED"}"#.as_slice(),
+            br#"{"errorCode":"METER_REPORT_FAILED"}"#.as_slice(),
+            b"{invalid".as_slice(),
+        ] {
+            assert!(!status_requires_identity_repair(status));
+        }
+        assert!(!status_requires_identity_repair(&vec![b' '; 4097]));
+    }
+
     fn connection_bytes(server_url: &str, binary_hash: Option<&str>) -> Vec<u8> {
         let mut connection = serde_json::json!({ "serverUrl": server_url });
         if let Some(binary_hash) = binary_hash {
@@ -1432,5 +1511,16 @@ mod tests {
         .unwrap();
         assert!(error.contains("统计程序未找到"));
         assert!(!error.contains("服务器地址"));
+    }
+
+    #[test]
+    fn server_state_preparation_diagnostics_expose_only_the_fixed_safe_message() {
+        let error = setup_failure_message(
+            br#"{"state":"FAILED","stage":"SERVER_STATE_PREPARE","reason":"SERVER_STATE_PREPARE_FAILED","details":"private-path-and-token"}"#,
+        )
+        .unwrap();
+        assert!(error.contains("独立统计状态"));
+        assert!(error.contains("SERVER_STATE_PREPARE/SERVER_STATE_PREPARE_FAILED"));
+        assert!(!error.contains("private-path-and-token"));
     }
 }

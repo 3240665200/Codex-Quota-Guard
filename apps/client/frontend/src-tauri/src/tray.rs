@@ -24,10 +24,12 @@ fn with_meter_check_lock<T>(lock: &Mutex<()>, check: impl FnOnce() -> T) -> Opti
 }
 
 pub(crate) fn ensure_meter_serialized(app: &AppHandle) -> meter_service::MeterStartOutcome {
-    with_meter_check_lock(&METER_CHECK_LOCK, || {
-        meter_service::ensure_running_or_install(app)
-    })
-    .unwrap_or(meter_service::MeterStartOutcome::Failed)
+    with_meter_operation(|| meter_service::ensure_running_or_install(app))
+        .unwrap_or(meter_service::MeterStartOutcome::Failed)
+}
+
+pub(crate) fn with_meter_operation<T>(operation: impl FnOnce() -> T) -> Option<T> {
+    with_meter_check_lock(&METER_CHECK_LOCK, operation)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

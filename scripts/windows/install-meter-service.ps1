@@ -370,6 +370,86 @@ function Initialize-MeterConflictEvidenceDirectory([string]$UserSid) {
     }
 }
 
+function Test-MeterStateTransition($Configuration, [string]$TargetUrl) {
+    $targetOrigin = (Resolve-MeterServerUri $TargetUrl).GetLeftPart([UriPartial]::Authority)
+    $configuredOrigin = (Resolve-MeterServerUri ([string]$Configuration.serverUrl)).GetLeftPart([UriPartial]::Authority)
+    $journal = Join-Path ([string]$Configuration.stateDir) 'usage-outbox.json'
+    if (Test-Path -LiteralPath $journal) {
+        $item = Get-Item -LiteralPath $journal -Force
+        if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+            $item.Length -gt 67108864) { throw 'The previous accounting journal cannot be safely read.' }
+        $outbox = Get-Content -LiteralPath $journal -Raw | ConvertFrom-Json
+        if (-not $outbox.serverOrigin -or -not $outbox.scanState -or
+            [string]$outbox.deviceId -cne [string]$Configuration.deviceId -or
+            [string]$outbox.codexHome -cne [string]$Configuration.codexHome) {
+            throw 'The previous accounting journal belongs to another device or profile.'
+        }
+        $journalOrigin = (Resolve-MeterServerUri ([string]$outbox.serverOrigin)).GetLeftPart([UriPartial]::Authority)
+        if ($journalOrigin -cne $targetOrigin) { return $true }
+    } elseif (Test-Path -LiteralPath (Join-Path ([string]$Configuration.stateDir) 'meter-credential.json')) {
+        # Legacy credentials have no origin of their own. Without a bound
+        # journal there is no evidence they belong to the selected server.
+        return $true
+    }
+    return $configuredOrigin -cne $targetOrigin
+}
+
+function New-MeterServerState([string]$Binary, [string]$ConfigPath) {
+    # This parent is protected before the helper creates any accounting files.
+    $root = Join-Path (Get-MeterEvidenceCommonApplicationData) 'CodexQuotaGuard\Meter'
+    $contexts = Join-Path $root 'contexts'
+    foreach ($directory in @($root, $contexts)) {
+        New-MeterEvidenceProtectedDirectory $directory
+        $pin = Open-MeterEvidenceDirectory $directory
+        try {
+            Assert-MeterEvidencePinnedPath $pin $directory
+            if ((Get-MeterEvidenceDirectoryAttributes $pin) -band 0x400) { throw 'Unsafe statistics directory.' }
+            Assert-MeterEvidenceDirectorySecurity (Get-MeterEvidenceDirectorySddl $pin)
+        } finally { $pin.Dispose() }
+    }
+    $destination = Join-Path $contexts ([Guid]::NewGuid().ToString('N'))
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $Binary
+    $startInfo.Arguments = 'prepare-server-state --config "' + $ConfigPath + '" --state-dir "' + $destination + '"'
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $helper = [Diagnostics.Process]::Start($startInfo)
+    try {
+        if (-not $helper.WaitForExit(60000)) {
+            $helper.Kill(); $helper.WaitForExit()
+            throw 'Preparing separate accounting state timed out; previous records were retained.'
+        }
+        if ($helper.ExitCode -ne 0 -or $helper.StandardOutput.ReadToEnd().Trim() -ne 'METER_SERVER_STATE_PREPARED' -or
+            -not (Test-Path -LiteralPath (Join-Path $destination 'scan-state.json') -PathType Leaf)) {
+            throw 'Preparing separate accounting state failed; previous records were retained.'
+        }
+        $prepared = Get-Content -LiteralPath (Join-Path $destination 'server-state-prepared.json') -Raw | ConvertFrom-Json
+        if ($prepared.schemaVersion -ne 1 -or $prepared.credentialCopied -ne $false) {
+            throw 'The prepared accounting state did not pass verification.'
+        }
+        return $destination
+    } finally { $helper.Dispose() }
+}
+
+function Write-MeterConfigurationAtomic([string]$Path, $Configuration) {
+    $temporary = Join-Path ([IO.Path]::GetDirectoryName($Path)) ('.meter-config-' + [Guid]::NewGuid().ToString('N') + '.tmp')
+    try {
+        [IO.File]::WriteAllText($temporary, ($Configuration | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+        if (Test-Path -LiteralPath $Path -PathType Leaf) { [IO.File]::Replace($temporary, $Path, [NullString]::Value) }
+        else { [IO.File]::Move($temporary, $Path) }
+    } finally {
+        if (Test-Path -LiteralPath $temporary -PathType Leaf) { Remove-Item -LiteralPath $temporary }
+    }
+}
+
+function Test-MeterStartedStatus($Status, [DateTime]$LastWrittenUtc, [string]$Version, [DateTime]$StartedAtUtc) {
+    return $Status.version -eq $Version -and $LastWrittenUtc -ge $StartedAtUtc -and
+        [long]$Status.lastScanEpochSeconds -ge ([DateTimeOffset]$StartedAtUtc).ToUnixTimeSeconds() -and
+        [string]$Status.errorCode -notmatch '^METER_(OUTBOX|STATE)_'
+}
+
 # Loading these helpers for regression checks never touches a service or config.
 if ($MyInvocation.InvocationName -eq '.') { return }
 
@@ -381,6 +461,8 @@ $backupBinary = ''
 $backupConfig = ''
 $connectionBackup = ''
 $connectionExisted = $false
+$setupLock = $null
+$transitionConfig = ''
 trap {
     if ($rollbackNeeded -and $service) {
         try {
@@ -409,12 +491,14 @@ trap {
         }
     }
     if ($stagedBinary) { Remove-Item -LiteralPath $stagedBinary -Force -ErrorAction SilentlyContinue }
+    if ($transitionConfig) { Remove-Item -LiteralPath $transitionConfig -ErrorAction SilentlyContinue }
     if (-not $rollbackNeeded) {
         foreach ($backup in @($backupBinary, $backupConfig, $connectionBackup)) {
             if ($backup) { Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue }
         }
     }
     try { Write-MeterSetupStatus 'FAILED' $setupStage $setupReason } catch { }
+    if ($setupLock) { $setupLock.Dispose() }
     Write-Host "Meter setup failed at $setupStage ($setupReason). See meter-setup-status.json in the app data directory."
     exit 1
 }
@@ -499,6 +583,20 @@ try {
 $setupStage = 'PREPARE_FILES'
 $setupReason = ''
 New-Item -ItemType Directory -Path $appData, $stateDirectory, $install -Force | Out-Null
+# The service directory is administrator-owned. Serialize manual and desktop setup.
+$setupLock = [IO.File]::Open((Join-Path $install '.meter-setup.lock'), [IO.FileMode]::OpenOrCreate,
+    [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+if ($service) {
+    # Re-read under the exclusive lock: another completed setup may have changed
+    # the selected context after the initial ownership preflight.
+    $registered = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
+    $existing = Get-MeterExistingConfiguration $registered.PathName $appData
+    if (-not $existing.configPath.Equals($configPath, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'The service configuration changed while preparing setup.'
+    }
+    $existingConfiguration = $existing.config
+    $ownerUserSid = Resolve-MeterOwnerSid $identity.User.Value ([string]$existingConfiguration.ownerUserSid)
+}
 if (Test-Path -LiteralPath $deviceIdFile -PathType Leaf) {
     $deviceId = [Guid]::Parse((Get-Content -LiteralPath $deviceIdFile -Raw).Trim())
 } elseif ($service) {
@@ -513,6 +611,7 @@ $configuration = [ordered]@{
     codexHome = $codexHome
     pairingInbox = $pairingInbox
     stateDir = $stateDirectory
+    logDir = (Join-Path $stateDirectory 'logs')
     statusFile = $statusFile
     deviceId = $deviceId.ToString()
     ownerUserSid = Resolve-MeterOwnerSid $identity.User.Value ''
@@ -523,6 +622,8 @@ if ($existingConfiguration) {
         $configuration[$field] = $existingConfiguration.$field
     }
     $stateDirectory = [string]$configuration.stateDir
+    $configuration.logDir = if ($existingConfiguration.logDir) { [string]$existingConfiguration.logDir }
+        else { Join-Path $stateDirectory 'logs' }
     $configuration.ownerUserSid = $ownerUserSid
 }
 New-Item -ItemType Directory -Path $stateDirectory -Force | Out-Null
@@ -556,8 +657,23 @@ if ($wasRunning) {
 }
 $setupStage = 'REPLACE_BINARY'
 Copy-Item -LiteralPath $stagedBinary -Destination $installedBinary -Force
-[IO.File]::WriteAllText($configPath, ($configuration | ConvertTo-Json -Compress),
-    [Text.UTF8Encoding]::new($false))
+$transitionSource = if ($existingConfiguration) { $existingConfiguration } else { [pscustomobject]$configuration }
+if (Test-MeterStateTransition $transitionSource $configuration.serverUrl) {
+    $setupStage = 'SERVER_STATE_PREPARE'
+    $setupReason = 'SERVER_STATE_PREPARE_FAILED'
+    $sourceConfigPath = $backupConfig
+    if (-not $sourceConfigPath) {
+        # Reinstallation can leave a journal even when SCM registration is gone.
+        $transitionConfig = Join-Path $install ('.meter-context-source-' + [Guid]::NewGuid().ToString('N') + '.json')
+        Write-MeterConfigurationAtomic $transitionConfig $transitionSource
+        $sourceConfigPath = $transitionConfig
+    }
+    $stateDirectory = New-MeterServerState $installedBinary $sourceConfigPath
+    $configuration.stateDir = $stateDirectory
+    # Credentials and original journals stay in the old directory. The new service
+    # accepts only pairing envelopes explicitly bound to its selected origin.
+}
+Write-MeterConfigurationAtomic $configPath $configuration
 
 # The device reporting token is kept under ProgramData and is not part of the UI.
 $setupStage = 'PROTECT_FILES'
@@ -583,6 +699,7 @@ $setupStage = 'SERVICE_RECOVERY'
 & sc.exe failure $serviceName reset= 86400 actions= restart/5000/restart/5000/restart/30000 | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Could not configure service recovery.' }
 $setupStage = 'SERVICE_START'
+$serviceStartedAtUtc = [DateTime]::UtcNow
 Start-Service -Name $serviceName -ErrorAction Stop
 $running = Get-Service -Name $serviceName
 $running.WaitForStatus('Running', [TimeSpan]::FromSeconds(20))
@@ -593,6 +710,7 @@ $verifiedConfiguration = Get-MeterExistingConfiguration $registeredAfterInstall.
 if (-not $verifiedConfiguration.binaryPath.Equals($installedBinary, [StringComparison]::OrdinalIgnoreCase) -or
     -not $verifiedConfiguration.configPath.Equals($configPath, [StringComparison]::OrdinalIgnoreCase) -or
     [string]$verifiedConfiguration.config.deviceId -ne $deviceId.ToString() -or
+    [string]$verifiedConfiguration.config.stateDir -cne [string]$configuration.stateDir -or
     (Resolve-MeterServerUri ([string]$verifiedConfiguration.config.serverUrl)).GetLeftPart([UriPartial]::Authority) -ne
         $uri.GetLeftPart([UriPartial]::Authority)) {
     throw 'The registered meter service does not match the configuration just installed.'
@@ -616,12 +734,29 @@ if ((Resolve-MeterServerUri ([string]$connectionRecord.serverUrl)).GetLeftPart([
 }
 $setupStage = 'SERVICE_START'
 $setupReason = ''
+# Wait for the real process to replace old public status, never fabricate a tick.
+$statusDeadline = [DateTime]::UtcNow.AddSeconds(15)
+$statusReady = $false
+do {
+    try {
+        $statusWrittenAtUtc = (Get-Item -LiteralPath ([string]$configuration.statusFile)).LastWriteTimeUtc
+        $publicStatus = Get-Content -LiteralPath ([string]$configuration.statusFile) -Raw | ConvertFrom-Json
+        $statusReady = Test-MeterStartedStatus $publicStatus $statusWrittenAtUtc $binaryVersion $serviceStartedAtUtc
+    } catch { }
+    if (-not $statusReady) { Start-Sleep -Milliseconds 200 }
+} while (-not $statusReady -and [DateTime]::UtcNow -lt $statusDeadline)
+if (-not $statusReady) {
+    $setupReason = 'SERVICE_VERIFICATION_FAILED'
+    throw 'The statistics process did not confirm the new configuration.'
+}
 Write-MeterSetupStatus 'SUCCEEDED' 'READY'
 $rollbackNeeded = $false
 Remove-Item -LiteralPath $stagedBinary -Force -ErrorAction SilentlyContinue
 foreach ($backup in @($backupBinary, $backupConfig, $connectionBackup)) {
     if ($backup) { Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue }
 }
+$setupLock.Dispose()
+if ($transitionConfig) { Remove-Item -LiteralPath $transitionConfig -ErrorAction SilentlyContinue }
 Write-Host "Rust meter service is running: $serviceName"
 Write-Host "Device ID: $deviceId"
 Write-Host "Private activity log: $(Join-Path $stateDirectory 'logs\meter.jsonl')"

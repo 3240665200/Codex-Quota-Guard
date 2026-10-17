@@ -735,6 +735,25 @@ describe("Tauri API boundary", () => {
     );
   });
 
+  it.each([
+    "服务器地址未保存。同步统计程序地址需要管理员授权，取消授权后地址不会保存。",
+    "服务器地址未保存。安装包中的统计程序不完整，请重新安装客户端后重试。",
+    "服务器地址未保存。统计程序地址同步失败，请检查 Windows 服务后重试。",
+    "服务器地址未保存。无法确认统计程序地址已同步，请稍后重试。",
+    "服务器地址未保存。当前平台暂不支持同步统计程序地址。",
+    "无法保存客户端设置，统计程序已恢复原服务器地址。请检查目录权限后重试。",
+    "无法保存客户端设置，统计程序地址也未能恢复。请重新保存原服务器地址，确认同步成功后再使用。",
+    "无法保存服务器设置，请检查目录权限后重试。",
+    "无法同步统计程序地址，请重启客户端后重试。",
+    "无法保存服务器地址，请重试。",
+  ])("preserves the fixed server synchronization error: %s", (message) => {
+    expect(getApiErrorMessage(message)).toBe(message);
+    expect(getApiErrorMessage(new Error(message))).toBe(message);
+    expect(getApiErrorMessage(`${message} token=secret`)).toBe(
+      "暂时无法连接本地服务，请确认应用仍在运行。",
+    );
+  });
+
   it("shows the precise autostart ownership warning without exposing arbitrary task details", () => {
     const warning =
       "开机自启动任务与当前用户或安装目录不匹配，已阻止自动修改，请检查旧版本残留任务。";

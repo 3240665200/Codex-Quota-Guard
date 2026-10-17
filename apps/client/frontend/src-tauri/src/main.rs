@@ -155,8 +155,16 @@ fn server_config_get(app: tauri::AppHandle) -> ServerConfig {
 }
 
 #[tauri::command]
-fn server_config_save(app: tauri::AppHandle, config: ServerConfig) -> CommandResult<ServerConfig> {
-    server_config::save(&app, config).map_err(str::to_owned)
+async fn server_config_save(
+    app: tauri::AppHandle,
+    config: ServerConfig,
+) -> CommandResult<ServerConfig> {
+    tauri::async_runtime::spawn_blocking(move || {
+        tray::with_meter_operation(|| server_config::save(&app, config))
+            .ok_or_else(|| "无法同步统计程序地址，请重启客户端后重试。".to_owned())?
+    })
+    .await
+    .map_err(|_| "无法保存服务器地址，请重试。".to_owned())?
 }
 
 #[tauri::command]

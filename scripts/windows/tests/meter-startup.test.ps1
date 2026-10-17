@@ -14,6 +14,7 @@ Assert-Equal (Get-MeterStartupAction 'Running' 'http://127.0.0.1:8080' 'http://1
 Assert-Equal (Get-MeterStartupAction 'Running' 'http://127.0.0.1:8080' 'http://127.0.0.1:8080' 'same' 'same') 'READY'
 Assert-Equal (Get-MeterStartupAction 'Running' 'http://127.0.0.1:8080' 'http://127.0.0.1:8080' 'same' 'same' 'actual-old') 'UPGRADE'
 Assert-Equal (Get-MeterStartupAction 'Running' 'http://127.0.0.1:8080' 'http://127.0.0.1:8080' 'record-old' 'new-bundle' 'new-bundle') 'READY'
+Assert-Equal (Get-MeterStartupAction 'Running' 'http://127.0.0.1:8080' 'http://127.0.0.1:8080' 'same' 'same' 'same' $true) 'CONFIGURE'
 Assert-Equal (Normalize-MeterServerUrl 'http://0.0.0.0:8080') 'http://127.0.0.1:8080'
 $config = [pscustomobject]@{
     serverUrl = 'http://192.168.0.102:8080'; codexHome = 'C:\Users\test\.codex'

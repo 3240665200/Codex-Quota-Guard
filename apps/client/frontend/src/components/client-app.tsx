@@ -68,6 +68,7 @@ function StartupGatePage({
 }) {
   const [serverUrl, setServerUrl] = useState("");
   const [savingServer, setSavingServer] = useState(false);
+  const [needsRestart, setNeedsRestart] = useState(false);
   const [serverError, setServerError] = useState("");
   useEffect(() => {
     void api
@@ -78,11 +79,16 @@ function StartupGatePage({
       });
   }, []);
   const saveServer = async () => {
+    if (savingServer) return;
     setSavingServer(true);
     setServerError("");
     try {
-      await api.saveServerConfig({ url: serverUrl.trim() });
-      setServerError("地址已保存。点击“重新检查”以应用新地址。");
+      const config = await api.saveServerConfig({ url: serverUrl.trim() });
+      setServerUrl(config.url);
+      setNeedsRestart(true);
+      setServerError(
+        "服务器与统计程序地址已同步，请从托盘退出并重新启动，然后登录。",
+      );
     } catch (error) {
       setServerError(getApiErrorMessage(error));
     } finally {
@@ -126,6 +132,7 @@ function StartupGatePage({
               <input
                 id="startup-server-url"
                 value={serverUrl}
+                disabled={savingServer || retrying}
                 onChange={(event) => setServerUrl(event.target.value)}
                 placeholder="https://your-server.example.com"
                 className="min-w-64 flex-1 rounded-md border bg-background px-3 py-2 text-sm text-foreground"
@@ -133,16 +140,21 @@ function StartupGatePage({
               <Button
                 variant="outline"
                 size="sm"
-                disabled={savingServer}
+                disabled={savingServer || retrying}
                 onClick={() => void saveServer()}
               >
-                {savingServer ? "正在保存…" : "保存地址"}
+                {savingServer ? "正在同步统计程序…" : "保存地址"}
               </Button>
             </div>
             {serverError ? <p role="status">{serverError}</p> : null}
           </div>
           {!waiting ? (
-            <Button variant="outline" size="sm" onClick={onRetry}>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={savingServer || needsRestart}
+              onClick={onRetry}
+            >
               重新检查
             </Button>
           ) : null}

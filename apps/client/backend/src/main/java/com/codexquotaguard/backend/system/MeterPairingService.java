@@ -1,5 +1,6 @@
 package com.codexquotaguard.backend.system;
 
+import com.codexquotaguard.backend.controlplane.ControlPlaneOrigin;
 import com.codexquotaguard.backend.controlplane.MeterEnrollment;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -21,6 +22,7 @@ public final class MeterPairingService {
     private final ObjectMapper mapper;
     private final Path deviceIdFile;
     private final Path pairingInbox;
+    private final String serverOrigin;
     private volatile String state = "NOT_INSTALLED";
     private UUID pairedUser;
     private UUID pairedDevice;
@@ -31,11 +33,14 @@ public final class MeterPairingService {
             @Value("${quota-guard.meter.device-id-file:${user.home}/AppData/Roaming/com.codexquotaguard.desktop/meter-device-id.txt}")
             String deviceIdFile,
             @Value("${quota-guard.meter.pairing-inbox:${user.home}/AppData/Roaming/com.codexquotaguard.desktop/meter-pairing.json}")
-            String pairingInbox) {
+            String pairingInbox,
+            @Value("${quota-guard.control-plane.base-url:http://127.0.0.1:8080}") String baseUrl) {
         this.session = session;
         this.mapper = mapper;
         this.deviceIdFile = Path.of(deviceIdFile).toAbsolutePath().normalize();
         this.pairingInbox = Path.of(pairingInbox).toAbsolutePath().normalize();
+        var origin = ControlPlaneOrigin.normalize(baseUrl);
+        this.serverOrigin = origin.getScheme() + "://" + origin.getRawAuthority();
     }
 
     /** Never returns a device token or official credential to the renderer. */
@@ -54,7 +59,7 @@ public final class MeterPairingService {
             if (deviceId.equals(pairedDevice) && userId.equals(pairedUser) && probe.generation() == pairedGeneration) return true;
             MeterEnrollment enrollment = session.enrollMeter(deviceId, probe);
             if (!deviceId.equals(enrollment.deviceId()) || !userId.equals(enrollment.userId())) throw new IllegalStateException();
-            payload = mapper.writeValueAsBytes(new PairingInbox(deviceId, enrollment.deviceToken(), enrollment.userId()));
+            payload = mapper.writeValueAsBytes(new PairingInbox(deviceId, enrollment.deviceToken(), enrollment.userId(), serverOrigin));
             Path parent = pairingInbox.getParent();
             if (parent == null) throw new IOException();
             Files.createDirectories(parent);
@@ -88,7 +93,7 @@ public final class MeterPairingService {
 
     public String state() { return state; }
 
-    private record PairingInbox(UUID deviceId, String deviceToken, UUID userId) {
+    private record PairingInbox(UUID deviceId, String deviceToken, UUID userId, String serverOrigin) {
         @Override public String toString() { return "PairingInbox[deviceToken=REDACTED]"; }
     }
 }

@@ -53,6 +53,10 @@ impl AuditLog {
         Self::with_limits(&state_dir.join("logs"), MAX_LOG_BYTES, LOG_BACKUPS)
     }
 
+    pub(super) fn in_directory(directory: &Path) -> Result<Self, String> {
+        Self::with_limits(directory, MAX_LOG_BYTES, LOG_BACKUPS)
+    }
+
     fn with_limits(directory: &Path, max_bytes: u64, backups: usize) -> Result<Self, String> {
         if !directory.is_absolute() || max_bytes < 256 || !(1..=20).contains(&backups) {
             return Err("METER_LOG_CONFIG_INVALID".into());

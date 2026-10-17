@@ -5,7 +5,7 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::PathBuf;
 
-const MAX_OUTBOX_BYTES: usize = 64 * 1024 * 1024;
+pub(super) const MAX_OUTBOX_BYTES: usize = 64 * 1024 * 1024;
 
 /// One atomic journal owns both the captured records and their scan cursor.
 /// Upload acknowledgements remove records only after the server accepted them;
@@ -34,6 +34,18 @@ struct QuarantinedUsage {
 }
 
 impl Outbox {
+    pub(super) fn server_transition_source(
+        &self,
+        config: &MeterConfig,
+    ) -> Result<(&str, &ScanState), String> {
+        // A previous installer may already have changed only the origin. It
+        // must never make an unrelated device or profile's journal eligible.
+        if self.device_id != config.device_id || self.codex_home != config.codex_home {
+            return Err("METER_OUTBOX_IDENTITY_MISMATCH".into());
+        }
+        Ok((&self.server_origin, &self.scan_state))
+    }
+
     pub(super) fn capture(
         config: &MeterConfig,
         previous: &ScanState,

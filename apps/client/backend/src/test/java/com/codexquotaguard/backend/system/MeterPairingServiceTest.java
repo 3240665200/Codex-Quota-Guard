@@ -14,14 +14,26 @@ import java.nio.file.Path;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import tools.jackson.databind.ObjectMapper;
 
 class MeterPairingServiceTest {
 
     @TempDir Path temporaryDirectory;
 
-    @Test
-    void writesOnlyTheMeterScopedEnrollmentIntoTheRustServiceInbox() throws Exception {
+    @ParameterizedTest
+    @CsvSource({
+            "http://127.0.0.1:18080,http://127.0.0.1:18080",
+            "http://192.0.2.10:8080/,http://192.0.2.10:8080",
+            "HTTP://LOCALHOST:80/,http://localhost",
+            "HTTPS://Quota.Example.test:443/,https://quota.example.test",
+            "http://0.0.0.0:8080/,http://127.0.0.1:8080",
+            "https://[::1]:443/,https://[::1]"
+    })
+    void writesOnlyTheMeterScopedEnrollmentWithItsCanonicalServerOrigin(
+            String baseUrl, String expectedOrigin) throws Exception {
         UUID userId = UUID.randomUUID();
         UUID deviceId = UUID.randomUUID();
         Path deviceIdFile = temporaryDirectory.resolve("meter-device-id.txt");
@@ -38,10 +50,12 @@ class MeterPairingServiceTest {
         session.login("alice@example.com", "password");
 
         boolean paired = new MeterPairingService(session, new ObjectMapper(),
-                deviceIdFile.toString(), inbox.toString()).pairIfInstalled();
+                deviceIdFile.toString(), inbox.toString(), baseUrl).pairIfInstalled();
 
         assertThat(paired).isTrue();
         String content = Files.readString(inbox);
+        java.util.Map<?, ?> payload = new ObjectMapper().readValue(content, java.util.Map.class);
+        assertThat(payload.get("serverOrigin")).isEqualTo(expectedOrigin);
         assertThat(content).contains(deviceId.toString(), "A".repeat(43), userId.toString());
         assertThat(content).doesNotContain("access-secret", "refresh-secret");
     }
@@ -61,7 +75,8 @@ class MeterPairingServiceTest {
                 .thenReturn(new MeterEnrollment(device, "A".repeat(43), "2026-11-07T00:00:00Z", UUID.randomUUID()));
         var session = new SystemSessionService(gateway);
         session.login("alice@example.com", "password");
-        var pairing = new MeterPairingService(session, new ObjectMapper(), file.toString(), inbox.toString());
+        var pairing = new MeterPairingService(session, new ObjectMapper(), file.toString(), inbox.toString(),
+                "http://127.0.0.1:8080");
         assertThatThrownBy(pairing::pairIfInstalled).isInstanceOf(IllegalStateException.class);
         assertThat(Files.readString(inbox)).isEqualTo("previous pairing remains");
     }
@@ -87,8 +102,24 @@ class MeterPairingServiceTest {
             session.login("alice@example.com", "password");
             return "stale credential payload".getBytes(java.nio.charset.StandardCharsets.UTF_8);
         });
-        var pairing = new MeterPairingService(session, mapper, file.toString(), inbox.toString());
+        var pairing = new MeterPairingService(session, mapper, file.toString(), inbox.toString(),
+                "http://127.0.0.1:8080");
         assertThatThrownBy(pairing::pairIfInstalled).isInstanceOf(SystemSessionRequiredException.class);
+        assertThat(Files.readString(inbox)).isEqualTo("previous pairing remains");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"", "not-a-url", "ftp://quota.example.test", "https://quota.example.test/path",
+            "https://user:private-origin-canary@quota.example.test", "https://quota.example.test?token=private-origin-canary"})
+    void rejectsInvalidServerConfigurationWithoutChangingTheInbox(String baseUrl) throws Exception {
+        Path file = temporaryDirectory.resolve("meter-device-id.txt");
+        Path inbox = temporaryDirectory.resolve("meter-pairing.json");
+        Files.writeString(inbox, "previous pairing remains");
+
+        assertThatThrownBy(() -> new MeterPairingService(mock(SystemSessionService.class), new ObjectMapper(),
+                file.toString(), inbox.toString(), baseUrl))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("Control-plane base URL must be an HTTP or HTTPS origin.");
         assertThat(Files.readString(inbox)).isEqualTo("previous pairing remains");
     }
 }

@@ -1,4 +1,4 @@
-use quota_guard_meter::{MeterConfig, MeterRuntime};
+use quota_guard_meter::{prepare_server_state, MeterConfig, MeterRuntime};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -33,11 +33,25 @@ fn run_foreground(config_path: &Path, once: bool) -> Result<(), String> {
     }
 }
 
-fn config_from_args() -> Result<(PathBuf, bool, bool), String> {
-    let mut arguments = std::env::args_os().skip(1);
+enum Command {
+    Run {
+        path: PathBuf,
+        service: bool,
+        once: bool,
+    },
+    PrepareServerState {
+        path: PathBuf,
+        state_dir: PathBuf,
+    },
+}
+
+fn command_from_args(
+    mut arguments: impl Iterator<Item = std::ffi::OsString>,
+) -> Result<Command, String> {
     let mode = arguments.next().ok_or("METER_ARGUMENTS_INVALID")?;
     let service = mode == "service";
-    if !service && mode != "run" {
+    let prepare = mode == "prepare-server-state";
+    if !service && mode != "run" && !prepare {
         return Err("METER_ARGUMENTS_INVALID".into());
     }
     if arguments.next().as_deref() != Some(std::ffi::OsStr::new("--config")) {
@@ -50,11 +64,32 @@ fn config_from_args() -> Result<(PathBuf, bool, bool), String> {
     if !path.is_absolute() {
         return Err("METER_ARGUMENTS_INVALID".into());
     }
-    let once = arguments.next().is_some_and(|value| value == "--once");
+    if prepare {
+        if arguments.next().as_deref() != Some(std::ffi::OsStr::new("--state-dir")) {
+            return Err("METER_ARGUMENTS_INVALID".into());
+        }
+        let state_dir = arguments
+            .next()
+            .map(PathBuf::from)
+            .ok_or("METER_ARGUMENTS_INVALID")?;
+        if !state_dir.is_absolute() || arguments.next().is_some() {
+            return Err("METER_ARGUMENTS_INVALID".into());
+        }
+        return Ok(Command::PrepareServerState { path, state_dir });
+    }
+    let once = match arguments.next() {
+        None => false,
+        Some(value) if value == "--once" && !service => true,
+        Some(_) => return Err("METER_ARGUMENTS_INVALID".into()),
+    };
     if arguments.next().is_some() {
         return Err("METER_ARGUMENTS_INVALID".into());
     }
-    Ok((path, service, once))
+    Ok(Command::Run {
+        path,
+        service,
+        once,
+    })
 }
 
 fn main() {
@@ -63,7 +98,18 @@ fn main() {
         return;
     }
     let outcome = (|| {
-        let (config_path, service, once) = config_from_args()?;
+        let (config_path, service, once) = match command_from_args(std::env::args_os().skip(1))? {
+            Command::PrepareServerState { path, state_dir } => {
+                prepare_server_state(&path, &state_dir)?;
+                println!("METER_SERVER_STATE_PREPARED");
+                return Ok(());
+            }
+            Command::Run {
+                path,
+                service,
+                once,
+            } => (path, service, once),
+        };
         if service {
             if once {
                 return Err("METER_ARGUMENTS_INVALID".into());
@@ -82,6 +128,44 @@ fn main() {
     if let Err(code) = outcome {
         eprintln!("{code}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsString;
+
+    #[test]
+    fn prepare_server_state_arguments_require_both_absolute_paths_and_no_extra_flags() {
+        let config = std::env::temp_dir().join("synthetic-meter-config.json");
+        let destination = std::env::temp_dir().join("synthetic-meter-context");
+        let arguments = vec![
+            OsString::from("prepare-server-state"),
+            OsString::from("--config"),
+            config.clone().into_os_string(),
+            OsString::from("--state-dir"),
+            destination.clone().into_os_string(),
+        ];
+        assert!(matches!(command_from_args(arguments.clone().into_iter()),
+            Ok(Command::PrepareServerState { path, state_dir }) if path == config && state_dir == destination));
+        for invalid in [
+            arguments[..3].to_vec(),
+            {
+                let mut relative = arguments.clone();
+                relative[4] = "relative-context".into();
+                relative
+            },
+            {
+                let mut extra = arguments.clone();
+                extra.push("--once".into());
+                extra
+            },
+        ] {
+            assert!(
+                matches!(command_from_args(invalid.into_iter()), Err(code) if code == "METER_ARGUMENTS_INVALID")
+            );
+        }
     }
 }
 
