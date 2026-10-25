@@ -1,6 +1,6 @@
 {
   "name": "@codex-quota-guard/client",
-  "version": "0.3.27",
+  "version": "0.3.28",
   "private": true,
   "description": "Codex quota dashboard with an independent Windows metering service",
   "type": "module",

@@ -24,7 +24,6 @@ public class QuotaOverviewService {
     private static final Duration FIVE_HOUR_WINDOW = Duration.ofHours(5);
     private static final Duration WEEKLY_WINDOW = Duration.ofDays(7);
     private static final String TEAM_UNAVAILABLE = "TEAM_UNAVAILABLE";
-    private static final String TOKEN_QUOTA_UNCONFIGURED = "TOKEN_QUOTA_UNCONFIGURED";
     private static final String FIVE_HOUR_QUOTA_EXCEEDED = "FIVE_HOUR_TOKEN_QUOTA_EXCEEDED";
     private static final String WEEKLY_QUOTA_EXCEEDED = "WEEKLY_TOKEN_QUOTA_EXCEEDED";
 
@@ -198,12 +197,6 @@ public class QuotaOverviewService {
     ) {
         if (team != null && team.getStatus() != Team.Status.ACTIVE) {
             return TEAM_UNAVAILABLE;
-        }
-        if (teamQuota != null && teamQuota.weeklyTokenLimit() == null) {
-            return TOKEN_QUOTA_UNCONFIGURED;
-        }
-        if (teamQuota == null && policy.weeklyTokenLimit() == null) {
-            return TOKEN_QUOTA_UNCONFIGURED;
         }
         if (teamQuota != null && Long.valueOf(0).equals(teamQuota.fiveHourRemainingTokens())) {
             return "TEAM_FIVE_HOUR_TOKEN_QUOTA_EXCEEDED";

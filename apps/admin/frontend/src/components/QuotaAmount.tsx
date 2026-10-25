@@ -9,7 +9,7 @@ export function QuotaAmount({ used, limit, remaining, label }: {
   const percent = quotaPercent(mode, used, remaining, limit);
   const exhausted = limit !== null && (limit === 0 || remaining === 0);
   if (limit === null) return <div>
-    <Typography.Text type="secondary">不设限</Typography.Text>
+    <Typography.Text type="secondary">无限制</Typography.Text>
     {mode === 'used' ? <div>已用 <TokenAmount value={used} /></div> : null}
   </div>;
   return <div style={{ minWidth: 165 }}>

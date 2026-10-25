@@ -1,11 +1,11 @@
 # Docker Hub 拉取部署
 
-本配置面向服务器 `0.3.25`，后端与管理网页版本一致，平台为 **Linux amd64 / x86_64**，配套源码标签为 `server-v0.3.25`。生产部署固定版本，不依赖 `latest`；发布状态、镜像摘要与变更范围见 [服务器 0.3.25 发布说明](../../../docs/releases/server-v0.3.25.md)。
+本配置面向服务器 `0.3.28`，后端与管理网页版本一致，平台为 **Linux amd64 / x86_64**，配套源码标签为 `server-v0.3.28`。生产部署固定版本，不依赖 `latest`；变更范围见 [服务器 0.3.28 发布说明](../../../docs/releases/server-v0.3.28.md)。
 
 | 组件 | 镜像 |
 | --- | --- |
-| 普通后端，不含 Chromium | `minjm/codex-quota-guard-backend:0.3.25` |
-| 管理网页 | `minjm/codex-quota-guard-web:0.3.25` |
+| 普通后端，不含 Chromium | `minjm/codex-quota-guard-backend:0.3.28` |
+| 管理网页 | `minjm/codex-quota-guard-web:0.3.28` |
 | 数据库 | 官方 `postgres:17-alpine` |
 
 镜像仓库：[后端](https://hub.docker.com/r/minjm/codex-quota-guard-backend) · [管理网页](https://hub.docker.com/r/minjm/codex-quota-guard-web)。服务器不需要源码、Java、Node.js 或 Maven；需要 Docker Engine、Compose **v2.24.4+**、Bash、OpenSSL，以及访问 Docker Hub 的网络。下载配置另外需要 `curl`。这不是 Windows 容器或 ARM 镜像。
@@ -21,7 +21,7 @@
   set -e
   mkdir codex-quota-guard-server
   cd codex-quota-guard-server
-  qg_base="https://raw.githubusercontent.com/3240665200/Codex-Quota-Guard/server-v0.3.25/deploy/docker"
+  qg_base="https://raw.githubusercontent.com/3240665200/Codex-Quota-Guard/server-v0.3.28/deploy/docker"
   curl -fSL --fail-early --remote-name-all \
     "$qg_base/registry/compose.yaml" \
     "$qg_base/registry/start.sh" \
@@ -31,7 +31,7 @@
 )
 ```
 
-下载地址固定到与 `0.3.25` 镜像配套的 `server-v0.3.25` 源码标签。已有同名目录时下载步骤会停止，不覆盖已有部署。
+下载地址固定到与 `0.3.28` 镜像配套的 `server-v0.3.28` 源码标签。已有同名目录时下载步骤会停止，不覆盖已有部署。
 
 进入包含 `start.sh` 的目录（上述下载方式为 `cd codex-quota-guard-server`），替换服务器 IP 和管理员邮箱后执行：
 
@@ -44,11 +44,13 @@ bash start.sh up
 
 管理网页和桌面端使用同一个中央服务地址。基础 Compose 设置 `APP_REQUIRE_HTTPS=false`，允许 HTTP 和 HTTPS，包括私有预置授权、授权文件导入与会话管理，不再仅限 localhost。HTTP 页面只提示风险，不因协议禁用功能；**HTTP 会明文传输系统密码、导入的官方授权，推荐使用 HTTPS**。服务器到官方站点的 TLS 校验、鉴权和密钥加密规则不变。数据库和 Java 内部端口不单独公开。
 
-配套桌面为 **0.3.27**，附带独立统计服务 **0.2.7**；新版已修复桌面连接安全策略对中央请求的拦截。新版业务请求由 JS Axios 直接访问中央后台，安装包不包含 Java 或本地 HTTP 后端；安装统计服务需要批准 Windows 管理员授权。
+配套桌面为 **0.3.28**，附带独立统计服务 **0.2.7**；新版修复额度空值语义、成员布局，并包含桌面连接安全策略修复。新版业务请求由 JS Axios 直接访问中央后台，安装包不包含 Java 或本地 HTTP 后端；安装统计服务需要批准 Windows 管理员授权。
 
-## 升级到 0.3.25
+## 升级到 0.3.28
 
-从 `0.3.23` 升级执行 **V35–V36**：新增官方额度轮询状态表和验证器密钥表。从 `0.3.22` 升级还会执行 V32–V34 的前置节点、加密订阅及 Trojan 许可迁移。升级前停止旧应用、保留 PostgreSQL 运行并备份数据库与原 `.env`；保留项目名、数据库卷、全部密钥和自定义配置。后端与网页同时改为 `0.3.25`，桌面使用 `0.3.25`；不要覆盖原 `.env` 或重新生成密钥。
+从 `0.3.25` 升级不新增数据库迁移，本次统一个人和团队的空上限为无限制；明确设置为 `0` 的上限保持用尽。已有实际用量继续保留。
+
+从 `0.3.23` 升级执行 **V35–V36**：新增官方额度轮询状态表和验证器密钥表。从 `0.3.22` 升级还会执行 V32–V34 的前置节点、加密订阅及 Trojan 许可迁移。升级前停止旧应用、保留 PostgreSQL 运行并备份数据库与原 `.env`；保留项目名、数据库卷、全部密钥和自定义配置。后端与网页同时改为 `0.3.28`，桌面使用 `0.3.28`；不要覆盖原 `.env` 或重新生成密钥。
 
 升级后确认 Flyway 到 **V36**。先验证原单出口账户与手动节点，再按需导入订阅、测试“前置 → 出口”并保存账户链；保存链后手动刷新官方账户与会话。订阅仅首次导入及手动“更新节点”时下载，没有后台定时更新。下载、解析或版本检查失败保留原节点，同订阅按唯一节点名保留 ID；来源缺失或曾主动停用的节点不会因更新而自动启用。
 
@@ -84,8 +86,8 @@ bash start.sh backup
 普通部署的两个镜像改为：
 
 ```text
-minjm/codex-quota-guard-backend:0.3.25
-minjm/codex-quota-guard-web:0.3.25
+minjm/codex-quota-guard-backend:0.3.28
+minjm/codex-quota-guard-web:0.3.28
 ```
 
 旧 Compose 的 `services.backend.environment` 合并下列映射（若文件为 JSON，使用等价的 JSON 键值格式）：
@@ -138,7 +140,7 @@ HTTP 与 HTTPS 使用相同镜像、预置和文件导入。需要强制 HTTPS �
 ```bash
 (
   set -e
-  qg_base="https://raw.githubusercontent.com/3240665200/Codex-Quota-Guard/server-v0.3.25/deploy/docker"
+  qg_base="https://raw.githubusercontent.com/3240665200/Codex-Quota-Guard/server-v0.3.28/deploy/docker"
   curl -fSL --fail-early --remote-name-all \
     "$qg_base/compose.https.yaml" \
     "$qg_base/nginx.https.conf"

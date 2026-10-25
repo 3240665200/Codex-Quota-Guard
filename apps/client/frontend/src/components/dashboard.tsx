@@ -109,7 +109,7 @@ function QuotaProgress({
     return (
       <div className="flex justify-between gap-3 text-xs text-muted-foreground">
         <span>{label}</span>
-        <span>{limit === null ? "不设限" : "暂不可得"}</span>
+        <span>{limit === null ? "无限制" : "暂不可得"}</span>
       </div>
     );
   }
@@ -339,14 +339,14 @@ function MemberRemainingWindow({
       ariaLabel={`${label}个人${displayLabel}额度`}
       percent={percent}
       exhausted={remaining === 0 && limit !== null}
-      unavailableLabel={limit === null ? "未设个人限额" : "暂不可得"}
+      unavailableLabel={limit === null ? "无限制" : "暂不可得"}
       detail={
         limit !== null && remaining !== null
           ? mode === "remaining"
             ? `剩余 ${formatTokenCount(remaining)} / 上限 ${formatTokenCount(limit)} Token`
             : `个人上限 ${formatTokenCount(limit)} Token${remaining === 0 ? " · 已达到上限" : ""}`
           : limit === null
-            ? "受团队共享额度约束"
+            ? "未设置个人上限"
             : `个人上限 ${formatTokenCount(limit)} Token`
       }
     />
@@ -393,9 +393,13 @@ function TeamMemberRow({
   overview: QuotaOverview;
 }) {
   const { user, teamQuota } = overview;
+  const { label: displayLabel } = useQuotaDisplay();
   return (
-    <tr className={member.userId === user.id ? "cqg-member-self" : undefined}>
-      <th scope="row">
+    <tr
+      role="row"
+      className={member.userId === user.id ? "cqg-member-self" : undefined}
+    >
+      <th scope="row" role="rowheader">
         <div className="cqg-member-identity">
           <span className="cqg-member-name">
             {member.displayName || "未命名成员"}
@@ -413,7 +417,10 @@ function TeamMemberRow({
           {member.status === "DISABLED" ? "已停用" : "正常"}
         </span>
       </th>
-      <td>
+      <td role="cell">
+        <p className="cqg-member-column-label" aria-hidden="true">
+          个人{displayLabel}额度
+        </p>
         <div className="cqg-member-windows">
           <MemberRemainingWindow
             label="5 小时"
@@ -427,7 +434,10 @@ function TeamMemberRow({
           />
         </div>
       </td>
-      <td>
+      <td role="cell">
+        <p className="cqg-member-column-label" aria-hidden="true">
+          团队用量占比
+        </p>
         <div className="cqg-member-windows">
           <MemberTeamShareWindow
             label="5 小时"
@@ -504,28 +514,29 @@ function TeamMembersCard({ overview }: { overview: QuotaOverview }) {
         <p className="cqg-members-empty">团队暂无成员</p>
       ) : (
         <>
-          <div
-            className="cqg-members-scroll"
-            role="region"
-            aria-label="团队成员用量表格，可横向和纵向滚动"
-            tabIndex={0}
-          >
-            <table className="cqg-members-table">
-              <caption className="sr-only">
-                当前团队全部成员，按累计用量从高到低排序。个人{displayLabel}
-                额度及团队用量占比分窗口显示，单位 Token。
+          <div className="cqg-members-content">
+            <table className="cqg-members-table" role="table">
+              <caption className="cqg-members-caption">
+                个人限额留空即无限制；用量占比仅表示成员在团队已用 Token
+                中的占比。
               </caption>
-              <thead>
-                <tr>
-                  <th scope="col">成员</th>
-                  <th scope="col">个人{displayLabel}额度</th>
-                  <th scope="col">团队用量占比</th>
+              <thead role="rowgroup">
+                <tr role="row">
+                  <th scope="col" role="columnheader">
+                    成员
+                  </th>
+                  <th scope="col" role="columnheader">
+                    个人{displayLabel}额度
+                  </th>
+                  <th scope="col" role="columnheader">
+                    团队用量占比
+                  </th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody role="rowgroup">
                 {members!.length === 0 ? (
-                  <tr>
-                    <td colSpan={3} className="cqg-members-empty">
+                  <tr role="row">
+                    <td role="cell" colSpan={3} className="cqg-members-empty">
                       未找到匹配的成员
                     </td>
                   </tr>
@@ -598,7 +609,7 @@ function UsageWindow({
       <header className="cqg-usage-window-header flex items-start justify-between gap-3">
         <h4 className="text-sm font-semibold">{label}</h4>
         <span className="text-xs text-muted-foreground">
-          {limitTokens === null ? "不设限" : "个人上限"}
+          {limitTokens === null ? "无限制" : "个人上限"}
         </span>
       </header>
       <div className="cqg-usage-window-primary">
@@ -611,7 +622,7 @@ function UsageWindow({
           {mode === "used" ? (
             <TokenAmount value={usedTokens} />
           ) : limitTokens === null ? (
-            "不限额"
+            "无限制"
           ) : remainingTokens === null ? (
             "暂不可得"
           ) : (

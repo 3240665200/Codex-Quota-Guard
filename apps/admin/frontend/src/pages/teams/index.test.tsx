@@ -130,6 +130,26 @@ describe('团队与 Token 配额页面', () => {
     expect(getTeamQuotaOverview).toHaveBeenCalledWith(team.id);
   });
 
+  it('shows empty limits as unlimited while preserving measured usage', async () => {
+    vi.mocked(listTeams).mockResolvedValue([{
+      ...team, fiveHourTokenLimit: null, weeklyTokenLimit: null, totalTokenLimit: null,
+    }]);
+    vi.mocked(getTeamQuotaOverview).mockResolvedValue({
+      id: team.id, name: team.name, status: team.status, memberCount: team.memberCount,
+      fiveHourTokenLimit: null, weeklyTokenLimit: null, totalTokenLimit: null,
+      fiveHourUsedTokens: 120, weeklyUsedTokens: 300, totalUsedTokens: 500,
+      fiveHourRemainingTokens: null, weeklyRemainingTokens: null, totalRemainingTokens: null,
+      measuredAt: '2026-10-08T04:00:00Z',
+    });
+    renderPage();
+    expect(await screen.findByTitle('精确值：120 Token')).toBeInTheDocument();
+    expect(screen.getAllByText(/无限制/)).toHaveLength(6);
+    expect(screen.queryByText('未配置')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '编辑 研发' }));
+    await waitFor(() => expect(screen.getByText('留空表示不设 7 天限制')).toBeVisible(), { timeout: 5000 });
+    expect(screen.queryByText('7 天基础额度；现有团队暂需配置')).not.toBeInTheDocument();
+  });
+
   it('opens member management from a visible team action and reloads member counts after saving', async () => {
     vi.mocked(listTeams).mockResolvedValueOnce([team])
       .mockResolvedValue([{ ...team, memberCount: 3 }]);

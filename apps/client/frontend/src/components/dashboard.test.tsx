@@ -398,9 +398,7 @@ describe("Dashboard", () => {
     await renderDashboard();
     await screen.findByRole("heading", { name: "个人 Token" });
     fireEvent.click(screen.getByRole("button", { name: "设置" }));
-    expect(
-      screen.getByRole("radio", { name: "剩余" }),
-    ).toBeChecked();
+    expect(screen.getByRole("radio", { name: "剩余" })).toBeChecked();
     fireEvent.click(screen.getByRole("radio", { name: "已用" }));
     fireEvent.click(screen.getByRole("button", { name: "额度总览" }));
     expect(
@@ -478,7 +476,7 @@ describe("Dashboard", () => {
       within(rows[2]).getByText("已用 120 / 团队 10,000 Token"),
     ).toBeVisible();
     expect(within(rows[3]).getByText(longName)).toBeVisible();
-    expect(within(rows[4]).getAllByText("未设个人限额")).toHaveLength(2);
+    expect(within(rows[4]).getAllByText("无限制")).toHaveLength(2);
     expect(within(rows[4]).getAllByRole("cell")[0]).not.toHaveTextContent(
       "已用",
     );
@@ -488,11 +486,9 @@ describe("Dashboard", () => {
     expect(
       within(memberRegion).getByText(/已离队成员的历史用量/),
     ).toBeVisible();
-    expect(
-      within(memberRegion).getByRole("region", {
-        name: "团队成员用量表格，可横向和纵向滚动",
-      }),
-    ).toHaveAttribute("tabindex", "0");
+    expect(within(memberRegion).getByRole("table")).toHaveAccessibleName(
+      /个人限额留空即无限制/,
+    );
   });
 
   it("keeps large teams fully accessible and filters members locally", async () => {
@@ -709,7 +705,7 @@ describe("Dashboard", () => {
       expect(window.children[2]).toHaveClass("cqg-usage-window-footer");
     }
 
-    const unlimitedValue = within(fiveHour).getByText("不限额");
+    const unlimitedValue = within(fiveHour).getAllByText("无限制")[1];
     expect(
       unlimitedValue.closest(".cqg-usage-window-primary"),
     ).toHaveTextContent("个人剩余");
@@ -995,8 +991,62 @@ describe("Dashboard", () => {
     expect(
       screen.queryByRole("progressbar", { name: "5 小时个人额度剩余额度" }),
     ).not.toBeInTheDocument();
-    expect(screen.getAllByText("不设限").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("无限制").length).toBeGreaterThan(0);
   });
+
+  it.each(["remaining", "used"] as const)(
+    "keeps unset personal limits unlimited while distinguishing measured team contribution in %s mode",
+    async (mode) => {
+      setQuotaDisplayMode(mode);
+      quotaResponse = {
+        ...quota,
+        policy: {
+          fiveHourTokenLimit: null,
+          weeklyTokenLimit: null,
+          fiveHourSource: "UNCONFIGURED",
+          weeklySource: "UNCONFIGURED",
+        },
+        usage: {
+          ...quota.usage,
+          fiveHourRemainingTokens: null,
+          weeklyRemainingTokens: null,
+        },
+        teamQuota: {
+          ...quota.teamQuota!,
+          fiveHourTokenLimit: null,
+          weeklyTokenLimit: null,
+          fiveHourRemainingTokens: null,
+          weeklyRemainingTokens: null,
+        },
+        teamMembers: [
+          {
+            ...quota.teamMembers![0],
+            fiveHourTokenLimit: null,
+            weeklyTokenLimit: null,
+            fiveHourRemainingTokens: null,
+            weeklyRemainingTokens: null,
+          },
+        ],
+      };
+      await renderDashboard();
+      const members = await screen.findByRole("region", { name: "成员用量" });
+      const row = within(members).getAllByRole("row")[1];
+      const personal = within(row).getAllByRole("cell")[0];
+      expect(within(personal).getAllByText("无限制")).toHaveLength(2);
+      expect(within(personal).queryByRole("progressbar")).toBeNull();
+      expect(within(personal).queryByText("受团队共享额度约束")).toBeNull();
+      expect(
+        within(row).getByRole("progressbar", {
+          name: "5 小时团队用量占比",
+        }),
+      ).toHaveAttribute("aria-valuetext", "88.9%");
+      expect(
+        within(members).getByText(
+          /用量占比仅表示成员在团队已用 Token 中的占比/,
+        ),
+      ).toBeVisible();
+    },
+  );
 
   it("opens independent workspaces without fetching inactive usage pages", async () => {
     const user = (await import("@testing-library/user-event")).default.setup();

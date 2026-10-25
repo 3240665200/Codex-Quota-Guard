@@ -349,10 +349,10 @@ export default function TeamsPage() {
       {
         dataIndex: 'fiveHourTokenLimit',
         render: (value: number | null, team) => <Space orientation="vertical" size={0}>
-          <span>上限 <TokenAmount value={value} /></span>
+          <span>上限 {value === null ? '无限制' : <TokenAmount value={value} />}</span>
           <Typography.Text type="secondary">已用 <TokenAmount value={quotaByTeam[team.id]?.fiveHourUsedTokens} /></Typography.Text>
           <Typography.Text type={quotaByTeam[team.id]?.fiveHourRemainingTokens === 0 ? 'danger' : 'secondary'}>
-            剩余 <TokenAmount value={quotaByTeam[team.id]?.fiveHourRemainingTokens} />
+            剩余 {value === null ? '无限制' : <TokenAmount value={quotaByTeam[team.id]?.fiveHourRemainingTokens} />}
           </Typography.Text>
         </Space>,
         title: '5 小时团队共享额度',
@@ -361,10 +361,10 @@ export default function TeamsPage() {
       {
         dataIndex: 'weeklyTokenLimit',
         render: (value: number | null, team) => <Space orientation="vertical" size={0}>
-          <span>上限 <TokenAmount value={value} /></span>
+          <span>上限 {value === null ? '无限制' : <TokenAmount value={value} />}</span>
           <Typography.Text type="secondary">已用 <TokenAmount value={quotaByTeam[team.id]?.weeklyUsedTokens} /></Typography.Text>
           <Typography.Text type={quotaByTeam[team.id]?.weeklyRemainingTokens === 0 ? 'danger' : 'secondary'}>
-            剩余 <TokenAmount value={quotaByTeam[team.id]?.weeklyRemainingTokens} />
+            剩余 {value === null ? '无限制' : <TokenAmount value={quotaByTeam[team.id]?.weeklyRemainingTokens} />}
           </Typography.Text>
         </Space>,
         title: '7 天团队共享额度',
@@ -373,10 +373,10 @@ export default function TeamsPage() {
       {
         dataIndex: 'totalTokenLimit',
         render: (value: number | null, team) => <Space orientation="vertical" size={0}>
-          <span>上限 <TokenAmount value={value} /></span>
+          <span>上限 {value === null ? '无限制' : <TokenAmount value={value} />}</span>
           <Typography.Text type="secondary">已用 <TokenAmount value={quotaByTeam[team.id]?.totalUsedTokens} /></Typography.Text>
           <Typography.Text type={quotaByTeam[team.id]?.totalRemainingTokens === 0 ? 'danger' : 'secondary'}>
-            剩余 <TokenAmount value={quotaByTeam[team.id]?.totalRemainingTokens} />
+            剩余 {value === null ? '无限制' : <TokenAmount value={quotaByTeam[team.id]?.totalRemainingTokens} />}
           </Typography.Text>
         </Space>,
         title: '团队累计总额',
@@ -577,7 +577,7 @@ export default function TeamsPage() {
               />
             </Form.Item>
             <Form.Item
-              extra="7 天基础额度；现有团队暂需配置"
+              extra="留空表示不设 7 天限制"
               label="7 天 Token 上限"
               name="weeklyTokenLimit"
               rules={[tokenLimitRule()]}

@@ -401,7 +401,7 @@ class QuotaPolicyIntegrationTest {
     }
 
     @Test
-    void missingTokenLimitsFailClosedAndOldPersonalAssignmentRouteIsGone() throws Exception {
+    void missingTokenLimitsAreUnlimitedAndOldPersonalAssignmentRouteIsGone() throws Exception {
         User admin = administrator();
         authService.register("member@example.com", PASSWORD, "Member");
         User member = users.findByEmail("member@example.com").orElseThrow();
@@ -414,8 +414,8 @@ class QuotaPolicyIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.policy.fiveHourTokenLimit").value(nullValue()))
                 .andExpect(jsonPath("$.usage.fiveHourUsedTokens").value(0))
-                .andExpect(jsonPath("$.allowed").value(false))
-                .andExpect(jsonPath("$.blockReason").value("TOKEN_QUOTA_UNCONFIGURED"));
+                .andExpect(jsonPath("$.allowed").value(true))
+                .andExpect(jsonPath("$.blockReason").value(nullValue()));
         mvc.perform(put("/api/v1/admin/users/{id}/codex-account", member.getId())
                         .header(HttpHeaders.AUTHORIZATION, bearer(admin))
                         .contentType(MediaType.APPLICATION_JSON)
@@ -428,6 +428,51 @@ class QuotaPolicyIntegrationTest {
                         .header(HttpHeaders.AUTHORIZATION, bearer(afterPolicy.accessToken())))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.allowed").value(true));
+    }
+
+    @Test
+    void unsetWindowsKeepUsageWithoutLimitsAndExplicitWeeklyZeroStillBlocks() throws Exception {
+        User admin = administrator();
+        authService.register("member@example.com", PASSWORD, "Member");
+        User member = users.findByEmail("member@example.com").orElseThrow();
+        AuthResponse noTeamSession = authService.login("member@example.com", PASSWORD);
+        mvc.perform(get(OVERVIEW).with(boundRequest())
+                        .header(HttpHeaders.AUTHORIZATION, bearer(noTeamSession.accessToken())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.allowed").value(true))
+                .andExpect(jsonPath("$.blockReason").value(nullValue()));
+
+        UUID teamId = createTeam(admin, "Unlimited team");
+        joinTeam(admin, member.getId(), teamId);
+        AuthResponse session = authService.login("member@example.com", PASSWORD);
+        reportAndReadQuota(session.accessToken(), usageRequest(EVENT_ID, 320))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.usage.fiveHourUsedTokens").value(320))
+                .andExpect(jsonPath("$.usage.weeklyUsedTokens").value(320))
+                .andExpect(jsonPath("$.usage.fiveHourRemainingTokens").value(nullValue()))
+                .andExpect(jsonPath("$.usage.weeklyRemainingTokens").value(nullValue()))
+                .andExpect(jsonPath("$.teamQuota.fiveHourTokenLimit").value(nullValue()))
+                .andExpect(jsonPath("$.teamQuota.weeklyTokenLimit").value(nullValue()))
+                .andExpect(jsonPath("$.teamQuota.fiveHourUsedTokens").value(320))
+                .andExpect(jsonPath("$.teamQuota.weeklyUsedTokens").value(320))
+                .andExpect(jsonPath("$.teamQuota.fiveHourRemainingTokens").value(nullValue()))
+                .andExpect(jsonPath("$.teamQuota.weeklyRemainingTokens").value(nullValue()))
+                .andExpect(jsonPath("$.allowed").value(true))
+                .andExpect(jsonPath("$.blockReason").value(nullValue()));
+
+        mvc.perform(put("/api/v1/admin/teams/{id}/token-limits", teamId)
+                        .header(HttpHeaders.AUTHORIZATION, bearer(admin))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"fiveHourTokenLimit\":null,\"weeklyTokenLimit\":0}"))
+                .andExpect(status().isOk());
+        AuthResponse cappedSession = authService.login("member@example.com", PASSWORD);
+        mvc.perform(get(OVERVIEW).with(boundRequest())
+                        .header(HttpHeaders.AUTHORIZATION, bearer(cappedSession.accessToken())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.teamQuota.fiveHourRemainingTokens").value(nullValue()))
+                .andExpect(jsonPath("$.teamQuota.weeklyRemainingTokens").value(0))
+                .andExpect(jsonPath("$.allowed").value(false))
+                .andExpect(jsonPath("$.blockReason").value("TEAM_WEEKLY_TOKEN_QUOTA_EXCEEDED"));
     }
 
     @Test

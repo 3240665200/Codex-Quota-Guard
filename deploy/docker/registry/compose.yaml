@@ -79,7 +79,7 @@
           "bind": { "create_host_path": false }
         }
       ],
-      "image": "minjm/codex-quota-guard-backend:0.3.25",
+      "image": "minjm/codex-quota-guard-backend:0.3.28",
       "platform": "linux/amd64",
       "pull_policy": "missing"
     },
@@ -175,7 +175,7 @@
       "tmpfs": [
         "/tmp:rw,noexec,nosuid,size=64m"
       ],
-      "image": "minjm/codex-quota-guard-web:0.3.25",
+      "image": "minjm/codex-quota-guard-web:0.3.28",
       "platform": "linux/amd64",
       "pull_policy": "missing"
     }
