@@ -2,7 +2,7 @@
 
 文档按用途分层维护，避免架构说明、接口契约和产品需求混在同一目录。
 
-当前已发布桌面与服务器 **0.3.25**，统计服务 **0.2.6**。见[桌面发布说明](releases/v0.3.25.md)、[服务器发布说明](releases/server-v0.3.25.md)及[当前架构](architecture/current-system-architecture.md)。桌面不捆绑 Java，安装包强制安装独立 Rust 统计服务。
+当前已发布桌面 **0.3.26**、服务器 **0.3.25**，统计服务 **0.2.7**。见[桌面发布说明](releases/v0.3.26.md)、[服务器发布说明](releases/server-v0.3.25.md)及[当前架构](architecture/current-system-architecture.md)。桌面不捆绑 Java，安装包强制安装独立 Rust 统计服务。
 
 使用与本地验证：[Windows 本地管理网页测试](local-admin-test.md)、[桌面启动与独立统计测试](local-desktop-test.md)、[订阅与前置／后置代理链](proxy-subscriptions-and-chains.md)。
 

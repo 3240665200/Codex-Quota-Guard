@@ -684,6 +684,16 @@ describe("Tauri API boundary", () => {
     expect(invokeMock).toHaveBeenCalledWith("meter_status");
   });
 
+  it("accepts historical review warnings independently of a healthy meter status", async () => {
+    const status = {
+      state: "UP_TO_DATE", lastScanEpochSeconds: 1792909500,
+      lastReportEpochSeconds: 1792909490, reportedEvents: 0, errorCode: null,
+      version: "0.2.7", warningCode: "METER_EVENT_OUTSIDE_REPORT_WINDOW", deferredEvents: 1194,
+    };
+    invokeMock.mockResolvedValue(status);
+    await expect(api.usageStatus()).resolves.toEqual(status);
+  });
+
   it("allows only the fixed safe message for a rejected control-plane request", () => {
     const safeMessage = "中央后台拒绝请求，请检查请求内容后重试。";
     expect(getApiErrorMessage(safeMessage)).toBe(safeMessage);

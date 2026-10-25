@@ -870,6 +870,12 @@ export function UsageActivityPanel({
               <p className="mt-2 text-xs [overflow-wrap:anywhere]">
                 {explainError(status?.errorCode) ?? "暂无统计程序错误"}
               </p>
+              {status?.warningCode ? (
+                <div role="status" className="mt-2 text-xs text-amber-700 dark:text-amber-400 [overflow-wrap:anywhere]">
+                  <p>统计服务持续运行，待核对记录：{formatTokenCount(status.deferredEvents ?? 0)} 条。</p>
+                  <p className="mt-1">{explainError(status.warningCode)}</p>
+                </div>
+              ) : null}
               {serviceState === "UNPAIRED" || pairingError.data ? (
                 <p className="mt-2 text-xs text-destructive [overflow-wrap:anywhere]">
                   {pairingError.data === "PAIRING_IDENTITY_MISMATCH"

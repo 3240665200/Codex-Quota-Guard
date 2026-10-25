@@ -320,6 +320,8 @@ const usageStatusSchema = z.strictObject({
   lastScanEpochSeconds: tokenCount.nullable(),
   lastReportEpochSeconds: tokenCount.nullable(),
   reportedEvents: tokenCount,
+  warningCode: z.string().regex(/^[A-Z_]{1,64}$/).nullable().optional(),
+  deferredEvents: tokenCount.optional(),
   errorCode: z
     .string()
     .regex(/^[A-Z_]{1,64}$/)

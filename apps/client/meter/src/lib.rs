@@ -1230,6 +1230,10 @@ pub struct MeterStatus {
     pub reported_events: usize,
     #[serde(default)]
     pub pending_events: Option<usize>,
+    #[serde(default)]
+    pub deferred_events: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning_code: Option<String>,
     pub error_code: Option<String>,
     pub cc_switch_guard: String,
     pub cc_switch_guard_checked_at: u64,
@@ -1844,6 +1848,8 @@ fn publish_capture_progress(config: &MeterConfig, pending_events: usize, status_
         last_report_epoch_seconds: None,
         reported_events: 0,
         pending_events: None,
+        deferred_events: 0,
+        warning_code: None,
         error_code: None,
         cc_switch_guard: "INACTIVE".into(),
         cc_switch_guard_checked_at: 0,
@@ -1877,6 +1883,8 @@ pub struct MeterRuntime {
     last_heartbeat: Option<Instant>,
     last_report_epoch_seconds: Option<u64>,
     pending_events: Option<usize>,
+    deferred_events: usize,
+    warning_code: Option<String>,
     guard: GuardSupervisor,
     capture: CaptureSupervisor,
     journal_lock: Arc<Mutex<()>>,
@@ -1948,6 +1956,8 @@ impl MeterRuntime {
             last_heartbeat: None,
             last_report_epoch_seconds: None,
             pending_events: None,
+            deferred_events: 0,
+            warning_code: None,
             guard,
             capture,
             journal_lock,
@@ -1985,6 +1995,8 @@ impl MeterRuntime {
                 last_report_epoch_seconds: self.last_report_epoch_seconds,
                 reported_events,
                 pending_events: self.pending_events,
+                deferred_events: self.deferred_events,
+                warning_code: self.warning_code.clone(),
                 error_code: None,
                 cc_switch_guard: guard.state.into(),
                 cc_switch_guard_checked_at: guard.checked_at,
@@ -1997,6 +2009,8 @@ impl MeterRuntime {
                 last_report_epoch_seconds: self.last_report_epoch_seconds,
                 reported_events: 0,
                 pending_events: self.pending_events,
+                deferred_events: self.deferred_events,
+                warning_code: self.warning_code.clone(),
                 error_code: Some(code),
                 cc_switch_guard: guard.state.into(),
                 cc_switch_guard_checked_at: guard.checked_at,
@@ -2032,7 +2046,7 @@ impl MeterRuntime {
         if let Some(kind) = kind {
             let _ = self.audit.append(kind, Some(&status), 0, false);
             self.last_logged_state = Some(status.state.clone());
-            self.last_logged_error = status.error_code.clone();
+            self.last_logged_error = status.error_code.clone().or(status.warning_code.clone());
             self.last_logged_epoch_seconds = Some(now);
         }
         status
@@ -2072,6 +2086,8 @@ impl MeterRuntime {
             last_report_epoch_seconds: None,
             reported_events: 0,
             pending_events: self.pending_events,
+            deferred_events: self.deferred_events,
+            warning_code: self.warning_code.clone(),
             error_code: None,
             cc_switch_guard: "INACTIVE".into(),
             cc_switch_guard_checked_at: 0,
@@ -2088,6 +2104,8 @@ impl MeterRuntime {
     }
 
     fn tick_inner(&mut self) -> Result<(&'static str, usize), String> {
+        self.deferred_events = 0;
+        self.warning_code = None;
         let state_path = self.config.state_dir.join("scan-state.json");
         let (previous, credential) = {
             let _journal_guard = self
@@ -2271,13 +2289,14 @@ impl MeterRuntime {
         }
         self.pending_events = Some(outbox.pending_count());
         self.record_capture_progress(&outbox);
-        let warning = outbox.owner_warning().or_else(|| {
-            outbox
-                .pending
-                .iter()
-                .any(|event| !reportable_at(event, Utc::now()))
-                .then_some("METER_EVENT_OUTSIDE_REPORT_WINDOW")
-        });
+        let now = Utc::now();
+        self.deferred_events = outbox.pending.iter().filter(|event| !reportable_at(event, now)).count();
+        self.warning_code = (self.deferred_events > 0)
+            .then(|| "METER_EVENT_OUTSIDE_REPORT_WINDOW".to_owned());
+        // Keep historical/future events with their original IDs, timestamps and
+        // owner. Their review warning is separate from collector/network errors;
+        // valid usage and device-only heartbeats continue without the desktop.
+        let warning = outbox.owner_warning();
         let reported = ScanOutcome {
             events: reported_events,
             next_state: outbox.scan_state().clone(),
@@ -2296,6 +2315,8 @@ impl MeterRuntime {
                 last_report_epoch_seconds: self.last_report_epoch_seconds,
                 reported_events: reported.events.len(),
                 pending_events: self.pending_events,
+                deferred_events: self.deferred_events,
+                warning_code: self.warning_code.clone(),
                 error_code: None,
                 cc_switch_guard: guard.state.into(),
                 cc_switch_guard_checked_at: guard.checked_at,
@@ -2327,6 +2348,8 @@ impl MeterRuntime {
                 last_report_epoch_seconds: self.last_report_epoch_seconds,
                 reported_events: 0,
                 pending_events: self.pending_events,
+                deferred_events: self.deferred_events,
+                warning_code: self.warning_code.clone(),
                 error_code: None,
                 cc_switch_guard: guard.state.into(),
                 cc_switch_guard_checked_at: guard.checked_at,
@@ -2358,7 +2381,8 @@ fn audit_kind_for_status(
     now: u64,
 ) -> Option<AuditKind> {
     let changed =
-        last_state != Some(status.state.as_str()) || last_error != status.error_code.as_deref();
+        last_state != Some(status.state.as_str())
+            || last_error != status.error_code.as_deref().or(status.warning_code.as_deref());
     if status.state == "ERROR" {
         return (changed
             || last_logged_at.is_none_or(|previous| now.saturating_sub(previous) >= 300))
@@ -4248,7 +4272,7 @@ mod tests {
     #[test]
     fn stale_usage_is_retained_while_new_usage_continues_to_upload() {
         let root = TestDir::new();
-        let (url, receiver) = mock_meter_http(vec![(200, "{}".into()), (200, "{}".into())]);
+        let (url, receiver) = mock_meter_http(vec![(200, "{}".into()); 4]);
         let config = MeterConfig {
             server_url: url,
             codex_home: root.path().join(".codex"),
@@ -4286,17 +4310,33 @@ mod tests {
         .unwrap();
         let mut runtime = MeterRuntime::new_for_test(config.clone()).unwrap();
         let status = runtime.tick();
+        runtime.shutdown().unwrap();
+        // Restart only the meter, then capture new usage with the existing
+        // device grant and durable cursor. No desktop/login process is created.
+        let log = config.codex_home.join("sessions/run.jsonl");
+        let existing = fs::read_to_string(&log).unwrap();
+        fs::write(&log, existing + &record("after-meter-restart", 15)).unwrap();
+        let mut restarted = MeterRuntime::new_for_test(config.clone()).unwrap();
+        let after_restart = restarted.tick();
+        restarted.shutdown().unwrap();
+        assert_eq!(after_restart.state, "REPORTED");
+        assert_eq!(after_restart.reported_events, 1);
+        assert_eq!(after_restart.error_code, None);
+        assert_eq!(after_restart.deferred_events, 2);
         let requests = receiver.join().unwrap();
         assert_eq!(
             requests.len(),
-            2,
+            4,
             "invalid old records must not prevent valid uploads or heartbeat"
         );
         assert!(String::from_utf8_lossy(&requests[0]).contains("\"totalTokens\":99"));
-        assert_eq!(
-            status.error_code.as_deref(),
-            Some("METER_EVENT_OUTSIDE_REPORT_WINDOW")
-        );
+        assert!(String::from_utf8_lossy(&requests[2]).contains("\"totalTokens\":15"));
+        assert!(requests.iter().all(|request| !String::from_utf8_lossy(request)
+            .to_ascii_lowercase().contains("authorization:")));
+        assert_eq!(status.state, "REPORTED");
+        assert_eq!(status.error_code, None);
+        assert_eq!(status.warning_code.as_deref(), Some("METER_EVENT_OUTSIDE_REPORT_WINDOW"));
+        assert_eq!(status.deferred_events, 2);
         let outbox: serde_json::Value =
             serde_json::from_slice(&fs::read(config.state_dir.join("usage-outbox.json")).unwrap())
                 .unwrap();
@@ -4304,6 +4344,21 @@ mod tests {
         let public: serde_json::Value =
             serde_json::from_slice(&fs::read(&config.status_file).unwrap()).unwrap();
         assert_eq!(public["pendingEvents"], 2);
+        assert_eq!(public["deferredEvents"], 2);
+        assert_eq!(public["state"], "REPORTED");
+        assert!(public["errorCode"].is_null());
+        assert_eq!(outbox["pending"][0]["occurredAt"], stale);
+        assert_eq!(outbox["pending"][1]["occurredAt"], future);
+    }
+
+    #[test]
+    fn future_usage_becomes_eligible_without_rewriting_its_time() {
+        let now = DateTime::parse_from_rfc3339("2026-10-25T06:00:00Z").unwrap().with_timezone(&Utc);
+        let timestamp = (now + TimeDelta::minutes(10)).to_rfc3339();
+        let event = parse_direct_record(record_at("future-catch-up", 7, &timestamp).as_bytes()).unwrap();
+        assert!(!reportable_at(&event, now));
+        assert!(reportable_at(&event, now + TimeDelta::minutes(7)));
+        assert_eq!(event.occurred_at, timestamp);
     }
 
     #[test]
@@ -4706,6 +4761,8 @@ mod tests {
             reported_events: 0,
             error_code: Some("METER_BACKEND_UNAVAILABLE".into()),
             pending_events: None,
+            deferred_events: 0,
+            warning_code: None,
             cc_switch_guard: "INACTIVE".into(),
             cc_switch_guard_checked_at: 1_000,
             cc_switch_guard_lease_id: None,

@@ -38,6 +38,8 @@ struct AuditEntry<'a> {
     reported_tokens: u64,
     heartbeat_sent: bool,
     error_code: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warning_code: Option<&'a str>,
     cc_switch_guard: Option<&'a str>,
 }
 
@@ -95,6 +97,7 @@ impl AuditLog {
             error_code: status
                 .and_then(|value| value.error_code.as_deref())
                 .map(safe_error),
+            warning_code: status.and_then(|value| value.warning_code.as_deref()).map(safe_error),
             cc_switch_guard: status.map(|value| safe_guard(&value.cc_switch_guard)),
         };
         self.append_entry(entry)
@@ -110,6 +113,7 @@ impl AuditLog {
             reported_tokens: 0,
             heartbeat_sent: false,
             error_code: None,
+            warning_code: None,
             cc_switch_guard: Some(safe_guard(guard_state)),
         })
     }
@@ -286,6 +290,8 @@ mod tests {
             last_report_epoch_seconds: None,
             reported_events: 2,
             pending_events: Some(1),
+            deferred_events: 0,
+            warning_code: None,
             error_code: error.map(str::to_owned),
             cc_switch_guard: "INACTIVE".into(),
             cc_switch_guard_checked_at: 1,

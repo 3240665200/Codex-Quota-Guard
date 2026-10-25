@@ -39,6 +39,10 @@ pub(crate) struct MeterStatus {
     pub last_report_epoch_seconds: Option<u64>,
     pub reported_events: u64,
     pub error_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deferred_events: Option<u64>,
     pub version: Option<String>,
 }
 
@@ -124,6 +128,8 @@ fn empty_status(state: &'static str) -> MeterStatus {
         last_report_epoch_seconds: None,
         reported_events: 0,
         error_code: None,
+        warning_code: None,
+        deferred_events: None,
         version: None,
     }
 }
@@ -175,6 +181,10 @@ fn parse_status(bytes: &[u8]) -> MeterStatus {
             .unwrap_or(0)
             .min(MAX_SAFE_NUMBER),
         error_code,
+        warning_code: object.get("warningCode").and_then(Value::as_str)
+            .filter(|text| valid_error(text)).map(str::to_owned),
+        deferred_events: object.get("deferredEvents").and_then(Value::as_u64)
+            .filter(|count| *count > 0).map(|count| count.min(MAX_SAFE_NUMBER)),
         version,
     }
 }
@@ -641,6 +651,27 @@ mod tests {
         assert_eq!(status.state, "REPORTED");
         assert_eq!(status.error_code, None);
         assert_eq!(status.version.as_deref(), Some("1.2.3"));
+    }
+
+    #[test]
+    fn historical_review_warning_keeps_a_fresh_service_healthy() {
+        let now = crate::unix_seconds();
+        let input = serde_json::json!({
+            "state":"UP_TO_DATE", "version":"0.2.7", "lastScanEpochSeconds":now,
+            "reportedEvents":0, "errorCode":null,
+            "warningCode":"METER_EVENT_OUTSIDE_REPORT_WINDOW", "deferredEvents":1194
+        });
+        let status = parse_status(input.to_string().as_bytes());
+        assert_eq!(status.state, "UP_TO_DATE");
+        assert_eq!(status.error_code, None);
+        assert_eq!(status.warning_code.as_deref(), Some("METER_EVENT_OUTSIDE_REPORT_WINDOW"));
+        assert_eq!(status.deferred_events, Some(1194));
+        let mut invalid = input;
+        invalid["warningCode"] = "private path/token".into();
+        invalid["deferredEvents"] = serde_json::Value::from(u64::MAX);
+        let status = parse_status(invalid.to_string().as_bytes());
+        assert_eq!(status.warning_code, None);
+        assert_eq!(status.deferred_events, Some(MAX_SAFE_NUMBER));
     }
 
     #[test]

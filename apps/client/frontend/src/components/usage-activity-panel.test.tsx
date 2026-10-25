@@ -436,6 +436,17 @@ describe("UsageActivityPanel", () => {
     expect(screen.getAllByText("0.1.1")).toHaveLength(2);
   });
 
+  it("shows retained historical events as a warning while the service remains running", () => {
+    render(view("user-a", {
+      ...status, state: "UP_TO_DATE", errorCode: null,
+      warningCode: "METER_EVENT_OUTSIDE_REPORT_WINDOW", deferredEvents: 1194,
+    }, vi.fn(), "diagnostics"));
+    expect(screen.getByText("统计程序运行中")).toBeVisible();
+    expect(screen.getByText(/统计服务持续运行，待核对记录/)).toHaveTextContent("1,194");
+    expect(screen.getByText(/超过后台接收时间范围.*保留.*后续有效用量/)).toBeVisible();
+    expect(screen.queryByText("统计程序异常")).not.toBeInTheDocument();
+  });
+
   it("explains a rejected usage request without reporting a network outage", async () => {
     render(
       view("user-a", {
