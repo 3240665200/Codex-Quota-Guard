@@ -210,6 +210,11 @@ fn main() {
         std::process::exit(exit_code);
     }
     let arguments: Vec<_> = std::env::args_os().skip(1).collect();
+    if arguments.first().is_some_and(|argument| argument == "--smoke-central") {
+        if arguments.len() != 2 { std::process::exit(1); }
+        let Some(origin) = arguments[1].to_str() else { std::process::exit(1); };
+        std::process::exit(package_smoke::run_central(context, origin));
+    }
     if arguments.iter().any(|argument| {
         argument == "--smoke-package" || argument.to_string_lossy().starts_with("--smoke-package=")
     }) {

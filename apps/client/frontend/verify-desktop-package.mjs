@@ -75,10 +75,11 @@ export function verifyDesktopPackage(binary, expectedVersion, run = spawnSync) {
     webview.custom_protocol !== true ||
     webview.root_rendered !== true ||
     webview.stylesheet_loaded !== true ||
-    webview.packaged_origin !== true
+    webview.packaged_origin !== true ||
+    webview.central_http !== true
   ) {
     throw new Error(
-      "The packaged WebView did not render the embedded application.",
+      "The packaged WebView failed to render or connect to the central HTTP probe.",
     );
   }
   return { version: expectedVersion, assets, webview };

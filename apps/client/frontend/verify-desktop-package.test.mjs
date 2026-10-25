@@ -25,6 +25,7 @@ const validWebview = {
   root_rendered: true,
   stylesheet_loaded: true,
   packaged_origin: true,
+  central_http: true,
 };
 
 function fixture(body) {
@@ -109,4 +110,14 @@ test("WebView failures and timeouts prevent publication", () =>
         ),
       );
     }
+  }));
+
+test("a rendered page with blocked central HTTP must not pass packaging", () =>
+  fixture((binary) => {
+    assert.throws(() => verifyDesktopPackage(binary, "0.3.12", (_binary, args) => ({
+      status: 0,
+      stdout: JSON.stringify(args[0] === "--verify-package" ? validAssets : {
+        ...validWebview, central_http: false,
+      }),
+    })), /WebView/);
   }));
