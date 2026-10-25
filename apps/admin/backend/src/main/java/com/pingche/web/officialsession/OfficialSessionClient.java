@@ -195,7 +195,8 @@ public class OfficialSessionClient {
                     case 429 -> "OFFICIAL_RATE_LIMITED";
                     default -> null;
                 };
-                if(rejection!=null)return new OfficialSessionWriteResult("REJECTED",rejection);
+                if(rejection!=null)return new OfficialSessionWriteResult("REJECTED",rejection,
+                        response.statusCode()==429 ? new OfficialRateLimitedException(response.headers().firstValue("Retry-After").orElse(null), Instant.now()).retryAt() : null);
                 if(response.statusCode()!=200 && response.statusCode()!=202 && response.statusCode()!=204)return uncertainWrite();
                 byte[] body=response.body();
                 if(body==null || body.length>MAX_BODY)return uncertainWrite();

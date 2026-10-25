@@ -21,6 +21,9 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Supplier;
+import java.util.function.BooleanSupplier;
+import java.util.function.Predicate;
+import java.util.function.Consumer;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
@@ -60,6 +63,53 @@ public class OfficialSessionLogoutService {
         this.json = json;
         this.clock = clock;
         this.tx = new TransactionTemplate(manager);
+    }
+
+    /** Called only by a persisted administrator policy; it can never issue an ALL logout. */
+    public AutomaticOutcome automate(UUID owner, UUID account, String mode, Set<String> candidates,
+            Predicate<Set<String>> authorized, Consumer<AutomaticOutcome> onPrepared) {
+        if (owner == null || !Set.of("UNBOUND", "SELECTED").contains(mode)) throw error("OFFICIAL_LOGOUT_MODE_INVALID");
+        try {
+            AutomaticPreparation prepared = transaction(() -> {
+                lock(account);
+                if (!authorized.test(Set.of())) throw error("OFFICIAL_LOGOUT_CONTEXT_CHANGED");
+                Connection connection = connection(account);
+                idle(account, connection);
+                OfficialSessionSnapshot snapshot = fresh(connection);
+                Set<String> present = new HashSet<>();
+                if ("SELECTED".equals(mode)) for (var device : snapshot.sessions().devices()) {
+                    if (device.sessionId() != null && candidates.contains(device.sessionId())) present.add(device.sessionId());
+                }
+                UUID id = UUID.randomUUID();
+                OfficialSessionLogoutPreview classified = classify(id, account, mode, snapshot, activeSessions(account), present);
+                // The provider snapshot is bounded to 500 devices. Process every eligible target; each dispatch retains the lease fence.
+                List<OfficialSessionLogoutPreview.Target> targets = classified.targets();
+                if (targets.isEmpty()) return new AutomaticPreparation(null, classified.excluded().size());
+                Set<String> selected = targets.stream().map(OfficialSessionLogoutPreview.Target::sessionId).collect(java.util.stream.Collectors.toUnmodifiableSet());
+                if (!authorized.test(selected)) throw error("OFFICIAL_LOGOUT_CONTEXT_CHANGED");
+                OfficialSessionLogoutPreview preview = new OfficialSessionLogoutPreview(id, account, mode,
+                        classified.expiresAt(), targets, classified.excluded(), classified.warnings());
+                Instant now = clock.instant();
+                jdbc.update("insert into official_session_logout_plans(id,owner_id,official_account_id,mode,status,connection_revision,official_account_key,official_user_key,binding_fingerprint,session_fingerprint,preview_json,created_at,expires_at,started_at,lease_until) values(?,?,?,?,'EXECUTING',?,?,?,?,?,?,?,?,?,?)",
+                        id, owner, account, mode, connection.revision, snapshot.account().accountId(), snapshot.account().userId(),
+                        bindingFingerprint(account), sessionFingerprint(snapshot), json.writeValueAsString(preview),
+                        at(now), at(preview.expiresAt()), at(now), at(now.plusSeconds(300)));
+                jdbc.update("update official_account_connections set snapshot_cipher=null,last_success_at=null,version=version+1 where official_account_id=?", account);
+                // Persist the policy correlation and audit in the same transaction as the official write fence.
+                onPrepared.accept(new AutomaticOutcome(id, "EXECUTING", targets.size(), classified.excluded().size(), null, null));
+                return new AutomaticPreparation(new Work(owned(owner, account, id), connection, () -> authorized.test(selected)), classified.excluded().size());
+            });
+            if (prepared.work == null) return new AutomaticOutcome(null, "NO_TARGETS", 0, prepared.excluded, null, null);
+            Work work = prepared.work;
+            try { workers.execute(() -> executeSafely(owner, account, work)); }
+            catch (RejectedExecutionException unavailable) { invalidate(work.plan.id); throw error("OFFICIAL_LOGOUT_BUSY"); }
+            int count = json.readValue(work.plan.preview, OfficialSessionLogoutPreview.class).targets().size();
+            return new AutomaticOutcome(work.plan.id, "EXECUTING", count, prepared.excluded, null, null);
+        } catch (OfficialRateLimitedException limited) {
+            return new AutomaticOutcome(null, "FAILED", 0, 0, limited.getCode(), limited.retryAt());
+        } catch (DomainException failure) {
+            return new AutomaticOutcome(null, "SKIPPED", 0, 0, safeCode(failure.getCode()), null);
+        }
     }
 
     public OfficialSessionLogoutPreview preview(UUID owner, UUID account, String mode) {
@@ -109,7 +159,7 @@ public class OfficialSessionLogoutService {
             if (!connection.revision.equals(plan.revision) || !bindingFingerprint(account).equals(plan.bindings)) throw error("OFFICIAL_LOGOUT_CONTEXT_CHANGED");
             jdbc.update("update official_session_logout_plans set status='EXECUTING',started_at=?,lease_until=? where id=?", at(clock.instant()), at(clock.instant().plusSeconds(300)), id);
             jdbc.update("update official_account_connections set snapshot_cipher=null,last_success_at=null,version=version+1 where official_account_id=?", account);
-            return new Work(plan, connection);
+            return new Work(plan, connection, () -> true);
         });
         try { workers.execute(() -> executeSafely(owner, account, work)); }
         catch (RejectedExecutionException unavailable) { invalidate(id); throw error("OFFICIAL_LOGOUT_BUSY"); }
@@ -136,6 +186,7 @@ public class OfficialSessionLogoutService {
                     lock(account);
                     Plan current = owned(owner, account, work.plan.id);
                     if (!"EXECUTING".equals(current.status) || !connection(account).revision.equals(current.revision)) return null;
+                    if (failure instanceof OfficialRateLimitedException limited) cooldown(account, current.id, limited.retryAt());
                     List<OfficialSessionLogoutResult.Item> items = storedItems(current.id);
                     invalidateSelectedBindings(current, items);
                     boolean dispatched = items.stream().anyMatch(item -> !"NOT_ATTEMPTED".equals(item.status()));
@@ -182,6 +233,7 @@ public class OfficialSessionLogoutService {
 
     private OfficialSessionLogoutResult execute(UUID owner, UUID account, Work work) {
         UUID id = work.plan.id;
+        if (!work.authorized.getAsBoolean()) throw error("OFFICIAL_LOGOUT_CONTEXT_CHANGED");
         OfficialSessionSnapshot snapshot;
         try { snapshot = fresh(work.connection); }
         catch (RuntimeException failure) {
@@ -194,7 +246,8 @@ public class OfficialSessionLogoutService {
             Connection current = connection(account);
             boolean valid = "EXECUTING".equals(plan.status) && current.revision.equals(plan.revision)
                     && plan.bindings.equals(bindingFingerprint(account)) && plan.sessions.equals(sessionFingerprint(snapshot))
-                    && plan.accountKey.equals(snapshot.account().accountId()) && plan.userKey.equals(snapshot.account().userId());
+                    && plan.accountKey.equals(snapshot.account().accountId()) && plan.userKey.equals(snapshot.account().userId())
+                    && work.authorized.getAsBoolean();
             return valid;
         });
         if (!same) throw error("OFFICIAL_LOGOUT_CONTEXT_CHANGED");
@@ -216,7 +269,8 @@ public class OfficialSessionLogoutService {
                 lock(account);
                 Plan plan = owned(owner, account, id);
                 if (!"EXECUTING".equals(plan.status) || !connection(account).revision.equals(plan.revision)
-                        || !plan.bindings.equals(bindingFingerprint(account)) || !plan.leaseUntil.isAfter(clock.instant())) return false;
+                        || !plan.bindings.equals(bindingFingerprint(account)) || !plan.leaseUntil.isAfter(clock.instant())
+                        || !work.authorized.getAsBoolean()) return false;
                 // UNKNOWN is durable before dispatch, including process death after the upstream accepts.
                 items.set(next, new OfficialSessionLogoutResult.Item(items.get(next).sessionId(), "UNKNOWN", "OFFICIAL_LOGOUT_OUTCOME_UNKNOWN"));
                 journal(id, items);
@@ -233,7 +287,8 @@ public class OfficialSessionLogoutService {
                 lock(account);
                 Plan plan = owned(owner, account, id);
                 if (!"EXECUTING".equals(plan.status) || !plan.leaseUntil.isAfter(clock.instant())
-                        || !connection(account).revision.equals(plan.revision) || !plan.bindings.equals(bindingFingerprint(account))) return null;
+                        || !connection(account).revision.equals(plan.revision) || !plan.bindings.equals(bindingFingerprint(account))
+                        || !work.authorized.getAsBoolean()) return null;
                 OfficialSessionWriteResult outcome;
                 try {
                     if (work.connection.frontProxy == null) {
@@ -245,6 +300,7 @@ public class OfficialSessionLogoutService {
                     }
                 } catch (RuntimeException failure) { outcome = new OfficialSessionWriteResult("UNKNOWN", "OFFICIAL_LOGOUT_OUTCOME_UNKNOWN"); }
                 if (outcome == null) outcome = new OfficialSessionWriteResult("UNKNOWN", "OFFICIAL_LOGOUT_OUTCOME_UNKNOWN");
+                if (outcome.retryAt() != null) cooldown(account, id, outcome.retryAt());
                 String itemStatus = "ACCEPTED".equals(outcome.status()) ? "ACCEPTED" : "REJECTED".equals(outcome.status()) ? "FAILED" : "UNKNOWN";
                 items.set(next, new OfficialSessionLogoutResult.Item(items.get(next).sessionId(), itemStatus,
                         "ACCEPTED".equals(itemStatus) ? null : safeCode(outcome.errorCode())));
@@ -380,7 +436,16 @@ public class OfficialSessionLogoutService {
                     || ("SELECTED".equals(work.plan.mode) && (!Objects.equals(expected.rowId(), target.renderId()) || !Objects.equals(expected.trustedDevice(), target.trustedDevice())))
                     || (target.renderId() != null && latest.sessions().devices().stream().filter(device -> target.renderId().equals(device.renderId())).count() != 1)) return "OFFICIAL_LOGOUT_CONTEXT_CHANGED";
             return null;
+        } catch (OfficialRateLimitedException limited) {
+            transaction(() -> { lock(work.plan.account); cooldown(work.plan.account, work.plan.id, limited.retryAt()); return null; });
+            return "OFFICIAL_RATE_LIMITED";
         } catch (RuntimeException failure) { return "OFFICIAL_LOGOUT_SNAPSHOT_INCOMPLETE"; }
+    }
+
+    /** The restriction clock survives settings changes and process restarts, including provider Retry-After. */
+    private void cooldown(UUID account, UUID plan, Instant until) {
+        jdbc.update("update restriction_account_checks set cooldown_until=case when cooldown_until is null or cooldown_until<? then ? else cooldown_until end where official_account_id=? and pending_plan_id=?",
+                at(until), at(until), account, plan);
     }
 
     private OfficialSessionCredentials credentials(Connection connection) {
@@ -473,7 +538,9 @@ public class OfficialSessionLogoutService {
         @Override public String toString() { return "OfficialLogoutConnection[redacted]"; }
     }
     private record Plan(UUID id, UUID owner, UUID account, String mode, String status, UUID revision, String accountKey, String userKey, String bindings, String sessions, String preview, Instant expiresAt, Instant leaseUntil) { }
-    private record Work(Plan plan, Connection connection) { }
+    private record Work(Plan plan, Connection connection, BooleanSupplier authorized) { }
+    private record AutomaticPreparation(Work work, int excluded) { }
+    public record AutomaticOutcome(UUID planId, String status, int targetedCount, int excludedCount, String errorCode, Instant retryAt) { }
     private record SecurityIdentity(String rowId, String sessionId, Boolean current, Boolean trusted) { }
     private record BindingTarget(UUID id, UUID attempt) { }
     @PreDestroy void close() {

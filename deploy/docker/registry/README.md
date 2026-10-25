@@ -1,11 +1,11 @@
 # Docker Hub 拉取部署
 
-本配置面向服务器 `0.3.28`，后端与管理网页版本一致，平台为 **Linux amd64 / x86_64**，配套源码标签为 `server-v0.3.28`。生产部署固定版本，不依赖 `latest`；变更范围见 [服务器 0.3.28 发布说明](../../../docs/releases/server-v0.3.28.md)。
+本配置面向服务器 `0.3.30`，后端与管理网页版本一致，平台为 **Linux amd64 / x86_64**，配套源码标签为 `server-v0.3.30`。生产部署固定版本，不依赖 `latest`；变更范围见 [服务器 0.3.30 发布说明](../../../docs/releases/server-v0.3.30.md)。
 
 | 组件 | 镜像 |
 | --- | --- |
-| 普通后端，不含 Chromium | `minjm/codex-quota-guard-backend:0.3.28` |
-| 管理网页 | `minjm/codex-quota-guard-web:0.3.28` |
+| 普通后端，不含 Chromium | `minjm/codex-quota-guard-backend:0.3.30` |
+| 管理网页 | `minjm/codex-quota-guard-web:0.3.30` |
 | 数据库 | 官方 `postgres:17-alpine` |
 
 镜像仓库：[后端](https://hub.docker.com/r/minjm/codex-quota-guard-backend) · [管理网页](https://hub.docker.com/r/minjm/codex-quota-guard-web)。服务器不需要源码、Java、Node.js 或 Maven；需要 Docker Engine、Compose **v2.24.4+**、Bash、OpenSSL，以及访问 Docker Hub 的网络。下载配置另外需要 `curl`。这不是 Windows 容器或 ARM 镜像。
@@ -21,7 +21,7 @@
   set -e
   mkdir codex-quota-guard-server
   cd codex-quota-guard-server
-  qg_base="https://raw.githubusercontent.com/3240665200/Codex-Quota-Guard/server-v0.3.28/deploy/docker"
+  qg_base="https://raw.githubusercontent.com/3240665200/Codex-Quota-Guard/server-v0.3.30/deploy/docker"
   curl -fSL --fail-early --remote-name-all \
     "$qg_base/registry/compose.yaml" \
     "$qg_base/registry/start.sh" \
@@ -31,7 +31,7 @@
 )
 ```
 
-下载地址固定到与 `0.3.28` 镜像配套的 `server-v0.3.28` 源码标签。已有同名目录时下载步骤会停止，不覆盖已有部署。
+下载地址固定到与 `0.3.30` 镜像配套的 `server-v0.3.30` 源码标签。已有同名目录时下载步骤会停止，不覆盖已有部署。
 
 进入包含 `start.sh` 的目录（上述下载方式为 `cd codex-quota-guard-server`），替换服务器 IP 和管理员邮箱后执行：
 
@@ -46,13 +46,13 @@ bash start.sh up
 
 配套桌面为 **0.3.29**，附带独立统计服务 **0.2.7**；新版修复未设置 7 天上限时客户端拒绝额度响应的问题，并包含成员布局及桌面连接安全策略修复。新版业务请求由 JS Axios 直接访问中央后台，安装包不包含 Java 或本地 HTTP 后端；安装统计服务需要批准 Windows 管理员授权。
 
-## 升级到 0.3.28
+## 升级到 0.3.30
 
-从 `0.3.25` 升级不新增数据库迁移，本次统一个人和团队的空上限为无限制；明确设置为 `0` 的上限保持用尽。已有实际用量继续保留。
+从 `0.3.28` 升级执行 **V37**，新增限制规则、账户检查计划和执行审计。两条规则初始关闭，升级后在“限制管理”中设置启用；个人额度用尽后下线绑定会话，未绑定会话默认每 90 分钟清理，并保留当前与受信任设备。
 
-从 `0.3.23` 升级执行 **V35–V36**：新增官方额度轮询状态表和验证器密钥表。从 `0.3.22` 升级还会执行 V32–V34 的前置节点、加密订阅及 Trojan 许可迁移。升级前停止旧应用、保留 PostgreSQL 运行并备份数据库与原 `.env`；保留项目名、数据库卷、全部密钥和自定义配置。后端与网页同时改为 `0.3.28`，桌面使用 `0.3.28`；不要覆盖原 `.env` 或重新生成密钥。
+从 `0.3.23` 升级执行 **V35–V37**：新增官方额度轮询状态表和验证器密钥表。从 `0.3.22` 升级还会执行 V32–V34 的前置节点、加密订阅及 Trojan 许可迁移。升级前停止旧应用、保留 PostgreSQL 运行并备份数据库与原 `.env`；保留项目名、数据库卷、全部密钥和自定义配置。后端与网页同时改为 `0.3.30`，桌面使用 `0.3.29`；不要覆盖原 `.env` 或重新生成密钥。
 
-升级后确认 Flyway 到 **V36**。先验证原单出口账户与手动节点，再按需导入订阅、测试“前置 → 出口”并保存账户链；保存链后手动刷新官方账户与会话。订阅仅首次导入及手动“更新节点”时下载，没有后台定时更新。下载、解析或版本检查失败保留原节点，同订阅按唯一节点名保留 ID；来源缺失或曾主动停用的节点不会因更新而自动启用。
+升级后确认 Flyway 到 **V37**。先验证原单出口账户与手动节点，再按需导入订阅、测试“前置 → 出口”并保存账户链；保存链后手动刷新官方账户与会话。订阅仅首次导入及手动“更新节点”时下载，没有后台定时更新。下载、解析或版本检查失败保留原节点，同订阅按唯一节点名保留 ID；来源缺失或曾主动停用的节点不会因更新而自动启用。
 
 **不能将直接换回旧镜像当作等价回滚。** 旧应用不理解前置链，可能绕过所选前置。降级到不理解 Trojan 许可的代码前，还应先在新版关闭该订阅例外，确认已保存节点恢复证书校验；该操作会停用相关节点并清除旧出口测试结果，保留 ID 和账户引用。需要恢复升级前状态时，应停止官方请求并恢复相互匹配的数据库、应用、配置和密钥备份。不要改写已执行迁移、执行 Flyway repair 或清库，详见[迁移边界](../../../docs/proxy-subscriptions-and-chains.md#api)。
 
@@ -66,7 +66,7 @@ HTTP 部署保留基础 `APP_REQUIRE_HTTPS=false`；强制 HTTPS 部署继续使
 
 ## 从 0.3.11 或更早版本升级
 
-`0.3.25` 包含此前的自动绑定与交接、取得名额后 30 分钟登录期限、至少间隔 10 秒的官方会话监测、官方账户与会话管理，以及区分系统用户退出和官方会话退出的管理操作。从 `0.3.11` 升级会执行 **V22–V36 数据库迁移**，并启用上述官方账户必选代理规则。
+`0.3.25` 包含此前的自动绑定与交接、取得名额后 30 分钟登录期限、至少间隔 10 秒的官方会话监测、官方账户与会话管理，以及区分系统用户退出和官方会话退出的管理操作。从 `0.3.11` 升级会执行 **V22–V37 数据库迁移**，并启用上述官方账户必选代理规则。
 
 **V29 要求所有旧应用写入进程先停止，禁止新旧队列 writer 混跑。** 迁移增加代际校验字段，旧程序不会检查它们。按以下顺序在原部署目录操作：
 
@@ -86,8 +86,8 @@ bash start.sh backup
 普通部署的两个镜像改为：
 
 ```text
-minjm/codex-quota-guard-backend:0.3.28
-minjm/codex-quota-guard-web:0.3.28
+minjm/codex-quota-guard-backend:0.3.30
+minjm/codex-quota-guard-web:0.3.30
 ```
 
 旧 Compose 的 `services.backend.environment` 合并下列映射（若文件为 JSON，使用等价的 JSON 键值格式）：
@@ -140,7 +140,7 @@ HTTP 与 HTTPS 使用相同镜像、预置和文件导入。需要强制 HTTPS �
 ```bash
 (
   set -e
-  qg_base="https://raw.githubusercontent.com/3240665200/Codex-Quota-Guard/server-v0.3.28/deploy/docker"
+  qg_base="https://raw.githubusercontent.com/3240665200/Codex-Quota-Guard/server-v0.3.30/deploy/docker"
   curl -fSL --fail-early --remote-name-all \
     "$qg_base/compose.https.yaml" \
     "$qg_base/nginx.https.conf"

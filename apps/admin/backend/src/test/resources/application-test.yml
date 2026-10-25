@@ -12,6 +12,7 @@ spring:
     open-in-view: false
 
 app:
+  restriction-scheduler-enabled: false
   official-quota-scheduler-enabled: false
   session-binding-scheduler-enabled: false
   jwt-secret: test-secret-that-is-longer-than-thirty-two-bytes

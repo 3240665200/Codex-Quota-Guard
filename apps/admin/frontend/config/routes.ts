@@ -66,6 +66,13 @@ export default [
   },
   {
     access: 'canAdmin',
+    component: './restrictions',
+    icon: 'safetyCertificate',
+    name: '限制管理',
+    path: '/restrictions',
+  },
+  {
+    access: 'canAdmin',
     component: './usage',
     icon: 'barChart',
     name: '用量统计',
