@@ -280,7 +280,16 @@ const previewQuota: QuotaOverview =
           ? { ...demoQuota, teamQuota: null }
           : unlimitedScenario
             ? unlimitedQuota
-            : demoQuota;
+            : scenario === "unlimited-team"
+              ? {
+                  ...unlimitedQuota,
+                  teamQuota: {
+                    ...unlimitedQuota.teamQuota!,
+                    weeklyTokenLimit: null,
+                    weeklyRemainingTokens: null,
+                  },
+                }
+              : demoQuota;
 
 const demoUsageStatus: UsageStatus = {
   state: "UP_TO_DATE",

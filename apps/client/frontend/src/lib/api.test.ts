@@ -686,9 +686,14 @@ describe("Tauri API boundary", () => {
 
   it("accepts historical review warnings independently of a healthy meter status", async () => {
     const status = {
-      state: "UP_TO_DATE", lastScanEpochSeconds: 1792909500,
-      lastReportEpochSeconds: 1792909490, reportedEvents: 0, errorCode: null,
-      version: "0.2.7", warningCode: "METER_EVENT_OUTSIDE_REPORT_WINDOW", deferredEvents: 1194,
+      state: "UP_TO_DATE",
+      lastScanEpochSeconds: 1792909500,
+      lastReportEpochSeconds: 1792909490,
+      reportedEvents: 0,
+      errorCode: null,
+      version: "0.2.7",
+      warningCode: "METER_EVENT_OUTSIDE_REPORT_WINDOW",
+      deferredEvents: 1194,
     };
     invokeMock.mockResolvedValue(status);
     await expect(api.usageStatus()).resolves.toEqual(status);
@@ -716,6 +721,115 @@ describe("Tauri API boundary", () => {
 
     await expect(api.quotaOverview()).resolves.toMatchObject({ allowed: true });
   });
+
+  const unlimitedOverview = {
+    ...quotaOverview,
+    teamQuota: {
+      id: "team-1",
+      name: "Design",
+      status: "ACTIVE",
+      memberCount: 1,
+      fiveHourTokenLimit: null,
+      weeklyTokenLimit: null,
+      totalTokenLimit: 7_600_000_000,
+      fiveHourUsedTokens: 200,
+      weeklyUsedTokens: 1_000,
+      totalUsedTokens: 5_000,
+      fiveHourRemainingTokens: null,
+      weeklyRemainingTokens: null,
+      totalRemainingTokens: 7_599_995_000,
+      measuredAt: "2026-10-06T08:00:00Z",
+    },
+    teamMembers: [
+      {
+        userId: "11111111-1111-4111-8111-111111111111",
+        displayName: "Alice",
+        status: "ACTIVE",
+        fiveHourTokenLimit: null,
+        weeklyTokenLimit: 630_000_000,
+        fiveHourUsedTokens: 200,
+        weeklyUsedTokens: 1_000,
+        totalUsedTokens: 5_000,
+        fiveHourRemainingTokens: null,
+        weeklyRemainingTokens: 629_999_000,
+        measuredAt: "2026-10-06T08:00:00Z",
+      },
+    ],
+    policy: {
+      fiveHourTokenLimit: null,
+      weeklyTokenLimit: 630_000_000,
+      fiveHourSource: "UNCONFIGURED",
+      weeklySource: "USER",
+    },
+    usage: {
+      ...quotaOverview.usage,
+      fiveHourRemainingTokens: null,
+      weeklyRemainingTokens: 629_999_000,
+    },
+  };
+
+  it.each([
+    ["team windows with a capped personal week", unlimitedOverview],
+    [
+      "all personal and team windows",
+      {
+        ...unlimitedOverview,
+        policy: {
+          fiveHourTokenLimit: null,
+          weeklyTokenLimit: null,
+          fiveHourSource: "UNCONFIGURED",
+          weeklySource: "UNCONFIGURED",
+        },
+        usage: { ...unlimitedOverview.usage, weeklyRemainingTokens: null },
+      },
+    ],
+    [
+      "personal windows without a team",
+      {
+        ...unlimitedOverview,
+        team: null,
+        teamQuota: null,
+        teamMembers: [],
+        policy: {
+          fiveHourTokenLimit: null,
+          weeklyTokenLimit: null,
+          fiveHourSource: "UNCONFIGURED",
+          weeklySource: "UNCONFIGURED",
+        },
+        usage: { ...unlimitedOverview.usage, weeklyRemainingTokens: null },
+      },
+    ],
+  ])(
+    "accepts unlimited %s through the actual quota HTTP boundary",
+    async (_label, response) => {
+      harness.respond(response);
+      await expect(api.quotaOverview()).resolves.toMatchObject({
+        allowed: true,
+        blockReason: null,
+        policy: { fiveHourTokenLimit: null },
+        usage: { fiveHourUsedTokens: 200, fiveHourRemainingTokens: null },
+      });
+      expect(
+        harness.requestsFor("GET", "/api/v1/client/quota/overview").at(-1)
+          ?.params,
+      ).toEqual({ includeTeamMembers: true });
+    },
+  );
+
+  it.each([
+    { fiveHourTokenLimit: 0, fiveHourRemainingTokens: 0 },
+    { weeklyTokenLimit: 1_000, weeklyRemainingTokens: 0 },
+    { totalTokenLimit: 5_000, totalRemainingTokens: 0 },
+  ])(
+    "still rejects an allowed response with an exhausted team limit %j",
+    async (exhausted) => {
+      harness.respond({
+        ...unlimitedOverview,
+        teamQuota: { ...unlimitedOverview.teamQuota, ...exhausted },
+      });
+      await expect(api.quotaOverview()).rejects.toThrow();
+    },
+  );
 
   it("does not coerce unconfigured personal token limits to zero", async () => {
     invokeMock.mockResolvedValue({

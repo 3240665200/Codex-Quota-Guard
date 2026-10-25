@@ -320,7 +320,11 @@ const usageStatusSchema = z.strictObject({
   lastScanEpochSeconds: tokenCount.nullable(),
   lastReportEpochSeconds: tokenCount.nullable(),
   reportedEvents: tokenCount,
-  warningCode: z.string().regex(/^[A-Z_]{1,64}$/).nullable().optional(),
+  warningCode: z
+    .string()
+    .regex(/^[A-Z_]{1,64}$/)
+    .nullable()
+    .optional(),
   deferredEvents: tokenCount.optional(),
   errorCode: z
     .string()
@@ -549,17 +553,10 @@ const quotaOverviewSchema = z
         value.teamQuota.weeklyRemainingTokens,
         value.teamQuota.totalRemainingTokens,
       ].some((remaining) => remaining !== null && remaining <= 0);
-    if (
-      value.allowed &&
-      (personalExhausted ||
-        teamExhausted ||
-        (value.teamQuota
-          ? value.teamQuota.weeklyTokenLimit === null
-          : unconfiguredWeekly))
-    ) {
+    if (value.allowed && (personalExhausted || teamExhausted)) {
       context.addIssue({
         code: "custom",
-        message: "可用状态必须具有尚有余量的必需团队或个人额度。",
+        message: "可用状态不能包含已用尽的个人或团队额度。",
         path: ["allowed"],
       });
     }
