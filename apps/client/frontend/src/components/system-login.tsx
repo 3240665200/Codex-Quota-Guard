@@ -30,7 +30,7 @@ export function SystemLoginPage({
   const [passwordVisible, setPasswordVisible] = useState(false);
   const [showServerSettings, setShowServerSettings] = useState(false);
   const [serverUrl, setServerUrl] = useState("");
-  const [needsRestart, setNeedsRestart] = useState(false);
+  const [serverSaveNotice, setServerSaveNotice] = useState("");
   const serverConfigQuery = useQuery({
     queryKey: ["server-config"],
     queryFn: api.serverConfig,
@@ -50,10 +50,12 @@ export function SystemLoginPage({
       }),
     onSuccess: (config) => {
       setServerUrl(config.url);
-      setNeedsRestart(true);
-      toast.success(
-        "服务器与统计程序地址已同步，请从托盘退出并重新启动，然后登录。",
+      setServerSaveNotice(
+        config.meterSync === "NOT_INSTALLED"
+          ? "中央服务器地址已保存。统计程序未安装，请重新运行客户端安装器。"
+          : "中央服务器地址已保存。",
       );
+      toast.success("中央服务器地址已保存");
     },
     onError: (error) => toast.error(getApiErrorMessage(error)),
   });
@@ -75,12 +77,6 @@ export function SystemLoginPage({
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (saveServerMutation.isPending) return;
-    if (needsRestart) {
-      toast.error(
-        "服务器地址已更改，请从系统托盘退出客户端后重新启动，再登录。",
-      );
-      return;
-    }
     if (!email.trim() || !password) {
       toast.error("请输入邮箱和密码。");
       return;
@@ -178,9 +174,7 @@ export function SystemLoginPage({
                   type="submit"
                   className="mt-2 w-full"
                   disabled={
-                    loginMutation.isPending ||
-                    saveServerMutation.isPending ||
-                    needsRestart
+                    loginMutation.isPending || saveServerMutation.isPending
                   }
                 >
                   {loginMutation.isPending ? (
@@ -242,14 +236,14 @@ export function SystemLoginPage({
                       onClick={() => saveServerMutation.mutate()}
                     >
                       {saveServerMutation.isPending
-                        ? "正在同步统计程序…"
+                        ? "正在保存…"
                         : "保存服务器地址"}
                     </Button>
-                    {needsRestart &&
+                    {serverSaveNotice &&
                     !saveServerMutation.isPending &&
                     !saveServerMutation.isError ? (
                       <p role="status" className="text-sm text-primary">
-                        服务器与统计程序地址已同步，请从托盘退出并重新启动，然后登录。
+                        {serverSaveNotice}
                       </p>
                     ) : null}
                     {saveServerMutation.isError ? (
@@ -259,7 +253,7 @@ export function SystemLoginPage({
                     ) : null}
                     {serverConfigQuery.isError ? (
                       <p className="text-xs text-destructive">
-                        无法读取当前设置，请重启客户端重试。
+                        无法读取当前设置，请稍后重试。
                       </p>
                     ) : null}
                   </div>
@@ -268,7 +262,9 @@ export function SystemLoginPage({
             </CardContent>
 
             <CardFooter className="flex-col justify-center gap-1 text-center text-xs text-muted-foreground">
-              <p>在本机保留登录状态 7 天，退出登录将清除。</p>
+              <p>
+                系统登录状态在本机加密保存 7 天；退出登录或更换服务器后清除。
+              </p>
               <p>系统账号由管理员创建</p>
             </CardFooter>
           </Card>

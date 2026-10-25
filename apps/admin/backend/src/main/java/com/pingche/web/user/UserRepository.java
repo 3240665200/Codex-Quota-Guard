@@ -45,6 +45,8 @@ public interface UserRepository extends JpaRepository<User, UUID>, JpaSpecificat
 
     long countByTeamId(UUID teamId);
 
+    List<User> findByTeamIdOrderByDisplayNameAscIdAsc(UUID teamId);
+
     @Modifying
     @Query(value = "delete from session_bindings where user_id = :userId", nativeQuery = true)
     int deleteSessionBindingsForUser(@Param("userId") UUID userId);

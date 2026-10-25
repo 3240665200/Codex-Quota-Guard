@@ -13,18 +13,24 @@ import type { OfficialAccountInput, OfficialAccountResponse,
   OfficialQuotaSnapshot } from '../../services/api';
 import MailboxConfigModal from './MailboxConfigModal';
 import ConnectionModal from './ConnectionModal';
+import QuotaPollingModal, { quotaStatus } from './QuotaPollingModal';
+import AuthenticatorConfigModal from './AuthenticatorConfigModal';
+import { useQuotaDisplay } from '../../services/quota-display';
 
 const MAX_TOKEN_LIMIT = 1_000_000_000_000;
 
-function QuotaWindow({ snapshot, minutes, label }: {
-  snapshot: OfficialQuotaSnapshot | null; minutes: number; label: string;
+function QuotaWindow({ window }: {
+  window: OfficialQuotaSnapshot['windows'][number];
 }) {
-  const window = snapshot?.windows.find((item) => item.windowDurationMins === minutes);
-  if (!window) return null;
+  const { mode, label: displayLabel } = useQuotaDisplay();
+  const minutes = window.windowDurationMins;
+  const label = minutes === 300 ? '5 小时' : minutes === 10_080 ? '7 天'
+    : minutes % 1440 === 0 ? `${minutes / 1440} 天` : minutes % 60 === 0 ? `${minutes / 60} 小时` : `${minutes} 分钟`;
   const remaining = Math.max(0, 100 - window.usedPercent);
+  const percent = mode === 'remaining' ? remaining : window.usedPercent;
   return <div style={{ minWidth: 125 }}>
-    <Typography.Text>{label}剩余 {remaining.toFixed(1).replace(/\.0$/, '')}%</Typography.Text>
-    <Progress aria-label={`${label}官方额度`} percent={window.usedPercent}
+    <Typography.Text>{label}{displayLabel} {percent.toFixed(1).replace(/\.0$/, '')}%</Typography.Text>
+    <Progress aria-label={`${label}官方${displayLabel}额度`} aria-valuenow={percent} aria-valuetext={`${displayLabel} ${percent}%`} percent={percent}
       size="small" showInfo={false} status={remaining === 0 ? 'exception' : 'normal'} />
   </div>;
 }
@@ -40,6 +46,8 @@ export default function OfficialAccountsPage() {
   const [error, setError] = useState('');
   const [mailboxAccount, setMailboxAccount] = useState<OfficialAccountResponse | null>(null);
   const [connectionAccount, setConnectionAccount] = useState<OfficialAccountResponse | null>(null);
+  const [quotaAccount, setQuotaAccount] = useState<OfficialAccountResponse | null>(null);
+  const [authenticatorAccount, setAuthenticatorAccount] = useState<OfficialAccountResponse | null>(null);
 
   const load = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true);
@@ -102,25 +110,29 @@ export default function OfficialAccountsPage() {
     { title: '官方账户', dataIndex: 'label', render: (value: string) => <Typography.Text strong>{value}</Typography.Text> },
     { title: '团队估算总量', dataIndex: 'estimatedTotalTokens', width: 165,
       render: (value: number) => <TokenAmount value={value} /> },
-    { title: '上报用户', dataIndex: 'reporterEmail', width: 220,
-      render: (value: string | null) => value || <Typography.Text type="secondary">未指定</Typography.Text> },
     { title: '套餐', width: 90, render: (_, account) => account.quota?.planType || '未知' },
     { title: '官方额度', width: 310, render: (_, account) => account.quota?.windows.some(
-      (item) => item.windowDurationMins === 300 || item.windowDurationMins === 10_080)
+      (item) => item.limitId === 'codex')
       ? <Space align="start" size={16}>
-          <QuotaWindow snapshot={account.quota} minutes={300} label="5 小时" />
-          <QuotaWindow snapshot={account.quota} minutes={10_080} label="7 天" />
+          {account.quota.windows.filter((item) => item.limitId === 'codex').map((window) => <QuotaWindow key={window.slot} window={window} />)}
         </Space>
-      : <Tag>{account.quota ? '未返回额度窗口' : '待客户端上报'}</Tag> },
+      : <Tag>{account.quota ? '官方未返回额度窗口' : '等待官方检测'}</Tag> },
+    { title: '检测状态', width: 195, render: (_, account) => <Space orientation="vertical" size={2}>
+      <Tag color={account.quotaPolling?.status === 'SUCCESS' ? 'success' : 'default'}>{quotaStatus[account.quotaPolling?.status ?? 'PENDING'] ?? '等待检测'}</Tag>
+      <Typography.Text type="secondary">每 {(account.quotaPolling?.intervalSeconds ?? 300) / 60} 分钟</Typography.Text>
+      {account.quotaPolling?.lastErrorCode ? <Typography.Text type="warning">上次查询失败，检查检测设置</Typography.Text> : null}
+    </Space> },
     { title: '快照时间', width: 210, render: (_, account) => account.quota
       ? <Space size={4} wrap>
           <span>{new Date(account.quota.receivedAt).toLocaleString('zh-CN')}</span>
-          {Date.now() - new Date(account.quota.receivedAt).getTime() > 5 * 60_000
+          {account.quotaPolling?.lastErrorCode || Date.now() - new Date(account.quota.receivedAt).getTime() > (account.quotaPolling?.intervalSeconds ?? 300) * 2_000
             ? <Tag color="warning">旧快照</Tag> : null}
         </Space> : '暂无' },
-    { title: '操作', width: 310, render: (_, account) => <Space size={0}>
+    { title: '操作', width: 410, render: (_, account) => <Space size={0} wrap>
       <Button aria-label={`授权登录 ${account.label}`} type="link" onClick={() => setConnectionAccount(account)}>授权登录</Button>
       <Button aria-label={`邮箱配置 ${account.label}`} type="link" onClick={() => setMailboxAccount(account)}>邮箱配置</Button>
+      <Button aria-label={`额度检测 ${account.label}`} type="link" onClick={() => setQuotaAccount(account)}>额度检测</Button>
+      <Button aria-label={`验证器配置 ${account.label}`} type="link" onClick={() => setAuthenticatorAccount(account)}>验证器</Button>
       <Button aria-label={`编辑 ${account.label}`} icon={<EditOutlined />} type="text" onClick={() => edit(account)} />
       <Popconfirm title={`删除「${account.label}」？`} description="已关联团队的账户不可删除。"
         okText="删除" cancelText="取消" onConfirm={() => void remove(account)}>
@@ -130,7 +142,7 @@ export default function OfficialAccountsPage() {
   ];
 
   return <PageContainer title="账户管理"
-    content="管理官方账户登记、邮箱与授权登录。设备快照、绑定与登出操作请前往“官方账户 → 会话管理”。"
+    content="后台通过官方接口定时获取额度，支持配置检测间隔、登录邮箱和 Authenticator 验证码。会话与登出操作请前往“官方账户 → 会话管理”。"
     extra={<Space>
       <Button icon={<ReloadOutlined />} loading={loading} onClick={() => void load()}>刷新</Button>
       <Button icon={<PlusOutlined />} type="primary" onClick={() => edit(null)}>添加官方账户</Button>
@@ -144,6 +156,8 @@ export default function OfficialAccountsPage() {
       onClose={() => setMailboxAccount(null)} /> : null}
     {connectionAccount ? <ConnectionModal key={connectionAccount.id} account={connectionAccount} view="authorization"
       onClose={() => setConnectionAccount(null)} /> : null}
+    {quotaAccount ? <QuotaPollingModal key={quotaAccount.id} account={quotaAccount} onChange={() => void load(true)} onClose={() => setQuotaAccount(null)} /> : null}
+    {authenticatorAccount ? <AuthenticatorConfigModal key={authenticatorAccount.id} account={authenticatorAccount} onClose={() => setAuthenticatorAccount(null)} /> : null}
     <Modal open={open} title={editing ? '编辑官方账户' : '添加官方账户'}
       onCancel={() => setOpen(false)} onOk={() => void save()} okButtonProps={{ loading: saving }}
       okText="保存" destroyOnHidden>
@@ -157,7 +171,7 @@ export default function OfficialAccountsPage() {
           <InputNumber min={0} max={MAX_TOKEN_LIMIT} precision={0} suffix="Token" style={{ width: '100%' }} />
         </Form.Item>
         <Form.Item name="reporterEmail" label="上报用户的系统邮箱"
-          extra="该用户需要在自己的电脑上登录对应官方账户并打开客户端，才会产生额度快照。"
+          extra="兼容保留的客户端上报关联；账户管理的官方额度由后台定时查询，无需打开客户端。"
           rules={[{ type: 'email', message: '请输入有效邮箱' }]}>
           <Input maxLength={320} placeholder="可稍后指定" />
         </Form.Item>

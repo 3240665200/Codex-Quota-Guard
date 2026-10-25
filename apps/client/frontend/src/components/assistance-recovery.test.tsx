@@ -22,6 +22,7 @@ vi.mock("@/lib/assistance-events", () => ({
 vi.mock("@/lib/api", async (original) => ({
   ...(await original<typeof import("@/lib/api")>()),
   api: {
+    authenticatorInfo: vi.fn(),
     loginAssistanceInfo: vi.fn(),
     loginAssistanceCurrent: vi.fn(),
     loginAssistanceStart: vi.fn(),
@@ -70,6 +71,12 @@ beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   vi.setSystemTime(new Date("2026-10-15T10:00:00Z"));
   vi.clearAllMocks();
+  vi.mocked(api.authenticatorInfo).mockResolvedValue({
+    available: false,
+    reasonCode: "AUTHENTICATOR_UNCONFIGURED",
+    officialAccountId: null,
+    accountLabel: null,
+  });
   handlers.clear();
   vi.mocked(api.loginAssistanceInfo).mockResolvedValue({
     available: true,
@@ -209,7 +216,9 @@ it("server advances queue without renderer prepare polling and the countdown fol
   });
   await signal();
   await screen.findByText(/后台会自动检测并完成绑定/);
-  expect(screen.queryByRole("button", { name: /已完成登录|确认绑定/ })).toBeNull();
+  expect(
+    screen.queryByRole("button", { name: /已完成登录|确认绑定/ }),
+  ).toBeNull();
   expect(screen.getByLabelText("绑定剩余时间")).toHaveTextContent("30:00");
 });
 it("does not fabricate server EXPIRED or enable retry when the local countdown ends", async () => {
@@ -229,7 +238,9 @@ it("does not fabricate server EXPIRED or enable retry when the local countdown e
     await vi.advanceTimersByTimeAsync(1_100);
   });
   await screen.findByText(/正在核对服务器到期状态/);
-  expect(screen.queryByRole("button", { name: /已完成登录|确认绑定/ })).toBeNull();
+  expect(
+    screen.queryByRole("button", { name: /已完成登录|确认绑定/ }),
+  ).toBeNull();
   expect(api.sessionBindingAction).not.toHaveBeenCalled();
   expect(screen.queryByRole("button", { name: "重新申请绑定" })).toBeNull();
   expect(screen.queryByText(/本次绑定已超时/)).toBeNull();

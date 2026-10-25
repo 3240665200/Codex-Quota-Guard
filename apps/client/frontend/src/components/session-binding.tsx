@@ -281,7 +281,7 @@ export function SessionBinding({
                 {error ===
                 "本设备绑定信息不可用，请检查统计程序设备登记或联系管理员。" ? (
                   <p className="mt-2">
-                    可先使用上方的“配对统计程序”，等待几秒后重新读取绑定状态；仍失败请联系管理员核对设备登记。
+                    请先重新运行安装器准备统计服务，再登录完成设备登记。
                   </p>
                 ) : null}
               </AlertDescription>

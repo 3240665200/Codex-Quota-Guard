@@ -8,9 +8,14 @@ import com.pingche.web.user.UserRepository;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
@@ -42,6 +47,11 @@ public class QuotaOverviewService {
 
     @Transactional(readOnly = true)
     public QuotaOverviewResponse overview(UUID userId) {
+        return overview(userId, false);
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public QuotaOverviewResponse overview(UUID userId, boolean includeTeamMembers) {
         User user = users.findById(userId).orElseThrow(this::userNotFound);
         Team team = findTeam(user);
         QuotaOverviewResponse.TeamReference teamReference = team == null
@@ -57,6 +67,7 @@ public class QuotaOverviewService {
                 QuotaSystemUserResponse.from(user),
                 teamReference,
                 teamQuota,
+                includeTeamMembers ? (team == null ? List.of() : teamMembers(team, now)) : null,
                 policy,
                 currentUsage,
                 blockReason == null,
@@ -93,6 +104,38 @@ public class QuotaOverviewService {
     private Team findTeam(User user) {
         UUID teamId = user.getTeamId();
         return teamId == null ? null : teams.findById(teamId).orElse(null);
+    }
+
+    private List<TeamMemberUsageResponse> teamMembers(Team team, Instant now) {
+        List<User> members = users.findByTeamIdOrderByDisplayNameAscIdAsc(team.getId());
+        Map<UUID, CodexUsageEventRepository.TeamMemberUsage> memberUsage = usage.summarizeTeamMemberUsage(
+                team.getId(),
+                since(now, FIVE_HOUR_WINDOW, team.getQuotaResetAt()),
+                since(now, WEEKLY_WINDOW, team.getQuotaResetAt()),
+                now, resetAtOrEpoch(team.getQuotaResetAt()))
+                .stream().collect(Collectors.toMap(
+                        CodexUsageEventRepository.TeamMemberUsage::getUserId, Function.identity()));
+        Map<UUID, CodexUsageEventRepository.TeamMemberPersonalUsage> personalUsage =
+                usage.summarizeTeamMemberPersonalUsage(team.getId(), now.minus(FIVE_HOUR_WINDOW),
+                        now.minus(WEEKLY_WINDOW), now, Instant.EPOCH)
+                        .stream().collect(Collectors.toMap(
+                                CodexUsageEventRepository.TeamMemberPersonalUsage::getUserId,
+                                Function.identity()));
+        return members.stream().map(member -> {
+            CodexUsageEventRepository.TeamMemberUsage totals = memberUsage.get(member.getId());
+            CodexUsageEventRepository.TeamMemberPersonalUsage personal = personalUsage.get(member.getId());
+            long personalFiveHourUsed = personal == null ? 0L : personal.getFiveHourUsedTokens();
+            long personalWeeklyUsed = personal == null ? 0L : personal.getWeeklyUsedTokens();
+            return new TeamMemberUsageResponse(
+                    member.getId(), member.getDisplayName(), member.getStatus(),
+                    totals == null ? 0L : totals.getFiveHourUsedTokens(),
+                    totals == null ? 0L : totals.getWeeklyUsedTokens(),
+                    totals == null ? 0L : totals.getTotalUsedTokens(),
+                    totals == null ? null : totals.getMeasuredAt(),
+                    member.getFiveHourTokenLimit(), member.getWeeklyTokenLimit(),
+                    remaining(member.getFiveHourTokenLimit(), personalFiveHourUsed),
+                    remaining(member.getWeeklyTokenLimit(), personalWeeklyUsed));
+        }).toList();
     }
 
     private QuotaOverviewResponse.Policy policy(User user) {

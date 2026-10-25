@@ -6,6 +6,7 @@ import { UserQuotaDetail } from './user';
 import { getUser, getUserMeterDevices, getUserOfficialQuota,
   getUserQuotaOverview, getUserUsageEvents } from '../../services/api';
 import { resetTeamQuota, resetUserQuota } from '../../services/api';
+import { setQuotaDisplayMode } from '../../services/quota-display';
 
 vi.mock('@umijs/max', () => ({ history: { push: vi.fn() }, useParams: () => ({ id: 'user-1' }) }));
 
@@ -17,6 +18,7 @@ vi.mock('../../services/api', () => ({
 
 describe('独立用户额度页面', () => {
   beforeEach(() => {
+    setQuotaDisplayMode('used');
     vi.clearAllMocks();
     vi.mocked(getUser).mockResolvedValue({ id: 'user-1', displayName: 'Alice',
       email: 'alice@example.com', fiveHourTokenLimit: 1000,
@@ -53,8 +55,8 @@ describe('独立用户额度页面', () => {
   it('separates personal, shared team, official and ledger usage', async () => {
     render(<AntApp><UserQuotaDetail userId="user-1" /></AntApp>);
     expect(await screen.findByText('Alice的额度')).toBeInTheDocument();
-    expect(screen.getByRole('region', { name: '个人用量' })).toHaveTextContent('280 Token 已用');
-    expect(screen.getByRole('region', { name: '团队共享额度' })).toHaveTextContent('510 Token 已用');
+    expect(screen.getByRole('region', { name: '个人用量' })).toHaveTextContent('已用 280 Token');
+    expect(screen.getByRole('region', { name: '团队共享额度' })).toHaveTextContent('已用 510 Token');
     expect(screen.getByText('团队 5 小时共享额度已用尽')).toBeInTheDocument();
     expect(screen.getByRole('region', { name: '官方额度' })).toHaveTextContent('25.5%');
     expect(await screen.findByText('42 Token')).toBeInTheDocument();

@@ -94,7 +94,22 @@ public class OfficialSessionClient {
                 : proxies.open(frontProxyNodeId, proxyNodeId, ManagedProxyGateway.Purpose.OFFICIAL_SESSION);
     }
 
+    com.pingche.web.quota.OfficialQuotaSnapshotResponse fetchQuota(OfficialSessionCredentials credentials,
+            UUID frontProxyNodeId, UUID proxyNodeId, String verifiedUserId, Instant now) {
+        if (proxyNodeId == null) throw proxyRequired();
+        credentials.validate();
+        try (ProxyLease lease = open(frontProxyNodeId, proxyNodeId)) {
+            return OfficialQuotaPayload.parse(read(clients.apply(lease.proxySelector()), "/wham/usage", credentials, now),
+                    credentials.requestedAccountId(), verifiedUserId, now);
+        } catch (DomainException failure) { throw failure; }
+        catch (RuntimeException ignored) { throw failure("OFFICIAL_UNAVAILABLE"); }
+    }
+
     private JsonNode read(HttpClient client, String path, OfficialSessionCredentials credentials) {
+        return read(client, path, credentials, Instant.now());
+    }
+
+    private JsonNode read(HttpClient client, String path, OfficialSessionCredentials credentials, Instant now) {
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create("https://chatgpt.com/backend-api" + path))
                 .timeout(Duration.ofSeconds(10)).header("Accept", "application/json")
                 .header("Authorization", credentials.authorization())
@@ -112,7 +127,7 @@ public class OfficialSessionClient {
                 case 200 -> { }
                 case 401 -> throw failure("OFFICIAL_AUTH_REQUIRED");
                 case 403 -> throw failure("OFFICIAL_ACCESS_BLOCKED");
-                case 429 -> throw failure("OFFICIAL_RATE_LIMITED");
+                case 429 -> throw new OfficialRateLimitedException(response.headers().firstValue("Retry-After").orElse(null), now);
                 default -> throw failure("OFFICIAL_UNAVAILABLE");
             }
             byte[] body = response.body();

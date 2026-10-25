@@ -20,7 +20,7 @@ import { Button } from "@/components/ui/button";
 import { UsageStatistics } from "@/components/usage-statistics";
 import { formatUsd } from "@/lib/usage-format";
 
-export const serviceLabels: Record<UsageStatus["service"]["state"], string> = {
+export const serviceLabels: Record<UsageStatus["state"], string> = {
   NOT_INSTALLED: "统计程序未安装",
   OFFLINE: "统计程序离线",
   BASELINE_READY: "统计基线已建立",
@@ -29,37 +29,6 @@ export const serviceLabels: Record<UsageStatus["service"]["state"], string> = {
   REPORTED: "统计程序运行中",
   ERROR: "统计程序异常",
 };
-const fallbackLabels: Record<UsageStatus["fallback"]["state"], string> = {
-  SIGNED_OUT: "请先登录本系统账户",
-  WAITING_FOR_SESSIONS: "尚未找到官方 Codex 会话目录",
-  BASELINE_READY: "本机扫描已建立基线",
-  UP_TO_DATE: "本机扫描暂无新事件",
-  REPORTED: "本机用量已上报",
-  REPORT_FAILED: "本机扫描发现用量，但上报失败，稍后会重试",
-  SCAN_FAILED: "本机扫描失败",
-  SERVICE_ACTIVE: "常驻服务负责采集，回退扫描待命",
-};
-const scannerIssueLabels: Record<string, string> = {
-  SESSIONS_DIRECTORY_UNAVAILABLE: "会话目录不可用",
-  FILE_UNREADABLE: "日志文件不可读",
-  MALFORMED_JSONL_RECORD: "日志行格式无效",
-  OVERSIZED_JSONL_RECORD: "超大日志记录",
-  INVALID_USAGE_RECORD: "用量记录无效",
-  STALE_USAGE_EVENT: "过期用量记录",
-  CUMULATIVE_COUNTER_RESET: "累计计数重置",
-};
-const scannerIssueDescriptions: Record<string, string> = {
-  SESSIONS_DIRECTORY_UNAVAILABLE: "当前无法读取官方会话目录，请稍后重新扫描。",
-  FILE_UNREADABLE: "日志文件暂时无法读取，请检查文件权限后重新扫描。",
-  MALFORMED_JSONL_RECORD: "无法解析该日志行，已跳过，不会读取或展示原始内容。",
-  OVERSIZED_JSONL_RECORD: "超长日志行已跳过，不会作为用量上报。",
-  INVALID_USAGE_RECORD:
-    "记录未通过本地安全校验，已跳过且不会阻断同批有效用量。",
-  STALE_USAGE_EVENT: "记录早于允许的 29 天范围，已跳过且不会阻断同批有效用量。",
-  CUMULATIVE_COUNTER_RESET:
-    "累计计数下降时只重置基线，不会将下降值算作新用量。",
-};
-const MAX_VISIBLE_ISSUE_TYPES = 20;
 const costLabels = {
   MISSING_PRICE: "未定价",
   MISSING_BREAKDOWN: "分项缺失",
@@ -242,20 +211,6 @@ function EstimatedCost({ item }: { item: UsageEventPage["items"][number] }) {
   );
 }
 
-function summarizeScannerIssues(fallback: UsageStatus["fallback"]) {
-  const counts = fallback.issueCounts;
-  const aggregated =
-    counts && Object.keys(counts).length > 0
-      ? counts
-      : fallback.issues.reduce<Record<string, number>>((result, code) => {
-          result[code] = (result[code] ?? 0) + 1;
-          return result;
-        }, {});
-  return Object.entries(aggregated)
-    .filter(([, count]) => Number.isInteger(count) && count > 0)
-    .sort(([left], [right]) => left.localeCompare(right));
-}
-
 const logLabels: Record<MeterRuntimeLogs["entries"][number]["kind"], string> = {
   SERVICE_STARTED: "统计程序启动",
   SERVICE_STOPPED: "统计程序停止",
@@ -313,6 +268,12 @@ function explainError(code: string | null | undefined) {
       return "部分用量超过后台接收时间范围或时间超前，记录已保留，后续有效用量仍会继续上报。请检查系统时间并联系管理员核对历史记录，不要修改记录时间。";
     case "CONTROL_PLANE_REQUEST_REJECTED":
       return "后台拒绝了用量请求，请检查请求数据；这通常不是网络连接故障。";
+    case "METER_LEGACY_DIRECT_LATE":
+      return "部分记录与旧累计统计可能重叠，已保留待核对，未重复计费。";
+    case "METER_CAPTURE_THREAD_PANICKED":
+      return "统计程序的会话采集任务异常退出，请检查 Windows 服务状态；如持续发生，请重新运行客户端安装器。";
+    case "METER_CAPTURE_THREAD_STOPPED":
+      return "统计程序的会话采集任务已停止，请刷新状态并检查 Windows 服务。";
     case "STATE_STORAGE_FAILED":
     case "METER_STATE_READ_FAILED":
     case "METER_STATE_WRITE_FAILED":
@@ -356,24 +317,12 @@ export function UsageActivityPanel({
   status,
   statusError,
   measuredAt,
-  scanning,
-  pairing,
-  starting,
-  onScan,
-  onPair,
-  onStart,
 }: {
   userId: string;
   view?: "overview" | "ledger" | "diagnostics";
   status: UsageStatus | undefined;
   statusError?: unknown;
   measuredAt?: string | null;
-  scanning: boolean;
-  pairing: boolean;
-  starting: boolean;
-  onScan: () => void;
-  onPair: () => void;
-  onStart: () => void;
 }) {
   const [tab, setTab] = useState<"overview" | "ledger" | "diagnostics">(
     "overview",
@@ -409,12 +358,19 @@ export function UsageActivityPanel({
     enabled: legacyView || activeView === "diagnostics",
     refetchInterval: 30000,
   });
-  const serviceState = status?.service.state;
+  const pairingError = useQuery({
+    queryKey: ["meter-pairing-error", userId],
+    queryFn: api.meterPairingError,
+    retry: false,
+    enabled: legacyView || activeView === "diagnostics",
+    refetchInterval: 10_000,
+  });
+  const serviceState = status?.state;
   const healthy = serviceState === "UP_TO_DATE" || serviceState === "REPORTED";
   const upgradeRequired =
     meterVersion.data?.status === "UPGRADE_REQUIRED" ||
     meterVersion.data?.needsUpgrade === true;
-  const runtimeVersion = status?.service.version;
+  const runtimeVersion = status?.version;
   const runtimeVersionMismatch =
     !!runtimeVersion &&
     !!meterVersion.data?.installedVersion &&
@@ -426,25 +382,11 @@ export function UsageActivityPanel({
     runtimeVersionUnknown;
   const versionNeedsAttention =
     upgradeRequired || runtimeVersionMismatch || versionUnverified;
-  const showVersionAction =
-    versionNeedsAttention && serviceState !== "NOT_INSTALLED";
   const sameVersionDifferentBinary =
     upgradeRequired &&
     !!meterVersion.data?.installedVersion &&
     meterVersion.data.installedVersion === meterVersion.data.bundledVersion;
-  const fallbackFailed =
-    status?.fallback.state === "REPORT_FAILED" ||
-    status?.fallback.state === "SCAN_FAILED";
-  const scannerIssues = status ? summarizeScannerIssues(status.fallback) : [];
-  const hasSkippedNonUsageRecords = scannerIssues.some(
-    ([code]) =>
-      code === "OVERSIZED_JSONL_RECORD" || code === "CUMULATIVE_COUNTER_RESET",
-  );
-  const fallbackScanCompleted =
-    status?.fallback.state === "UP_TO_DATE" ||
-    status?.fallback.state === "REPORTED";
-  const lastReport =
-    status?.service.lastReportEpochSeconds ?? status?.fallback.lastReportedAt;
+  const lastReport = status?.lastReportEpochSeconds;
   const acceptedAt =
     page === 0 ? (ledger.data?.items[0]?.receivedAt ?? measuredAt) : measuredAt;
   const refresh = () => {
@@ -516,17 +458,15 @@ export function UsageActivityPanel({
               </div>
             </div>
             <span
-              className={`text-xs font-medium ${healthy && !fallbackFailed && !versionNeedsAttention ? "text-primary" : "text-amber-700 dark:text-amber-400"}`}
+              className={`text-xs font-medium ${healthy && !versionNeedsAttention ? "text-primary" : "text-amber-700 dark:text-amber-400"}`}
             >
               {upgradeRequired
                 ? "需升级"
-                : fallbackFailed
-                  ? "回退上报异常"
-                  : runtimeVersionMismatch || versionUnverified
-                    ? "版本待确认"
-                    : healthy
-                      ? "正常"
-                      : "需检查"}
+                : runtimeVersionMismatch || versionUnverified
+                  ? "版本待确认"
+                  : healthy
+                    ? "正常"
+                    : "需检查"}
             </span>
           </div>
           {statusReadFailed ? (
@@ -554,23 +494,8 @@ export function UsageActivityPanel({
                 {sameVersionDifferentBinary
                   ? "版本号相同，但程序文件校验不一致，仍需更新。"
                   : "已安装程序与安装包不一致，旧版可能缺少输入、输出等 Token 分项。"}
-                点击更新以安装随客户端打包的版本；如提示权限不足，请从托盘退出客户端，再以管理员身份重新打开。已入库的旧流水不会自动补齐。
+                请重新运行客户端安装器以更新统计程序。已入库的旧流水不会自动补齐。
               </p>
-              {showVersionAction ? (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="mt-2"
-                  disabled={starting}
-                  onClick={onStart}
-                >
-                  <RefreshCw
-                    aria-hidden="true"
-                    className={starting ? "animate-spin" : undefined}
-                  />
-                  {starting ? "正在更新…" : "更新统计程序"}
-                </Button>
-              ) : null}
             </div>
           ) : null}
           {!upgradeRequired && (runtimeVersionMismatch || versionUnverified) ? (
@@ -586,23 +511,8 @@ export function UsageActivityPanel({
                     ? "无法读取安装版本，请刷新后重试。"
                     : meterVersion.data?.status === "UNKNOWN"
                       ? "安装版本无法通过程序文件校验，不能确认已是最新版；请检查安装状态。"
-                      : "后台尚未收到运行版本，可能仍在运行旧版统计程序或旧版后端。请检查安装与服务状态。"}
+                      : "后台尚未收到运行版本，可能仍在运行旧版统计程序。请重新运行客户端安装器完成检查。"}
               </p>
-              {showVersionAction ? (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="mt-2"
-                  disabled={starting}
-                  onClick={onStart}
-                >
-                  <RefreshCw
-                    aria-hidden="true"
-                    className={starting ? "animate-spin" : undefined}
-                  />
-                  {starting ? "正在检查…" : "检查并修复"}
-                </Button>
-              ) : null}
             </div>
           ) : null}
           <dl className="mt-4 grid grid-cols-[repeat(auto-fit,minmax(min(100%,12rem),1fr))] gap-3 rounded-lg border bg-muted/40 p-3 text-sm">
@@ -611,7 +521,7 @@ export function UsageActivityPanel({
                 统计程序最近扫描
               </dt>
               <dd className="mt-1 tabular-nums">
-                {time(status?.service.lastScanEpochSeconds)}
+                {time(status?.lastScanEpochSeconds)}
               </dd>
             </div>
             <div>
@@ -711,42 +621,10 @@ export function UsageActivityPanel({
             ) : null}
             {legacyView || activeView === "diagnostics" ? (
               <>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={scanning}
-                  onClick={onScan}
-                >
-                  {scanning ? "正在扫描…" : "立即扫描"}
-                </Button>
-                {serviceState === "UNPAIRED" ||
-                status?.pairingState === "PAIRING_FAILED" ||
-                status?.service.errorCode === "METER_PAIRING_EXPIRED" ||
-                status?.service.errorCode === "METER_PAIRING_INVALID" ? (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={pairing}
-                    onClick={onPair}
-                  >
-                    {pairing ? "正在配对…" : "重新配对"}
-                  </Button>
-                ) : null}
-                {(serviceState === "OFFLINE" ||
-                  serviceState === "NOT_INSTALLED") &&
-                !showVersionAction ? (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={starting}
-                    onClick={onStart}
-                  >
-                    {starting
-                      ? "正在处理…"
-                      : serviceState === "NOT_INSTALLED"
-                        ? "安装统计程序"
-                        : "启动统计程序"}
-                  </Button>
+                {serviceState === "NOT_INSTALLED" ? (
+                  <p className="self-center text-xs text-muted-foreground">
+                    请重新运行客户端安装器安装统计程序。
+                  </p>
                 ) : null}
               </>
             ) : null}
@@ -990,68 +868,16 @@ export function UsageActivityPanel({
                 </p>
               ) : null}
               <p className="mt-2 text-xs [overflow-wrap:anywhere]">
-                {explainError(status?.service.errorCode) ?? "暂无统计程序错误"}
+                {explainError(status?.errorCode) ?? "暂无统计程序错误"}
               </p>
-              {status?.pairingState === "PAIRING_FAILED" ? (
+              {serviceState === "UNPAIRED" || pairingError.data ? (
                 <p className="mt-2 text-xs text-destructive [overflow-wrap:anywhere]">
-                  设备配对失败，请确认后台在线后重试。
+                  {pairingError.data === "PAIRING_IDENTITY_MISMATCH"
+                    ? "中央后台返回的设备或账户与本机不匹配，请联系管理员核对设备登记。"
+                    : pairingError.data === "PAIRING_ENROLL_FAILED"
+                      ? "向中央后台登记统计设备暂未成功；客户端会在后续登录状态核验时重试。请检查服务器地址与网络。"
+                      : "统计程序尚未收到本设备配对信息，请确认服务器连接；客户端会在后续登录状态核验时重试。"}
                 </p>
-              ) : null}
-            </div>
-            <div className="min-w-0 rounded-lg border p-3">
-              <h3 className="font-medium">桌面回退扫描</h3>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {status
-                  ? fallbackLabels[status.fallback.state]
-                  : statusReadFailed
-                    ? "统计状态读取失败"
-                    : "正在读取…"}
-              </p>
-              <p className="mt-2 text-xs">
-                最近扫描：{time(status?.fallback.lastScannedAt)}
-              </p>
-              {explainError(status?.fallback.errorCode) ? (
-                <p className="mt-2 text-xs text-destructive [overflow-wrap:anywhere]">
-                  {explainError(status?.fallback.errorCode)}
-                </p>
-              ) : null}
-              {scannerIssues.length ? (
-                <div className="mt-3">
-                  <p className="text-xs font-medium text-amber-700">
-                    扫描诊断（按类型汇总）
-                  </p>
-                  {fallbackScanCompleted && hasSkippedNonUsageRecords ? (
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      扫描已完成。超长行和累计计数重置属于已跳过的非用量诊断，不代表网络错误。
-                    </p>
-                  ) : null}
-                  <ul
-                    aria-label="扫描诊断汇总"
-                    className="cqg-scrollbar-hidden mt-2 max-h-40 min-w-0 divide-y overflow-y-auto rounded-md border px-3"
-                    tabIndex={0}
-                  >
-                    {scannerIssues
-                      .slice(0, MAX_VISIBLE_ISSUE_TYPES)
-                      .map(([code, count]) => (
-                        <li key={code} className="py-2">
-                          <p className="break-words text-xs text-amber-800 [overflow-wrap:anywhere]">
-                            {scannerIssueLabels[code] ?? "扫描诊断"} · {code} ·{" "}
-                            {count} 次
-                          </p>
-                          <p className="mt-1 text-xs text-muted-foreground [overflow-wrap:anywhere]">
-                            {scannerIssueDescriptions[code] ??
-                              "仅显示安全诊断码，不包含原始日志内容。"}
-                          </p>
-                        </li>
-                      ))}
-                    {scannerIssues.length > MAX_VISIBLE_ISSUE_TYPES ? (
-                      <li className="py-2 text-xs text-muted-foreground">
-                        另有 {scannerIssues.length - MAX_VISIBLE_ISSUE_TYPES}{" "}
-                        种诊断未展开。
-                      </li>
-                    ) : null}
-                  </ul>
-                </div>
               ) : null}
             </div>
           </div>

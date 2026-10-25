@@ -3,17 +3,19 @@ use std::{
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
+    sync::Mutex,
 };
 
-use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
+use url::Url;
 use uuid::Uuid;
 
-use crate::meter_service::{self, MeterStartOutcome};
+use crate::meter_service::{self, MeterSync};
 
 const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:8080";
 const CONFIG_FILE: &str = "server-config.json";
+static SAVE_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -22,6 +24,13 @@ pub(crate) struct ServerConfig {
     // Accept the retired setting when reading existing installations.
     #[serde(default, rename = "allowInsecureLanHttp", skip_serializing)]
     _legacy_allow_insecure_lan_http: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ServerConfigSaveResult {
+    pub(crate) url: String,
+    pub(crate) meter_sync: MeterSync,
 }
 
 impl Default for ServerConfig {
@@ -92,52 +101,50 @@ pub(crate) fn load(app: &AppHandle) -> ServerConfig {
     ServerConfig::default()
 }
 
-pub(crate) fn save(app: &AppHandle, config: ServerConfig) -> Result<ServerConfig, String> {
+pub(crate) fn save(
+    app: &AppHandle,
+    config: ServerConfig,
+) -> Result<ServerConfigSaveResult, String> {
+    let _operation = SAVE_LOCK
+        .lock()
+        .map_err(|_| "无法保存服务器设置，请重启客户端后重试。".to_owned())?;
+    let previous = load(app);
     save_with_meter(
         &config_path(app).map_err(str::to_owned)?,
-        &load(app),
+        &previous,
         config,
-        |url| match meter_service::ensure_running_or_install_for_server(app, url) {
-            MeterStartOutcome::Running
-            | MeterStartOutcome::Started
-            | MeterStartOutcome::Installed => Ok(()),
-            MeterStartOutcome::NeedsAdmin => {
-                Err("同步统计程序地址需要管理员授权，取消授权后地址不会保存。".to_owned())
-            }
-            MeterStartOutcome::NotInstalled => {
-                Err("安装包中的统计程序不完整，请重新安装客户端后重试。".to_owned())
-            }
-            MeterStartOutcome::InstallFailed => {
-                Err("统计程序地址同步失败，请检查 Windows 服务后重试。".to_owned())
-            }
-            MeterStartOutcome::Failed => Err("无法确认统计程序地址已同步，请稍后重试。".to_owned()),
-            #[cfg(not(windows))]
-            MeterStartOutcome::Unsupported => Err("当前平台暂不支持同步统计程序地址。".to_owned()),
-        },
+        |url| meter_service::configure_existing_service(app, url),
     )
 }
 
-// The caller holds the same lock used by tray and startup service checks until
-// both settings agree, including any rollback after a failed desktop commit.
+// Serialize the external meter update and desktop commit, including rollback,
+// so concurrent settings saves cannot interleave their server origins.
 fn save_with_meter(
     path: &Path,
     previous: &ServerConfig,
     config: ServerConfig,
-    mut sync_meter: impl FnMut(&str) -> Result<(), String>,
-) -> Result<ServerConfig, String> {
+    mut sync_meter: impl FnMut(&str) -> Result<MeterSync, String>,
+) -> Result<ServerConfigSaveResult, String> {
     let config = config.validated().map_err(str::to_owned)?;
     let pending = PendingConfig::prepare(path, &config).map_err(str::to_owned)?;
-    sync_meter(&config.url).map_err(|error| format!("服务器地址未保存。{error}"))?;
+    let meter_sync = if config.url == previous.url {
+        MeterSync::Unchanged
+    } else {
+        sync_meter(&config.url).map_err(|error| format!("服务器地址未保存。{error}"))?
+    };
     if pending.commit().is_err() {
-        if config.url != previous.url {
+        if config.url != previous.url && meter_sync == MeterSync::Updated {
             return match sync_meter(&previous.url) {
-                Ok(()) => Err("无法保存客户端设置，统计程序已恢复原服务器地址。请检查目录权限后重试。".to_owned()),
+                Ok(_) => Err("无法保存客户端设置，统计程序已恢复原服务器地址。请检查目录权限后重试。".to_owned()),
                 Err(_) => Err("无法保存客户端设置，统计程序地址也未能恢复。请重新保存原服务器地址，确认同步成功后再使用。".to_owned()),
             };
         }
         return Err("无法保存服务器设置，请检查目录权限后重试。".to_owned());
     }
-    Ok(config)
+    Ok(ServerConfigSaveResult {
+        url: config.url,
+        meter_sync,
+    })
 }
 
 struct PendingConfig {
@@ -295,12 +302,13 @@ mod tests {
             |url| {
                 assert_eq!(fixture.stored_url(), previous.url);
                 requested.push(url.to_owned());
-                Ok(())
+                Ok(MeterSync::Updated)
             },
         )
         .unwrap();
 
         assert_eq!(requested, ["https://next.example.com"]);
+        assert_eq!(saved.meter_sync, MeterSync::Updated);
         assert_eq!(fixture.stored_url(), saved.url);
         fixture.assert_no_pending_files();
     }
@@ -332,7 +340,7 @@ mod tests {
     fn invalid_or_unwritable_settings_never_reconfigure_the_meter() {
         let previous = candidate("http://127.0.0.1:8080");
         let fixture = TestConfig::new(&previous);
-        let unexpected_sync = |_: &str| -> Result<(), String> {
+        let unexpected_sync = |_: &str| -> Result<MeterSync, String> {
             panic!("meter must not change before settings can be prepared")
         };
         assert!(save_with_meter(
@@ -365,7 +373,7 @@ mod tests {
                 // Simulate the staged file becoming unavailable after sync.
                 fixture.remove_pending_file();
             }
-            Ok(())
+            Ok(MeterSync::Updated)
         });
 
         assert!(result.unwrap_err().contains("已恢复原服务器地址"));
@@ -382,7 +390,7 @@ mod tests {
         let result = save_with_meter(&fixture.path, &previous, candidate(next), |url| {
             if url == next {
                 fixture.remove_pending_file();
-                Ok(())
+                Ok(MeterSync::Updated)
             } else {
                 Err("rollback failed".to_owned())
             }
@@ -394,17 +402,18 @@ mod tests {
     }
 
     #[test]
-    fn saving_the_current_address_still_checks_and_repairs_the_meter() {
+    fn saving_the_current_address_does_not_call_the_service_updater() {
         let previous = candidate("http://127.0.0.1:8080");
         let fixture = TestConfig::new(&previous);
-        let mut requested = Vec::new();
-        save_with_meter(&fixture.path, &previous, previous.clone(), |url| {
-            requested.push(url.to_owned());
-            Ok(())
+        let mut called = false;
+        let saved = save_with_meter(&fixture.path, &previous, previous.clone(), |_url| {
+            called = true;
+            Ok(MeterSync::Updated)
         })
         .unwrap();
 
-        assert_eq!(requested, [previous.url.as_str()]);
+        assert!(!called, "unchanged address must not invoke the service updater");
+        assert_eq!(saved.meter_sync, MeterSync::Unchanged);
         assert_eq!(fixture.stored_url(), previous.url);
         fixture.assert_no_pending_files();
     }

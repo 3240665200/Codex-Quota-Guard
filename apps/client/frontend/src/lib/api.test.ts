@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { invoke } from "@tauri-apps/api/core";
-
 import { api, getApiErrorMessage } from "@/lib/api";
+import { ApiHttpHarness } from "@/test/api-http-harness";
 
-const invokeMock = vi.mocked(invoke);
+const harness = new ApiHttpHarness();
+const invokeMock = harness.native;
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
@@ -58,13 +58,18 @@ const loginListener = {
 };
 
 describe("login assistance API boundary", () => {
-  beforeEach(() => invokeMock.mockReset());
+  beforeEach(async () => harness.prepare(api));
 
-  it("restores current only through the fixed authenticated command and rejects secret extras", async () => {
-    invokeMock.mockResolvedValue({ listener: null });
+  it("restores current over the authenticated central route and rejects secret extras", async () => {
+    harness.respond({ listener: null });
     expect(await api.loginAssistanceCurrent()).toEqual({ listener: null });
-    expect(invokeMock).toHaveBeenLastCalledWith("login_assistance_current");
-    invokeMock.mockResolvedValue({ listener: loginListener });
+    expect(
+      harness.requestsFor(
+        "GET",
+        "/api/v1/client/login-assistance/listeners/current",
+      ),
+    ).toHaveLength(1);
+    harness.respond({ listener: loginListener });
     expect(await api.loginAssistanceCurrent()).toEqual({
       listener: loginListener,
     });
@@ -72,33 +77,43 @@ describe("login assistance API boundary", () => {
       { listener: loginListener, accessToken: "synthetic" },
       { listener: { ...loginListener, password: "synthetic" } },
     ]) {
-      invokeMock.mockResolvedValue(result);
+      harness.respond(result);
       await expect(api.loginAssistanceCurrent()).rejects.toThrow();
     }
   });
 
-  it("uses only the four fixed commands with validated listener IDs", async () => {
-    invokeMock.mockResolvedValue(loginAssistanceInfo);
+  it("uses the fixed central listener routes with validated listener IDs", async () => {
+    harness.respond(loginAssistanceInfo);
     await expect(api.loginAssistanceInfo()).resolves.toEqual(
       loginAssistanceInfo,
     );
-    expect(invokeMock).toHaveBeenLastCalledWith("login_assistance_info");
-    invokeMock.mockResolvedValue(loginListener);
+    expect(
+      harness.requestsFor("GET", "/api/v1/client/login-assistance"),
+    ).toHaveLength(1);
+    harness.respond(loginListener);
     await expect(api.loginAssistanceStart()).resolves.toEqual(loginListener);
-    expect(invokeMock).toHaveBeenLastCalledWith("login_assistance_start");
+    expect(
+      harness.requestsFor("POST", "/api/v1/client/login-assistance/listeners"),
+    ).toHaveLength(1);
     await expect(api.loginAssistanceStatus(loginListener.id)).resolves.toEqual(
       loginListener,
     );
-    expect(invokeMock).toHaveBeenLastCalledWith("login_assistance_status", {
-      listenerId: loginListener.id,
-    });
+    expect(
+      harness.requestsFor(
+        "GET",
+        `/api/v1/client/login-assistance/listeners/${loginListener.id}`,
+      ),
+    ).toHaveLength(1);
     await expect(api.loginAssistanceCancel(loginListener.id)).resolves.toEqual(
       loginListener,
     );
-    expect(invokeMock).toHaveBeenLastCalledWith("login_assistance_cancel", {
-      listenerId: loginListener.id,
-    });
-    invokeMock.mockClear();
+    expect(
+      harness.requestsFor(
+        "DELETE",
+        `/api/v1/client/login-assistance/listeners/${loginListener.id}`,
+      ),
+    ).toHaveLength(1);
+    const requestCount = harness.requests.length;
     for (const id of [
       "",
       "someone-else",
@@ -108,7 +123,7 @@ describe("login assistance API boundary", () => {
       await expect(api.loginAssistanceStatus(id)).rejects.toThrow();
       await expect(api.loginAssistanceCancel(id)).rejects.toThrow();
     }
-    expect(invokeMock).not.toHaveBeenCalled();
+    expect(harness.requests).toHaveLength(requestCount);
   });
 
   it("rejects additional mailbox credentials instead of retaining or silently accepting them", async () => {
@@ -118,9 +133,9 @@ describe("login assistance API boundary", () => {
       { accessToken: "synthetic-token" },
       { serverUrl: "https://mail.example.com" },
     ]) {
-      invokeMock.mockResolvedValue({ ...loginAssistanceInfo, ...extra });
+      harness.respond({ ...loginAssistanceInfo, ...extra });
       await expect(api.loginAssistanceInfo()).rejects.toThrow();
-      invokeMock.mockResolvedValue({ ...loginListener, ...extra });
+      harness.respond({ ...loginListener, ...extra });
       await expect(api.loginAssistanceStart()).rejects.toThrow();
     }
   });
@@ -132,7 +147,7 @@ describe("login assistance API boundary", () => {
       receivedAt: "2026-10-12T10:00:02Z",
       code: "123456",
     };
-    invokeMock.mockResolvedValue(received);
+    harness.respond(received);
     await expect(api.loginAssistanceStatus(loginListener.id)).resolves.toEqual(
       received,
     );
@@ -146,14 +161,14 @@ describe("login assistance API boundary", () => {
       { id: "22222222-2222-4222-8222-222222222222" },
       { state: "HISTORICAL" },
     ]) {
-      invokeMock.mockResolvedValue({ ...received, ...change });
+      harness.respond({ ...received, ...change });
       await expect(
         api.loginAssistanceStatus(loginListener.id),
       ).rejects.toThrow();
     }
-    invokeMock.mockResolvedValue({ ...loginListener, code: "123456" });
+    harness.respond({ ...loginListener, code: "123456" });
     await expect(api.loginAssistanceStart()).rejects.toThrow();
-    invokeMock.mockResolvedValue({
+    harness.respond({
       ...loginListener,
       expiresAt: loginListener.startedAt,
     });
@@ -162,9 +177,7 @@ describe("login assistance API boundary", () => {
 });
 
 describe("Tauri API boundary", () => {
-  beforeEach(() => {
-    invokeMock.mockReset();
-  });
+  beforeEach(async () => harness.prepare(api));
 
   it("validates autostart status and passes only a boolean to the fixed setter", async () => {
     invokeMock.mockResolvedValue({ supported: true, enabled: true });
@@ -206,15 +219,18 @@ describe("Tauri API boundary", () => {
       trend: [],
     };
     invokeMock.mockResolvedValue(data);
+    const requestStart = harness.requests.length;
     for (const days of [1, 7, 30] as const) {
       await expect(api.usageAnalytics(days)).resolves.toEqual(data);
-      expect(invokeMock).toHaveBeenLastCalledWith("usage_analytics", { days });
+      expect(
+        harness.requestsFor("GET", "/api/v1/client/usage/analytics").at(-1)
+          ?.params,
+      ).toEqual({ days });
     }
-    invokeMock.mockClear();
     for (const invalid of [0, 2, 31, NaN]) {
       await expect(api.usageAnalytics(invalid as 1)).rejects.toThrow();
     }
-    expect(invokeMock).not.toHaveBeenCalled();
+    expect(harness.requests).toHaveLength(requestStart + 3);
     for (const invalid of [
       { currency: "CNY" },
       { timezone: "local" },
@@ -236,14 +252,19 @@ describe("Tauri API boundary", () => {
       totalPages: 0,
     });
     await expect(api.usageEvents(0, 10)).resolves.toHaveProperty("items", []);
-    expect(invokeMock).toHaveBeenCalledWith("usage_events", {
+    expect(
+      harness.requestsFor("GET", "/api/v1/client/usage/events").at(-1)?.params,
+    ).toEqual({
       page: 0,
       size: 10,
+      includeMetadata: true,
+      includeTokenBreakdown: true,
     });
+    const requestCount = harness.requests.length;
     invokeMock.mockClear();
     await expect(api.usageEvents(-1, 10)).rejects.toThrow();
     await expect(api.usageEvents(0, 101)).rejects.toThrow();
-    expect(invokeMock).not.toHaveBeenCalled();
+    expect(harness.requests).toHaveLength(requestCount);
   });
 
   it("normalizes optional usage metadata without dropping valid ledger events", async () => {
@@ -429,31 +450,6 @@ describe("Tauri API boundary", () => {
     await expect(api.meterRuntimeLogs()).rejects.toThrow();
   });
 
-  it("validates a status response and calls the fixed command", async () => {
-    invokeMock.mockResolvedValue({
-      service: "codex-quota-guard",
-      state: "online",
-    });
-
-    await expect(api.status()).resolves.toEqual({
-      service: "codex-quota-guard",
-      state: "online",
-    });
-    expect(invokeMock).toHaveBeenCalledWith("status");
-  });
-
-  it("uses one fixed native command to ensure the installed meter service is running", async () => {
-    invokeMock.mockResolvedValue("STARTED");
-    await expect(api.ensureMeterService()).resolves.toBe("STARTED");
-    await expect(api.ensureMeterService()).resolves.toBe("STARTED");
-    expect(invokeMock).toHaveBeenCalledWith("meter_service_ensure");
-    expect(invokeMock).toHaveBeenCalledTimes(1);
-    invokeMock.mockResolvedValue("SOME_UNKNOWN_SERVICE_RESULT");
-    await expect(api.retryMeterService()).rejects.toThrow();
-    expect(invokeMock).toHaveBeenCalledWith("meter_service_retry");
-    await expect(api.ensureMeterService()).rejects.toThrow();
-  });
-
   it("accepts only fixed native startup guard outcomes", async () => {
     invokeMock.mockResolvedValue({ state: "READY", ccSwitchTerminated: true });
     await expect(api.startupGateCheck()).resolves.toEqual({
@@ -476,14 +472,6 @@ describe("Tauri API boundary", () => {
     await expect(api.startupGuardStatus()).rejects.toThrow();
   });
 
-  it("accepts first-run service installation and server validation outcomes", async () => {
-    invokeMock
-      .mockResolvedValueOnce("INSTALLED")
-      .mockResolvedValueOnce("SERVER_UNAVAILABLE");
-    await expect(api.retryMeterService()).resolves.toBe("INSTALLED");
-    await expect(api.retryMeterService()).resolves.toBe("SERVER_UNAVAILABLE");
-  });
-
   it("validates installed and bundled statistics program versions", async () => {
     const version = {
       installedVersion: "0.1.0",
@@ -503,21 +491,34 @@ describe("Tauri API boundary", () => {
     await expect(api.meterServiceVersion()).rejects.toThrow();
   });
 
-  it("validates the server address setting and uses fixed settings commands", async () => {
-    invokeMock.mockResolvedValue({
-      url: "http://192.168.0.102:8080",
+  it("strips response metadata when saving the server address again", async () => {
+    invokeMock.mockImplementation(async (command) => {
+      if (command === "server_config_get") {
+        return { url: "http://192.168.0.102:8080" };
+      }
+      if (command === "server_config_save") {
+        return { url: "http://192.168.0.102:8080", meterSync: "UPDATED" };
+      }
+      return null;
     });
 
-    await expect(api.serverConfig()).resolves.toEqual({
+    await expect(api.serverConfig()).resolves.toMatchObject({
       url: "http://192.168.0.102:8080",
     });
-    await api.saveServerConfig({
+    const saved = await api.saveServerConfig({
       url: "http://192.168.0.102:8080",
+      meterSync: "UPDATED",
     });
+    await api.saveServerConfig(saved);
     expect(invokeMock).toHaveBeenCalledWith("server_config_get");
     expect(invokeMock).toHaveBeenCalledWith("server_config_save", {
       config: { url: "http://192.168.0.102:8080" },
     });
+    expect(
+      invokeMock.mock.calls.filter(
+        ([command]) => command === "server_config_save",
+      ),
+    ).toHaveLength(2);
   });
 
   it("validates personal token values rather than account-level percentages", async () => {
@@ -531,8 +532,131 @@ describe("Tauri API boundary", () => {
         fiveHourRemainingTokens: 800,
       },
     });
-    expect(invokeMock).toHaveBeenCalledWith("quota_overview");
+    expect(
+      harness.requestsFor("GET", "/api/v1/client/quota/overview").at(-1)
+        ?.params,
+    ).toEqual({ includeTeamMembers: true });
   });
+
+  it("validates all current team members including zero usage and disabled members", async () => {
+    const members = [
+      {
+        userId: "11111111-1111-4111-8111-111111111111",
+        displayName: "Alice",
+        status: "ACTIVE",
+        fiveHourUsedTokens: 200,
+        weeklyUsedTokens: 1000,
+        totalUsedTokens: 5000,
+        fiveHourTokenLimit: 1_000,
+        weeklyTokenLimit: 10_000,
+        fiveHourRemainingTokens: 800,
+        weeklyRemainingTokens: 9_000,
+        measuredAt: "2026-10-06T08:00:00Z",
+      },
+      {
+        userId: "22222222-2222-4222-8222-222222222222",
+        displayName: "Alice",
+        status: "DISABLED",
+        fiveHourUsedTokens: 0,
+        weeklyUsedTokens: 0,
+        totalUsedTokens: 0,
+        fiveHourTokenLimit: null,
+        weeklyTokenLimit: 0,
+        fiveHourRemainingTokens: null,
+        weeklyRemainingTokens: 0,
+        measuredAt: null,
+      },
+    ];
+    invokeMock.mockResolvedValue({ ...quotaOverview, teamMembers: members });
+    expect((await api.quotaOverview()).teamMembers).toEqual(members);
+    expect(
+      harness.requestsFor("GET", "/api/v1/client/quota/overview").at(-1)
+        ?.params,
+    ).toEqual({ includeTeamMembers: true });
+  });
+
+  it("preserves older-server member data absence as null and an explicit empty list as empty", async () => {
+    for (const payload of [
+      quotaOverview,
+      { ...quotaOverview, teamMembers: null },
+    ]) {
+      invokeMock.mockResolvedValue(payload);
+      expect((await api.quotaOverview()).teamMembers).toBeNull();
+    }
+    invokeMock.mockResolvedValue({
+      ...quotaOverview,
+      team: null,
+      teamMembers: [],
+    });
+    expect((await api.quotaOverview()).teamMembers).toEqual([]);
+  });
+
+  it.each([
+    { userId: "not-a-uuid" },
+    { status: "UNKNOWN" },
+    { fiveHourUsedTokens: -1 },
+    { weeklyUsedTokens: 0.5 },
+    { totalUsedTokens: Number.MAX_SAFE_INTEGER + 1 },
+    { fiveHourTokenLimit: -1 },
+    { weeklyRemainingTokens: 0.5 },
+    { fiveHourTokenLimit: null, fiveHourRemainingTokens: 1 },
+    { fiveHourTokenLimit: 100, fiveHourRemainingTokens: null },
+    { weeklyTokenLimit: 100, weeklyRemainingTokens: null },
+    { fiveHourTokenLimit: 100, fiveHourRemainingTokens: 101 },
+    { weeklyTokenLimit: 10, weeklyRemainingTokens: 11 },
+    { measuredAt: "not-a-timestamp" },
+  ])("rejects malformed team member usage: %j", async (invalid) => {
+    invokeMock.mockResolvedValue({
+      ...quotaOverview,
+      teamMembers: [
+        {
+          userId: "11111111-1111-4111-8111-111111111111",
+          displayName: "Alice",
+          status: "ACTIVE",
+          fiveHourUsedTokens: 0,
+          weeklyUsedTokens: 0,
+          totalUsedTokens: 0,
+          fiveHourTokenLimit: null,
+          weeklyTokenLimit: null,
+          fiveHourRemainingTokens: null,
+          weeklyRemainingTokens: null,
+          measuredAt: null,
+          ...invalid,
+        },
+      ],
+    });
+    await expect(api.quotaOverview()).rejects.toThrow();
+  });
+
+  it.each([
+    "fiveHourTokenLimit",
+    "weeklyTokenLimit",
+    "fiveHourRemainingTokens",
+    "weeklyRemainingTokens",
+  ] as const)(
+    "rejects a member with missing required personal quota field %s",
+    async (field) => {
+      const member = {
+        userId: "11111111-1111-4111-8111-111111111111",
+        displayName: "Alice",
+        status: "ACTIVE",
+        fiveHourUsedTokens: 0,
+        weeklyUsedTokens: 0,
+        totalUsedTokens: 0,
+        fiveHourTokenLimit: null,
+        weeklyTokenLimit: null,
+        fiveHourRemainingTokens: null,
+        weeklyRemainingTokens: null,
+        measuredAt: null,
+      };
+      const { [field]: _missing, ...partialMember } = member;
+      invokeMock.mockResolvedValue({
+        ...quotaOverview,
+        teamMembers: [partialMember],
+      });
+      await expect(api.quotaOverview()).rejects.toThrow();
+    },
+  );
 
   it("accepts a truthful absence of reported usage before the first event", async () => {
     invokeMock.mockResolvedValue({
@@ -545,64 +669,19 @@ describe("Tauri API boundary", () => {
     });
   });
 
-  it("validates safe Rust meter diagnostics and fixed scan commands", async () => {
+  it("reads the fixed native meter status DTO", async () => {
     const status = {
-      fallback: {
-        state: "BASELINE_READY",
-        lastScannedAt: "2026-10-07T00:00:00Z",
-        lastReportedAt: null,
-        lastReportedEvents: 0,
-        issues: [],
-      },
-      service: {
-        state: "NOT_INSTALLED",
-        lastScanEpochSeconds: null,
-        lastReportEpochSeconds: null,
-        reportedEvents: 0,
-        errorCode: null,
-      },
-      pairingState: "NOT_INSTALLED",
+      state: "NOT_INSTALLED",
+      lastScanEpochSeconds: null,
+      lastReportEpochSeconds: null,
+      reportedEvents: 0,
+      errorCode: null,
+      version: null,
     };
     invokeMock.mockResolvedValue(status);
 
     await expect(api.usageStatus()).resolves.toEqual(status);
-    await expect(api.scanUsage()).resolves.toEqual(status);
-    await expect(api.pairMeter()).resolves.toEqual(status);
-    expect(invokeMock).toHaveBeenCalledWith("usage_status");
-    expect(invokeMock).toHaveBeenCalledWith("usage_scan");
-    expect(invokeMock).toHaveBeenCalledWith("usage_pair");
-  });
-
-  it("accepts bounded scanner issue counts and rejects unsafe diagnostic keys", async () => {
-    const status = {
-      fallback: {
-        state: "UP_TO_DATE",
-        lastScannedAt: "2026-10-07T00:00:00Z",
-        lastReportedAt: null,
-        lastReportedEvents: 0,
-        issues: ["OVERSIZED_JSONL_RECORD"],
-        issueCounts: { OVERSIZED_JSONL_RECORD: 500 },
-      },
-      service: {
-        state: "NOT_INSTALLED",
-        lastScanEpochSeconds: null,
-        lastReportEpochSeconds: null,
-        reportedEvents: 0,
-        errorCode: null,
-      },
-      pairingState: "NOT_INSTALLED",
-    };
-    invokeMock.mockResolvedValue(status);
-
-    await expect(api.usageStatus()).resolves.toMatchObject({
-      fallback: { issueCounts: { OVERSIZED_JSONL_RECORD: 500 } },
-    });
-
-    invokeMock.mockResolvedValue({
-      ...status,
-      fallback: { ...status.fallback, issueCounts: { refresh_token: 1 } },
-    });
-    await expect(api.usageStatus()).rejects.toThrow();
+    expect(invokeMock).toHaveBeenCalledWith("meter_status");
   });
 
   it("allows only the fixed safe message for a rejected control-plane request", () => {
@@ -657,36 +736,39 @@ describe("Tauri API boundary", () => {
     expect(api).not.toHaveProperty("codexSession");
   });
 
-  it("keeps system session credentials inside the bridge", async () => {
+  it("clears the native vault and sends logout credentials only in the HTTPS body", async () => {
     invokeMock.mockResolvedValue(undefined);
 
     await api.systemLogout();
 
-    expect(invokeMock).toHaveBeenCalledWith("system_logout");
-    expect(invokeMock.mock.calls.flat().join(" ")).not.toMatch(/bearer|token/i);
+    const request = harness.requestsFor("POST", "/api/v1/auth/logout").at(-1)!;
+    expect(request.url).not.toMatch(/token/i);
+    expect(request.headers).toMatchObject({
+      Authorization: "Bearer access-test-token",
+    });
+    expect(JSON.parse(String(request.data))).toEqual({
+      refreshToken: "refresh-test-token",
+    });
+    expect(invokeMock).toHaveBeenCalledWith("session_vault_clear");
+    expect(
+      invokeMock.mock.calls.some(([command]) => command === "system_logout"),
+    ).toBe(false);
   });
 
-  it("uses the system account login command without exposing tokens", async () => {
-    invokeMock.mockResolvedValue({
-      authenticated: true,
-      user: quotaOverview.user,
-      accessToken: "must-be-stripped",
-      refreshToken: "must-be-stripped",
-    });
-
+  it("sends account credentials in the login body and keeps tokens out of the URL", async () => {
     await expect(
       api.systemLogin("alice@example.com", "password"),
     ).resolves.toEqual({
       authenticated: true,
-      user: quotaOverview.user,
+      user: expect.objectContaining({ email: "alice@example.com" }),
     });
-    expect(invokeMock).toHaveBeenCalledWith("system_login", {
+    const request = harness.requestsFor("POST", "/api/v1/auth/login").at(-1)!;
+    expect(JSON.parse(String(request.data))).toEqual({
       email: "alice@example.com",
       password: "password",
     });
-    expect(invokeMock.mock.calls.flat().join(" ")).not.toMatch(
-      /accessToken|refreshToken|bearer/i,
-    );
+    expect(request.url).not.toMatch(/password|token/i);
+    expect(request.headers).not.toHaveProperty("Authorization");
   });
 
   it("keeps official account windows separate from personal token quota", async () => {
@@ -712,47 +794,74 @@ describe("Tauri API boundary", () => {
   });
 
   it("does not render arbitrary URL or token-like transport errors", () => {
+    const safeNetworkMessage =
+      "无法连接中央服务器，请检查地址、网络及服务器是否允许桌面访问。";
     expect(
       getApiErrorMessage(
         new Error("request failed at https://control.example/token=secret"),
       ),
-    ).toBe("暂时无法连接本地服务，请确认应用仍在运行。");
+    ).toBe(safeNetworkMessage);
     expect(
       getApiErrorMessage(
         "request failed at https://control.example/token=secret",
       ),
-    ).toBe("暂时无法连接本地服务，请确认应用仍在运行。");
+    ).toBe(safeNetworkMessage);
   });
 
   it("shows only allow-listed Tauri string errors", () => {
-    const sessionStorageMessage =
-      "本机登录存储不可用，请关闭其他客户端并检查用户目录权限后重试。";
-    expect(getApiErrorMessage(sessionStorageMessage)).toBe(
-      sessionStorageMessage,
+    expect(getApiErrorMessage("无法安全保存登录状态")).toBe(
+      "本机加密登录存储不可用，请检查用户目录权限后重试。",
     );
     expect(getApiErrorMessage("本地服务暂时不可用，请稍后重试。")).toBe(
-      "本地服务暂时不可用，请稍后重试。",
+      "无法连接中央服务器，请检查地址、网络及服务器是否允许桌面访问。",
     );
   });
 
   it.each([
-    "服务器地址未保存。同步统计程序地址需要管理员授权，取消授权后地址不会保存。",
-    "服务器地址未保存。安装包中的统计程序不完整，请重新安装客户端后重试。",
-    "服务器地址未保存。统计程序地址同步失败，请检查 Windows 服务后重试。",
-    "服务器地址未保存。无法确认统计程序地址已同步，请稍后重试。",
-    "服务器地址未保存。当前平台暂不支持同步统计程序地址。",
-    "无法保存客户端设置，统计程序已恢复原服务器地址。请检查目录权限后重试。",
-    "无法保存客户端设置，统计程序地址也未能恢复。请重新保存原服务器地址，确认同步成功后再使用。",
-    "无法保存服务器设置，请检查目录权限后重试。",
-    "无法同步统计程序地址，请重启客户端后重试。",
-    "无法保存服务器地址，请重试。",
-  ])("preserves the fixed server synchronization error: %s", (message) => {
-    expect(getApiErrorMessage(message)).toBe(message);
-    expect(getApiErrorMessage(new Error(message))).toBe(message);
-    expect(getApiErrorMessage(`${message} token=secret`)).toBe(
-      "暂时无法连接本地服务，请确认应用仍在运行。",
-    );
-  });
+    {
+      message: "服务器地址未保存。已取消管理员授权，服务器地址未保存。",
+      expected: "已取消管理员授权，服务器地址未保存。",
+    },
+    {
+      message: "服务器地址未保存。统计程序地址更新失败，服务器地址未保存。",
+      expected: "统计程序地址更新失败，服务器地址未保存。",
+    },
+    {
+      message: "服务器地址未保存。统计程序地址更新超时，服务器地址未保存。",
+      expected: "统计程序地址更新超时，服务器地址未保存。",
+    },
+    {
+      message: "服务器地址未保存。无法读取 Windows 统计服务状态。",
+      expected: "无法读取 Windows 统计服务状态，请稍后重试。",
+    },
+    {
+      message: "服务器地址未保存。统计程序地址更新脚本未随安装包提供。",
+      expected: "安装包缺少统计程序地址更新脚本，请重新运行完整安装器。",
+    },
+    {
+      message: "无法保存服务器设置，请检查目录权限后重试。",
+      expected: "无法保存服务器设置，请检查目录权限后重试。",
+    },
+    {
+      message: "无法同步统计程序地址，请重启客户端后重试。",
+      expected: "无法同步统计程序地址，请重启客户端后重试。",
+    },
+    {
+      message: "无法保存服务器地址，请重试。",
+      expected: "无法保存服务器地址，请重试。",
+    },
+  ])(
+    "maps server configuration failures to fixed safe guidance: $message",
+    ({ message, expected }) => {
+      expect(getApiErrorMessage(message)).toBe(expected);
+      expect(getApiErrorMessage(new Error(message))).toBe(expected);
+      expect(getApiErrorMessage(`${message} token=secret`)).toBe(
+        message.startsWith("服务器地址未保存。")
+          ? expected
+          : "无法连接中央服务器，请检查地址、网络及服务器是否允许桌面访问。",
+      );
+    },
+  );
 
   it("shows the precise autostart ownership warning without exposing arbitrary task details", () => {
     const warning =
@@ -760,7 +869,7 @@ describe("Tauri API boundary", () => {
     expect(getApiErrorMessage(warning)).toBe(warning);
     expect(getApiErrorMessage(new Error(warning))).toBe(warning);
     expect(getApiErrorMessage(`${warning} token=secret`)).toBe(
-      "暂时无法连接本地服务，请确认应用仍在运行。",
+      "无法连接中央服务器，请检查地址、网络及服务器是否允许桌面访问。",
     );
   });
 
@@ -776,7 +885,7 @@ describe("Tauri API boundary", () => {
     expect(getApiErrorMessage(message)).toBe(message);
     expect(getApiErrorMessage(new Error(message))).toBe(message);
     expect(getApiErrorMessage(`${message} token=secret`)).toBe(
-      "暂时无法连接本地服务，请确认应用仍在运行。",
+      "无法连接中央服务器，请检查地址、网络及服务器是否允许桌面访问。",
     );
   });
 });

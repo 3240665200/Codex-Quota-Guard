@@ -4,33 +4,24 @@ import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { UsageActivityPanel } from "./usage-activity-panel";
-import type { UsageStatus } from "@/lib/api";
+import { api, type UsageStatus } from "@/lib/api";
+import { ApiHttpHarness } from "@/test/api-http-harness";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 const invokeMock = vi.mocked(invoke);
-const status = {
-  fallback: {
-    state: "REPORT_FAILED",
-    lastScannedAt: null,
-    lastReportedAt: null,
-    lastReportedEvents: 0,
-    issues: [],
-    errorCode: "CONTROL_PLANE_UNAVAILABLE",
-  },
-  service: {
-    state: "REPORTED",
-    lastScanEpochSeconds: 1791504000,
-    lastReportEpochSeconds: 1791504000,
-    reportedEvents: 2,
-    version: "0.1.1",
-    errorCode: null,
-  },
-  pairingState: "PAIRING_SENT",
-} as const;
+const http = new ApiHttpHarness();
+const status: UsageStatus = {
+  state: "REPORTED",
+  lastScanEpochSeconds: 1791504000,
+  lastReportEpochSeconds: 1791504000,
+  reportedEvents: 2,
+  version: "0.1.1",
+  errorCode: null,
+};
 function view(
   userId = "user-a",
   override?: UsageStatus | null,
-  onStart: () => void = vi.fn(),
+  _onStart: () => void = vi.fn(),
   selectedView?: "overview" | "ledger" | "diagnostics",
   statusError?: unknown,
 ) {
@@ -43,21 +34,8 @@ function view(
       <UsageActivityPanel
         userId={userId}
         view={selectedView}
-        status={
-          override === null
-            ? undefined
-            : (override ?? {
-                ...status,
-                fallback: { ...status.fallback, issues: [] },
-              })
-        }
+        status={override === null ? undefined : (override ?? status)}
         statusError={statusError}
-        scanning={false}
-        pairing={false}
-        starting={false}
-        onScan={vi.fn()}
-        onPair={vi.fn()}
-        onStart={onStart}
       />
     </QueryClientProvider>
   );
@@ -77,9 +55,39 @@ const ledger = {
   totalElements: 11,
   totalPages: 2,
 };
+const emptyAnalytics = {
+  from: "2026-10-03T00:00:00Z",
+  to: "2026-10-10T00:00:00Z",
+  currency: "USD",
+  timezone: "UTC",
+  granularity: "DAY",
+  summary: {
+    eventCount: 0,
+    totalTokens: 0,
+    inputTokens: null,
+    cachedInputTokens: null,
+    cacheWriteInputTokens: null,
+    outputTokens: null,
+    reasoningOutputTokens: null,
+    breakdownEventCount: 0,
+    costedEventCount: 0,
+    estimatedCostUsd: null,
+    cacheHitRatePercent: null,
+  },
+  trend: [],
+};
 describe("UsageActivityPanel", () => {
-  beforeEach(() => {
-    invokeMock.mockReset();
+  beforeEach(async () => {
+    await http.prepare(api);
+    http.respond(ledger);
+    http.route("GET", "/api/v1/client/usage/events", (config) => {
+      const page = Number(config.params?.page ?? 0);
+      const response = (http.centralResponse as typeof ledger | null) ?? ledger;
+      return { data: { ...response, page } };
+    });
+    http.route("GET", "/api/v1/client/usage/analytics", () => ({
+      data: emptyAnalytics,
+    }));
     invokeMock.mockImplementation(async (command) => {
       if (command === "meter_service_version")
         return {
@@ -87,29 +95,6 @@ describe("UsageActivityPanel", () => {
           bundledVersion: "0.1.1",
           needsUpgrade: false,
           status: "CURRENT",
-        };
-      if (command === "usage_events") return ledger;
-      if (command === "usage_analytics")
-        return {
-          from: "2026-10-03T00:00:00Z",
-          to: "2026-10-10T00:00:00Z",
-          currency: "USD",
-          timezone: "UTC",
-          granularity: "DAY",
-          trend: [],
-          summary: {
-            eventCount: 0,
-            totalTokens: 0,
-            inputTokens: null,
-            cachedInputTokens: null,
-            cacheWriteInputTokens: null,
-            outputTokens: null,
-            reasoningOutputTokens: null,
-            breakdownEventCount: 0,
-            costedEventCount: 0,
-            estimatedCostUsd: null,
-            cacheHitRatePercent: null,
-          },
         };
       if (command === "meter_runtime_logs")
         return {
@@ -132,32 +117,17 @@ describe("UsageActivityPanel", () => {
     });
   });
 
-  it("summarizes repeated scanner diagnostics instead of rendering an unbounded wall", async () => {
-    render(
-      view("user-a", {
-        ...status,
-        fallback: {
-          ...status.fallback,
-          issues: [
-            ...Array(500).fill("OVERSIZED_JSONL_RECORD"),
-            ...Array(12).fill("CUMULATIVE_COUNTER_RESET"),
-          ],
-        },
-      }),
-    );
-    await userEvent.click(screen.getByRole("tab", { name: "运行诊断" }));
-    expect(screen.getByText(/超大日志记录.*500/)).toBeVisible();
-    expect(screen.getByText(/累计计数重置.*12/)).toBeVisible();
-    expect(screen.getByRole("list", { name: "扫描诊断汇总" })).toHaveClass(
-      "cqg-scrollbar-hidden",
-      "overflow-y-auto",
-    );
-    expect(screen.getByRole("list", { name: "扫描诊断汇总" })).toHaveAttribute(
-      "tabindex",
-      "0",
-    );
+  it("keeps the desktop diagnostics view read-only", async () => {
+    render(view("user-a", undefined, vi.fn(), "diagnostics"));
+    expect(await screen.findByText("统计程序运行中")).toBeVisible();
     expect(
-      screen.queryByText(/OVERSIZED_JSONL_RECORD、OVERSIZED_JSONL_RECORD/),
+      screen.queryByRole("button", { name: "立即扫描" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "重新配对" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "安装统计程序" }),
     ).not.toBeInTheDocument();
   });
 
@@ -181,38 +151,28 @@ describe("UsageActivityPanel", () => {
     expect(
       screen.queryByText("统计程序日志 · 最近 50 条"),
     ).not.toBeInTheDocument();
-    expect(invokeMock.mock.calls.map(([command]) => command)).toEqual([
-      "usage_analytics",
-    ]);
+    expect(
+      http.requestsFor("GET", "/api/v1/client/usage/analytics"),
+    ).toHaveLength(1);
 
     await userEvent.click(screen.getByRole("button", { name: "刷新用量统计" }));
     await waitFor(() =>
       expect(
-        invokeMock.mock.calls.filter(
-          ([command]) => command === "usage_analytics",
-        ),
+        http.requestsFor("GET", "/api/v1/client/usage/analytics"),
       ).toHaveLength(2),
     );
-    expect(invokeMock.mock.calls.map(([command]) => command)).toEqual([
-      "usage_analytics",
-      "usage_analytics",
-    ]);
   });
 
   it("renders the external ledger without diagnostics and keeps model metadata", async () => {
-    invokeMock.mockImplementation(async (command) => {
-      if (command === "usage_events")
-        return {
-          ...ledger,
-          items: [
-            {
-              ...ledger.items[0],
-              model: "gpt-5-codex",
-              reasoningEffort: "high",
-            },
-          ],
-        };
-      throw new Error(`Unexpected command: ${command}`);
+    http.respond({
+      ...ledger,
+      items: [
+        {
+          ...ledger.items[0],
+          model: "gpt-5-codex",
+          reasoningEffort: "high",
+        },
+      ],
     });
 
     render(view("user-a", undefined, vi.fn(), "ledger"));
@@ -228,9 +188,9 @@ describe("UsageActivityPanel", () => {
     expect(
       screen.queryByRole("button", { name: "立即扫描" }),
     ).not.toBeInTheDocument();
-    expect(invokeMock.mock.calls.map(([command]) => command)).toEqual([
-      "usage_events",
-    ]);
+    expect(http.requestsFor("GET", "/api/v1/client/usage/events")).toHaveLength(
+      1,
+    );
     expect(
       within(table)
         .getAllByRole("columnheader")
@@ -241,7 +201,7 @@ describe("UsageActivityPanel", () => {
     expect(within(table).getByTitle("精确值：12,500 Token")).toBeVisible();
   });
 
-  it("concentrates service recovery, scan reports, and logs in the external diagnostics view", async () => {
+  it("keeps diagnostics read-only while showing local service details", async () => {
     invokeMock.mockImplementation(async (command) => {
       if (command === "meter_service_version")
         return {
@@ -271,17 +231,8 @@ describe("UsageActivityPanel", () => {
     });
     const diagnosticStatus = {
       ...status,
-      service: {
-        ...status.service,
-        state: "UNPAIRED",
-        errorCode: "METER_PAIRING_EXPIRED",
-      },
-      pairingState: "PAIRING_FAILED",
-      fallback: {
-        ...status.fallback,
-        state: "UP_TO_DATE",
-        issues: ["OVERSIZED_JSONL_RECORD"],
-      },
+      state: "UNPAIRED",
+      errorCode: "METER_PAIRING_EXPIRED",
     } as UsageStatus;
 
     render(
@@ -298,10 +249,16 @@ describe("UsageActivityPanel", () => {
     expect(screen.getByText(/当前显示的是上次读取结果/)).toBeVisible();
     expect(await screen.findByText("统计程序需要更新")).toBeVisible();
     expect(await screen.findByText("统计程序启动")).toBeVisible();
-    expect(screen.getByText(/超大日志记录/)).toBeVisible();
-    expect(screen.getByRole("button", { name: "更新统计程序" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "重新配对" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "立即扫描" })).toBeVisible();
+    expect(screen.getByText(/请重新运行客户端安装器/)).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "更新统计程序" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "重新配对" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "立即扫描" }),
+    ).not.toBeInTheDocument();
     const toolbar = screen.getByRole("button", { name: "刷新运行诊断" })
       .parentElement!.parentElement!;
     expect(toolbar.previousElementSibling?.tagName).toBe("DL");
@@ -348,7 +305,9 @@ describe("UsageActivityPanel", () => {
     expect(screen.queryByText("正在检查统计程序…")).not.toBeInTheDocument();
     expect(screen.queryByText("正在读取…")).not.toBeInTheDocument();
     expect(await screen.findByText(/无法确认当前版本/)).toBeVisible();
-    expect(screen.getByRole("button", { name: "检查并修复" })).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "检查并修复" }),
+    ).not.toBeInTheDocument();
   });
 
   it("shows CC Switch guard actions in the runtime log", async () => {
@@ -399,8 +358,10 @@ describe("UsageActivityPanel", () => {
     expect(warning).toHaveTextContent("运行版本 0.1.1");
     expect(warning).toHaveTextContent("已安装版本 0.1.0");
     expect(warning).toHaveTextContent("安装包版本 0.1.1");
-    await userEvent.click(screen.getByRole("button", { name: "更新统计程序" }));
-    expect(onStart).toHaveBeenCalledOnce();
+    expect(
+      screen.queryByRole("button", { name: "更新统计程序" }),
+    ).not.toBeInTheDocument();
+    expect(onStart).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole("tab", { name: "运行诊断" }));
     expect(screen.getByText("0.1.0")).toBeVisible();
     expect(screen.getAllByText("0.1.1")).toHaveLength(2);
@@ -420,8 +381,10 @@ describe("UsageActivityPanel", () => {
     });
     render(view("user-a", undefined, onStart));
     expect(await screen.findByText("统计程序运行版本待确认")).toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: "检查并修复" }));
-    expect(onStart).toHaveBeenCalledOnce();
+    expect(
+      screen.queryByRole("button", { name: "检查并修复" }),
+    ).not.toBeInTheDocument();
+    expect(onStart).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole("tab", { name: "运行诊断" }));
     expect(await screen.findByText(/无法确认当前版本/)).toBeVisible();
     expect(screen.queryByText("统计程序需要更新")).not.toBeInTheDocument();
@@ -450,8 +413,7 @@ describe("UsageActivityPanel", () => {
     render(
       view("user-a", {
         ...status,
-        fallback: { ...status.fallback, issues: [] },
-        service: { ...status.service, version: null },
+        version: null,
       }),
     );
     expect(await screen.findByText("统计程序运行版本待确认")).toBeVisible();
@@ -464,8 +426,7 @@ describe("UsageActivityPanel", () => {
     render(
       view("user-a", {
         ...status,
-        fallback: { ...status.fallback, issues: [] },
-        service: { ...status.service, version: "0.1.0" },
+        version: "0.1.0",
       }),
     );
     expect(await screen.findByText("统计程序运行版本待确认")).toBeVisible();
@@ -479,11 +440,7 @@ describe("UsageActivityPanel", () => {
     render(
       view("user-a", {
         ...status,
-        fallback: {
-          ...status.fallback,
-          issues: [],
-          errorCode: "CONTROL_PLANE_REQUEST_REJECTED",
-        },
+        errorCode: "CONTROL_PLANE_REQUEST_REJECTED",
       }),
     );
     await userEvent.click(screen.getByRole("tab", { name: "运行诊断" }));
@@ -492,19 +449,17 @@ describe("UsageActivityPanel", () => {
     expect(screen.queryByText(/后台不可达/)).not.toBeInTheDocument();
   });
 
-  it("offers pairing recovery for an expired Rust device authorization", async () => {
+  it("explains an expired Rust device authorization without starting pairing", async () => {
     render(
       view("user-a", {
         ...status,
-        fallback: { ...status.fallback, issues: [] },
-        service: {
-          ...status.service,
-          state: "ERROR",
-          errorCode: "METER_PAIRING_EXPIRED",
-        },
+        state: "ERROR",
+        errorCode: "METER_PAIRING_EXPIRED",
       }),
     );
-    expect(screen.getByRole("button", { name: "重新配对" })).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "重新配对" }),
+    ).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("tab", { name: "运行诊断" }));
     expect(screen.getByText(/设备授权已失效/)).toBeVisible();
   });
@@ -548,12 +503,8 @@ describe("UsageActivityPanel", () => {
           "user-a",
           {
             ...status,
-            fallback: { ...status.fallback, issues: [], errorCode: null },
-            service: {
-              ...status.service,
-              state: "ERROR",
-              errorCode: code as string,
-            },
+            state: "ERROR",
+            errorCode: code as string,
           },
           vi.fn(),
           "diagnostics",
@@ -578,35 +529,33 @@ describe("UsageActivityPanel", () => {
     expect(screen.getByText("官方用量记录")).toBeVisible();
     expect(screen.getByText("已接收")).toBeVisible();
     expect(screen.queryByText("暂无上报记录")).not.toBeInTheDocument();
-    expect(screen.getByText("回退上报异常")).toBeVisible();
-    expect(invokeMock).toHaveBeenCalledWith("usage_events", {
+    expect(screen.getByText(/统计程序运行中/)).toBeVisible();
+    expect(
+      http.requestsFor("GET", "/api/v1/client/usage/events").at(-1)?.params,
+    ).toEqual({
       page: 0,
       size: 10,
+      includeMetadata: true,
+      includeTokenBreakdown: true,
     });
   });
   it("keeps model metadata visible in the seven-column compact ledger", async () => {
     const longModel = `m${"x".repeat(95)}`;
-    invokeMock.mockImplementation(async (command) => {
-      if (command === "usage_events")
-        return {
-          ...ledger,
-          items: [
-            {
-              ...ledger.items[0],
-              model: longModel,
-              reasoningEffort: "high",
-            },
-            {
-              ...ledger.items[0],
-              id: "b".repeat(64),
-              model: null,
-              reasoningEffort: null,
-            },
-          ],
-        };
-      if (command === "meter_runtime_logs")
-        return { state: "READY", skippedLines: 0, entries: [] };
-      throw new Error("Unexpected command");
+    http.respond({
+      ...ledger,
+      items: [
+        {
+          ...ledger.items[0],
+          model: longModel,
+          reasoningEffort: "high",
+        },
+        {
+          ...ledger.items[0],
+          id: "b".repeat(64),
+          model: null,
+          reasoningEffort: null,
+        },
+      ],
     });
 
     render(view());
@@ -653,7 +602,7 @@ describe("UsageActivityPanel", () => {
     }
   });
   it("shows compact token summaries and opens details for the selected row", async () => {
-    invokeMock.mockResolvedValue({
+    http.respond({
       ...ledger,
       items: [
         {
@@ -765,7 +714,7 @@ describe("UsageActivityPanel", () => {
     );
   });
   it("does not present missing historical breakdowns as zero", async () => {
-    invokeMock.mockResolvedValue({
+    http.respond({
       ...ledger,
       items: [
         {
@@ -824,23 +773,29 @@ describe("UsageActivityPanel", () => {
     await screen.findByRole("table", { name: "个人消耗流水" });
     await userEvent.click(screen.getByRole("button", { name: "下一页" }));
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("usage_events", {
+      expect(
+        http.requestsFor("GET", "/api/v1/client/usage/events").at(-1)?.params,
+      ).toEqual({
         page: 1,
         size: 10,
+        includeMetadata: true,
+        includeTokenBreakdown: true,
       }),
     );
   });
   it("distinguishes unreachable ledger from zero usage", async () => {
-    invokeMock.mockRejectedValue(
-      "中央后台暂不可用，请确认后台已启动且服务器地址正确。",
-    );
+    http.route("GET", "/api/v1/client/usage/events", () => {
+      throw new Error("transport failure");
+    });
     render(view());
     await userEvent.click(screen.getByRole("tab", { name: "消耗流水" }));
     expect(await screen.findByText("消耗流水读取失败")).toBeVisible();
     expect(screen.queryByText("暂无消耗记录")).not.toBeInTheDocument();
   });
-  it("shows safe batch logs and a useful fallback error explanation", async () => {
-    render(view());
+  it("shows safe batch logs and the native service error explanation", async () => {
+    render(
+      view("user-a", { ...status, errorCode: "CONTROL_PLANE_UNAVAILABLE" }),
+    );
     await userEvent.click(screen.getByRole("tab", { name: "运行诊断" }));
     expect(await screen.findByText("用量上报成功")).toBeVisible();
     expect(screen.getByText(/后台不可达/)).toBeVisible();

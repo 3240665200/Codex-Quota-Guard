@@ -1,13 +1,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod assistance_stream;
 mod autostart;
-mod backend;
 mod codex_connection;
+mod codex_rate_limits;
 #[path = "../../../conflict_evidence.rs"]
 mod conflict_evidence;
 mod conflict_notice;
 mod meter_service;
+mod meter_status;
 mod package_check;
 mod package_smoke;
 mod server_config;
@@ -17,19 +17,12 @@ mod tray;
 mod window_layout;
 mod window_state;
 
-use backend::{ApiRoute, BackendState, BindingAction};
-use reqwest::Method;
-use serde_json::Value;
-use server_config::ServerConfig;
-use tauri::{Manager, RunEvent, State};
+use tauri::{Manager, RunEvent};
 
 type CommandResult<T> = Result<T, String>;
 
 #[tauri::command]
-async fn autostart_status(
-    state: State<'_, BackendState>,
-) -> CommandResult<autostart::AutostartStatus> {
-    state.require_binding().await.map_err(command_error)?;
+async fn autostart_status() -> CommandResult<autostart::AutostartStatus> {
     tauri::async_runtime::spawn_blocking(autostart::status)
         .await
         .map_err(|_| "无法读取开机自启动状态，请稍后重试。".to_owned())?
@@ -37,11 +30,7 @@ async fn autostart_status(
 }
 
 #[tauri::command]
-async fn autostart_set(
-    enabled: bool,
-    state: State<'_, BackendState>,
-) -> CommandResult<autostart::AutostartStatus> {
-    state.require_binding().await.map_err(command_error)?;
+async fn autostart_set(enabled: bool) -> CommandResult<autostart::AutostartStatus> {
     tauri::async_runtime::spawn_blocking(move || autostart::set(enabled))
         .await
         .map_err(|_| "无法设置开机自启动，请稍后重试。".to_owned())?
@@ -54,7 +43,7 @@ async fn startup_gate_check(app: tauri::AppHandle) -> startup_gate::GateResult {
         app.state::<startup_gate::StartupGate>().check(&app)
     })
     .await
-    .unwrap_or(startup_gate::GateResult::failed())
+    .unwrap_or_else(|_| startup_gate::GateResult::failed())
 }
 
 #[tauri::command]
@@ -63,49 +52,109 @@ async fn startup_guard_status(app: tauri::AppHandle) -> startup_gate::GateResult
         app.state::<startup_gate::StartupGate>().status(&app)
     })
     .await
-    .unwrap_or(startup_gate::GateResult::failed())
+    .unwrap_or_else(|_| startup_gate::GateResult::failed())
 }
 
 #[tauri::command]
-fn meter_setup_error(app: tauri::AppHandle) -> Option<String> {
-    meter_service::setup_error(&app)
+fn device_identity(app: tauri::AppHandle) -> meter_status::DeviceIdentity {
+    meter_status::device_identity(&app)
+}
+
+#[tauri::command]
+fn meter_status(app: tauri::AppHandle) -> meter_status::MeterStatus {
+    meter_status::meter_status(&app)
+}
+
+#[tauri::command]
+fn meter_runtime_logs(app: tauri::AppHandle) -> meter_status::MeterRuntimeLogs {
+    meter_status::meter_runtime_logs(&app)
+}
+
+#[tauri::command]
+fn meter_pairing_write(
+    app: tauri::AppHandle,
+    pairing: meter_status::MeterPairing,
+) -> CommandResult<()> {
+    meter_status::meter_pairing_write(&app, pairing)
 }
 
 #[tauri::command]
 async fn meter_service_version(
     app: tauri::AppHandle,
-    state: State<'_, BackendState>,
-) -> Result<meter_service::MeterVersionStatus, String> {
-    state.require_binding().await.map_err(command_error)?;
+) -> CommandResult<meter_service::MeterVersionStatus> {
     tauri::async_runtime::spawn_blocking(move || meter_service::version_status(&app))
         .await
-        .map_err(|_| "统计程序版本查询失败".to_string())
+        .map_err(|_| "统计程序版本查询失败。".to_owned())
 }
 
 #[tauri::command]
-async fn meter_service_ensure(app: tauri::AppHandle) -> meter_service::MeterStartOutcome {
-    tauri::async_runtime::spawn_blocking(move || tray::ensure_meter_serialized(&app))
-        .await
-        .unwrap_or(meter_service::MeterStartOutcome::Failed)
+fn server_config_get(app: tauri::AppHandle) -> server_config::ServerConfig {
+    server_config::load(&app)
 }
 
 #[tauri::command]
-async fn meter_service_retry(
+async fn server_config_save(
     app: tauri::AppHandle,
-    state: State<'_, BackendState>,
-) -> CommandResult<meter_service::MeterStartOutcome> {
-    state.require_binding().await.map_err(command_error)?;
-    Ok(
-        tauri::async_runtime::spawn_blocking(move || tray::ensure_meter_serialized(&app))
-            .await
-            .unwrap_or(meter_service::MeterStartOutcome::Failed),
-    )
+    config: server_config::ServerConfig,
+) -> CommandResult<server_config::ServerConfigSaveResult> {
+    tauri::async_runtime::spawn_blocking(move || server_config::save(&app, config))
+        .await
+        .map_err(|_| "无法保存服务器地址，请重试。".to_owned())?
 }
 
-fn command_error(error: backend::BackendError) -> String {
-    // BackendError has exclusively user-safe messages. Do not pass through
-    // errors from the child process, HTTP library, filesystem, or Java.
-    error.to_string()
+#[tauri::command]
+fn session_vault_load(
+    app: tauri::AppHandle,
+) -> CommandResult<Option<session_vault::SessionDto>> {
+    session_vault::load(&app)
+}
+
+#[tauri::command]
+fn session_vault_save(
+    app: tauri::AppHandle,
+    session: session_vault::SessionDto,
+) -> CommandResult<()> {
+    session_vault::save(&app, session)
+}
+
+#[tauri::command]
+fn session_vault_clear(app: tauri::AppHandle) -> CommandResult<()> {
+    session_vault::clear(&app)
+}
+
+#[tauri::command]
+async fn codex_rate_limits(
+    app: tauri::AppHandle,
+) -> CommandResult<codex_rate_limits::OfficialCodexRateLimits> {
+    let before = tauri::async_runtime::spawn_blocking(codex_connection::conflict_snapshot)
+        .await
+        .ok()
+        .flatten();
+    let result = tauri::async_runtime::spawn_blocking(codex_rate_limits::read)
+        .await
+        .map_err(|_| "无法读取 Codex 官方额度信息。".to_owned())?;
+    if matches!(result, Err(codex_rate_limits::CodexRateLimitError::SessionConflict)) {
+        if let Some(before) = before {
+            let conflict_app = app.clone();
+            let _ = tauri::async_runtime::spawn_blocking(move || {
+                let gate = conflict_app.state::<startup_gate::StartupGate>();
+                let ready = gate.ready_flag();
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+                while !ready.load(std::sync::atomic::Ordering::Acquire)
+                    && std::time::Instant::now() < deadline
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                if ready.load(std::sync::atomic::Ordering::Acquire) {
+                    gate.record_official_session_conflict(&conflict_app, &before)
+                } else {
+                    false
+                }
+            })
+            .await;
+        }
+    }
+    result.map_err(|_| "无法读取 Codex 官方额度信息。".to_owned())
 }
 
 fn record_window_size(
@@ -149,277 +198,10 @@ fn record_current_window_size(
     record_window_size(app_handle, window, size, Some(scale_factor), force);
 }
 
-#[tauri::command]
-fn server_config_get(app: tauri::AppHandle) -> ServerConfig {
-    server_config::load(&app)
-}
-
-#[tauri::command]
-async fn server_config_save(
-    app: tauri::AppHandle,
-    config: ServerConfig,
-) -> CommandResult<ServerConfig> {
-    tauri::async_runtime::spawn_blocking(move || {
-        tray::with_meter_operation(|| server_config::save(&app, config))
-            .ok_or_else(|| "无法同步统计程序地址，请重启客户端后重试。".to_owned())?
-    })
-    .await
-    .map_err(|_| "无法保存服务器地址，请重试。".to_owned())?
-}
-
-#[tauri::command]
-async fn status(state: State<'_, BackendState>) -> CommandResult<Value> {
-    state
-        .json(Method::GET, ApiRoute::Status)
-        .await
-        .map_err(command_error)
-}
-
-#[tauri::command]
-async fn system_access(state: State<'_, BackendState>) -> CommandResult<Value> {
-    state
-        .json(Method::GET, ApiRoute::SystemAccess)
-        .await
-        .map_err(command_error)
-}
-
-#[tauri::command]
-async fn quota_overview(state: State<'_, BackendState>) -> CommandResult<Value> {
-    state
-        .json(Method::GET, ApiRoute::QuotaOverview)
-        .await
-        .map_err(command_error)
-}
-
-#[tauri::command]
-async fn usage_status(state: State<'_, BackendState>) -> CommandResult<Value> {
-    state
-        .json(Method::GET, ApiRoute::UsageStatus)
-        .await
-        .map_err(command_error)
-}
-
-#[tauri::command]
-async fn usage_events(
-    page: u32,
-    size: u32,
-    state: State<'_, BackendState>,
-) -> CommandResult<Value> {
-    state.usage_events(page, size).await.map_err(command_error)
-}
-
-#[tauri::command]
-async fn usage_analytics(days: u32, state: State<'_, BackendState>) -> CommandResult<Value> {
-    state.usage_analytics(days).await.map_err(command_error)
-}
-
-#[tauri::command]
-async fn meter_runtime_logs(state: State<'_, BackendState>) -> CommandResult<Value> {
-    state
-        .json(Method::GET, ApiRoute::MeterRuntimeLogs)
-        .await
-        .map_err(command_error)
-}
-
-#[tauri::command]
-async fn usage_scan(state: State<'_, BackendState>) -> CommandResult<Value> {
-    state
-        .json(Method::POST, ApiRoute::UsageScan)
-        .await
-        .map_err(command_error)
-}
-
-#[tauri::command]
-async fn usage_pair(state: State<'_, BackendState>) -> CommandResult<Value> {
-    state
-        .json(Method::POST, ApiRoute::UsagePair)
-        .await
-        .map_err(command_error)
-}
-
-#[tauri::command]
-async fn codex_rate_limits(
-    app: tauri::AppHandle,
-    state: State<'_, BackendState>,
-) -> CommandResult<Value> {
-    let before = tauri::async_runtime::spawn_blocking(codex_connection::conflict_snapshot)
-        .await
-        .ok()
-        .flatten();
-    let result = state.json(Method::GET, ApiRoute::CodexRateLimits).await;
-    if matches!(result, Err(backend::BackendError::OfficialSessionConflict)) {
-        if let Some(before) = before {
-            let app = app.clone();
-            let _ = tauri::async_runtime::spawn_blocking(move || {
-                app.state::<startup_gate::StartupGate>()
-                    .record_official_session_conflict(&app, &before)
-            })
-            .await;
-        }
-    }
-    result.map_err(command_error)
-}
-
-#[tauri::command]
-async fn system_login(
-    email: String,
-    password: String,
-    state: State<'_, BackendState>,
-) -> CommandResult<Value> {
-    state
-        .system_login(email, password)
-        .await
-        .map_err(command_error)
-}
-
-#[tauri::command]
-async fn login_assistance_info(state: State<'_, BackendState>) -> CommandResult<Value> {
-    state
-        .json(Method::GET, ApiRoute::LoginAssistanceInfo)
-        .await
-        .map_err(command_error)
-}
-
-#[tauri::command]
-async fn login_assistance_current(state: State<'_, BackendState>) -> CommandResult<Value> {
-    state
-        .json(Method::GET, ApiRoute::LoginAssistanceCurrent)
-        .await
-        .map_err(command_error)
-}
-
-#[tauri::command]
-fn login_assistance_events_start(
-    subscription_id: String,
-    channel: tauri::ipc::Channel<assistance_stream::AssistanceSignal>,
-    state: State<'_, BackendState>,
-) -> CommandResult<()> {
-    state
-        .assistance_events_start(&subscription_id, channel)
-        .map_err(command_error)
-}
-
-#[tauri::command]
-fn login_assistance_events_stop(
-    subscription_id: String,
-    state: State<'_, BackendState>,
-) -> CommandResult<()> {
-    state
-        .assistance_events_stop(&subscription_id)
-        .map_err(command_error)
-}
-
-#[tauri::command]
-async fn login_assistance_start(state: State<'_, BackendState>) -> CommandResult<Value> {
-    state
-        .json(Method::POST, ApiRoute::LoginAssistanceStart)
-        .await
-        .map_err(command_error)
-}
-
-#[tauri::command]
-async fn login_assistance_status(
-    listener_id: String,
-    state: State<'_, BackendState>,
-) -> CommandResult<Value> {
-    let route = backend::login_assistance_route(&listener_id).map_err(command_error)?;
-    state.json(Method::GET, route).await.map_err(command_error)
-}
-
-#[tauri::command]
-async fn login_assistance_cancel(
-    listener_id: String,
-    state: State<'_, BackendState>,
-) -> CommandResult<Value> {
-    let route = backend::login_assistance_route(&listener_id).map_err(command_error)?;
-    state
-        .json(Method::DELETE, route)
-        .await
-        .map_err(command_error)
-}
-
-#[tauri::command]
-async fn system_current(state: State<'_, BackendState>) -> CommandResult<Value> {
-    state
-        .json(Method::GET, ApiRoute::SystemCurrent)
-        .await
-        .map_err(command_error)
-}
-
-#[tauri::command]
-async fn session_binding_current(state: State<'_, BackendState>) -> CommandResult<Value> {
-    state
-        .json(Method::GET, ApiRoute::SessionBindingCurrent)
-        .await
-        .map_err(command_error)
-}
-#[tauri::command]
-async fn session_binding_start(state: State<'_, BackendState>) -> CommandResult<Value> {
-    state
-        .json(Method::POST, ApiRoute::SessionBindingStart)
-        .await
-        .map_err(command_error)
-}
-async fn binding_action(
-    state: State<'_, BackendState>,
-    id: String,
-    action: BindingAction,
-) -> CommandResult<Value> {
-    let route = backend::session_binding_route(&id, action).map_err(command_error)?;
-    state
-        .json(
-            if action == BindingAction::Status {
-                Method::GET
-            } else {
-                Method::POST
-            },
-            route,
-        )
-        .await
-        .map_err(command_error)
-}
-#[tauri::command]
-async fn session_binding_status(
-    attempt_id: String,
-    state: State<'_, BackendState>,
-) -> CommandResult<Value> {
-    binding_action(state, attempt_id, BindingAction::Status).await
-}
-#[tauri::command]
-async fn session_binding_prepare(
-    attempt_id: String,
-    state: State<'_, BackendState>,
-) -> CommandResult<Value> {
-    binding_action(state, attempt_id, BindingAction::Prepare).await
-}
-#[tauri::command]
-async fn session_binding_detect(
-    attempt_id: String,
-    state: State<'_, BackendState>,
-) -> CommandResult<Value> {
-    binding_action(state, attempt_id, BindingAction::Detect).await
-}
-#[tauri::command]
-async fn session_binding_confirm(
-    attempt_id: String,
-    state: State<'_, BackendState>,
-) -> CommandResult<Value> {
-    binding_action(state, attempt_id, BindingAction::Confirm).await
-}
-#[tauri::command]
-async fn session_binding_cancel(
-    attempt_id: String,
-    state: State<'_, BackendState>,
-) -> CommandResult<Value> {
-    binding_action(state, attempt_id, BindingAction::Cancel).await
-}
-
-#[tauri::command]
-async fn system_logout(state: State<'_, BackendState>) -> CommandResult<()> {
-    state
-        .empty(Method::POST, ApiRoute::SystemLogout)
-        .await
-        .map_err(command_error)
+pub(crate) fn unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
 }
 
 fn main() {
@@ -439,6 +221,15 @@ fn main() {
     if let Some(exit_code) = autostart::handle_launch_mode() {
         std::process::exit(exit_code);
     }
+
+    let _session_lock = match session_vault::acquire_process_lock() {
+        Ok(lock) => lock,
+        Err(()) => {
+            session_vault::show_already_running_notice();
+            return;
+        }
+    };
+
     let builder = tauri::Builder::default()
         .setup(|app| {
             app.manage(conflict_notice::ConflictNotices::default());
@@ -461,6 +252,7 @@ fn main() {
                         .set_initial_size(initial_size);
                 }
             }
+
             app.manage(tray::TrayState::default());
             app.manage(startup_gate::StartupGate::default());
             let guard_app = app.handle().clone();
@@ -472,17 +264,15 @@ fn main() {
                 if !gate.should_monitor() {
                     break;
                 }
-                // Continue consuming termination notices even if a guard error
-                // stopped Java or the renderer is hidden in the tray.
                 let _ = gate.status(&guard_app);
             });
+
             let tray_available = tray::install(app).is_ok();
             app.state::<tray::TrayState>()
                 .set_available(tray_available);
             if !tray_available {
                 eprintln!("Unable to initialize the desktop tray; closing the main window will exit the client.");
             }
-
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -490,39 +280,17 @@ fn main() {
             autostart_set,
             startup_gate_check,
             startup_guard_status,
-            meter_service_ensure,
-            meter_service_retry,
-            meter_setup_error,
-            meter_service_version,
-            status,
-            quota_overview,
-            system_access,
-            usage_status,
-            usage_events,
-            usage_analytics,
+            device_identity,
+            meter_status,
             meter_runtime_logs,
-            usage_scan,
-            usage_pair,
-            codex_rate_limits,
-            system_login,
-            system_current,
-            system_logout,
-            login_assistance_info,
-            login_assistance_current,
-            login_assistance_events_start,
-            login_assistance_events_stop,
-            login_assistance_start,
-            login_assistance_status,
-            login_assistance_cancel,
-            session_binding_current,
-            session_binding_start,
-            session_binding_status,
-            session_binding_prepare,
-            session_binding_detect,
-            session_binding_confirm,
-            session_binding_cancel,
+            meter_pairing_write,
+            meter_service_version,
             server_config_get,
-            server_config_save
+            server_config_save,
+            session_vault_load,
+            session_vault_save,
+            session_vault_clear,
+            codex_rate_limits
         ]);
 
     let app = match builder.build(context) {
@@ -569,9 +337,7 @@ fn main() {
                 _ => {}
             }
         }
-        RunEvent::ExitRequested { .. } => {
-            // Withdraw enforcement before notification shutdown or preference
-            // flushes, so a slow disk cannot extend silent enforcement.
+        RunEvent::ExitRequested { .. } | RunEvent::Exit => {
             if let Some(gate) = app_handle.try_state::<startup_gate::StartupGate>() {
                 gate.stop();
             }
@@ -584,28 +350,6 @@ fn main() {
             if let Some(state) = app_handle.try_state::<window_state::WindowState>() {
                 state.flush();
             }
-            let mut ops = tray::TauriExitEventOps {
-                app: app_handle.clone(),
-            };
-            tray::handle_exit_event(tray::AppExitEvent::ExitRequested, &mut ops);
-        }
-        RunEvent::Exit => {
-            if let Some(gate) = app_handle.try_state::<startup_gate::StartupGate>() {
-                gate.stop();
-            }
-            if let Some(notices) = app_handle.try_state::<conflict_notice::ConflictNotices>() {
-                notices.stop();
-            }
-            if let Some(window) = app_handle.get_webview_window("main") {
-                record_current_window_size(app_handle, &window, true);
-            }
-            if let Some(state) = app_handle.try_state::<window_state::WindowState>() {
-                state.flush();
-            }
-            let mut ops = tray::TauriExitEventOps {
-                app: app_handle.clone(),
-            };
-            tray::handle_exit_event(tray::AppExitEvent::Exit, &mut ops);
         }
         _ => {}
     });

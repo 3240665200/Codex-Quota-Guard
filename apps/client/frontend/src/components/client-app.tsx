@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { LoaderCircle } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -13,8 +13,6 @@ import {
 } from "@/lib/api";
 import { Dashboard } from "@/components/dashboard";
 import { SystemLoginPage } from "@/components/system-login";
-import { ThemeSwitcher } from "@/components/theme-switcher";
-import { subscribeToTrayFeedback, trayFeedbackNotice } from "@/lib/tray-events";
 
 const signedOutSession: SystemSession = {
   authenticated: false,
@@ -32,161 +30,35 @@ function SessionLoading() {
   );
 }
 
-function SessionError({
-  error,
-  onRetry,
-}: {
-  error: unknown;
-  onRetry: () => void;
-}) {
-  return (
-    <main className="flex min-h-screen items-center justify-center bg-muted/30 px-4">
-      <Alert variant="destructive" className="max-w-lg">
-        <AlertTitle>无法连接系统服务</AlertTitle>
-        <AlertDescription className="flex flex-wrap items-center gap-3">
-          <span>{getApiErrorMessage(error)}</span>
-          <Button variant="outline" size="sm" onClick={onRetry}>
-            重试
-          </Button>
-        </AlertDescription>
-      </Alert>
-    </main>
-  );
-}
-
 const guardExplanation =
   "Quota Guard 默认与 CC Switch 共存。仅在确认 CC Switch 接管导致官方会话信息不可读时，统计程序才会停止当前 Windows 用户会话中核实过的 CC Switch，并提示处理结果；未保存更改可能丢失。确认停止后会恢复可识别的连接配置。普通网络、登录或服务错误不会触发停止。恢复后若当前聊天仍报错，请重启 Codex 或重新打开会话以重载连接。";
-
-function StartupGatePage({
-  result,
-  retrying,
-  onRetry,
-}: {
-  result: StartupGateResult | null;
-  retrying: boolean;
-  onRetry: () => void;
-}) {
-  const [serverUrl, setServerUrl] = useState("");
-  const [savingServer, setSavingServer] = useState(false);
-  const [needsRestart, setNeedsRestart] = useState(false);
-  const [serverError, setServerError] = useState("");
-  useEffect(() => {
-    void api
-      .serverConfig()
-      .then((config) => setServerUrl(config.url))
-      .catch(() => {
-        setServerError("无法读取服务器地址，请检查客户端设置目录。");
-      });
-  }, []);
-  const saveServer = async () => {
-    if (savingServer) return;
-    setSavingServer(true);
-    setServerError("");
-    try {
-      const config = await api.saveServerConfig({ url: serverUrl.trim() });
-      setServerUrl(config.url);
-      setNeedsRestart(true);
-      setServerError(
-        "服务器与统计程序地址已同步，请从托盘退出并重新启动，然后登录。",
-      );
-    } catch (error) {
-      setServerError(getApiErrorMessage(error));
-    } finally {
-      setSavingServer(false);
-    }
-  };
-  const state = result?.state;
-  const waiting = state === "CHECKING" || retrying || result === null;
-  const detail =
-    state === "ADMIN_REQUIRED"
-      ? "请从系统托盘退出客户端，右键点击程序并选择“以管理员身份运行”，然后重试。"
-      : state === "METER_UNAVAILABLE"
-        ? "统计程序未安装、未启动或更新失败。请确认安装包完整，并以管理员身份重试。"
-        : state === "CODEX_RESTORE_FAILED"
-          ? `Codex 连接配置恢复失败。${result?.codexRestoreError ?? "无法安全恢复当前连接配置。"}处理后点击“重新检查”重试。`
-          : state === "BACKEND_UNAVAILABLE"
-            ? "本地 Java 服务未能启动，请检查安装包后重试。"
-            : state === "UNSUPPORTED"
-              ? "当前平台暂不支持 Windows 统计程序门禁。"
-              : state === "GUARD_ERROR"
-                ? "统计服务无法核实当前客户端的检查状态，请检查统计程序后重试。"
-                : "正在验证管理员权限与统计程序状态…";
-  return (
-    <main className="relative flex min-h-screen items-center justify-center bg-background px-6 py-12">
-      <ThemeSwitcher compact className="absolute right-6 top-5" />
-      <Alert
-        variant={waiting ? "default" : "destructive"}
-        className="max-w-xl bg-card p-6 shadow-sm"
-      >
-        <AlertTitle>
-          {waiting ? "正在检查启动条件" : "启动条件尚未满足"}
-        </AlertTitle>
-        <AlertDescription className="space-y-3">
-          <p>{detail}</p>
-          <p>{guardExplanation}</p>
-          <div className="space-y-2 border-t pt-3">
-            <label htmlFor="startup-server-url" className="font-medium">
-              中央服务器地址
-            </label>
-            <div className="flex flex-wrap gap-2">
-              <input
-                id="startup-server-url"
-                value={serverUrl}
-                disabled={savingServer || retrying}
-                onChange={(event) => setServerUrl(event.target.value)}
-                placeholder="https://your-server.example.com"
-                className="min-w-64 flex-1 rounded-md border bg-background px-3 py-2 text-sm text-foreground"
-              />
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={savingServer || retrying}
-                onClick={() => void saveServer()}
-              >
-                {savingServer ? "正在同步统计程序…" : "保存地址"}
-              </Button>
-            </div>
-            {serverError ? <p role="status">{serverError}</p> : null}
-          </div>
-          {!waiting ? (
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={savingServer || needsRestart}
-              onClick={onRetry}
-            >
-              重新检查
-            </Button>
-          ) : null}
-        </AlertDescription>
-      </Alert>
-    </main>
-  );
-}
 
 export function ClientApp() {
   const queryClient = useQueryClient();
   const [logoutError, setLogoutError] = useState<unknown>(null);
   const [localSignedOut, setLocalSignedOut] = useState(false);
   const [gate, setGate] = useState<StartupGateResult | null>(null);
-  const [gateRetrying, setGateRetrying] = useState(false);
   const [ccSwitchStopped, setCcSwitchStopped] = useState(false);
   const [codexConnectionRestored, setCodexConnectionRestored] = useState(false);
-  const gateAttempt = useRef(0);
-  const previouslyReady = useRef(false);
   const gateQuery = useQuery({
     queryKey: ["startup-gate"],
     queryFn: api.startupGateCheck,
     retry: false,
     staleTime: Infinity,
   });
-  const gateReady = gate?.state === "READY";
   const sessionQuery = useQuery({
     queryKey: ["system-session"],
     queryFn: api.systemSession,
     retry: false,
     refetchInterval: 30_000,
-    enabled: gateReady,
+    enabled: true,
+  });
+  const pairingErrorQuery = useQuery({
+    queryKey: ["meter-pairing-error", sessionQuery.data?.user?.id],
+    queryFn: api.meterPairingError,
+    retry: false,
+    refetchInterval: 10_000,
+    enabled: !!sessionQuery.data?.authenticated,
   });
 
   useEffect(() => {
@@ -197,18 +69,29 @@ export function ClientApp() {
   }, [gateQuery.data, gateQuery.isError]);
 
   useEffect(() => {
-    if (gate?.ccSwitchTerminated) setCcSwitchStopped(true);
-    if (gate?.codexConnectionRestored) setCodexConnectionRestored(true);
-    if (gate?.state === "READY") {
-      previouslyReady.current = true;
-    } else if (previouslyReady.current) {
-      queryClient.removeQueries({ queryKey: ["system-session"] });
-      setLocalSignedOut(false);
-    }
-  }, [gate, queryClient]);
+    const expireSession = () => {
+      setLocalSignedOut(true);
+      queryClient.removeQueries({
+        predicate: (query) =>
+          !["startup-gate", "system-session"].includes(
+            String(query.queryKey[0]),
+          ),
+      });
+      queryClient.setQueryData(["system-session"], signedOutSession);
+      void queryClient.invalidateQueries({ queryKey: ["system-session"] });
+    };
+    window.addEventListener("quota-guard:session-expired", expireSession);
+    return () =>
+      window.removeEventListener("quota-guard:session-expired", expireSession);
+  }, [queryClient]);
 
   useEffect(() => {
-    if (!gateReady) return;
+    if (gate?.ccSwitchTerminated) setCcSwitchStopped(true);
+    if (gate?.codexConnectionRestored) setCodexConnectionRestored(true);
+  }, [gate]);
+
+  useEffect(() => {
+    if (gate?.state !== "READY") return;
     let active = true;
     const check = async () => {
       try {
@@ -226,48 +109,10 @@ export function ClientApp() {
       active = false;
       window.clearInterval(timer);
     };
-  }, [gateReady]);
+  }, [gate?.state]);
 
   // The native guard presents an acknowledged Windows dialog independently of
   // renderer visibility. Keep the persistent banner without a duplicate toast.
-
-  const retryGate = async () => {
-    const attempt = ++gateAttempt.current;
-    setGateRetrying(true);
-    setGate({ state: "CHECKING", ccSwitchTerminated: false });
-    try {
-      const result = await api.startupGateCheck();
-      if (attempt === gateAttempt.current) setGate(result);
-    } catch {
-      if (attempt === gateAttempt.current) {
-        setGate({ state: "GUARD_ERROR", ccSwitchTerminated: false });
-      }
-    } finally {
-      if (attempt === gateAttempt.current) setGateRetrying(false);
-    }
-  };
-
-  useEffect(
-    () =>
-      subscribeToTrayFeedback((feedback) => {
-        const notice = trayFeedbackNotice(feedback);
-        toast[notice.kind](notice.message);
-        for (const key of [
-          "usage-status",
-          "quota-overview",
-          "usage-events",
-          "usage-analytics",
-          "meter-runtime-logs",
-          "meter-service-version",
-        ]) {
-          void queryClient.invalidateQueries({ queryKey: [key] });
-        }
-        if (feedback.action === "scan" && feedback.outcome === "signed_out") {
-          void queryClient.invalidateQueries({ queryKey: ["system-session"] });
-        }
-      }),
-    [queryClient],
-  );
 
   const handleAuthenticated = (session: SystemSession) => {
     queryClient.removeQueries({
@@ -280,34 +125,29 @@ export function ClientApp() {
   };
 
   const handleLogout = async () => {
+    let failure: unknown = null;
     try {
       await api.systemLogout();
       setLogoutError(null);
-      setLocalSignedOut(true);
-      queryClient.removeQueries({
-        predicate: (query) =>
-          !["startup-gate", "system-session"].includes(
-            String(query.queryKey[0]),
-          ),
-      });
-      queryClient.setQueryData(["system-session"], signedOutSession);
-      await queryClient.invalidateQueries({ queryKey: ["system-session"] });
-      toast.success("已退出系统");
     } catch (error) {
+      failure = error;
       setLogoutError(error);
-      toast.error(`退出失败：${getApiErrorMessage(error)}`);
+    }
+    setLocalSignedOut(true);
+    queryClient.removeQueries({
+      predicate: (query) =>
+        !["startup-gate", "system-session"].includes(String(query.queryKey[0])),
+    });
+    queryClient.setQueryData(["system-session"], signedOutSession);
+    await queryClient.invalidateQueries({ queryKey: ["system-session"] });
+    if (failure) {
+      toast.warning(
+        `已清除本机登录状态；中央后台未确认退出：${getApiErrorMessage(failure)}`,
+      );
+    } else {
+      toast.success("已退出系统");
     }
   };
-
-  if (!gateReady) {
-    return (
-      <StartupGatePage
-        result={gate}
-        retrying={gateRetrying}
-        onRetry={() => void retryGate()}
-      />
-    );
-  }
 
   if (sessionQuery.isPending) {
     return <SessionLoading />;
@@ -319,29 +159,20 @@ export function ClientApp() {
         <span role="status">
           {ccSwitchStopped ? "已停止 CC Switch。" : ""}
           {codexConnectionRestored ? "已恢复 Codex 连接配置。" : ""}
-          默认与 CC Switch 共存，仅在确认官方会话冲突时停止并提醒。
+          {pairingErrorQuery.data === "PAIRING_IDENTITY_MISMATCH"
+            ? "统计设备与中央账户登记不匹配，请联系管理员核对。"
+            : pairingErrorQuery.data === "PAIRING_ENROLL_FAILED"
+              ? "统计程序设备登记暂未成功，客户端会继续退避重试。"
+              : ""}
+          {gate && gate.state !== "READY"
+            ? "CC Switch 冲突保护暂不可用，客户端仍可正常登录和使用。"
+            : "默认与 CC Switch 共存，仅在确认官方会话冲突时停止并提醒。"}
         </span>
         <span className="ml-2 text-primary">查看说明</span>
       </summary>
       <p className="mt-2 max-w-4xl leading-relaxed">{guardExplanation}</p>
     </details>
   );
-
-  if (
-    sessionQuery.error &&
-    (!sessionQuery.data?.authenticated ||
-      getApiErrorMessage(sessionQuery.error) === "请先登录系统账户。")
-  ) {
-    return (
-      <div className="cqg-entry-page">
-        <div className="border-b bg-muted/50 px-6 py-2">{guardNotice}</div>
-        <SessionError
-          error={sessionQuery.error}
-          onRetry={() => void sessionQuery.refetch()}
-        />
-      </div>
-    );
-  }
 
   const session = sessionQuery.data;
   if (localSignedOut || !session?.authenticated || !session.user) {
@@ -350,7 +181,7 @@ export function ClientApp() {
         <div className="border-b bg-muted/50 px-6 py-2">{guardNotice}</div>
         <SystemLoginPage
           onAuthenticated={handleAuthenticated}
-          statusError={logoutError ?? undefined}
+          statusError={logoutError ?? sessionQuery.error ?? undefined}
         />
       </div>
     );

@@ -12,10 +12,9 @@ mod migration;
 mod startup_entry;
 
 const READ_ERROR: &str = "无法读取 Windows 开机自启动状态，请检查当前用户的启动应用设置。";
-const WRITE_ERROR: &str = "无法设置开机自启动，请以管理员身份运行客户端后重试。";
+const WRITE_ERROR: &str = "无法设置开机自启动，请检查当前 Windows 用户的启动应用权限。";
 const VERIFY_ERROR: &str = "Windows 未保存开机自启动设置，请重试。";
-const CONTEXT_ERROR: &str =
-    "开机自启动仅支持当前登录的管理员用户；请勿使用其他账户的管理员凭据设置。";
+const CONTEXT_ERROR: &str = "开机自启动仅支持当前登录的 Windows 用户。";
 static OPERATION: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -35,25 +34,22 @@ pub(crate) enum LaunchMode {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum StartupAction {
     Initialize,
-    Elevate,
     Uninstall,
 }
 
 pub(crate) fn startup_action(
     mode: LaunchMode,
-    elevated: bool,
+    _elevated: bool,
     same_user: bool,
 ) -> Result<StartupAction, &'static str> {
     if !same_user {
         return Err(CONTEXT_ERROR);
     }
-    match (mode, elevated) {
-        (LaunchMode::Desktop | LaunchMode::Logon, false) => Ok(StartupAction::Elevate),
-        (LaunchMode::Desktop | LaunchMode::Logon | LaunchMode::ElevatedLogon, true) => {
+    match mode {
+        LaunchMode::Desktop | LaunchMode::Logon | LaunchMode::ElevatedLogon => {
             Ok(StartupAction::Initialize)
         }
-        (LaunchMode::ElevatedLogon, false) => Err(WRITE_ERROR),
-        (LaunchMode::Uninstall, _) => Ok(StartupAction::Uninstall),
+        LaunchMode::Uninstall => Ok(StartupAction::Uninstall),
     }
 }
 
@@ -187,8 +183,7 @@ pub(crate) fn set(enabled: bool) -> Result<AutostartStatus, &'static str> {
     }
 }
 
-// A launcher/uninstaller or rejected elevation must exit before constructing
-// Tauri, the guard lease, Java, or the meter service.
+// A launcher or uninstaller exits before constructing Tauri or its OS guards.
 pub(crate) fn handle_launch_mode() -> Option<i32> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mode = match parse_launch_mode(&args) {

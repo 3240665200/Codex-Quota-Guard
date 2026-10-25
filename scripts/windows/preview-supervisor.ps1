@@ -11,6 +11,7 @@ $ConfigPath=$request.ConfigPath;$PreviewDirectory=$request.PreviewDirectory
 $BackendPort=[int]$request.BackendPort;$FrontendPort=[int]$request.FrontendPort
 $ProxyKernel=$request.ProxyKernel;$EnableWebLogin=[bool]$request.EnableWebLogin;$BrowserExecutable=$request.BrowserExecutable
 $AuthorizationPresetFile=if($request.PSObject.Properties['AuthorizationPresetFile']){[string]$request.AuthorizationPresetFile}else{''}
+$PackageDirectory=if($request.PSObject.Properties['PackageDirectory']){[string]$request.PackageDirectory}else{''}
 $state=@{Schema=1;RunId=(Split-Path -Leaf $RunDirectory);Phase='STARTING';ErrorCode=$null;LaunchMode='WMI';
     Supervisor=@{Pid=$PID;CreatedUtc=[Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().ToString('o');JobFlags=[Pingche.Preview.Native]::CurrentJobFlags()};
     Backend=@{Port=$BackendPort;Launcher=$null;Listener=$null;LauncherExitCode=$null;ListenerExitCode=$null};
@@ -57,7 +58,7 @@ try {
     foreach($key in $featureKeys){if(!$features.Contains($key) -or $features[$key] -isnot [Security.SecureString]){throw 'PREVIEW_FEATURE_KEYS_INVALID'}}
     $apiLog=Join-Path $RunDirectory 'api.out.log';$apiError=Join-Path $RunDirectory 'api.err.log'
     $uiLog=Join-Path $RunDirectory 'ui.out.log';$uiError=Join-Path $RunDirectory 'ui.err.log'
-    $toolDirectories=@($request.Tools.Maven,$request.Tools.Pnpm,$request.Tools.Java,$request.Tools.Node|ForEach-Object{Split-Path -Parent $_})
+    $toolDirectories=@($request.Tools.Maven,$request.Tools.Pnpm,$request.Tools.Java,$request.Tools.Node|Where-Object{$_}|ForEach-Object{Split-Path -Parent $_})
     $apiEnvironment=Get-PreviewBaseEnvironment -ToolDirectories $toolDirectories
     $uiEnvironment=Get-PreviewBaseEnvironment -ToolDirectories $toolDirectories
     $job=[Pingche.Preview.OwnedChildJob]::new()
@@ -73,14 +74,29 @@ try {
         if($AuthorizationPresetFile){$apiEnvironment['OFFICIAL_AUTHORIZATION_PRESET_FILE']=$AuthorizationPresetFile}
         $apiEnvironment['JAVA_HOME']=Split-Path -Parent (Split-Path -Parent $request.Tools.Java)
         $apiEnvironment['CORS_ALLOWED_ORIGINS']="http://localhost:$FrontendPort,http://127.0.0.1:$FrontendPort"
-        $backend=$job.Spawn($request.Tools.ComSpec,(New-PreviewBatchArguments $request.Tools.Maven @('-o','-f',(Join-Path $repository 'apps\admin\backend\pom.xml'),'-Dmaven.test.skip=true','spring-boot:run')),$repository,$apiEnvironment,$apiLog,$apiError)
+        if ($PackageDirectory) {
+            Assert-PreviewPath $PackageDirectory
+            $packagedJar=Join-Path $PackageDirectory 'backend.jar'
+            if (!(Test-Path -LiteralPath $packagedJar -PathType Leaf)) { throw 'PREVIEW_PACKAGE_INCOMPLETE' }
+            $backend=$job.Spawn($request.Tools.Java,('-jar ' + [Pingche.Preview.Native]::Quote($packagedJar)),$PackageDirectory,$apiEnvironment,$apiLog,$apiError)
+        } else {
+            $backend=$job.Spawn($request.Tools.ComSpec,(New-PreviewBatchArguments $request.Tools.Maven @('-o','-f',(Join-Path $repository 'apps\admin\backend\pom.xml'),'-Dmaven.test.skip=true','spring-boot:run')),$repository,$apiEnvironment,$apiLog,$apiError)
+        }
     } finally {$apiEnvironment.Clear()}
     # UI receives a separately built allowlist environment; backend secrets and inherited NODE_OPTIONS never enter it.
     $uiEnvironment['HOST']='127.0.0.1';$uiEnvironment['PORT']=[string]$FrontendPort
     $uiEnvironment['ADMIN_API_TARGET']="http://127.0.0.1:$BackendPort"
     $hook=(Join-Path $PSScriptRoot 'preview-loopback.cjs').Replace('\','/')
     $uiEnvironment['NODE_OPTIONS']='--require "'+$hook+'"'
-    $frontend=$job.Spawn($request.Tools.ComSpec,(New-PreviewBatchArguments $request.Tools.Pnpm @('dev:admin')),$repository,$uiEnvironment,$uiLog,$uiError)
+    if ($PackageDirectory) {
+        $uiEnvironment['ADMIN_OUTPUT_DIRECTORY']=Join-Path $PackageDirectory 'web'
+        $adminFrontend=Join-Path $repository 'apps\admin\frontend'
+        $maxCli=Join-Path $adminFrontend 'node_modules\@umijs\max\bin\max.js'
+        $maxCli=Resolve-PreviewToolPath -Path $maxCli
+        $frontend=$job.Spawn($request.Tools.Node,(([Pingche.Preview.Native]::Quote($maxCli)) + ' preview --port ' + $FrontendPort),$adminFrontend,$uiEnvironment,$uiLog,$uiError)
+    } else {
+        $frontend=$job.Spawn($request.Tools.ComSpec,(New-PreviewBatchArguments $request.Tools.Pnpm @('dev:admin')),$repository,$uiEnvironment,$uiLog,$uiError)
+    }
     $uiEnvironment.Clear()
     $state.Backend.Launcher=@{Pid=$backend.Id;CreatedUtc=$backend.CreatedUtc.ToString('o')}
     $state.Frontend.Launcher=@{Pid=$frontend.Id;CreatedUtc=$frontend.CreatedUtc.ToString('o')}

@@ -2,7 +2,8 @@
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
-import { StrictMode } from "react";
+import axios, { type AxiosAdapter } from "axios";
+import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { I18nextProvider } from "react-i18next";
 
@@ -17,7 +18,6 @@ import type {
   MeterVersion,
   OfficialCodexRateLimits,
   QuotaOverview,
-  StatusResponse,
   SystemSession,
   UsageAnalytics,
   UsageEventPage,
@@ -45,7 +45,7 @@ const epochMinutesAgo = (minutes: number) =>
 const demoSession = {
   authenticated: true,
   user: {
-    id: "preview-user",
+    id: "11111111-1111-4111-8111-111111111111",
     email: "preview@example.invalid",
     displayName: "演示账户",
     role: "USER",
@@ -60,7 +60,7 @@ const demoQuota = {
     id: "preview-team",
     name: "示例团队",
     status: "ACTIVE",
-    memberCount: 4,
+    memberCount: 8,
     fiveHourTokenLimit: 400_000,
     weeklyTokenLimit: 2_400_000,
     totalTokenLimit: 12_000_000,
@@ -72,6 +72,112 @@ const demoQuota = {
     totalRemainingTokens: 7_820_000,
     measuredAt: demoNow.toISOString(),
   },
+  teamMembers: [
+    {
+      userId: demoSession.user.id,
+      displayName: demoSession.user.displayName,
+      status: "ACTIVE",
+      fiveHourUsedTokens: 74_200,
+      weeklyUsedTokens: 512_600,
+      totalUsedTokens: 1_628_400,
+      fiveHourTokenLimit: 180_000,
+      weeklyTokenLimit: 1_200_000,
+      fiveHourRemainingTokens: 105_800,
+      weeklyRemainingTokens: 687_400,
+      measuredAt: demoNow.toISOString(),
+    },
+    {
+      userId: "22222222-2222-4222-8222-222222222222",
+      displayName: "林舟",
+      status: "ACTIVE",
+      fiveHourUsedTokens: 38_100,
+      weeklyUsedTokens: 220_400,
+      totalUsedTokens: 1_201_600,
+      fiveHourTokenLimit: null,
+      weeklyTokenLimit: null,
+      fiveHourRemainingTokens: null,
+      weeklyRemainingTokens: null,
+      measuredAt: isoHoursAgo(0.2),
+    },
+    {
+      userId: "33333333-3333-4333-8333-333333333333",
+      displayName: "林舟",
+      status: "DISABLED",
+      fiveHourUsedTokens: 2_800,
+      weeklyUsedTokens: 42_000,
+      totalUsedTokens: 420_000,
+      fiveHourTokenLimit: 2_800,
+      weeklyTokenLimit: 42_000,
+      fiveHourRemainingTokens: 0,
+      weeklyRemainingTokens: 0,
+      measuredAt: isoHoursAgo(0.5),
+    },
+    {
+      userId: "44444444-4444-4444-8444-444444444444",
+      displayName: "刚加入的成员",
+      status: "ACTIVE",
+      fiveHourUsedTokens: 0,
+      weeklyUsedTokens: 0,
+      totalUsedTokens: 0,
+      fiveHourTokenLimit: 100_000,
+      weeklyTokenLimit: 500_000,
+      fiveHourRemainingTokens: 100_000,
+      weeklyRemainingTokens: 500_000,
+      measuredAt: null,
+    },
+    {
+      userId: "55555555-5555-4555-8555-555555555555",
+      displayName: "跨地区产品与基础架构协作团队的超长名称成员 Alexandra",
+      status: "ACTIVE",
+      fiveHourUsedTokens: 21_000,
+      weeklyUsedTokens: 85_000,
+      totalUsedTokens: 380_000,
+      fiveHourTokenLimit: 100_000,
+      weeklyTokenLimit: 400_000,
+      fiveHourRemainingTokens: 79_000,
+      weeklyRemainingTokens: 315_000,
+      measuredAt: isoHoursAgo(0.25),
+    },
+    {
+      userId: "66666666-6666-4666-8666-666666666666",
+      displayName: "陈默",
+      status: "ACTIVE",
+      fiveHourUsedTokens: 18_500,
+      weeklyUsedTokens: 56_000,
+      totalUsedTokens: 220_000,
+      fiveHourTokenLimit: 25_000,
+      weeklyTokenLimit: 100_000,
+      fiveHourRemainingTokens: 6_500,
+      weeklyRemainingTokens: 44_000,
+      measuredAt: isoHoursAgo(0.1),
+    },
+    {
+      userId: "77777777-7777-4777-8777-777777777777",
+      displayName: "Maya",
+      status: "ACTIVE",
+      fiveHourUsedTokens: 9_600,
+      weeklyUsedTokens: 20_000,
+      totalUsedTokens: 80_000,
+      fiveHourTokenLimit: 0,
+      weeklyTokenLimit: null,
+      fiveHourRemainingTokens: 0,
+      weeklyRemainingTokens: null,
+      measuredAt: isoHoursAgo(0.3),
+    },
+    {
+      userId: "88888888-8888-4888-8888-888888888888",
+      displayName: "测试成员",
+      status: "DISABLED",
+      fiveHourUsedTokens: 0,
+      weeklyUsedTokens: 0,
+      totalUsedTokens: 0,
+      fiveHourTokenLimit: 0,
+      weeklyTokenLimit: 0,
+      fiveHourRemainingTokens: 0,
+      weeklyRemainingTokens: 0,
+      measuredAt: null,
+    },
+  ],
   policy: {
     fiveHourTokenLimit: 180_000,
     weeklyTokenLimit: 1_200_000,
@@ -109,35 +215,84 @@ const unlimitedQuota: QuotaOverview = {
   },
   teamQuota: {
     ...demoQuota.teamQuota,
+    fiveHourTokenLimit: null,
+    fiveHourUsedTokens: 129_213_456,
+    fiveHourRemainingTokens: null,
+    weeklyTokenLimit: 1_000_000_000,
+    weeklyUsedTokens: 700_000_000,
+    weeklyRemainingTokens: 300_000_000,
     totalTokenLimit: 4_000_000_000,
     totalUsedTokens: 2_708_372_415,
     totalRemainingTokens: 1_291_627_585,
   },
+  teamMembers: demoQuota.teamMembers.map((member) =>
+    member.userId === demoSession.user.id
+      ? {
+          ...member,
+          fiveHourUsedTokens: 129_123_456,
+          weeklyUsedTokens: 470_720_001,
+          totalUsedTokens: 1_600_000_000,
+          fiveHourTokenLimit: null,
+          fiveHourRemainingTokens: null,
+          weeklyTokenLimit: 1_000_000_000,
+          weeklyRemainingTokens: 529_279_999,
+        }
+      : member,
+  ),
 };
-const unlimitedScenario =
-  new URLSearchParams(window.location.search).get("scenario") === "unlimited";
+const zeroTeamQuota: QuotaOverview = {
+  ...demoQuota,
+  teamQuota: {
+    ...demoQuota.teamQuota,
+    fiveHourUsedTokens: 0,
+    weeklyUsedTokens: 0,
+    totalUsedTokens: 0,
+    fiveHourRemainingTokens: demoQuota.teamQuota.fiveHourTokenLimit,
+    weeklyRemainingTokens: demoQuota.teamQuota.weeklyTokenLimit,
+    totalRemainingTokens: demoQuota.teamQuota.totalTokenLimit,
+  },
+  teamMembers: demoQuota.teamMembers.map((member) => ({
+    ...member,
+    fiveHourUsedTokens: 0,
+    weeklyUsedTokens: 0,
+    totalUsedTokens: 0,
+    fiveHourRemainingTokens: member.fiveHourTokenLimit,
+    weeklyRemainingTokens: member.weeklyTokenLimit,
+  })),
+  usage: {
+    ...demoQuota.usage,
+    fiveHourUsedTokens: 0,
+    weeklyUsedTokens: 0,
+    fiveHourRemainingTokens: demoQuota.policy.fiveHourTokenLimit,
+    weeklyRemainingTokens: demoQuota.policy.weeklyTokenLimit,
+  },
+};
+const scenario = new URLSearchParams(window.location.search).get("scenario");
+const unlimitedScenario = scenario === "unlimited";
+const previewQuota: QuotaOverview =
+  scenario === "legacy"
+    ? { ...demoQuota, teamMembers: null }
+    : scenario === "no-team"
+      ? { ...demoQuota, team: null, teamQuota: null, teamMembers: [] }
+      : scenario === "zero-team"
+        ? zeroTeamQuota
+        : scenario === "no-team-quota"
+          ? { ...demoQuota, teamQuota: null }
+          : unlimitedScenario
+            ? unlimitedQuota
+            : demoQuota;
 
-const demoUsageStatus = {
-  fallback: {
-    state: "SERVICE_ACTIVE",
-    lastScannedAt: isoHoursAgo(0.2),
-    lastReportedAt: isoHoursAgo(0.35),
-    lastReportedEvents: 3,
-    issues: [],
-  },
-  service: {
-    state: "UP_TO_DATE",
-    lastScanEpochSeconds: epochMinutesAgo(8),
-    lastReportEpochSeconds: epochMinutesAgo(11),
-    reportedEvents: 18,
-    version: "0.0.0-preview",
-    errorCode: null,
-  },
-  pairingState: "PAIRING_SENT",
+const demoUsageStatus: UsageStatus = {
+  state: "UP_TO_DATE",
+  lastScanEpochSeconds: epochMinutesAgo(8),
+  lastReportEpochSeconds: epochMinutesAgo(11),
+  reportedEvents: 18,
+  version: "0.0.0-preview",
+  errorCode: null,
 } satisfies UsageStatus;
 
 const demoOfficialLimits = {
-  planType: "演示套餐",
+  planType: "演示",
   windows: [
     {
       limitId: "preview-five-hour",
@@ -163,11 +318,6 @@ const demoMeterVersion = {
   needsUpgrade: false,
   status: "CURRENT",
 } satisfies MeterVersion;
-
-const demoStatus = {
-  service: "codex-quota-guard-preview",
-  state: "online",
-} satisfies StatusResponse;
 
 const demoEvents = Array.from({ length: 18 }, (_, index) => {
   const occurredAt = isoHoursAgo(index * 2.5 + 1);
@@ -344,19 +494,20 @@ mockIPC((command, payload) => {
       demoAutostartEnabled = enabled;
       return { supported: true, enabled: demoAutostartEnabled };
     }
-    case "system_current":
-      return demoSession;
-    case "session_binding_current":
-      return { attempt: null, binding: null };
     case "server_config_get":
       return { url: "http://preview.example.invalid:8080" };
-    case "status":
-      return demoStatus;
-    case "quota_overview":
-      return unlimitedScenario ? unlimitedQuota : demoQuota;
-    case "usage_status":
-    case "usage_scan":
-    case "usage_pair":
+    case "device_identity":
+      return {
+        deviceId: "99999999-9999-4999-8999-999999999999",
+        enrollmentId: "99999999-9999-4999-8999-999999999999",
+      };
+    case "session_vault_load":
+      return null;
+    case "session_vault_save":
+    case "session_vault_clear":
+    case "meter_pairing_write":
+      return null;
+    case "meter_status":
       return demoUsageStatus;
     case "codex_rate_limits":
       return demoOfficialLimits;
@@ -395,35 +546,126 @@ mockIPC((command, payload) => {
         : demoRuntimeLogs;
     case "meter_service_version":
       return demoMeterVersion;
-    case "meter_service_retry":
-      return "RUNNING";
-    case "meter_setup_error":
-      return null;
     default:
       throw new Error(`[界面预览] 未配置演示响应：${command}`);
   }
 });
 
-void Promise.all([
-  api.systemSession(),
-  api.status(),
-  api.quotaOverview(),
-  api.usageStatus(),
-  api.scanUsage(),
-  api.pairMeter(),
-  api.codexRateLimits(),
-  api.usageAnalytics(1),
-  api.usageAnalytics(7),
-  api.usageAnalytics(30),
-  api.usageEvents(0, 10),
-  api.usageEvents(1, 10),
-  api.meterRuntimeLogs(),
-  api.meterServiceVersion(),
-  api.retryMeterService(),
-  api.meterSetupError(),
-]).catch((error: unknown) => {
-  console.error("[界面预览] 演示数据未通过 API 校验。", error);
-});
+const previewAdapter: AxiosAdapter = async (config) => {
+  const url = new URL(config.url ?? "/", config.baseURL);
+  const path = url.pathname;
+  let data: unknown;
+  let status = 200;
+  if (path === "/api/v1/auth/login" || path === "/api/v1/auth/refresh") {
+    data = {
+      accessToken: "preview-access-token",
+      tokenType: "Bearer",
+      expiresIn: 3600,
+      refreshToken: "preview-refresh-token",
+      refreshExpiresIn: 7 * 86400,
+      user: demoSession.user,
+    };
+  } else if (path === "/api/v1/auth/logout") {
+    status = 204;
+    data = null;
+  } else if (path === "/api/v1/users/me") {
+    data = demoSession.user;
+  } else if (path === "/api/v1/client/access") {
+    data = {
+      allowed: true,
+      bindingId: "99999999-9999-4999-8999-999999999999",
+      reason: null,
+    };
+  } else if (path === "/api/v1/client/quota/overview") {
+    data = previewQuota;
+  } else if (path === "/api/v1/client/usage/events") {
+    const page = Number(config.params?.page ?? 0);
+    const size = Number(config.params?.size ?? 10);
+    data = {
+      ...demoEventsPage,
+      items: demoEvents.slice(page * size, (page + 1) * size),
+      page,
+      size,
+    };
+  } else if (path === "/api/v1/client/usage/analytics") {
+    const days = Number(config.params?.days ?? 7);
+    data = makeAnalytics(days === 1 || days === 30 ? days : 7);
+  } else if (path === "/api/v1/client/official-quota") {
+    status = 204;
+    data = null;
+  } else if (path === "/api/v1/client/meter/enroll") {
+    data = {
+      deviceId: "99999999-9999-4999-8999-999999999999",
+      deviceToken: "preview-device-token",
+      expiresAt: new Date(Date.now() + day).toISOString(),
+      userId: demoSession.user.id,
+    };
+  } else if (path === "/api/v1/client/login-assistance") {
+    data = {
+      available: true,
+      reasonCode: null,
+      officialAccountId: "preview-account",
+      accountLabel: "演示官方账户",
+      recipientEmail: "mail@example.invalid",
+    };
+  } else if (path === "/api/v1/client/login-assistance/listeners/current") {
+    data = { listener: null };
+  } else if (path === "/api/v1/client/login-assistance/events") {
+    const encoder = new TextEncoder();
+    data = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode("event: connected\ndata: {}\n\n"));
+      },
+    });
+  } else if (path === "/api/v1/client/session-bindings/current") {
+    data = { attempt: null, binding: null };
+  } else {
+    throw new Error(`[界面预览] 未配置中央演示响应：${path}`);
+  }
+  return {
+    config,
+    data,
+    headers: {},
+    request: {},
+    status,
+    statusText: status === 204 ? "No Content" : "OK",
+  };
+};
+axios.defaults.adapter = previewAdapter;
+
+const previewSessionReady = api
+  .systemLogin("preview@example.invalid", "preview-password")
+  .then(
+    () => true,
+    () => false,
+  );
+
+function PreviewDashboard() {
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    let active = true;
+    void previewSessionReady.then((result) => {
+      if (active) setReady(result);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+  if (!ready) {
+    return (
+      <main className="flex min-h-screen items-center justify-center text-sm text-muted-foreground">
+        正在准备演示数据…
+      </main>
+    );
+  }
+  return (
+    <Dashboard
+      session={demoSession}
+      onLogout={() => undefined}
+      guardNotice={<PreviewGuardNotice />}
+    />
+  );
+}
 
 function PreviewGuardNotice() {
   const { resolvedTheme } = useClientTheme();
@@ -467,11 +709,7 @@ root.render(
               <SystemLoginPage onAuthenticated={() => undefined} />
             </div>
           ) : (
-            <Dashboard
-              session={demoSession}
-              onLogout={() => undefined}
-              guardNotice={<PreviewGuardNotice />}
-            />
+            <PreviewDashboard />
           )}
           <Toaster />
         </ClientThemeProvider>

@@ -10,6 +10,7 @@ import com.pingche.web.user.UserRepository;
 import jakarta.servlet.DispatcherType;
 import java.util.Arrays;
 import java.util.List;
+import java.util.stream.Stream;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -39,9 +40,11 @@ public class SecurityConfig {
     CorsConfigurationSource corsConfigurationSource(
             @Value("${app.cors-allowed-origins}") String configuredOrigins
     ) {
-        List<String> origins = Arrays.stream(configuredOrigins.split(","))
+        List<String> origins = Stream.concat(Arrays.stream(configuredOrigins.split(",")),
+                        Stream.of("http://tauri.localhost", "https://tauri.localhost", "tauri://localhost"))
                 .map(String::trim)
                 .filter(origin -> !origin.isBlank() && !"*".equals(origin))
+                .distinct()
                 .toList();
 
         CorsConfiguration configuration = new CorsConfiguration();
@@ -54,7 +57,8 @@ public class SecurityConfig {
                 "DELETE",
                 "OPTIONS"
         ));
-        configuration.setAllowedHeaders(List.of("Authorization", "Content-Type", ClientAccessService.DEVICE_HEADER));
+        configuration.setAllowedHeaders(List.of("Authorization", "Content-Type",
+                ClientAccessService.DEVICE_HEADER, "X-CQG-Queue-Version"));
         configuration.setAllowCredentials(false);
         configuration.setMaxAge(600L);
 

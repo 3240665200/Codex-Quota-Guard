@@ -9,79 +9,125 @@ import {
 } from "@testing-library/react";
 import { I18nextProvider } from "react-i18next";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { invoke } from "@tauri-apps/api/core";
+
 import { Dashboard } from "@/components/dashboard";
 import i18n from "@/lib/i18n";
-import { api, bindingRequiredMessage } from "@/lib/api";
+import {
+  api,
+  type AssistanceEvent,
+  type QuotaOverview,
+  type SessionBinding,
+  type SessionBindingAttempt,
+  type SystemSession,
+} from "@/lib/api";
 
-const channels = vi.hoisted(
-  () => [] as { onmessage: (event: unknown) => void }[],
-);
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(),
-  Channel: class {
-    onmessage = (_event: unknown) => {};
-    constructor() {
-      channels.push(this);
-    }
-  },
-}));
-const mock = vi.mocked(invoke);
-const session = {
-  authenticated: true,
-  user: {
-    id: "user-1",
-    email: "alice@example.com",
-    displayName: "Alice",
-    role: "USER",
-    status: "ACTIVE",
-  },
-};
-const bindingId = "11111111-1111-4111-8111-111111111111";
-const binding = {
-  id: bindingId,
-  userId: bindingId,
+const userId = "11111111-1111-4111-8111-111111111111";
+const deviceId = "22222222-2222-4222-8222-222222222222";
+const binding: SessionBinding = {
+  id: "33333333-3333-4333-8333-333333333333",
+  userId,
   userDisplayName: "Alice",
   userEmail: "alice@example.com",
-  deviceId: bindingId,
-  enrollmentId: bindingId,
-  officialAccountId: bindingId,
-  sessionId: "session",
+  deviceId,
+  enrollmentId: deviceId,
+  officialAccountId: "44444444-4444-4444-8444-444444444444",
+  sessionId: "official-session",
   status: "ACTIVE",
   matchMethod: "SERIAL_LOGIN_DIFF",
   verificationLevel: "USER_CONFIRMED_INFERENCE",
   createdAt: "2026-10-15T10:00:00Z",
   endedAt: null,
 };
-const boundAttempt = () => ({
-  id: bindingId,
-  deviceId: bindingId,
-  enrollmentId: bindingId,
-  officialAccountId: bindingId,
-  status: "BOUND",
-  queuePosition: 0,
-  loginAllowed: false,
-  candidateSessionId: "session",
-  candidateDisplayName: "Alice",
-  candidatePlatform: "Windows",
-  expiresAt: new Date(Date.now() + 60_000).toISOString(),
-  errorCode: null,
-  quarantined: false,
-  queueState: "IDLE",
-  retryAt: null,
-  binding,
-});
-let access: unknown;
-let failAccess = false;
+
+const session: SystemSession = {
+  authenticated: true,
+  user: {
+    id: userId,
+    email: "alice@example.com",
+    displayName: "Alice",
+    role: "USER",
+    status: "ACTIVE",
+  },
+};
+
+const deniedAccess = {
+  allowed: false,
+  bindingId: null,
+  reason: "SESSION_BINDING_REQUIRED",
+};
+const allowedAccess = { allowed: true, bindingId: binding.id, reason: null };
+const quota: QuotaOverview = {
+  user: session.user!,
+  team: null,
+  teamQuota: null,
+  teamMembers: null,
+  policy: {
+    fiveHourTokenLimit: null,
+    weeklyTokenLimit: null,
+    fiveHourSource: "UNCONFIGURED",
+    weeklySource: "UNCONFIGURED",
+  },
+  usage: {
+    measurementStatus: "CLIENT_REPORTED",
+    fiveHourUsedTokens: 0,
+    weeklyUsedTokens: 0,
+    fiveHourRemainingTokens: null,
+    weeklyRemainingTokens: null,
+    fiveHourResetsAt: null,
+    weeklyResetsAt: null,
+    measuredAt: null,
+  },
+  allowed: false,
+  blockReason: "TOKEN_QUOTA_UNCONFIGURED",
+};
+
+function attempt(
+  status: SessionBindingAttempt["status"] = "READY_FOR_LOGIN",
+  overrides: Partial<SessionBindingAttempt> = {},
+): SessionBindingAttempt {
+  return {
+    id: "55555555-5555-4555-8555-555555555555",
+    deviceId,
+    enrollmentId: deviceId,
+    officialAccountId: binding.officialAccountId,
+    status,
+    queuePosition: 0,
+    loginAllowed: status === "READY_FOR_LOGIN",
+    candidateSessionId: null,
+    candidateDisplayName: null,
+    candidatePlatform: null,
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    errorCode: null,
+    quarantined: false,
+    binding: null,
+    queueState: "ACTIVE",
+    retryAt: null,
+    ...overrides,
+  };
+}
+
+interface StreamCall {
+  handler: (event: AssistanceEvent) => void;
+  signal: AbortSignal;
+}
+
+let streams: StreamCall[] = [];
+
 function show(role = "USER") {
   const client = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
+    defaultOptions: {
+      queries: { retry: false, gcTime: Infinity },
+      mutations: { retry: false },
+    },
   });
   const result = render(
     <I18nextProvider i18n={i18n}>
       <QueryClientProvider client={client}>
         <Dashboard
-          session={{ ...session, user: { ...session.user, role } }}
+          session={{
+            ...session,
+            user: { ...session.user!, role },
+          }}
           onLogout={vi.fn()}
         />
       </QueryClientProvider>
@@ -89,418 +135,246 @@ function show(role = "USER") {
   );
   return { ...result, client };
 }
-describe("device binding access gate", () => {
-  afterEach(async () => {
-    cleanup();
-    await Promise.resolve();
-    await Promise.resolve();
+
+async function emitStreamEvent(type: AssistanceEvent) {
+  await act(async () => {
+    streams[0]?.handler(type);
+    await new Promise((resolve) => setTimeout(resolve, 1));
   });
-  beforeEach(() => {
-    channels.length = 0;
-    access = {
-      allowed: false,
-      bindingId: null,
-      reason: "SESSION_BINDING_REQUIRED",
-    };
-    failAccess = false;
-    mock.mockReset();
-    mock.mockImplementation(async (command) => {
-      if (
-        command === "login_assistance_events_start" ||
-        command === "login_assistance_events_stop"
-      )
-        return;
-      if (command === "system_access") {
-        if (failAccess) throw new Error("offline");
-        return access;
-      }
-      if (command === "session_binding_current")
-        return { attempt: null, binding: null };
-      if (command === "login_assistance_info")
-        return {
-          available: false,
-          reasonCode: "NO_TEAM",
-          officialAccountId: null,
-          accountLabel: null,
-          recipientEmail: null,
-        };
-      if (command === "autostart_status")
-        return { supported: true, enabled: false };
-      throw new Error("unsupported");
-    });
+}
+
+beforeEach(() => {
+  vi.spyOn(api, "authenticatorInfo").mockResolvedValue({
+    available: false,
+    reasonCode: "AUTHENTICATOR_UNCONFIGURED",
+    officialAccountId: null,
+    accountLabel: null,
   });
-  it("keeps mail and session binding available to an unbound admin without the retired helper", async () => {
-    show("ADMIN");
-    await screen.findByRole("heading", { name: "监听登录邮件" });
-    expect(mock).toHaveBeenCalledWith("session_binding_current");
-    expect(mock).toHaveBeenCalledWith("login_assistance_info");
-    expect(screen.getByRole("button", { name: "设置" })).toBeDisabled();
-    expect(screen.queryByRole("region", { name: "官方登录助手" })).toBeNull();
-    expect(
-      mock.mock.calls.some(([name]) =>
-        name.startsWith("official_login_helper_"),
-      ),
-    ).toBe(false);
+  streams = [];
+  vi.spyOn(api, "clientAccess").mockResolvedValue(deniedAccess);
+  vi.spyOn(api, "sessionBindingCurrent").mockResolvedValue({
+    attempt: null,
+    binding: null,
   });
-  it("does not reset an already verified gate when opening its saved binding record", async () => {
-    access = { allowed: true, bindingId, reason: null };
-    const original = mock.getMockImplementation()!;
-    mock.mockImplementation(async (command, args) =>
-      command === "session_binding_current"
-        ? { attempt: boundAttempt(), binding }
-        : original(command, args),
-    );
-    show();
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "设置" })).toBeEnabled(),
-    );
-    const accessReads = mock.mock.calls.filter(
-      ([name]) => name === "system_access",
-    ).length;
-    fireEvent.click(screen.getByRole("button", { name: "登录辅助" }));
-    await screen.findByText(/绑定账户：Alice/);
-    expect(
-      mock.mock.calls.filter(([name]) => name === "system_access"),
-    ).toHaveLength(accessReads);
-    expect(screen.getByRole("button", { name: "设置" })).toBeEnabled();
-    await act(async () => channels[0].onmessage({ type: "state_changed" }));
-    await waitFor(() =>
-      expect(
-        mock.mock.calls.filter(([name]) => name === "session_binding_current")
-          .length,
-      ).toBeGreaterThan(1),
-    );
-    expect(
-      mock.mock.calls.filter(([name]) => name === "system_access"),
-    ).toHaveLength(accessReads);
-  });
-  it("keeps one native assistance stream across workspace navigation and stops it on logout unmount", async () => {
-    access = { allowed: true, bindingId, reason: null };
-    const view = show();
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "设置" })).toBeEnabled(),
-    );
-    expect(
-      mock.mock.calls.filter(
-        ([name]) => name === "login_assistance_events_start",
-      ),
-    ).toHaveLength(1);
-    for (let visit = 0; visit < 3; visit += 1) {
-      fireEvent.click(screen.getByRole("button", { name: "登录辅助" }));
-      await screen.findByRole("heading", { name: "监听登录邮件" });
-      fireEvent.click(screen.getByRole("button", { name: "设置" }));
-      await screen.findByRole("heading", { name: "启动设置" });
-    }
-    expect(
-      mock.mock.calls.filter(
-        ([name]) => name === "login_assistance_events_start",
-      ),
-    ).toHaveLength(1);
-    expect(
-      mock.mock.calls.filter(
-        ([name]) => name === "login_assistance_events_stop",
-      ),
-    ).toHaveLength(0);
-    view.unmount();
-    await waitFor(() =>
-      expect(
-        mock.mock.calls.filter(
-          ([name]) => name === "login_assistance_events_stop",
-        ),
-      ).toHaveLength(1),
-    );
-    expect(
-      mock.mock.calls.some(
-        ([name]) =>
-          name === "login_assistance_cancel" ||
-          name === "session_binding_cancel",
-      ),
-    ).toBe(false);
-  });
-  it.each(["transport", "schema"])(
-    "explains a %s gate failure without denying the saved record or leaking raw errors",
-    async (failure) => {
-      access = { allowed: true, bindingId, reason: null };
-      let failed = false;
-      const original = mock.getMockImplementation()!;
-      mock.mockImplementation(async (command, args) => {
-        if (command === "session_binding_current")
-          return { attempt: boundAttempt(), binding };
-        if (command === "system_access" && failed) {
-          if (failure === "schema")
-            return { private: "private-upstream-detail" };
-          throw new Error("private-upstream-detail");
-        }
-        return original(command, args);
-      });
-      const { client } = show();
-      await waitFor(() =>
-        expect(screen.getByRole("button", { name: "设置" })).toBeEnabled(),
-      );
-      fireEvent.click(screen.getByRole("button", { name: "登录辅助" }));
-      await screen.findByText("本设备官方会话绑定记录已保存。");
-      failed = true;
-      await act(async () => {
-        await client.invalidateQueries({ queryKey: ["client-access"] });
-      });
-      await screen.findByText("绑定状态核验失败");
-      expect(
-        screen.getByText(/已保存的绑定记录不代表当前访问权限已核验通过/),
-      ).toBeVisible();
-      expect(
-        screen.getByText(
-          failure === "schema"
-            ? "本地接口返回的数据格式不完整，请重启应用后重试。"
-            : "暂时无法连接本地服务，请确认应用仍在运行。",
-        ),
-      ).toBeVisible();
-      expect(screen.getByText("本设备官方会话绑定记录已保存。")).toBeVisible();
-      expect(screen.getByRole("button", { name: "设置" })).toBeDisabled();
-      expect(screen.queryByText(/private-upstream-detail/)).toBeNull();
-    },
+  vi.spyOn(api, "sessionBindingStart").mockResolvedValue(attempt());
+  vi.spyOn(api, "sessionBindingAction").mockImplementation(async () =>
+    attempt("CANCELLED"),
   );
-  it("starts closed and renders only assistance while protected menus and requests stay blocked", async () => {
+  vi.spyOn(api, "loginAssistanceInfo").mockResolvedValue({
+    available: false,
+    reasonCode: "NO_TEAM",
+    officialAccountId: null,
+    accountLabel: null,
+    recipientEmail: null,
+  });
+  vi.spyOn(api, "loginAssistanceCurrent").mockResolvedValue({ listener: null });
+  vi.spyOn(api, "autostartStatus").mockResolvedValue({
+    supported: true,
+    enabled: false,
+  });
+  vi.spyOn(api, "usageStatus").mockResolvedValue({
+    state: "OFFLINE",
+    lastScanEpochSeconds: null,
+    lastReportEpochSeconds: null,
+    reportedEvents: 0,
+    errorCode: null,
+    version: null,
+  });
+  vi.spyOn(api, "meterServiceVersion").mockResolvedValue({
+    installedVersion: null,
+    bundledVersion: "0.2.6",
+    needsUpgrade: null,
+    status: "NOT_INSTALLED",
+  });
+  vi.spyOn(api, "quotaOverview").mockResolvedValue(quota);
+  vi.spyOn(api, "codexRateLimits").mockResolvedValue({
+    planType: null,
+    windows: [],
+    fetchedAt: new Date().toISOString(),
+  });
+  vi.spyOn(api, "systemLogout").mockResolvedValue(undefined);
+  vi.spyOn(api, "streamLoginAssistanceEvents").mockImplementation(
+    (handler, signal) =>
+      new Promise<void>((resolve) => {
+        streams.push({ handler, signal });
+        if (signal.aborted) resolve();
+        else signal.addEventListener("abort", () => resolve(), { once: true });
+      }),
+  );
+});
+
+afterEach(async () => {
+  cleanup();
+  window.dispatchEvent(new Event("quota-guard:assistance-clear"));
+  await Promise.resolve();
+  await Promise.resolve();
+  vi.restoreAllMocks();
+});
+
+describe("device binding access gate", () => {
+  it("keeps assistance and binding available while the central access gate denies protected menus", async () => {
+    show("ADMIN");
+
+    expect(
+      await screen.findByRole("region", { name: "本设备官方会话绑定" }),
+    ).toBeVisible();
+    expect(api.sessionBindingCurrent).toHaveBeenCalled();
+    expect(api.loginAssistanceInfo).toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "设置" })).toBeDisabled();
+    expect(
+      screen.getByText(/完成本设备官方会话绑定后，中央后台确认有效/),
+    ).toBeVisible();
+    expect(api.quotaOverview).not.toHaveBeenCalled();
+    expect(api.codexRateLimits).not.toHaveBeenCalled();
+  });
+
+  it("does not grant access from a saved ACTIVE binding when central access denies it", async () => {
+    vi.mocked(api.sessionBindingCurrent).mockResolvedValue({
+      attempt: attempt("BOUND", { binding }),
+      binding,
+    });
+
     show();
+
+    expect(
+      await screen.findByRole("region", { name: "本设备官方会话绑定" }),
+    ).toBeVisible();
+    expect(
+      await screen.findByText("本设备官方会话绑定记录已保存。"),
+    ).toBeVisible();
     expect(screen.getByRole("button", { name: "额度总览" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "设置" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "设置" }));
-    await screen.findByRole("heading", { name: "监听登录邮件" });
-    expect(screen.queryByRole("heading", { name: "启动设置" })).toBeNull();
-    expect(
-      mock.mock.calls.some(([name]) =>
-        ["quota_overview", "usage_status", "codex_rate_limits"].includes(name),
-      ),
-    ).toBe(false);
+    expect(api.quotaOverview).not.toHaveBeenCalled();
   });
-  it("locks the current page immediately when access is revoked or cannot be checked", async () => {
-    access = { allowed: true, bindingId, reason: null };
+
+  it("refreshes the binding record from SSE without rechecking an unchanged central grant", async () => {
+    vi.mocked(api.clientAccess).mockResolvedValue(allowedAccess);
+    vi.mocked(api.sessionBindingCurrent).mockResolvedValue({
+      attempt: attempt("BOUND", { binding }),
+      binding,
+    });
+    show();
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "设置" })).toBeEnabled(),
+    );
+    const accessReads = vi.mocked(api.clientAccess).mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "登录辅助" }));
+    await screen.findByText("本设备官方会话绑定记录已保存。");
+    expect(streams).toHaveLength(1);
+
+    const bindingReads = vi.mocked(api.sessionBindingCurrent).mock.calls.length;
+    await emitStreamEvent("state_changed");
+    await waitFor(() =>
+      expect(api.sessionBindingCurrent).toHaveBeenCalledTimes(bindingReads + 1),
+    );
+    expect(api.clientAccess).toHaveBeenCalledTimes(accessReads);
+    expect(screen.getByRole("button", { name: "设置" })).toBeEnabled();
+  });
+
+  it("shares one assistance stream across workspace navigation and aborts it on dashboard unmount", async () => {
+    vi.mocked(api.clientAccess).mockResolvedValue(allowedAccess);
+    const view = show();
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "设置" })).toBeEnabled(),
+    );
+    expect(streams).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "登录辅助" }));
+    await screen.findByRole("region", { name: "本设备官方会话绑定" });
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    await screen.findByRole("heading", { name: "启动设置" });
+
+    expect(streams).toHaveLength(1);
+    expect(streams[0].signal.aborted).toBe(false);
+    view.unmount();
+    await waitFor(() => expect(streams[0].signal.aborted).toBe(true));
+  });
+
+  it("locks protected pages on an access error and shows the safe retry guidance", async () => {
+    vi.mocked(api.clientAccess).mockResolvedValueOnce(allowedAccess);
     const { client } = show();
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "设置" })).toBeEnabled(),
     );
     fireEvent.click(screen.getByRole("button", { name: "设置" }));
     await screen.findByRole("heading", { name: "启动设置" });
-    failAccess = true;
-    await client.invalidateQueries({ queryKey: ["client-access"] });
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "设置" })).toBeDisabled(),
+
+    vi.mocked(api.clientAccess).mockRejectedValueOnce(
+      new Error(
+        "无法连接中央服务器，请检查地址、网络及服务器是否允许桌面访问。",
+      ),
     );
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: ["client-access"] });
+    });
+
+    expect(await screen.findByText("绑定状态核验失败")).toBeVisible();
+    expect(
+      screen.getByText(/已保存的绑定记录不代表当前访问权限已核验通过/),
+    ).toBeVisible();
+    expect(screen.getByText(/无法连接中央服务器，请检查地址/)).toBeVisible();
     expect(screen.queryByRole("heading", { name: "启动设置" })).toBeNull();
-    expect(screen.getByRole("heading", { name: "监听登录邮件" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "设置" })).toBeDisabled();
+    expect(api.systemLogout).not.toHaveBeenCalled();
   });
-  it("does not trust an ACTIVE binding projection when central access denies it", async () => {
-    access = {
-      allowed: false,
-      bindingId: null,
-      reason: "CLIENT_BINDING_INVALID",
-    };
-    const original = mock.getMockImplementation()!;
-    mock.mockImplementation(async (command, args) =>
-      command === "session_binding_current"
-        ? { attempt: null, binding }
-        : original(command, args),
+
+  it("rechecks access after a BOUND event and keeps menus locked until central access allows them", async () => {
+    const accessResponses = [deniedAccess, deniedAccess, allowedAccess];
+    vi.mocked(api.clientAccess).mockImplementation(
+      async () => accessResponses.shift() ?? deniedAccess,
     );
-    show();
-    await screen.findByRole("heading", { name: "监听登录邮件" });
-    expect(screen.getByRole("button", { name: "额度总览" })).toBeDisabled();
-    expect(screen.queryByRole("heading", { name: "官方登录助手" })).toBeNull();
-  });
-  it("rechecks central access after the server completes binding and keeps menus locked while it is still denied", async () => {
-    const original = mock.getMockImplementation()!;
-    const candidate = {
-      id: bindingId,
-      deviceId: bindingId,
-      enrollmentId: bindingId,
-      officialAccountId: bindingId,
-      status: "AWAITING_CONFIRMATION",
-      queuePosition: 0,
-      loginAllowed: false,
-      candidateSessionId: "session",
-      candidateDisplayName: "This login",
-      candidatePlatform: "Windows",
-      expiresAt: new Date(Date.now() + 60000).toISOString(),
-      errorCode: null,
-      quarantined: false,
-      queueState: "ACTIVE",
-      retryAt: null,
+    let current: {
+      attempt: SessionBindingAttempt | null;
+      binding: SessionBinding | null;
+    } = {
+      attempt: attempt("AWAITING_CONFIRMATION", {
+        candidateSessionId: "new-session",
+        candidateDisplayName: "This login",
+        candidatePlatform: "Windows",
+      }),
       binding: null,
     };
-    let currentCandidate: unknown = candidate;
-    mock.mockImplementation(async (command, args) => {
-      if (command === "session_binding_current")
-        return { attempt: currentCandidate, binding: null };
-      return original(command, args);
-    });
+    vi.mocked(api.sessionBindingCurrent).mockImplementation(
+      async () => current,
+    );
     show();
+
     await screen.findByText("This login");
-    currentCandidate = { ...candidate, status: "BOUND", binding };
-    act(() =>
-      window.dispatchEvent(new Event("quota-guard:assistance-refresh")),
-    );
-    await waitFor(() =>
-      expect(
-        mock.mock.calls.filter(([name]) => name === "system_access").length,
-      ).toBeGreaterThan(1),
-    );
+    current = {
+      attempt: attempt("BOUND", { binding }),
+      binding,
+    };
+    await emitStreamEvent("state_changed");
+
+    await waitFor(() => expect(api.clientAccess).toHaveBeenCalledTimes(2));
     expect(screen.getByRole("button", { name: "设置" })).toBeDisabled();
-    access = { allowed: true, bindingId, reason: null };
     fireEvent.click(screen.getByRole("button", { name: "重新核对绑定" }));
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "设置" })).toBeEnabled(),
     );
+    expect(api.clientAccess).toHaveBeenCalledTimes(3);
   });
-  it("immediately retreats on protected binding_required while preserving the product login", async () => {
-    access = { allowed: true, bindingId, reason: null };
-    show();
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "设置" })).toBeEnabled(),
-    );
-    fireEvent.click(screen.getByRole("button", { name: "设置" }));
-    await screen.findByRole("heading", { name: "启动设置" });
-    const original = mock.getMockImplementation()!;
-    mock.mockImplementation(async (command, args) => {
-      if (command === "system_access") return new Promise(() => {});
-      if (command === "usage_events") throw bindingRequiredMessage;
-      return original(command, args);
-    });
-    await act(async () => {
-      await expect(api.usageEvents()).rejects.toBe(bindingRequiredMessage);
-    });
-    expect(screen.getByRole("button", { name: "设置" })).toBeDisabled();
-    expect(screen.queryByRole("heading", { name: "启动设置" })).toBeNull();
-    expect(mock.mock.calls.some(([name]) => name === "system_logout")).toBe(
-      false,
-    );
-  });
-  it.each(["focus", "visibilitychange"])(
-    "keeps the authorized page mounted but inert while %s rechecks access",
-    async (eventName) => {
-      access = { allowed: true, bindingId, reason: null };
-      show();
-      await waitFor(() =>
-        expect(screen.getByRole("button", { name: "设置" })).toBeEnabled(),
-      );
-      fireEvent.click(screen.getByRole("button", { name: "设置" }));
-      const heading = await screen.findByRole("heading", { name: "启动设置" });
-      const toggle = await screen.findByRole("switch", { name: "开机自启动" });
-      await waitFor(() => expect(toggle).toBeEnabled());
-      let resolveAccess!: (value: unknown) => void;
-      const pendingAccess = new Promise((resolve) => {
-        resolveAccess = resolve;
-      });
-      const original = mock.getMockImplementation()!;
-      mock.mockImplementation(async (command, args) =>
-        command === "system_access" ? pendingAccess : original(command, args),
-      );
-      const target = eventName === "focus" ? window : document;
-      act(() => {
-        target.dispatchEvent(new Event(eventName));
-        target.dispatchEvent(new Event(eventName));
-      });
-      expect(screen.getByRole("heading", { name: "启动设置" })).toBe(heading);
-      expect(screen.getByRole("button", { name: "设置" })).toBeDisabled();
-      expect(screen.getByRole("region", { name: "设置内容" })).toHaveAttribute(
-        "aria-busy",
-        "true",
-      );
-      expect(toggle.closest("[inert]")).not.toBeNull();
-      // The settings read also refreshes on focus. Let it finish so the access
-      // boundary, rather than that independent request, must block the action.
-      await waitFor(() => expect(toggle).toBeEnabled());
-      fireEvent.click(toggle);
-      fireEvent.click(screen.getByRole("button", { name: "登录辅助" }));
-      expect(mock.mock.calls.some(([name]) => name === "autostart_set")).toBe(
-        false,
-      );
-      expect(screen.getByRole("heading", { name: "启动设置" })).toBe(heading);
 
-      await act(async () => resolveAccess(access));
-      await waitFor(() =>
-        expect(screen.getByRole("button", { name: "设置" })).toBeEnabled(),
-      );
-      expect(screen.getByRole("heading", { name: "启动设置" })).toBe(heading);
-      expect(toggle.closest("[inert]")).toBeNull();
-    },
-  );
-  it.each(["denied", "failed"])(
-    "discards the preserved page when the return check is %s",
-    async (outcome) => {
-      access = { allowed: true, bindingId, reason: null };
-      show();
-      await waitFor(() =>
-        expect(screen.getByRole("button", { name: "设置" })).toBeEnabled(),
-      );
-      fireEvent.click(screen.getByRole("button", { name: "设置" }));
-      const heading = await screen.findByRole("heading", { name: "启动设置" });
-      let complete!: () => void;
-      const pendingAccess = new Promise((resolve, reject) => {
-        complete = () =>
-          outcome === "denied"
-            ? resolve({
-                allowed: false,
-                bindingId: null,
-                reason: "CLIENT_BINDING_INVALID",
-              })
-            : reject(new Error("offline"));
-      });
-      const original = mock.getMockImplementation()!;
-      mock.mockImplementation(async (command, args) =>
-        command === "system_access" ? pendingAccess : original(command, args),
-      );
-      act(() => window.dispatchEvent(new Event("focus")));
-      expect(screen.getByRole("heading", { name: "启动设置" })).toBe(heading);
-      await act(async () => complete());
-      await waitFor(() =>
-        expect(screen.queryByRole("heading", { name: "启动设置" })).toBeNull(),
-      );
-      expect(screen.getByRole("button", { name: "设置" })).toBeDisabled();
-      expect(mock.mock.calls.some(([name]) => name === "system_logout")).toBe(
-        false,
-      );
-    },
-  );
-  it("immediately discards an expired workspace when returning after timer suspension", async () => {
-    access = { allowed: true, bindingId, reason: null };
-    show();
+  it("retreats immediately on the protected binding-required event without logging out", async () => {
+    vi.mocked(api.clientAccess).mockResolvedValueOnce(allowedAccess);
+    const { client } = show();
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "设置" })).toBeEnabled(),
     );
     fireEvent.click(screen.getByRole("button", { name: "设置" }));
     await screen.findByRole("heading", { name: "启动设置" });
-    const original = mock.getMockImplementation()!;
-    mock.mockImplementation(async (command, args) =>
-      command === "system_access"
-        ? new Promise(() => {})
-        : original(command, args),
-    );
-    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 11_000);
-    try {
-      act(() => window.dispatchEvent(new Event("focus")));
-      expect(screen.queryByRole("heading", { name: "启动设置" })).toBeNull();
-      expect(screen.getByRole("button", { name: "设置" })).toBeDisabled();
-    } finally {
-      clock.mockRestore();
-    }
-  });
-  it("expires a previously valid permission when the periodic check hangs", async () => {
-    access = { allowed: true, bindingId, reason: null };
-    show();
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "设置" })).toBeEnabled(),
-    );
-    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 11_000);
-    const original = mock.getMockImplementation()!;
-    mock.mockImplementation(async (command, args) =>
-      command === "system_access"
-        ? new Promise(() => {})
-        : original(command, args),
-    );
-    try {
-      await waitFor(() =>
-        expect(screen.getByRole("button", { name: "设置" })).toBeDisabled(),
-      );
-    } finally {
-      clock.mockRestore();
-    }
+
+    vi.mocked(api.clientAccess).mockResolvedValueOnce(deniedAccess);
+    await act(async () => {
+      window.dispatchEvent(new Event("quota-guard-binding-required"));
+      await client.refetchQueries({ queryKey: ["client-access"] });
+    });
+
+    expect(
+      await screen.findByRole("region", { name: "本设备官方会话绑定" }),
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "设置" })).toBeDisabled();
+    expect(api.systemLogout).not.toHaveBeenCalled();
   });
 });

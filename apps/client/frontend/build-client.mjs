@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { nativeBuildEnvironment } from "./native-build-env.mjs";
@@ -7,15 +7,12 @@ import { nativeBuildEnvironment } from "./native-build-env.mjs";
 const projectRoot = path.dirname(fileURLToPath(import.meta.url));
 const environment = nativeBuildEnvironment();
 
-// Tauri's Windows bundler needs the Cargo target directory in the process
-// environment, not only in .cargo/config.toml. Keep large artifacts on D:.
-if (
-  process.platform === "win32" &&
-  !environment.CARGO_TARGET_DIR &&
-  existsSync("D:\\")
-) {
-  environment.CARGO_TARGET_DIR =
-    "D:\\BuildCache\\pingche\\desktop-package-target";
+// Keep generated project artifacts in the original checkout by default.
+if (process.platform === "win32" && !environment.CARGO_TARGET_DIR) {
+  environment.CARGO_TARGET_DIR = path.resolve(
+    projectRoot,
+    "../../../dist/build-target",
+  );
 }
 if (environment.CARGO_TARGET_DIR) {
   mkdirSync(environment.CARGO_TARGET_DIR, { recursive: true });

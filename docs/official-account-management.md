@@ -10,6 +10,24 @@
 
 ## 管理员操作流程
 
+账户管理现在可直接从官方接口读取额度，不再依赖该页面关联的客户端上报用户。先为账户完成“授权登录”和代理设置，再打开该行的“额度检测”。默认自动检测间隔为 5 分钟，可设置 1～1440 分钟，也可以停用。列表每 30 秒读取后台缓存，不会据此向官方发请求；“立即检测”和定时任务共享数据库冷却时间与执行租约。修改间隔或关闭再开启检测不能绕过已有冷却。
+
+查询使用 `GET https://chatgpt.com/backend-api/wham/usage`，沿用加密保存的 `Authorization: Bearer …`、所选 `ChatGPT-Account-ID` 和已有前置/出口代理。无 query 或 body，不请求推理。响应的 `rate_limit.primary_window` / `secondary_window` 提供实际窗口秒数、已用百分比和重置时间；按窗口时长显示，不能把 primary 一律当作 5 小时。官方有些套餐不提供百分比窗口，此时显示未知，不补成 0%。百分比不能据此换算成官方总 Token。
+
+429 会遵守 `Retry-After`，其余临时失败逐步退避并错开重试；旧快照仍保留并标记。授权失效、身份不匹配或安全验证会暂停检测，需要更新并验证官方授权。更换授权或代理后，不展示旧授权的额度，也不会发布此前尚未返回的旧请求结果。无需打开桌面客户端。
+
+协议依据为 [OpenAI Codex 官方后台客户端](https://github.com/openai/codex/blob/main/codex-rs/backend-client/src/client.rs) 和 [额度请求路径](https://github.com/openai/codex/blob/main/codex-rs/backend-client/src/client/rate_limit_resets.rs)。本次核实日期为 2026-10-25；Edge 控制通道不可用，启动独立 Edge 调试窗口被自动审批拒绝，因此尚未完成 Edge 实机抓包与真实账户联调。内部接口可能变化，源码与模拟响应测试不代表生产请求已成功。
+
+### Google Authenticator 登录验证码
+
+1. 管理员在“账户管理 → 对应账户 → 验证器”中配置该官方账户的原始 Base32 TOTP 密钥，或二维码里的标准 `otpauth://totp/…` 链接。不要配置管理员个人 Google 账户的密钥，也不要把真实密钥发到聊天或提交到仓库。
+2. 默认兼容 SHA1、6 位、30 秒；标准 URI 还支持 SHA256 / SHA512、8 位和 15～120 秒周期。Google Authenticator 的导出迁移二维码 `otpauth-migration://…` 和 HOTP 不在此范围。不能从手机当前显示的六位数恢复原密钥。
+3. 启用“允许所属团队成员获取验证码”后，成员在桌面“登录辅助 → Google Authenticator 验证码”中点击获取，再填入官方登录页面。绑定完成前也能获取，但后台始终核对当前用户、活动团队和该团队的官方账户，不接受客户端指定其他账户。
+4. 密钥使用现有 `OFFICIAL_SESSION_ENCRYPTION_KEY` 加密，并绑定到对应官方账户；后台接口只返回配置状态及当前短时验证码，从不回显密钥。沿用现有加密密钥，不要更换已使用的值。密钥输入在保存或关闭后清空。
+5. 验证码按后台时间生成，客户端依据服务器时间倒计时，不受电脑系统时间偏差直接影响；后台服务器本身需保持时钟同步。到期、页面隐藏、离开页面或退出登录后隐藏验证码，获取新码需再次点击。客户端通过 Axios 请求中央后台，没有增加本地后端。
+
+兼容性依据：[Google Authenticator URI 格式](https://github.com/google/google-authenticator/wiki/Key-Uri-Format) 与 [RFC 6238](https://www.rfc-editor.org/rfc/rfc6238.html)。后台生成使用 Java 标准 HMAC，无 Google API、手机联机或新增第三方依赖。已用 RFC 的三种摘要算法、六个时间点对照验证。
+
 以下按服务器 `0.3.23` 说明，包含持久订阅、前置／出口链和按订阅确认的 Trojan URI 证书例外；发布状态见[服务器发布说明](releases/server-v0.3.23.md)。旧 `0.3.22` 基线只有手动节点与单出口，需同时更新后台与管理网页。本机启动步骤见[本地管理网页测试指南](local-admin-test.md)，无需启动桌面客户端。
 
 1. 通过 HTTP 或 HTTPS 登录本系统管理后台，推荐 HTTPS。允许 HTTP 的部署保留相同功能，页面会提示密码与导入的授权可能明文传输。

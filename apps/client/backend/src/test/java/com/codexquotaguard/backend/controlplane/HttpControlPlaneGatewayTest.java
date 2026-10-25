@@ -222,13 +222,15 @@ class HttpControlPlaneGatewayTest {
     }
 
     @Test
-    void acceptsTheExactPersonalTokenQuotaContractAndRejectsUnexpectedFields() throws Exception {
+    void acceptsLegacyQuotaWithoutTeamMembersWhenTheServerIgnoresTheOptInParameter() throws Exception {
         UUID userId = UUID.randomUUID();
         UUID accountId = UUID.randomUUID();
         UUID teamId = UUID.randomUUID();
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/api/v1/client/quota/overview", exchange -> {
             assertThat(exchange.getRequestMethod()).isEqualTo("GET");
+            assertThat(exchange.getRequestURI().toString())
+                    .isEqualTo("/api/v1/client/quota/overview?includeTeamMembers=true");
             assertThat(exchange.getRequestHeaders().getFirst("Authorization")).isEqualTo("Bearer session-access");
             writeJson(exchange, quotaJson(userId, accountId, teamId, true, null));
         });
@@ -246,7 +248,112 @@ class HttpControlPlaneGatewayTest {
             assertThat(overview.usage().fiveHourRemainingTokens()).isEqualTo(900L);
             assertThat(overview.teamQuota().fiveHourUsedTokens()).isEqualTo(150L);
             assertThat(overview.teamQuota().fiveHourRemainingTokens()).isEqualTo(850L);
+            assertThat(overview.teamMembers()).isNull();
             assertThat(overview.toString()).doesNotContain("session-access", "credential", "refresh");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void preservesAllCurrentTeamMemberUsageFromTheExistingAuthenticatedQuotaRoute() throws Exception {
+        UUID userId = UUID.randomUUID();
+        UUID disabledUserId = UUID.randomUUID();
+        UUID teamId = UUID.randomUUID();
+        String members = """
+                [{"userId":"%s","displayName":"Alice","status":"ACTIVE",
+                  "fiveHourUsedTokens":100,"weeklyUsedTokens":200,"totalUsedTokens":2500,
+                  "fiveHourTokenLimit":1000,"weeklyTokenLimit":10000,
+                  "fiveHourRemainingTokens":350,"weeklyRemainingTokens":4200,
+                  "measuredAt":"2026-10-19T01:02:03Z"},
+                 {"userId":"%s","displayName":"Bob","status":"DISABLED",
+                  "fiveHourUsedTokens":0,"weeklyUsedTokens":0,"totalUsedTokens":0,
+                  "fiveHourTokenLimit":null,"weeklyTokenLimit":null,
+                  "fiveHourRemainingTokens":null,"weeklyRemainingTokens":null,"measuredAt":null}]
+                """.formatted(userId, disabledUserId);
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/api/v1/client/quota/overview", exchange -> {
+            assertThat(exchange.getRequestMethod()).isEqualTo("GET");
+            assertThat(exchange.getRequestURI().toString())
+                    .isEqualTo("/api/v1/client/quota/overview?includeTeamMembers=true");
+            assertThat(exchange.getRequestHeaders().getFirst("Authorization")).isEqualTo("Bearer session-access");
+            writeJson(exchange, withTeamMembers(quotaJson(userId, UUID.randomUUID(), teamId, true, null), members));
+        });
+        server.start();
+        try {
+            var overview = gateway(server).quotaOverview("session-access");
+            assertThat(overview.teamMembers()).containsExactly(
+                    new TeamMemberUsage(userId, "Alice", "ACTIVE", 100L, 200L, 2500L,
+                            1000L, 10000L, 350L, 4200L,
+                            Instant.parse("2026-10-19T01:02:03Z")),
+                    new TeamMemberUsage(disabledUserId, "Bob", "DISABLED", 0L, 0L, 0L,
+                            null, null, null, null, null));
+
+            var mapper = new ObjectMapper();
+            assertThat(mapper.readValue(mapper.writeValueAsString(overview), PersonalQuotaOverview.class).teamMembers())
+                    .isEqualTo(overview.teamMembers());
+            assertThat(mapper.writeValueAsString(overview.teamMembers()))
+                    .doesNotContain("email", "accessToken", "refreshToken", "credential");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void preservesAnExplicitEmptyTeamMemberProjection() throws Exception {
+        UUID userId = UUID.randomUUID();
+        UUID teamId = UUID.randomUUID();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/api/v1/client/quota/overview", exchange -> writeJson(exchange,
+                withTeamMembers(quotaJson(userId, UUID.randomUUID(), teamId, true, null), "[]")));
+        server.start();
+        try {
+            assertThat(gateway(server).quotaOverview("session-access").teamMembers()).isEmpty();
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void failsClosedWhenMemberPersonalAllowanceFieldsAreMissing() throws Exception {
+        UUID userId = UUID.randomUUID();
+        UUID teamId = UUID.randomUUID();
+        String members = """
+                [{"userId":"%s","displayName":"Alice","status":"ACTIVE",
+                  "fiveHourUsedTokens":100,"weeklyUsedTokens":200,"totalUsedTokens":2500,"measuredAt":null}]
+                """.formatted(userId);
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/api/v1/client/quota/overview", exchange -> writeJson(exchange,
+                withTeamMembers(quotaJson(userId, UUID.randomUUID(), teamId, true, null), members)));
+        server.start();
+        try {
+            assertThatThrownBy(() -> gateway(server).quotaOverview("session-access"))
+                    .isInstanceOfSatisfying(ControlPlaneException.class,
+                            failure -> assertThat(failure.reason()).isEqualTo(ControlPlaneException.Reason.UNAVAILABLE));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void failsClosedWhenTeamMemberUsageContainsPrivateFields() throws Exception {
+        UUID userId = UUID.randomUUID();
+        UUID teamId = UUID.randomUUID();
+        String members = """
+                [{"userId":"%s","displayName":"Alice","status":"ACTIVE",
+                  "fiveHourUsedTokens":100,"weeklyUsedTokens":200,"totalUsedTokens":2500,
+                  "fiveHourTokenLimit":1000,"weeklyTokenLimit":10000,
+                  "fiveHourRemainingTokens":350,"weeklyRemainingTokens":4200,
+                  "measuredAt":null,"email":"private-member@example.com"}]
+                """.formatted(userId);
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/api/v1/client/quota/overview", exchange -> writeJson(exchange,
+                withTeamMembers(quotaJson(userId, UUID.randomUUID(), teamId, true, null), members)));
+        server.start();
+        try {
+            assertThatThrownBy(() -> gateway(server).quotaOverview("session-access"))
+                    .isInstanceOfSatisfying(ControlPlaneException.class,
+                            failure -> assertThat(failure.reason()).isEqualTo(ControlPlaneException.Reason.UNAVAILABLE));
         } finally {
             server.stop(0);
         }
@@ -381,6 +488,10 @@ class HttpControlPlaneGatewayTest {
                 "fiveHourRemainingTokens":900,"weeklyRemainingTokens":9800,"fiveHourResetsAt":null,
                 "weeklyResetsAt":null,"measuredAt":"2026-10-06T00:00:00Z"},"allowed":%s,"blockReason":%s}
                 """.formatted(userId, teamId, teamId, teamId, allowed, reason).replaceAll("\\s+", "");
+    }
+
+    private static String withTeamMembers(String quota, String members) {
+        return quota.substring(0, quota.length() - 1) + ",\"teamMembers\":" + members + "}";
     }
 
     private static void writeJson(com.sun.net.httpserver.HttpExchange exchange, String json) throws IOException {

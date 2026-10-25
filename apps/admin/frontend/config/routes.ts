@@ -73,6 +73,13 @@ export default [
   },
   {
     access: 'canAdmin',
+    component: './settings',
+    icon: 'setting',
+    name: '设置',
+    path: '/settings',
+  },
+  {
+    access: 'canAdmin',
     component: './quotas/user',
     layout: true,
     name: '用户额度',

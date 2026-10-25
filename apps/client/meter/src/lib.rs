@@ -4,7 +4,9 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, VecDeque};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -24,6 +26,9 @@ const MAX_RECORD_BYTES: usize = 4 * 1024 * 1024;
 const MAX_GUARD_STATUS_BYTES: usize = 4096;
 const PREFIX_BYTES: usize = 4096;
 const MAX_CACHED_TURNS: usize = 256;
+const SCAN_CURSOR_VERSION: u8 = 1;
+const LEGACY_FILE_SETTLING_DELAY: Duration = Duration::from_secs(30);
+const CAPTURE_INTERVAL: Duration = Duration::from_secs(3);
 const GUARD_STATUS_FILE: &str = "ccswitch-guard-status.json";
 const GUARD_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const GUARD_STATUS_FRESH: Duration = Duration::from_secs(30);
@@ -202,11 +207,33 @@ struct FileCursor {
     prefix_len: usize,
     prefix_hash: String,
     #[serde(default)]
+    cursor_version: u8,
+    #[serde(default)]
+    legacy_usage: Option<CumulativeUsage>,
+    #[serde(default)]
+    direct_usage_record_observed: bool,
+    #[serde(default)]
+    legacy_fallback_released: bool,
+    #[serde(default)]
+    legacy_settled_cutoff: Option<String>,
+    #[serde(default)]
+    pending_fallback_events: Vec<UsageEvent>,
+    #[serde(default)]
     current_metadata: TurnMetadata,
     #[serde(default)]
     turn_metadata: BTreeMap<String, TurnMetadata>,
     #[serde(default)]
     turn_metadata_order: VecDeque<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+struct CumulativeUsage {
+    input_tokens: Option<u64>,
+    cached_input_tokens: Option<u64>,
+    cache_write_input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+    reasoning_output_tokens: Option<u64>,
+    total_tokens: u64,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
@@ -222,6 +249,13 @@ struct MetadataOverrides {
 }
 
 impl FileCursor {
+    fn fresh() -> Self {
+        Self {
+            cursor_version: SCAN_CURSOR_VERSION,
+            ..Self::default()
+        }
+    }
+
     fn remember_turn_metadata(&mut self, turn_id: &str, metadata: TurnMetadata) {
         let turn_hash = hex_digest(turn_id.as_bytes());
         self.turn_metadata_order
@@ -293,7 +327,7 @@ impl TurnMetadata {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageEvent {
     pub event_id: String,
@@ -335,6 +369,7 @@ fn scan_with_boundary(
     let mut next_state = previous.clone();
     next_state.sanitize_metadata_caches();
     let mut events = Vec::new();
+    let mut emitted_event_ids = std::collections::BTreeSet::new();
     if !sessions.is_dir() {
         return Ok(ScanOutcome { events, next_state });
     }
@@ -354,8 +389,8 @@ fn scan_with_boundary(
         }
         let prefix_len = (metadata.len() as usize).min(PREFIX_BYTES);
         let prefix_hash = hash_file_prefix(&file, prefix_len)?;
-        let prior = next_state.files.get(&key);
-        let start = match prior {
+        let prior = next_state.files.get(&key).cloned();
+        let start = match prior.as_ref() {
             Some(cursor)
                 if metadata.len() >= cursor.offset
                     && metadata.len() >= cursor.prefix_len as u64
@@ -367,16 +402,19 @@ fn scan_with_boundary(
         };
         let (retained_prefix_len, retained_prefix_hash) = if start == 0 {
             (prefix_len, prefix_hash)
-        } else if let Some(cursor) = prior {
+        } else if let Some(cursor) = prior.as_ref() {
             (cursor.prefix_len, cursor.prefix_hash.clone())
         } else {
             (prefix_len, prefix_hash)
         };
         let mut cursor = if start == 0 {
-            FileCursor::default()
+            FileCursor::fresh()
         } else {
-            prior.cloned().unwrap_or_default()
+            prior.clone().unwrap_or_else(FileCursor::fresh)
         };
+        if start > 0 && cursor.cursor_version < SCAN_CURSOR_VERSION {
+            cursor = rebuild_legacy_cursor(&file, start)?;
+        }
         cursor.sanitize_metadata_cache();
         let mut input = File::open(&file).map_err(|_| "SESSION_READ_UNAVAILABLE")?;
         input
@@ -410,20 +448,91 @@ fn scan_with_boundary(
             if line.len() > MAX_RECORD_BYTES {
                 continue;
             }
-            while matches!(line.last(), Some(b'\n' | b'\r')) {
+            if line.last() == Some(&b'\n') {
                 line.pop();
             }
-            if let Some(event) = process_session_record(&line, &mut cursor) {
-                events.push(event);
+            if line.last() == Some(&b'\r') {
+                line.pop();
+            }
+            if let Some(event) = process_session_record(&line, &mut cursor, true) {
+                if emitted_event_ids.insert(event.event_id.clone()) {
+                    events.push(event);
+                }
+            }
+        }
+
+        let settled = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+            .is_some_and(|age| age >= LEGACY_FILE_SETTLING_DELAY);
+        if settled && !cursor.direct_usage_record_observed {
+            let settled_events = std::mem::take(&mut cursor.pending_fallback_events);
+            cursor.legacy_fallback_released |= !settled_events.is_empty();
+            let settled_cutoff = settled_events
+                .iter()
+                .filter_map(|event| {
+                    DateTime::parse_from_rfc3339(&event.occurred_at)
+                        .ok()
+                        .map(|at| (at, event.occurred_at.as_str()))
+                })
+                .max_by_key(|(at, _)| *at)
+                .map(|(_, timestamp)| timestamp.to_owned());
+            if settled_cutoff.as_deref().is_some_and(|candidate| {
+                cursor
+                    .legacy_settled_cutoff
+                    .as_deref()
+                    .and_then(|current| DateTime::parse_from_rfc3339(current).ok())
+                    .zip(DateTime::parse_from_rfc3339(candidate).ok())
+                    .is_none_or(|(current, next)| next > current)
+            }) {
+                cursor.legacy_settled_cutoff = settled_cutoff;
+            }
+            for event in settled_events {
+                if emitted_event_ids.insert(event.event_id.clone()) {
+                    events.push(event);
+                }
             }
         }
 
         cursor.offset = complete_offset;
+        cursor.cursor_version = SCAN_CURSOR_VERSION;
         cursor.prefix_len = retained_prefix_len;
         cursor.prefix_hash = retained_prefix_hash;
         next_state.files.insert(key, cursor);
     }
     Ok(ScanOutcome { events, next_state })
+}
+
+fn rebuild_legacy_cursor(file: &Path, offset: u64) -> Result<FileCursor, String> {
+    let mut cursor = FileCursor::fresh();
+    let mut reader = BufReader::new(File::open(file).map_err(|_| "SESSION_READ_UNAVAILABLE")?);
+    let mut position = 0u64;
+    while position < offset {
+        let mut line = Vec::new();
+        let bytes = reader
+            .read_until(b'\n', &mut line)
+            .map_err(|_| "SESSION_READ_UNAVAILABLE")?;
+        if bytes == 0 || !line.ends_with(b"\n") || position.saturating_add(bytes as u64) > offset {
+            break;
+        }
+        position = position.saturating_add(bytes as u64);
+        if line.len() > MAX_RECORD_BYTES {
+            continue;
+        }
+        if line.last() == Some(&b'\n') {
+            line.pop();
+        }
+        if line.last() == Some(&b'\r') {
+            line.pop();
+        }
+        let _ = process_session_record(&line, &mut cursor, false);
+    }
+    // Historical usage rebuilds only the accounting context. It must never
+    // create billable fallback records during a cursor format upgrade.
+    cursor.pending_fallback_events.clear();
+    cursor.offset = offset;
+    Ok(cursor)
 }
 
 /// Establishes the first cursor from metadata only. Historical logs can be
@@ -452,15 +561,11 @@ pub fn baseline_codex_home(codex_home: &Path) -> Result<ScanState, String> {
             continue;
         }
         let prefix_len = (metadata.len() as usize).min(PREFIX_BYTES);
-        state.files.insert(
-            key,
-            FileCursor {
-                offset: metadata.len(),
-                prefix_len,
-                prefix_hash: hash_file_prefix(&file, prefix_len)?,
-                ..FileCursor::default()
-            },
-        );
+        let mut cursor = FileCursor::fresh();
+        cursor.offset = metadata.len();
+        cursor.prefix_len = prefix_len;
+        cursor.prefix_hash = hash_file_prefix(&file, prefix_len)?;
+        state.files.insert(key, cursor);
     }
     Ok(state)
 }
@@ -499,10 +604,19 @@ fn hash_file_prefix(file: &Path, length: usize) -> Result<String, String> {
 
 fn parse_direct_record(line: &[u8]) -> Option<UsageEvent> {
     let row: serde_json::Value = serde_json::from_slice(line).ok()?;
-    parse_token_usage_record(&row, line, None)
+    parse_token_usage_record(&row, line, None, false)
 }
 
-fn process_session_record(line: &[u8], cursor: &mut FileCursor) -> Option<UsageEvent> {
+fn parse_late_direct_review_record(line: &[u8], cursor: &FileCursor) -> Option<UsageEvent> {
+    let row: serde_json::Value = serde_json::from_slice(line).ok()?;
+    parse_token_usage_record(&row, line, Some(cursor), true)
+}
+
+fn process_session_record(
+    line: &[u8],
+    cursor: &mut FileCursor,
+    collect_fallback: bool,
+) -> Option<UsageEvent> {
     let row: serde_json::Value = serde_json::from_slice(line).ok()?;
     match row.get("type")?.as_str()? {
         "turn_context" => {
@@ -510,14 +624,198 @@ fn process_session_record(line: &[u8], cursor: &mut FileCursor) -> Option<UsageE
             None
         }
         "token_usage_record" => {
-            let mut event = parse_direct_record(line)?;
+            let (mut event, missing_reliable_time) = match parse_direct_record(line) {
+                Some(event) => (event, false),
+                None if cursor.legacy_fallback_released => {
+                    (parse_late_direct_review_record(line, cursor)?, true)
+                }
+                None => return None,
+            };
+            let event_time = DateTime::parse_from_rfc3339(&event.occurred_at).ok();
+            let settled_cutoff = cursor
+                .legacy_settled_cutoff
+                .as_deref()
+                .and_then(|cutoff| DateTime::parse_from_rfc3339(cutoff).ok());
+            let overlaps_settled_fallback = cursor.legacy_fallback_released
+                && (missing_reliable_time
+                    || !matches!((event_time, settled_cutoff), (Some(event), Some(cutoff)) if event > cutoff));
+            cursor.direct_usage_record_observed = true;
+            cursor.pending_fallback_events.clear();
             let metadata = metadata_for_usage(row.get("payload")?, Some(cursor));
             event.model = metadata.model;
             event.reasoning_effort = metadata.reasoning_effort;
+            if overlaps_settled_fallback {
+                // A settled fallback may already have reached the server. Keep
+                // this direct record for review rather than charging both when
+                // their relationship cannot be proven from the log.
+                event.source = "QUARANTINED_LEGACY_DIRECT_LATE".to_owned();
+            }
             Some(event)
+        }
+        "event_msg"
+            if row
+                .get("payload")
+                .and_then(|payload| payload.get("type"))
+                .and_then(serde_json::Value::as_str)
+                == Some("token_count") =>
+        {
+            process_cumulative_snapshot(&row, line, cursor, collect_fallback)
         }
         _ => None,
     }
+}
+
+fn process_cumulative_snapshot(
+    row: &serde_json::Value,
+    line: &[u8],
+    cursor: &mut FileCursor,
+    collect_fallback: bool,
+) -> Option<UsageEvent> {
+    if cursor.direct_usage_record_observed {
+        return None;
+    }
+    let payload = row.get("payload")?;
+    let info = payload.get("info")?;
+    let current = cumulative_usage(info.get("total_token_usage")?)?;
+    let Some(previous) = cursor.legacy_usage.replace(current.clone()) else {
+        return None;
+    };
+    if !current.is_at_least(&previous) {
+        return None;
+    }
+    let delta = current.minus(&previous);
+    if delta.is_zero() {
+        return None;
+    }
+    let timestamp = row.get("timestamp")?.as_str()?;
+    if !valid_timestamp(timestamp) {
+        return None;
+    }
+    if !collect_fallback {
+        // The retired Java collector may already have charged this historical
+        // delta. Preserve its boundary when upgrading a byte-only Rust cursor
+        // so late overlapping direct records cannot charge it a second time.
+        cursor.legacy_fallback_released = true;
+        let current_cutoff = cursor
+            .legacy_settled_cutoff
+            .as_deref()
+            .and_then(|value| DateTime::parse_from_rfc3339(value).ok());
+        if current_cutoff.is_none_or(|cutoff| {
+            DateTime::parse_from_rfc3339(timestamp).is_ok_and(|at| at > cutoff)
+        }) {
+            cursor.legacy_settled_cutoff = Some(timestamp.to_owned());
+        }
+        return None;
+    }
+    let metadata = metadata_for_usage(payload, Some(cursor));
+    let event = UsageEvent {
+        event_id: format!("codex-local-cumulative:v1:{}", hex_digest(line)),
+        occurred_at: timestamp.to_owned(),
+        total_tokens: delta.total_tokens,
+        source: "CUMULATIVE_TOKEN_COUNT_FALLBACK".to_owned(),
+        model: metadata.model,
+        reasoning_effort: metadata.reasoning_effort,
+        input_tokens: delta.input_tokens,
+        cached_input_tokens: delta.cached_input_tokens,
+        cache_write_input_tokens: delta.cache_write_input_tokens,
+        output_tokens: delta.output_tokens,
+        reasoning_output_tokens: delta.reasoning_output_tokens,
+    };
+    if !cursor
+        .pending_fallback_events
+        .iter()
+        .any(|pending| pending.event_id == event.event_id)
+    {
+        cursor.pending_fallback_events.push(event);
+    }
+    None
+}
+
+fn cumulative_usage(value: &serde_json::Value) -> Option<CumulativeUsage> {
+    if !value.is_object() {
+        return None;
+    }
+    let total_tokens = value.get("total_tokens")?.as_u64()?;
+    if total_tokens > 100_000_000 {
+        return None;
+    }
+    Some(CumulativeUsage {
+        input_tokens: cumulative_component(value, "input_tokens")?,
+        cached_input_tokens: cumulative_component(value, "cached_input_tokens")?,
+        cache_write_input_tokens: cumulative_component(value, "cache_write_input_tokens")?,
+        output_tokens: cumulative_component(value, "output_tokens")?,
+        reasoning_output_tokens: cumulative_component(value, "reasoning_output_tokens")?,
+        total_tokens,
+    })
+}
+
+fn cumulative_component(value: &serde_json::Value, field: &str) -> Option<Option<u64>> {
+    match value.get(field) {
+        None | Some(serde_json::Value::Null) => Some(None),
+        Some(component) => {
+            let tokens = component.as_u64()?;
+            (tokens <= 100_000_000).then_some(Some(tokens))
+        }
+    }
+}
+
+fn valid_timestamp(value: &str) -> bool {
+    DateTime::parse_from_rfc3339(value).is_ok()
+}
+
+impl CumulativeUsage {
+    fn is_at_least(&self, other: &Self) -> bool {
+        component_is_at_least(self.input_tokens, other.input_tokens)
+            && component_is_at_least(self.cached_input_tokens, other.cached_input_tokens)
+            && component_is_at_least(
+                self.cache_write_input_tokens,
+                other.cache_write_input_tokens,
+            )
+            && component_is_at_least(self.output_tokens, other.output_tokens)
+            && component_is_at_least(self.reasoning_output_tokens, other.reasoning_output_tokens)
+            && self.total_tokens >= other.total_tokens
+    }
+
+    fn minus(&self, other: &Self) -> Self {
+        Self {
+            input_tokens: component_delta(self.input_tokens, other.input_tokens),
+            cached_input_tokens: component_delta(
+                self.cached_input_tokens,
+                other.cached_input_tokens,
+            ),
+            cache_write_input_tokens: component_delta(
+                self.cache_write_input_tokens,
+                other.cache_write_input_tokens,
+            ),
+            output_tokens: component_delta(self.output_tokens, other.output_tokens),
+            reasoning_output_tokens: component_delta(
+                self.reasoning_output_tokens,
+                other.reasoning_output_tokens,
+            ),
+            total_tokens: self.total_tokens - other.total_tokens,
+        }
+    }
+
+    fn is_zero(&self) -> bool {
+        self.total_tokens == 0
+            && self.input_tokens.is_none_or(|tokens| tokens == 0)
+            && self.cached_input_tokens.is_none_or(|tokens| tokens == 0)
+            && self
+                .cache_write_input_tokens
+                .is_none_or(|tokens| tokens == 0)
+            && self.output_tokens.is_none_or(|tokens| tokens == 0)
+            && self
+                .reasoning_output_tokens
+                .is_none_or(|tokens| tokens == 0)
+    }
+}
+
+fn component_is_at_least(current: Option<u64>, previous: Option<u64>) -> bool {
+    current.is_none() || previous.is_none() || current >= previous
+}
+
+fn component_delta(current: Option<u64>, previous: Option<u64>) -> Option<u64> {
+    Some(current? - previous?)
 }
 
 fn update_turn_context(row: &serde_json::Value, cursor: &mut FileCursor) {
@@ -540,6 +838,7 @@ fn parse_token_usage_record(
     row: &serde_json::Value,
     line: &[u8],
     cursor: Option<&FileCursor>,
+    allow_missing_timestamp: bool,
 ) -> Option<UsageEvent> {
     if row.get("type")?.as_str()? != "token_usage_record" {
         return None;
@@ -550,8 +849,11 @@ fn parse_token_usage_record(
     if tokens > 100_000_000 {
         return None;
     }
-    let timestamp = row.get("timestamp")?.as_str()?;
-    if timestamp.is_empty() {
+    let timestamp = row
+        .get("timestamp")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if !allow_missing_timestamp && !valid_timestamp(timestamp) {
         return None;
     }
     let identity = payload
@@ -1271,12 +1573,22 @@ impl GuardSupervisor {
                     &thread_status_path,
                 );
                 *current = next;
-            })
-            .map_err(|_| "METER_GUARD_THREAD_UNAVAILABLE")?;
+            });
+        let worker = match worker {
+            Ok(worker) => Some(worker),
+            Err(_) => {
+                let mut current = snapshot
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                current.state = "ERROR";
+                current.error_code = Some("METER_GUARD_THREAD_UNAVAILABLE".into());
+                None
+            }
+        };
         Ok(Self {
             snapshot,
             stop,
-            worker: Mutex::new(Some(worker)),
+            worker: Mutex::new(worker),
         })
     }
 
@@ -1363,22 +1675,196 @@ impl Drop for GuardSupervisor {
 }
 
 fn publish_guard_snapshot(
-    mut guard: GuardSnapshot,
+    guard: GuardSnapshot,
     audit: &AuditLog,
     audit_state: &mut GuardAuditState,
     status_path: &Path,
 ) -> GuardSnapshot {
-    if let Err(code) = audit_state.record(audit, &guard) {
-        guard.state = "ERROR";
-        guard.error_code = Some(code);
-    }
+    let _ = audit_state.record(audit, &guard);
     if write_guard_status(status_path, &guard).is_err() {
-        guard.state = "ERROR";
-        guard.error_code = Some("METER_STATUS_WRITE_FAILED".into());
         // An older CLEAR record must not remain readable after publication fails.
         let _ = fs::remove_file(status_path);
     }
     guard
+}
+
+struct CaptureSupervisor {
+    stop: Arc<(Mutex<bool>, Condvar)>,
+    failure: Arc<Mutex<Option<&'static str>>>,
+    worker: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl CaptureSupervisor {
+    fn start(
+        interval: Duration,
+        cycle: impl Fn() -> Result<(), String> + Send + Sync + 'static,
+    ) -> Result<Self, String> {
+        let stop = Arc::new((Mutex::new(false), Condvar::new()));
+        let failure = Arc::new(Mutex::new(None));
+        let thread_stop = Arc::clone(&stop);
+        let thread_failure = Arc::clone(&failure);
+        let cycle = Arc::new(cycle);
+        let worker = thread::Builder::new()
+            .name("quota-guard-meter-capture".into())
+            .spawn(move || {
+                let outcome = catch_unwind(AssertUnwindSafe(|| loop {
+                    if capture_is_stopping(&thread_stop) {
+                        break;
+                    }
+                    let _ = cycle();
+                    if wait_for_capture(&thread_stop, interval) {
+                        break;
+                    }
+                }));
+                if !capture_is_stopping(&thread_stop) {
+                    let code = if outcome.is_err() {
+                        "METER_CAPTURE_THREAD_PANICKED"
+                    } else {
+                        "METER_CAPTURE_THREAD_STOPPED"
+                    };
+                    *thread_failure
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(code);
+                }
+            })
+            .map_err(|_| "METER_CAPTURE_THREAD_UNAVAILABLE")?;
+        Ok(Self {
+            stop,
+            failure,
+            worker: Mutex::new(Some(worker)),
+        })
+    }
+
+    fn fatal_error(&self) -> Option<&'static str> {
+        if let Some(code) = *self
+            .failure
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        {
+            return Some(code);
+        }
+        let finished = self
+            .worker
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .is_some_and(JoinHandle::is_finished);
+        (finished && !capture_is_stopping(&self.stop)).then_some("METER_CAPTURE_THREAD_STOPPED")
+    }
+
+    fn stop(&self) {
+        let mut stopped = self
+            .stop
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *stopped = true;
+        self.stop.1.notify_all();
+        drop(stopped);
+        if let Some(worker) = self
+            .worker
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
+            let _ = worker.join();
+        }
+    }
+}
+
+impl Drop for CaptureSupervisor {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+fn capture_is_stopping(stop: &Arc<(Mutex<bool>, Condvar)>) -> bool {
+    *stop
+        .0
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn wait_for_capture(stop: &Arc<(Mutex<bool>, Condvar)>, interval: Duration) -> bool {
+    let stopped = stop
+        .0
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (stopped, _) = stop
+        .1
+        .wait_timeout_while(stopped, interval, |stopped| !*stopped)
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *stopped
+}
+
+fn capture_local_events(
+    config: &MeterConfig,
+    journal_lock: &Mutex<()>,
+    status_lock: &Mutex<()>,
+    last_capture_epoch: &AtomicU64,
+) -> Result<(), String> {
+    let (previous, credential) = {
+        let _journal_guard = journal_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        (
+            load_state(&config.state_dir.join("scan-state.json"))?,
+            load_credential(&config.state_dir)?,
+        )
+    };
+    let (Some(previous), Some(credential)) = (previous, credential) else {
+        return Ok(());
+    };
+    if credential.device_id != config.device_id {
+        return Err("METER_CREDENTIAL_INVALID".into());
+    }
+    if !credential.owner_verified || credential.user_id.is_none() {
+        return Ok(());
+    }
+    let outbox = outbox::Outbox::capture_with_short_lock(
+        config,
+        &previous,
+        credential.user_id,
+        journal_lock,
+    )?;
+    let pending = outbox.pending_count();
+    last_capture_epoch.store(epoch_seconds(), Ordering::Relaxed);
+    publish_capture_progress(config, pending, status_lock);
+    Ok(())
+}
+
+fn publish_capture_progress(config: &MeterConfig, pending_events: usize, status_lock: &Mutex<()>) {
+    let _status_guard = status_lock
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut status = read_public_status(&config.status_file).unwrap_or_else(|| MeterStatus {
+        state: "UP_TO_DATE".into(),
+        version: env!("CARGO_PKG_VERSION").into(),
+        last_scan_epoch_seconds: 0,
+        last_report_epoch_seconds: None,
+        reported_events: 0,
+        pending_events: None,
+        error_code: None,
+        cc_switch_guard: "INACTIVE".into(),
+        cc_switch_guard_checked_at: 0,
+        cc_switch_guard_lease_id: None,
+    });
+    status.last_scan_epoch_seconds = epoch_seconds();
+    status.pending_events = Some(pending_events);
+    let _ = write_public_status(&config.status_file, &status);
+}
+
+fn ensure_current_owner(config: &MeterConfig, expected_user_id: uuid::Uuid) -> Result<(), String> {
+    let Some(current) = load_credential(&config.state_dir)? else {
+        return Err("METER_OUTBOX_OWNER_CHANGED".into());
+    };
+    if current.device_id != config.device_id
+        || !current.owner_verified
+        || current.user_id != Some(expected_user_id)
+    {
+        return Err("METER_OUTBOX_OWNER_CHANGED".into());
+    }
+    Ok(())
 }
 
 pub struct MeterRuntime {
@@ -1392,6 +1878,10 @@ pub struct MeterRuntime {
     last_report_epoch_seconds: Option<u64>,
     pending_events: Option<usize>,
     guard: GuardSupervisor,
+    capture: CaptureSupervisor,
+    journal_lock: Arc<Mutex<()>>,
+    status_lock: Arc<Mutex<()>>,
+    last_capture_epoch: Arc<AtomicU64>,
     last_public_status: Option<MeterStatus>,
 }
 
@@ -1405,6 +1895,15 @@ impl MeterRuntime {
         checker: Arc<GuardChecker>,
         guard_interval: Duration,
     ) -> Result<Self, String> {
+        Self::new_with_capture_interval(config, checker, guard_interval, CAPTURE_INTERVAL)
+    }
+
+    fn new_with_capture_interval(
+        config: MeterConfig,
+        checker: Arc<GuardChecker>,
+        guard_interval: Duration,
+        capture_interval: Duration,
+    ) -> Result<Self, String> {
         config.validate()?;
         let client = reqwest::blocking::Client::builder()
             .no_proxy()
@@ -1416,8 +1915,29 @@ impl MeterRuntime {
             Some(directory) => AuditLog::in_directory(directory)?,
             None => AuditLog::new(&config.state_dir)?,
         };
-        audit.append(AuditKind::ServiceStarted, None, 0, false)?;
+        let public_log_path = config
+            .status_file
+            .parent()
+            .ok_or("METER_STATUS_PATH_INVALID")?
+            .join("meter-runtime-logs.jsonl");
+        let audit = audit.with_public_summary_path(public_log_path);
+        let _ = audit.append(AuditKind::ServiceStarted, None, 0, false);
         let guard = GuardSupervisor::start(&config, &audit, checker, guard_interval)?;
+        let journal_lock = Arc::new(Mutex::new(()));
+        let status_lock = Arc::new(Mutex::new(()));
+        let last_capture_epoch = Arc::new(AtomicU64::new(0));
+        let capture_config = config.clone();
+        let capture_lock = Arc::clone(&journal_lock);
+        let capture_status_lock = Arc::clone(&status_lock);
+        let capture_epoch = Arc::clone(&last_capture_epoch);
+        let capture = CaptureSupervisor::start(capture_interval, move || {
+            capture_local_events(
+                &capture_config,
+                &capture_lock,
+                &capture_status_lock,
+                &capture_epoch,
+            )
+        })?;
         Ok(Self {
             config,
             client,
@@ -1429,6 +1949,10 @@ impl MeterRuntime {
             last_report_epoch_seconds: None,
             pending_events: None,
             guard,
+            capture,
+            journal_lock,
+            status_lock,
+            last_capture_epoch,
             last_public_status: None,
         })
     }
@@ -1446,16 +1970,10 @@ impl MeterRuntime {
         let now = epoch_seconds();
         // The independent supervisor publishes every guard check. Keep this
         // tick's public status compatible while never delaying checks for IO.
-        let mut guard = self.guard.snapshot();
-        let prepublish = self.publish_guard_status(&guard);
-        if let Err(code) = &prepublish {
-            guard.state = "ERROR";
-            guard.error_code = Some(code.clone());
-        }
-        let outcome = if let Err(code) = prepublish {
-            Err(code)
-        } else if let Some(error) = guard.error_code.clone() {
-            Err(error)
+        let guard = self.guard.snapshot();
+        let _ = self.publish_guard_status(&guard);
+        let outcome = if let Some(code) = self.capture.fatal_error() {
+            Err(code.into())
         } else {
             self.tick_inner()
         };
@@ -1485,6 +2003,9 @@ impl MeterRuntime {
                 cc_switch_guard_lease_id: guard.lease_id,
             },
         };
+        status.last_scan_epoch_seconds = status
+            .last_scan_epoch_seconds
+            .max(self.last_capture_epoch.load(Ordering::Relaxed));
         let latest_guard = self.guard.snapshot();
         status.cc_switch_guard = latest_guard.state.into();
         status.cc_switch_guard_checked_at = latest_guard.checked_at;
@@ -1496,10 +2017,9 @@ impl MeterRuntime {
                 status.reported_events = 0;
             }
         }
-        if write_public_status(&self.config.status_file, &status).is_err() {
-            status.state = "ERROR".into();
-            status.error_code = Some("METER_STATUS_WRITE_FAILED".into());
-        } else {
+        if write_public_status_monotonic(&self.config.status_file, &status, &self.status_lock)
+            .is_ok()
+        {
             self.last_public_status = Some(status.clone());
         }
         let kind = audit_kind_for_status(
@@ -1510,24 +2030,38 @@ impl MeterRuntime {
             now,
         );
         if let Some(kind) = kind {
-            if self.audit.append(kind, Some(&status), 0, false).is_err() {
-                status.state = "ERROR".into();
-                status.error_code = Some("METER_LOG_WRITE_FAILED".into());
-                if write_public_status(&self.config.status_file, &status).is_ok() {
-                    self.last_public_status = Some(status.clone());
-                }
-            } else {
-                self.last_logged_state = Some(status.state.clone());
-                self.last_logged_error = status.error_code.clone();
-                self.last_logged_epoch_seconds = Some(now);
-            }
+            let _ = self.audit.append(kind, Some(&status), 0, false);
+            self.last_logged_state = Some(status.state.clone());
+            self.last_logged_error = status.error_code.clone();
+            self.last_logged_epoch_seconds = Some(now);
         }
         status
     }
 
     pub fn shutdown(&self) -> Result<(), String> {
+        self.capture.stop();
         self.guard.stop();
-        self.audit.append(AuditKind::ServiceStopped, None, 0, false)
+        let _ = self.audit.append(AuditKind::ServiceStopped, None, 0, false);
+        Ok(())
+    }
+
+    pub fn fatal_error(&self) -> Option<&'static str> {
+        self.capture.fatal_error()
+    }
+
+    // Recheck between bounded HTTP operations so a failed collector cannot
+    // remain hidden behind a large upload backlog before SCM recovers it.
+    fn ensure_operational(&self) -> Result<(), String> {
+        if let Some(code) = self.capture.fatal_error() {
+            return Err(code.into());
+        }
+        self.guard.ensure_allowed()
+    }
+
+    fn record_capture_progress(&self, outbox: &outbox::Outbox) {
+        self.last_capture_epoch
+            .store(epoch_seconds(), Ordering::Relaxed);
+        publish_capture_progress(&self.config, outbox.pending_count(), &self.status_lock);
     }
 
     fn publish_guard_status(&mut self, guard: &GuardSnapshot) -> Result<(), String> {
@@ -1550,41 +2084,42 @@ impl MeterRuntime {
             status.state = "ERROR".into();
             status.error_code = Some(code.clone());
         }
-        write_public_status(&self.config.status_file, &status)
+        write_public_status_monotonic(&self.config.status_file, &status, &self.status_lock)
     }
 
     fn tick_inner(&mut self) -> Result<(&'static str, usize), String> {
-        self.guard.ensure_allowed()?;
         let state_path = self.config.state_dir.join("scan-state.json");
-        let first_pairing = load_credential(&self.config.state_dir)?.is_none()
-            && self.config.pairing_inbox.exists();
-        let fresh_baseline = if first_pairing {
-            Some(baseline_codex_home(&self.config.codex_home)?)
-        } else {
-            None
-        };
-        let paired = consume_pairing(&self.config)?;
-        if paired && first_pairing {
-            let baseline = fresh_baseline.ok_or("METER_STATE_INVALID")?;
-            if let Err(code) = self
-                .guard
-                .with_allowed(|| save_state(&state_path, &baseline))
-            {
-                let _ = fs::remove_file(credential_file(&self.config.state_dir));
-                return Err(code);
+        let (previous, credential) = {
+            let _journal_guard = self
+                .journal_lock
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let first_pairing = load_credential(&self.config.state_dir)?.is_none()
+                && self.config.pairing_inbox.exists();
+            let fresh_baseline = first_pairing
+                .then(|| baseline_codex_home(&self.config.codex_home))
+                .transpose()?;
+            let paired = consume_pairing(&self.config)?;
+            if paired && first_pairing {
+                let baseline = fresh_baseline.ok_or("METER_STATE_INVALID")?;
+                save_state(&state_path, &baseline)?;
+                return Ok(("BASELINE_READY", 0));
             }
-            return Ok(("BASELINE_READY", 0));
-        }
-        let previous = load_state(&state_path)?;
-        if previous.is_none() {
-            // Existing official activity has unknown ownership until this OS
-            // profile is paired. Establish a byte cursor without charging it.
-            let baseline = baseline_codex_home(&self.config.codex_home)?;
-            self.guard
-                .with_allowed(|| save_state(&state_path, &baseline))?;
-            return Ok(("BASELINE_READY", 0));
-        }
-        let Some(mut credential) = load_credential(&self.config.state_dir)? else {
+            let previous = load_state(&state_path)?;
+            if previous.is_none() {
+                // Existing official activity has unknown ownership until this OS
+                // profile is paired. Establish a byte cursor without charging it.
+                let baseline = match fresh_baseline {
+                    Some(baseline) => baseline,
+                    None => baseline_codex_home(&self.config.codex_home)?,
+                };
+                save_state(&state_path, &baseline)?;
+                return Ok(("BASELINE_READY", 0));
+            }
+            let credential = load_credential(&self.config.state_dir)?;
+            (previous.ok_or("METER_STATE_INVALID")?, credential)
+        };
+        let Some(mut credential) = credential else {
             return Ok(("UNPAIRED", 0));
         };
         if credential.device_id != self.config.device_id {
@@ -1593,27 +2128,35 @@ impl MeterRuntime {
         // Capture before any network IO so source log rotation and service
         // restarts cannot erase unacknowledged usage. The journal is bound to
         // the paired device, origin and Windows profile's Codex directory.
-        let previous = previous.unwrap();
-        let mut outbox =
-            outbox::Outbox::capture(&self.config, &previous, credential.user_id, || {
-                self.guard.ensure_allowed()
-            })?;
+        let mut outbox = outbox::Outbox::capture_with_short_lock(
+            &self.config,
+            &previous,
+            credential.user_id,
+            &self.journal_lock,
+        )?;
         self.pending_events = Some(outbox.pending_count());
+        self.record_capture_progress(&outbox);
         if !credential.owner_verified || credential.user_id.is_none() {
-            self.guard.ensure_allowed()?;
+            self.ensure_operational()?;
             let user_id = renew_device_credential(&self.client, &self.config, &credential)?;
             if credential.user_id.is_some_and(|claimed| claimed != user_id) {
                 return Err("METER_PAIRING_OWNER_MISMATCH".into());
             }
             credential.user_id = Some(user_id);
             credential.owner_verified = true;
-            self.guard
-                .with_allowed(|| save_credential(&self.config.state_dir, &credential))?;
-            outbox = outbox::Outbox::capture(&self.config, &previous, credential.user_id, || {
-                self.guard.ensure_allowed()
-            })?;
+            save_credential(&self.config.state_dir, &credential)?;
+            outbox = outbox::Outbox::capture_with_short_lock(
+                &self.config,
+                &previous,
+                credential.user_id,
+                &self.journal_lock,
+            )?;
             self.pending_events = Some(outbox.pending_count());
+            self.record_capture_progress(&outbox);
         }
+        // The guard is fail-closed for actions and network requests. A stale,
+        // unknown or failed desktop lease must not stop local collection.
+        self.ensure_operational()?;
         let now = Utc::now();
         let candidates: Vec<_> = outbox
             .pending
@@ -1623,14 +2166,24 @@ impl MeterRuntime {
             .collect();
         let mut reported_events = Vec::new();
         for batch in candidates.chunks(100) {
-            self.guard.ensure_allowed()?;
+            self.ensure_operational()?;
             match send_events_guarded(&self.client, &self.config, &credential, batch, || {
-                self.guard.ensure_allowed()
+                self.ensure_operational()
             }) {
                 Ok(()) => {
                     reported_events.extend_from_slice(batch);
-                    self.guard
-                        .with_allowed(|| outbox.acknowledge(&self.config, batch))?;
+                    let owner_id = credential.user_id.ok_or("METER_CREDENTIAL_INVALID")?;
+                    let latest = {
+                        let _journal_guard = self
+                            .journal_lock
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        ensure_current_owner(&self.config, owner_id)?;
+                        self.guard.with_allowed(|| {
+                            outbox::Outbox::acknowledge_latest(&self.config, owner_id, batch)
+                        })?
+                    };
+                    outbox = latest;
                 }
                 Err(code) if code == "METER_REPORT_REJECTED" => {
                     // A malformed event must not hold later valid events
@@ -1645,19 +2198,48 @@ impl MeterRuntime {
                                 &self.config,
                                 &credential,
                                 one,
-                                || self.guard.ensure_allowed(),
+                                || self.ensure_operational(),
                             )
                         };
                         match result {
                             Ok(()) => {
-                                self.guard
-                                    .with_allowed(|| outbox.acknowledge(&self.config, one))?;
+                                let owner_id =
+                                    credential.user_id.ok_or("METER_CREDENTIAL_INVALID")?;
+                                let latest = {
+                                    let _journal_guard = self
+                                        .journal_lock
+                                        .lock()
+                                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                                    ensure_current_owner(&self.config, owner_id)?;
+                                    self.guard.with_allowed(|| {
+                                        outbox::Outbox::acknowledge_latest(
+                                            &self.config,
+                                            owner_id,
+                                            one,
+                                        )
+                                    })?
+                                };
+                                outbox = latest;
                                 reported_events.push(event.clone());
                             }
                             Err(code) if code == "METER_REPORT_REJECTED" => {
-                                self.guard.with_allowed(|| {
-                                    outbox.quarantine_rejected(&self.config, one)
-                                })?;
+                                let owner_id =
+                                    credential.user_id.ok_or("METER_CREDENTIAL_INVALID")?;
+                                let latest = {
+                                    let _journal_guard = self
+                                        .journal_lock
+                                        .lock()
+                                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                                    ensure_current_owner(&self.config, owner_id)?;
+                                    self.guard.with_allowed(|| {
+                                        outbox::Outbox::quarantine_rejected_latest(
+                                            &self.config,
+                                            owner_id,
+                                            one,
+                                        )
+                                    })?
+                                };
+                                outbox = latest;
                             }
                             Err(code) => return Err(code),
                         }
@@ -1670,10 +2252,31 @@ impl MeterRuntime {
                 self.last_report_epoch_seconds = Some(epoch_seconds());
             }
         }
-        self.guard
-            .with_allowed(|| save_state(&state_path, outbox.scan_state()))?;
+        outbox = outbox::Outbox::capture_with_short_lock(
+            &self.config,
+            &previous,
+            credential.user_id,
+            &self.journal_lock,
+        )?;
+        {
+            let _journal_guard = self
+                .journal_lock
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            ensure_current_owner(
+                &self.config,
+                credential.user_id.ok_or("METER_CREDENTIAL_INVALID")?,
+            )?;
+            save_state(&state_path, outbox.scan_state())?;
+        }
+        self.pending_events = Some(outbox.pending_count());
+        self.record_capture_progress(&outbox);
         let warning = outbox.owner_warning().or_else(|| {
-            (!outbox.pending.is_empty()).then_some("METER_EVENT_OUTSIDE_REPORT_WINDOW")
+            outbox
+                .pending
+                .iter()
+                .any(|event| !reportable_at(event, Utc::now()))
+                .then_some("METER_EVENT_OUTSIDE_REPORT_WINDOW")
         });
         let reported = ScanOutcome {
             events: reported_events,
@@ -1698,16 +2301,17 @@ impl MeterRuntime {
                 cc_switch_guard_checked_at: guard.checked_at,
                 cc_switch_guard_lease_id: guard.lease_id,
             };
-            self.audit
-                .append(AuditKind::UsageReported, Some(&status), tokens, false)?;
+            let _ = self
+                .audit
+                .append(AuditKind::UsageReported, Some(&status), tokens, false);
         }
         if self
             .last_heartbeat
             .is_none_or(|last| last.elapsed() >= Duration::from_secs(30))
         {
-            self.guard.ensure_allowed()?;
+            self.ensure_operational()?;
             send_heartbeat_guarded(&self.client, &self.config, &credential, || {
-                self.guard.ensure_allowed()
+                self.ensure_operational()
             })?;
             self.last_heartbeat = Some(Instant::now());
             let guard = self.guard.snapshot();
@@ -1728,8 +2332,9 @@ impl MeterRuntime {
                 cc_switch_guard_checked_at: guard.checked_at,
                 cc_switch_guard_lease_id: guard.lease_id,
             };
-            self.audit
-                .append(AuditKind::Heartbeat, Some(&status), 0, true)?;
+            let _ = self
+                .audit
+                .append(AuditKind::Heartbeat, Some(&status), 0, true);
         }
         if let Some(code) = warning {
             return Err(code.into());
@@ -1797,6 +2402,38 @@ fn write_public_status(path: &Path, status: &MeterStatus) -> Result<(), String> 
         let _ = fs::remove_file(&temporary);
     }
     result.map_err(str::to_owned)
+}
+
+fn read_public_status(path: &Path) -> Option<MeterStatus> {
+    let metadata = fs::symlink_metadata(path).ok()?;
+    if !metadata.file_type().is_file() || metadata.len() > 16 * 1024 {
+        return None;
+    }
+    let bytes = fs::read(path).ok()?;
+    (bytes.len() <= 16 * 1024)
+        .then(|| serde_json::from_slice(&bytes).ok())
+        .flatten()
+}
+
+fn write_public_status_monotonic(
+    path: &Path,
+    status: &MeterStatus,
+    status_lock: &Mutex<()>,
+) -> Result<(), String> {
+    let _status_guard = status_lock
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut merged = status.clone();
+    if let Some(existing) = read_public_status(path) {
+        if existing.last_scan_epoch_seconds > merged.last_scan_epoch_seconds {
+            merged.last_scan_epoch_seconds = existing.last_scan_epoch_seconds;
+            merged.pending_events = existing.pending_events;
+        }
+        if existing.last_report_epoch_seconds > merged.last_report_epoch_seconds {
+            merged.last_report_epoch_seconds = existing.last_report_epoch_seconds;
+        }
+    }
+    write_public_status(path, &merged)
 }
 
 #[cfg(test)]
@@ -1989,7 +2626,7 @@ mod tests {
 
         let failed =
             publish_guard_snapshot(terminated.clone(), &audit, &mut audit_state, &blocked_path);
-        assert_eq!(failed.state, "ERROR");
+        assert_eq!(failed.state, "TERMINATED");
         assert_eq!(failed.termination_count, 1);
 
         fs::remove_dir(&blocked_path).unwrap();
@@ -2169,6 +2806,45 @@ mod tests {
         )
     }
 
+    fn cumulative_at(
+        timestamp: &str,
+        total: u64,
+        input: Option<u64>,
+        output: Option<u64>,
+    ) -> String {
+        let mut usage = serde_json::Map::new();
+        usage.insert("total_tokens".into(), serde_json::json!(total));
+        if let Some(input) = input {
+            usage.insert("input_tokens".into(), serde_json::json!(input));
+        }
+        if let Some(output) = output {
+            usage.insert("output_tokens".into(), serde_json::json!(output));
+        }
+        let row = serde_json::json!({
+            "type": "event_msg",
+            "timestamp": timestamp,
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "total_token_usage": usage,
+                    "last_token_usage": { "total_tokens": 1 }
+                }
+            }
+        });
+        format!("{}\n", serde_json::to_string(&row).unwrap())
+    }
+
+    fn set_file_mtime_older_than(path: &Path, age: Duration) {
+        let modified = SystemTime::now() - age;
+        fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+    }
+
     fn read_http_request(stream: &mut std::net::TcpStream) -> Vec<u8> {
         stream.set_nonblocking(false).unwrap();
         let mut bytes = Vec::new();
@@ -2276,6 +2952,265 @@ mod tests {
         let fresh = scan(&home, &baseline).unwrap();
         assert_eq!(fresh.events.len(), 1);
         assert_eq!(fresh.events[0].total_tokens, 25);
+    }
+
+    #[test]
+    fn legacy_cumulative_snapshots_emit_only_positive_deltas_with_java_stable_ids() {
+        let root = TestDir::new();
+        let home = root.path().join(".codex");
+        let sessions = home.join("sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        let log = sessions.join("legacy.jsonl");
+        let timestamp = Utc::now().to_rfc3339();
+        let first = cumulative_at(&timestamp, 120, None, None);
+        let second = cumulative_at(&timestamp, 180, Some(150), Some(30));
+        let third = cumulative_at(&timestamp, 240, Some(200), Some(40));
+        let reset = cumulative_at(&timestamp, 10, Some(5), Some(5));
+        let after_reset = cumulative_at(&timestamp, 20, Some(15), Some(5));
+        fs::write(&log, format!("{first}{second}{third}{reset}{after_reset}")).unwrap();
+        set_file_mtime_older_than(&log, Duration::from_secs(60));
+
+        let outcome = scan(&home, &ScanState::default()).unwrap();
+        assert_eq!(outcome.events.len(), 3);
+        assert_eq!(outcome.events[0].total_tokens, 60);
+        assert_eq!(outcome.events[0].input_tokens, None);
+        assert_eq!(outcome.events[1].input_tokens, Some(50));
+        assert_eq!(outcome.events[1].output_tokens, Some(10));
+        assert_eq!(outcome.events[2].total_tokens, 10);
+        assert_eq!(outcome.events[2].input_tokens, Some(10));
+        assert!(outcome
+            .events
+            .iter()
+            .all(|event| event.source == "CUMULATIVE_TOKEN_COUNT_FALLBACK"));
+        assert_eq!(
+            outcome.events[0].event_id,
+            format!(
+                "codex-local-cumulative:v1:{}",
+                hex_digest(second.trim_end().as_bytes())
+            )
+        );
+
+        let restored: ScanState =
+            serde_json::from_slice(&serde_json::to_vec(&outcome.next_state).unwrap()).unwrap();
+        assert!(scan(&home, &restored).unwrap().events.is_empty());
+    }
+
+    #[test]
+    fn direct_records_clear_unsettled_legacy_pending_and_permanently_disable_fallback() {
+        let root = TestDir::new();
+        let home = root.path().join(".codex");
+        let sessions = home.join("sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        let log = sessions.join("mixed.jsonl");
+        let timestamp = Utc::now().to_rfc3339();
+        fs::write(
+            &log,
+            cumulative_at(&timestamp, 100, Some(80), Some(20))
+                + &cumulative_at(&timestamp, 130, Some(100), Some(30)),
+        )
+        .unwrap();
+
+        let first = scan(&home, &ScanState::default()).unwrap();
+        assert!(first.events.is_empty());
+        assert_eq!(
+            first.next_state.files["mixed.jsonl"]
+                .pending_fallback_events
+                .len(),
+            1
+        );
+        let restored: ScanState =
+            serde_json::from_slice(&serde_json::to_vec(&first.next_state).unwrap()).unwrap();
+        let direct = record_at("mixed-direct", 31, &timestamp);
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&log)
+            .unwrap()
+            .write_all(direct.as_bytes())
+            .unwrap();
+        set_file_mtime_older_than(&log, Duration::from_secs(60));
+
+        let after_direct = scan(&home, &restored).unwrap();
+        assert_eq!(after_direct.events.len(), 1);
+        assert_eq!(after_direct.events[0].source, "TOKEN_USAGE_RECORD");
+        let cursor = &after_direct.next_state.files["mixed.jsonl"];
+        assert!(cursor.direct_usage_record_observed);
+        assert!(cursor.pending_fallback_events.is_empty());
+
+        let new_direct = record_at("mixed-direct-new", 42, &timestamp);
+        let later_legacy = cumulative_at(&timestamp, 500, Some(400), Some(100));
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&log)
+            .unwrap()
+            .write_all((later_legacy + &new_direct).as_bytes())
+            .unwrap();
+        let future = scan(&home, &after_direct.next_state).unwrap();
+        assert_eq!(future.events.len(), 1);
+        assert_eq!(future.events[0].source, "TOKEN_USAGE_RECORD");
+        assert!(future.next_state.files["mixed.jsonl"]
+            .pending_fallback_events
+            .is_empty());
+    }
+
+    #[test]
+    fn old_rust_cursor_rebuilds_history_context_without_rebilling_it() {
+        let root = TestDir::new();
+        let home = root.path().join(".codex");
+        let sessions = home.join("sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        let log = sessions.join("old-cursor.jsonl");
+        let timestamp = Utc::now().to_rfc3339();
+        let history = format!(
+            "{{\"type\":\"turn_context\",\"payload\":{{\"model\":\"gpt-6.1-sol\",\"effort\":\"max\"}}}}\n{}{}",
+            cumulative_at(&timestamp, 100, Some(80), Some(20)),
+            cumulative_at(&timestamp, 120, Some(100), Some(20)),
+        );
+        fs::write(&log, &history).unwrap();
+        let prefix_len = history.len().min(PREFIX_BYTES);
+        let mut old_state = ScanState::default();
+        old_state.files.insert(
+            "old-cursor.jsonl".into(),
+            FileCursor {
+                offset: history.len() as u64,
+                prefix_len,
+                prefix_hash: hex_digest(&history.as_bytes()[..prefix_len]),
+                ..FileCursor::default()
+            },
+        );
+        let appended = cumulative_at(&timestamp, 150, Some(125), Some(25));
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&log)
+            .unwrap()
+            .write_all(appended.as_bytes())
+            .unwrap();
+        set_file_mtime_older_than(&log, Duration::from_secs(60));
+
+        let upgraded = scan(&home, &old_state).unwrap();
+        assert_eq!(upgraded.events.len(), 1);
+        assert_eq!(upgraded.events[0].total_tokens, 30);
+        assert_eq!(upgraded.events[0].input_tokens, Some(25));
+        assert_eq!(upgraded.events[0].model.as_deref(), Some("gpt-6.1-sol"));
+        assert_eq!(upgraded.events[0].reasoning_effort.as_deref(), Some("max"));
+        assert_eq!(
+            upgraded.next_state.files["old-cursor.jsonl"].cursor_version,
+            SCAN_CURSOR_VERSION
+        );
+    }
+
+    #[test]
+    fn migrated_legacy_history_keeps_an_overlap_cutoff_without_rebilling() {
+        let root = TestDir::new();
+        let log = root.path().join("historical.jsonl");
+        let timestamp = Utc::now().to_rfc3339();
+        let history = cumulative_at(&timestamp, 100, Some(80), Some(20))
+            + &cumulative_at(&timestamp, 120, Some(100), Some(20));
+        fs::write(&log, &history).unwrap();
+        let mut cursor = rebuild_legacy_cursor(&log, history.len() as u64).unwrap();
+        assert!(cursor.pending_fallback_events.is_empty());
+        let direct = record_at("late-after-upgrade", 20, &timestamp);
+        let reviewed = process_session_record(direct.trim_end().as_bytes(), &mut cursor, true)
+            .expect("late record must remain available for review");
+        assert_eq!(reviewed.source, "QUARANTINED_LEGACY_DIRECT_LATE");
+        assert_eq!(reviewed.total_tokens, 20);
+    }
+
+    #[test]
+    fn late_direct_records_at_or_before_cutoff_or_without_time_are_quarantined() {
+        let root = TestDir::new();
+        let owner = uuid::Uuid::from_u128(17);
+        let config = MeterConfig {
+            server_url: "http://127.0.0.1:9".into(),
+            codex_home: root.path().join(".codex"),
+            pairing_inbox: root.path().join("pairing.json"),
+            state_dir: root.path().join("state"),
+            status_file: root.path().join("status.json"),
+            device_id: uuid::Uuid::new_v4(),
+            owner_user_sid: None,
+            log_dir: None,
+        };
+        let sessions = config.codex_home.join("sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        let log = sessions.join("legacy-then-direct.jsonl");
+        let cutoff = (Utc::now() - TimeDelta::seconds(2)).to_rfc3339();
+        let before_cutoff =
+            (DateTime::parse_from_rfc3339(&cutoff).unwrap() - TimeDelta::seconds(1)).to_rfc3339();
+        let after_cutoff =
+            (DateTime::parse_from_rfc3339(&cutoff).unwrap() + TimeDelta::seconds(1)).to_rfc3339();
+        fs::write(
+            &log,
+            cumulative_at(&before_cutoff, 100, Some(80), Some(20))
+                + &cumulative_at(&cutoff, 150, Some(120), Some(30)),
+        )
+        .unwrap();
+        save_state(
+            &config.state_dir.join("scan-state.json"),
+            &ScanState::default(),
+        )
+        .unwrap();
+        set_file_mtime_older_than(&log, Duration::from_secs(60));
+
+        let first = outbox::Outbox::capture(&config, &ScanState::default(), Some(owner), || Ok(()))
+            .unwrap();
+        assert_eq!(first.pending.len(), 1);
+        assert_eq!(first.pending[0].source, "CUMULATIVE_TOKEN_COUNT_FALLBACK");
+
+        let late_one = record_at("late-one", 25, &cutoff);
+        let late_two = record_at("late-two", 26, &before_cutoff);
+        let no_timestamp = record_at("late-no-time", 28, &cutoff)
+            .replace(&format!("\"timestamp\":\"{cutoff}\","), "");
+        let new_direct = record_at("new-direct", 27, &after_cutoff);
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&log)
+            .unwrap()
+            .write_all((late_one + &late_two + &no_timestamp + &new_direct).as_bytes())
+            .unwrap();
+        set_file_mtime_older_than(&log, Duration::from_secs(60));
+
+        let second =
+            outbox::Outbox::capture(&config, &ScanState::default(), Some(owner), || Ok(()))
+                .unwrap();
+        assert_eq!(second.owner_warning(), Some("METER_LEGACY_DIRECT_LATE"));
+        assert_eq!(second.pending.len(), 2);
+        assert!(second
+            .pending
+            .iter()
+            .any(|event| event.source == "CUMULATIVE_TOKEN_COUNT_FALLBACK"));
+        assert!(second.pending.iter().any(|event| {
+            event.source == "TOKEN_USAGE_RECORD"
+                && event.event_id
+                    == parse_direct_record(
+                        record_at("new-direct", 27, &after_cutoff).trim().as_bytes(),
+                    )
+                    .unwrap()
+                    .event_id
+        }));
+        assert!(second.pending.iter().all(|event| {
+            !["late-one", "late-two"].iter().any(|id| {
+                event.event_id
+                    == parse_direct_record(record_at(id, 25, &cutoff).trim().as_bytes())
+                        .unwrap()
+                        .event_id
+            })
+        }));
+        let saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(config.state_dir.join("usage-outbox.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            saved["quarantined"][0]["errorCode"],
+            "METER_LEGACY_DIRECT_LATE"
+        );
+        assert_eq!(
+            saved["quarantined"][0]["events"].as_array().unwrap().len(),
+            3
+        );
+        assert_eq!(saved["quarantined"][0]["events"][2]["occurredAt"], "");
+        let reloaded =
+            outbox::Outbox::capture(&config, &ScanState::default(), Some(owner), || Ok(()))
+                .unwrap();
+        assert_eq!(reloaded.owner_warning(), Some("METER_LEGACY_DIRECT_LATE"));
+        assert_eq!(reloaded.pending.len(), 2);
     }
 
     #[test]
@@ -3021,6 +3956,249 @@ mod tests {
     }
 
     #[test]
+    fn capture_thread_persists_new_usage_and_public_progress_while_upload_is_blocked() {
+        let root = TestDir::new();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let (first_request_tx, first_request_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let server = thread::spawn(move || {
+            let mut requests = Vec::new();
+            let accept = || {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => return stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(Instant::now() < deadline, "meter request timed out");
+                            thread::yield_now();
+                        }
+                        Err(error) => panic!("mock listener failed: {error}"),
+                    }
+                }
+            };
+            let mut first = accept();
+            first
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let request = read_http_request(&mut first);
+            first_request_tx.send(request.clone()).unwrap();
+            requests.push(request);
+            release_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("test should release the slow upload");
+            write!(
+                first,
+                "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+            )
+            .unwrap();
+            let mut second = accept();
+            second
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            requests.push(read_http_request(&mut second));
+            write!(
+                second,
+                "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+            )
+            .unwrap();
+            requests
+        });
+
+        let config = MeterConfig {
+            server_url: format!("http://{address}"),
+            codex_home: root.path().join(".codex"),
+            pairing_inbox: root.path().join("pairing.json"),
+            state_dir: root.path().join("state"),
+            status_file: root.path().join("status.json"),
+            device_id: uuid::Uuid::new_v4(),
+            owner_user_sid: None,
+            log_dir: None,
+        };
+        let log = config.codex_home.join("sessions/run.jsonl");
+        fs::create_dir_all(log.parent().unwrap()).unwrap();
+        fs::write(&log, record("slow-first", 10)).unwrap();
+        save_state(
+            &config.state_dir.join("scan-state.json"),
+            &ScanState::default(),
+        )
+        .unwrap();
+        save_credential(
+            &config.state_dir,
+            &MeterCredential {
+                device_id: config.device_id,
+                device_token: "A".repeat(43),
+                user_id: Some(uuid::Uuid::from_u128(1)),
+                owner_verified: true,
+            },
+        )
+        .unwrap();
+        let runtime = MeterRuntime::new_with_capture_interval(
+            config.clone(),
+            Arc::new(|_: &MeterConfig| GuardSnapshot::inactive()),
+            GUARD_POLL_INTERVAL,
+            Duration::from_millis(20),
+        )
+        .unwrap();
+        let ticker = thread::spawn(move || {
+            let mut runtime = runtime;
+            let status = runtime.tick();
+            (runtime, status)
+        });
+
+        let first_request = first_request_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("usage upload should enter the mock server");
+        assert!(first_request.starts_with(b"POST /api/v1/meter/usage/events "));
+        let initial_status = read_public_status(&config.status_file).unwrap();
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&log)
+            .unwrap()
+            .write_all(record("captured-during-upload", 20).as_bytes())
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(4);
+        let mut captured_while_blocked = false;
+        while Instant::now() < deadline {
+            let journal: Option<serde_json::Value> =
+                fs::read(config.state_dir.join("usage-outbox.json"))
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+            let status = read_public_status(&config.status_file);
+            if journal
+                .as_ref()
+                .and_then(|journal| journal["pending"].as_array())
+                .is_some_and(|pending| pending.len() == 2)
+                && status.as_ref().is_some_and(|status| {
+                    status.pending_events == Some(2)
+                        && status.last_scan_epoch_seconds > initial_status.last_scan_epoch_seconds
+                })
+            {
+                captured_while_blocked = true;
+                break;
+            }
+            thread::yield_now();
+        }
+        assert!(
+            captured_while_blocked,
+            "background capture did not persist and publish while HTTP was blocked"
+        );
+
+        release_tx.send(()).unwrap();
+        let (runtime, status) = ticker.join().unwrap();
+        let requests = server.join().unwrap();
+        runtime.shutdown().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(status.state, "REPORTED");
+        let journal: serde_json::Value =
+            serde_json::from_slice(&fs::read(config.state_dir.join("usage-outbox.json")).unwrap())
+                .unwrap();
+        assert_eq!(journal["pending"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn fatal_capture_signal_interrupts_a_multi_batch_upload() {
+        let root = TestDir::new();
+        let home = root.path().join(".codex");
+        fs::create_dir_all(home.join("sessions")).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let config = MeterConfig {
+            server_url: format!("http://{}", listener.local_addr().unwrap()),
+            codex_home: home.clone(),
+            pairing_inbox: root.path().join("pairing.json"),
+            state_dir: root.path().join("state"),
+            status_file: root.path().join("status.json"),
+            device_id: uuid::Uuid::new_v4(),
+            owner_user_sid: None,
+            log_dir: None,
+        };
+        save_state(
+            &config.state_dir.join("scan-state.json"),
+            &ScanState::default(),
+        )
+        .unwrap();
+        save_credential(
+            &config.state_dir,
+            &MeterCredential {
+                device_id: config.device_id,
+                device_token: "A".repeat(43),
+                user_id: Some(uuid::Uuid::from_u128(1)),
+                owner_verified: true,
+            },
+        )
+        .unwrap();
+        let log: String = (0..101)
+            .map(|index| record(&format!("fatal-backlog-{index}"), 10))
+            .collect();
+        fs::write(home.join("sessions/run.jsonl"), log).unwrap();
+        let mut runtime = MeterRuntime::new_for_test(config.clone()).unwrap();
+        let fatal_signal = Arc::clone(&runtime.capture.failure);
+        let server = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "first upload did not arrive");
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("listener failed: {error}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let request = read_http_request(&mut stream);
+            assert!(request.starts_with(b"POST /api/v1/meter/usage/events "));
+            // Simulate the supervisor's fatal signal while the first HTTP
+            // request is in flight. Real panic detection has its own test.
+            *fatal_signal.lock().unwrap() = Some("METER_CAPTURE_THREAD_PANICKED");
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_millis(250);
+            while Instant::now() < deadline {
+                match listener.accept() {
+                    Ok(_) => panic!("another batch was sent after capture failed"),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5))
+                    }
+                    Err(error) => panic!("listener failed: {error}"),
+                }
+            }
+        });
+        let status = runtime.tick();
+        assert_eq!(
+            status.error_code.as_deref(),
+            Some("METER_CAPTURE_THREAD_PANICKED")
+        );
+        assert_eq!(runtime.fatal_error(), Some("METER_CAPTURE_THREAD_PANICKED"));
+        runtime.shutdown().unwrap();
+        server.join().unwrap();
+        let journal: serde_json::Value =
+            serde_json::from_slice(&fs::read(config.state_dir.join("usage-outbox.json")).unwrap())
+                .unwrap();
+        assert_eq!(journal["pending"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn capture_thread_panic_is_a_fatal_supervisor_failure() {
+        let capture = CaptureSupervisor::start(Duration::from_millis(1), || {
+            panic!("synthetic capture thread panic")
+        })
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while capture.fatal_error().is_none() && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        assert_eq!(capture.fatal_error(), Some("METER_CAPTURE_THREAD_PANICKED"));
+        capture.stop();
+    }
+
+    #[test]
     fn expired_meter_renews_with_only_device_key_then_retries_the_same_usage() {
         let root = TestDir::new();
         let device_id = uuid::Uuid::new_v4();
@@ -3493,7 +4671,7 @@ mod tests {
     }
 
     #[test]
-    fn audit_write_failure_is_visible_in_the_public_status() {
+    fn audit_write_failure_does_not_block_local_baseline_or_change_meter_status() {
         let root = TestDir::new();
         let config = MeterConfig {
             server_url: "http://127.0.0.1:1".into(),
@@ -3510,11 +4688,11 @@ mod tests {
         fs::write(root.path().join("state/logs"), b"blocked").unwrap();
 
         let status = runtime.tick();
-        assert_eq!(status.state, "ERROR");
-        assert_eq!(status.error_code.as_deref(), Some("METER_LOG_WRITE_FAILED"));
+        assert_eq!(status.state, "BASELINE_READY");
+        assert_eq!(status.error_code, None);
         let public: serde_json::Value =
             serde_json::from_slice(&fs::read(root.path().join("status.json")).unwrap()).unwrap();
-        assert_eq!(public["errorCode"], "METER_LOG_WRITE_FAILED");
+        assert_eq!(public["state"], "BASELINE_READY");
         assert_eq!(public["version"], env!("CARGO_PKG_VERSION"));
     }
 
@@ -3551,7 +4729,7 @@ mod tests {
     }
 
     #[test]
-    fn public_status_write_failure_is_recorded_in_the_private_audit_log() {
+    fn public_status_and_summary_write_failures_do_not_block_local_baseline() {
         let root = TestDir::new();
         fs::write(root.path().join("blocked"), b"not-a-directory").unwrap();
         let config = MeterConfig {
@@ -3567,12 +4745,61 @@ mod tests {
         let mut runtime = MeterRuntime::new_for_test(config).unwrap();
 
         let status = runtime.tick();
+        assert_eq!(status.state, "BASELINE_READY");
+        assert_eq!(status.error_code, None);
+        let content = fs::read_to_string(root.path().join("state/logs/meter.jsonl")).unwrap();
+        assert!(content.contains("BASELINE_READY"));
+    }
+
+    #[test]
+    fn status_and_log_failures_do_not_block_durable_local_usage_capture() {
+        let root = TestDir::new();
+        fs::write(root.path().join("blocked-status"), b"not-a-directory").unwrap();
+        fs::write(root.path().join("blocked-logs"), b"not-a-directory").unwrap();
+        let config = MeterConfig {
+            server_url: "http://127.0.0.1:1".into(),
+            codex_home: root.path().join(".codex"),
+            pairing_inbox: root.path().join("pairing.json"),
+            state_dir: root.path().join("state"),
+            status_file: root.path().join("blocked-status/status.json"),
+            device_id: uuid::Uuid::new_v4(),
+            owner_user_sid: None,
+            log_dir: Some(root.path().join("blocked-logs")),
+        };
+        fs::create_dir_all(config.codex_home.join("sessions")).unwrap();
+        fs::write(
+            config.codex_home.join("sessions/run.jsonl"),
+            record("durable-despite-display-errors", 37),
+        )
+        .unwrap();
+        save_state(
+            &config.state_dir.join("scan-state.json"),
+            &ScanState::default(),
+        )
+        .unwrap();
+        save_credential(
+            &config.state_dir,
+            &MeterCredential {
+                device_id: config.device_id,
+                device_token: "A".repeat(43),
+                user_id: Some(uuid::Uuid::from_u128(1)),
+                owner_verified: true,
+            },
+        )
+        .unwrap();
+
+        let mut runtime = MeterRuntime::new_for_test(config.clone()).unwrap();
+        let status = runtime.tick();
         assert_eq!(
             status.error_code.as_deref(),
-            Some("METER_STATUS_WRITE_FAILED")
+            Some("METER_BACKEND_UNAVAILABLE")
         );
-        let content = fs::read_to_string(root.path().join("state/logs/meter.jsonl")).unwrap();
-        assert!(content.contains("METER_STATUS_WRITE_FAILED"));
+        assert_eq!(runtime.fatal_error(), None);
+        let journal: serde_json::Value =
+            serde_json::from_slice(&fs::read(config.state_dir.join("usage-outbox.json")).unwrap())
+                .unwrap();
+        assert_eq!(journal["pending"].as_array().unwrap().len(), 1);
+        assert_eq!(journal["pending"][0]["totalTokens"], 37);
     }
 
     #[test]
@@ -3640,10 +4867,11 @@ mod tests {
     }
 
     #[test]
-    fn guard_audit_failure_stops_scan_before_cursor_is_created() {
+    fn guard_audit_failure_does_not_stop_local_capture() {
         let root = TestDir::new();
+        let (url, receiver) = mock_meter_http(vec![(200, "{}".into()), (200, "{}".into())]);
         let config = MeterConfig {
-            server_url: "http://127.0.0.1:1".into(),
+            server_url: url,
             codex_home: root.path().join(".codex"),
             pairing_inbox: root.path().join("pairing.json"),
             state_dir: root.path().join("state"),
@@ -3652,16 +4880,43 @@ mod tests {
             owner_user_sid: None,
             log_dir: None,
         };
-        let runtime = MeterRuntime::new_for_test(config).unwrap();
+        let mut runtime = MeterRuntime::new_for_test(config.clone()).unwrap();
         fs::remove_dir_all(root.path().join("state/logs")).unwrap();
         fs::write(root.path().join("state/logs"), b"blocked").unwrap();
+        fs::create_dir_all(config.codex_home.join("sessions")).unwrap();
+        fs::write(
+            config.codex_home.join("sessions/run.jsonl"),
+            record("capture-despite-log-error", 13),
+        )
+        .unwrap();
+        save_state(
+            &config.state_dir.join("scan-state.json"),
+            &ScanState::default(),
+        )
+        .unwrap();
+        save_credential(
+            &config.state_dir,
+            &MeterCredential {
+                device_id: config.device_id,
+                device_token: "A".repeat(43),
+                user_id: Some(uuid::Uuid::from_u128(1)),
+                owner_verified: true,
+            },
+        )
+        .unwrap();
         let guard = GuardSnapshot::new("CLEAR", 123, Some(uuid::Uuid::new_v4()), None, false);
         let mut audit_state = GuardAuditState::default();
         assert_eq!(
             audit_state.record(&runtime.audit, &guard),
-            Err("METER_LOG_WRITE_FAILED".into())
+            Err("METER_LOG_UNAVAILABLE".into())
         );
-        assert!(!root.path().join("state/scan-state.json").exists());
+        let status = runtime.tick();
+        assert_eq!(status.state, "REPORTED");
+        assert_eq!(receiver.join().unwrap().len(), 2);
+        let journal: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.path().join("state/usage-outbox.json")).unwrap())
+                .unwrap();
+        assert_eq!(journal["pending"].as_array().unwrap().len(), 0);
     }
 
     #[test]
@@ -3852,7 +5107,9 @@ mod tests {
                     && public["ccSwitchGuardCheckedAt"]
                         .as_u64()
                         .is_some_and(|at| at > 0)
-                    && public["lastScanEpochSeconds"] == 0;
+                    && public["lastScanEpochSeconds"]
+                        .as_u64()
+                        .is_some_and(|at| at > 0);
                 stream
                     .set_read_timeout(Some(Duration::from_secs(5)))
                     .unwrap();
@@ -3888,7 +5145,7 @@ mod tests {
         let status = runtime.tick();
         assert!(
             receiver.join().unwrap(),
-            "guard status was not visible before HTTP reporting"
+            "guard status and current capture progress were not visible before HTTP reporting"
         );
         assert_eq!(status.state, "REPORTED");
 

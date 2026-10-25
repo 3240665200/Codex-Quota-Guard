@@ -24,7 +24,7 @@ function New-SyntheticRun([string]$Maven='mvn.cmd',[string]$Pnpm='pnpm.cmd',[int
 function Start-SyntheticRun([string]$Run) {return Start-PreviewDetachedWorker -Executable $shell -Arguments @('-NoLogo','-NoProfile','-NonInteractive','-File',$worker,'-RunDirectory',$Run) -WorkingDirectory $Run}
 function Wait-Phase([string]$Run,[string[]]$Phases) {
     $deadline=[DateTime]::UtcNow.AddSeconds(35);$path=Join-Path $Run 'status.json'
-    while([DateTime]::UtcNow -lt $deadline){if(Test-Path -LiteralPath $path){$state=Get-Content -LiteralPath $path -Raw|ConvertFrom-Json;if($state.Phase -in $Phases){return $state}};Start-Sleep -Milliseconds 100}
+    while([DateTime]::UtcNow -lt $deadline){if(Test-Path -LiteralPath $path){$state=Read-PreviewState -Path $path;if($state.Phase -in $Phases){return $state}};Start-Sleep -Milliseconds 100}
     throw 'Synthetic supervisor phase timeout.'
 }
 $run=New-SyntheticRun;$identity=Start-SyntheticRun $run

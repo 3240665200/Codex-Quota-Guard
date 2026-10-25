@@ -4,6 +4,7 @@ import java.util.UUID;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -17,7 +18,9 @@ public class ClientQuotaController {
     }
 
     @GetMapping("/overview")
-    public QuotaOverviewResponse overview(Authentication authentication) {
-        return quotaOverview.overview((UUID) authentication.getPrincipal());
+    public QuotaOverviewResponse overview(Authentication authentication,
+            @RequestParam(defaultValue = "false") boolean includeTeamMembers) {
+        UUID userId = (UUID) authentication.getPrincipal();
+        return includeTeamMembers ? quotaOverview.overview(userId, true) : quotaOverview.overview(userId);
     }
 }

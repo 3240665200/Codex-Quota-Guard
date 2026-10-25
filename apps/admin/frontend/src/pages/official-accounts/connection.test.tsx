@@ -172,7 +172,7 @@ describe('官方账户授权与只读会话', () => {
     expect(screen.getByRole('button', { name: '刷新官方账户与会话' })).toBeDisabled();
     expect(screen.getByRole('button', { name: '登出所有会话' })).toBeDisabled();
     expect(screen.getByRole('button', { name: '登出所有未绑定会话' })).toBeDisabled();
-    expect(screen.getByRole('link', { name: '管理代理节点' })).toHaveAttribute('href', '/proxy-nodes');
+    expect(screen.getByRole('link', { name: '管理代理节点' })).toHaveAttribute('href', '#/proxy-nodes');
     expect(mocks.refreshOfficialAccountConnection).not.toHaveBeenCalled();
   });
 

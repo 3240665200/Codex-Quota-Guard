@@ -7,15 +7,13 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { invoke } from "@tauri-apps/api/core";
 import { I18nextProvider } from "react-i18next";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Dashboard } from "./dashboard";
-import type { LoginAssistanceInfo, SystemSession } from "@/lib/api";
+import { api, type LoginAssistanceInfo, type SystemSession } from "@/lib/api";
 import i18n from "@/lib/i18n";
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 const handlers = vi.hoisted(() => new Set<(event: { type: string }) => void>());
 vi.mock("@/lib/assistance-events", () => ({
   subscribeToAssistanceEvents: (
@@ -26,7 +24,6 @@ vi.mock("@/lib/assistance-events", () => ({
     return () => handlers.delete(handler);
   },
 }));
-const invokeMock = vi.mocked(invoke);
 const listenerId = "11111111-1111-4111-8111-111111111111";
 const nextListenerId = "22222222-2222-4222-8222-222222222222";
 const session: SystemSession = {
@@ -78,21 +75,15 @@ let startResponse = listener();
 let statusResponse = listener();
 let cancelResponse = listener("CANCELLED");
 let serverListenerExists = false;
-function calls(command: string) {
-  return invokeMock.mock.calls.filter(([name]) => name === command);
+let apiSpies: Record<string, any> = {};
+function calls(method: string) {
+  return apiSpies[method].mock.calls;
 }
 async function renderDashboard(bound = true) {
-  const currentImplementation = invokeMock.getMockImplementation()!;
-  invokeMock.mockImplementation(async (command, args) =>
-    command === "system_access"
-      ? {
-          allowed: bound,
-          bindingId: bound ? listenerId : null,
-          reason: bound ? null : "SESSION_BINDING_REQUIRED",
-        }
-      : command === "session_binding_current"
-        ? { attempt: null, binding: null }
-        : currentImplementation(command, args),
+  apiSpies.clientAccess.mockResolvedValue(
+    bound
+      ? { allowed: true, bindingId: listenerId, reason: null }
+      : { allowed: false, bindingId: null, reason: "SESSION_BINDING_REQUIRED" },
   );
   const client = new QueryClient({
     defaultOptions: {
@@ -155,14 +146,20 @@ describe("one-message login assistance", () => {
     await renderDashboard(false);
     await start();
     const heading = screen.getByRole("heading", { name: "监听登录邮件" });
-    const count = calls("login_assistance_info").length;
+    const count = calls("loginAssistanceInfo").length;
     fireEvent.click(screen.getByRole("button", { name: "刷新数据" }));
     await tick(20);
     expect(screen.getByRole("heading", { name: "监听登录邮件" })).toBe(heading);
-    expect(calls("login_assistance_info")).toHaveLength(count);
-    expect(calls("login_assistance_cancel")).toHaveLength(0);
+    expect(calls("loginAssistanceInfo")).toHaveLength(count);
+    expect(calls("loginAssistanceCancel")).toHaveLength(0);
   });
   beforeEach(() => {
+    vi.spyOn(api, "authenticatorInfo").mockResolvedValue({
+      available: false,
+      reasonCode: "AUTHENTICATOR_UNCONFIGURED",
+      officialAccountId: null,
+      accountLabel: null,
+    });
     clients = [];
     infoResponse = available;
     startResponse = listener();
@@ -172,101 +169,110 @@ describe("one-message login assistance", () => {
     handlers.clear();
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(new Date("2026-10-12T10:00:01Z"));
-    invokeMock.mockReset();
-    invokeMock.mockImplementation(async (command) => {
-      if (command === "login_assistance_info") return infoResponse;
-      if (command === "login_assistance_start") {
-        serverListenerExists = true;
-        statusResponse = startResponse;
-        return startResponse;
-      }
-      if (command === "login_assistance_current")
-        return {
-          listener:
-            serverListenerExists &&
-            ["CONNECTING", "LISTENING", "RECEIVED"].includes(
-              statusResponse.state,
-            )
-              ? statusResponse
-              : null,
-        };
-      if (command === "login_assistance_status") return statusResponse;
-      if (command === "login_assistance_cancel") {
-        statusResponse = cancelResponse;
-        return cancelResponse;
-      }
-      if (command === "status")
-        return { service: "codex-quota-guard", state: "online" };
-      if (command === "quota_overview")
-        return {
-          user: session.user,
-          team: { id: "team-1", name: "Design" },
-          policy: {
-            fiveHourTokenLimit: 1_000,
-            weeklyTokenLimit: 10_000,
-            fiveHourSource: "TEAM",
-            weeklySource: "TEAM",
-          },
-          usage: {
-            measurementStatus: "CLIENT_REPORTED",
-            fiveHourUsedTokens: 0,
-            weeklyUsedTokens: 0,
-            fiveHourRemainingTokens: 1_000,
-            weeklyRemainingTokens: 10_000,
-            fiveHourResetsAt: null,
-            weeklyResetsAt: null,
-            measuredAt: null,
-          },
-          allowed: true,
-          blockReason: null,
-        };
-      if (command === "codex_rate_limits")
-        return { planType: null, windows: [], fetchedAt: null };
-      if (command === "meter_service_version")
-        return {
-          installedVersion: null,
-          bundledVersion: "0.1.1",
-          needsUpgrade: null,
-          status: "NOT_INSTALLED",
-        };
-      if (command === "usage_status")
-        return {
-          fallback: {
-            state: "SIGNED_OUT",
-            lastScannedAt: null,
-            lastReportedAt: null,
-            lastReportedEvents: 0,
-            issues: [],
-          },
-          service: {
-            state: "NOT_INSTALLED",
-            lastScanEpochSeconds: null,
-            lastReportEpochSeconds: null,
-            reportedEvents: 0,
-            errorCode: null,
-          },
-          pairingState: "NOT_INSTALLED",
-        };
-      throw new Error("Unexpected test command");
+    apiSpies = {
+      clientAccess: vi.spyOn(api, "clientAccess"),
+      sessionBindingCurrent: vi.spyOn(api, "sessionBindingCurrent"),
+      quotaOverview: vi.spyOn(api, "quotaOverview"),
+      usageStatus: vi.spyOn(api, "usageStatus"),
+      meterServiceVersion: vi.spyOn(api, "meterServiceVersion"),
+      codexRateLimits: vi.spyOn(api, "codexRateLimits"),
+      loginAssistanceInfo: vi.spyOn(api, "loginAssistanceInfo"),
+      loginAssistanceStart: vi.spyOn(api, "loginAssistanceStart"),
+      loginAssistanceCurrent: vi.spyOn(api, "loginAssistanceCurrent"),
+      loginAssistanceStatus: vi.spyOn(api, "loginAssistanceStatus"),
+      loginAssistanceCancel: vi.spyOn(api, "loginAssistanceCancel"),
+    };
+    apiSpies.clientAccess.mockResolvedValue({
+      allowed: true,
+      bindingId: listenerId,
+      reason: null,
+    });
+    apiSpies.sessionBindingCurrent.mockResolvedValue({
+      attempt: null,
+      binding: null,
+    });
+    apiSpies.quotaOverview.mockResolvedValue({
+      user: session.user,
+      team: { id: "team-1", name: "Design" },
+      teamQuota: null,
+      teamMembers: null,
+      policy: {
+        fiveHourTokenLimit: 1_000,
+        weeklyTokenLimit: 10_000,
+        fiveHourSource: "TEAM",
+        weeklySource: "TEAM",
+      },
+      usage: {
+        measurementStatus: "CLIENT_REPORTED",
+        fiveHourUsedTokens: 0,
+        weeklyUsedTokens: 0,
+        fiveHourRemainingTokens: 1_000,
+        weeklyRemainingTokens: 10_000,
+        fiveHourResetsAt: null,
+        weeklyResetsAt: null,
+        measuredAt: null,
+      },
+      allowed: true,
+      blockReason: null,
+    });
+    apiSpies.usageStatus.mockResolvedValue({
+      state: "NOT_INSTALLED",
+      lastScanEpochSeconds: null,
+      lastReportEpochSeconds: null,
+      reportedEvents: 0,
+      errorCode: null,
+      version: null,
+    });
+    apiSpies.meterServiceVersion.mockResolvedValue({
+      installedVersion: null,
+      bundledVersion: "0.1.1",
+      needsUpgrade: null,
+      status: "NOT_INSTALLED",
+    });
+    apiSpies.codexRateLimits.mockResolvedValue({
+      planType: null,
+      windows: [],
+      fetchedAt: null,
+    });
+    apiSpies.loginAssistanceInfo.mockImplementation(async () => infoResponse);
+    apiSpies.loginAssistanceStart.mockImplementation(async () => {
+      serverListenerExists = true;
+      statusResponse = startResponse;
+      return startResponse;
+    });
+    apiSpies.loginAssistanceCurrent.mockImplementation(async () => ({
+      listener:
+        serverListenerExists &&
+        ["CONNECTING", "LISTENING", "RECEIVED"].includes(statusResponse.state)
+          ? statusResponse
+          : null,
+    }));
+    apiSpies.loginAssistanceStatus.mockImplementation(
+      async () => statusResponse,
+    );
+    apiSpies.loginAssistanceCancel.mockImplementation(async () => {
+      statusResponse = cancelResponse;
+      return cancelResponse;
     });
   });
   afterEach(() => {
     cleanup();
     clients.forEach((client) => client.clear());
+    apiSpies = {};
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
   it("only fetches eligibility after selection and does not ask for mailbox credentials", async () => {
     await renderDashboard();
-    expect(calls("login_assistance_info")).toHaveLength(0);
+    expect(calls("loginAssistanceInfo")).toHaveLength(0);
     await openPage();
-    expect(calls("login_assistance_info")).toHaveLength(1);
+    expect(calls("loginAssistanceInfo")).toHaveLength(1);
     expect(screen.getByRole("button", { name: "监听邮件" })).toBeEnabled();
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
     expect(screen.getByText(/等待.*正在监听.*再.*ChatGPT/)).toBeVisible();
     expect(screen.getByText(/本次监听.*新到.*一封/)).toBeVisible();
-    expect(calls("login_assistance_start")).toHaveLength(0);
+    expect(calls("loginAssistanceStart")).toHaveLength(0);
   });
 
   it("does not say ready while connecting and reads current after a state signal", async () => {
@@ -279,8 +285,8 @@ describe("one-message login assistance", () => {
     statusResponse = listener("LISTENING");
     await tick();
     expect(screen.getByText("正在监听")).toBeVisible();
-    expect(calls("login_assistance_status")).toHaveLength(0);
-    expect(calls("login_assistance_current").length).toBeGreaterThan(1);
+    expect(calls("loginAssistanceStatus")).toHaveLength(0);
+    expect(calls("loginAssistanceCurrent").length).toBeGreaterThan(1);
   });
 
   it("receives one code, stops polling, and stores it outside the global query cache", async () => {
@@ -291,9 +297,9 @@ describe("one-message login assistance", () => {
     await tick();
     expect(screen.getByLabelText("本次登录验证码")).toHaveTextContent("123456");
     expect(screen.getByText("已收到验证码，监听已停止")).toBeVisible();
-    const count = calls("login_assistance_status").length;
+    const count = calls("loginAssistanceStatus").length;
     await tick(6_000);
-    expect(calls("login_assistance_status")).toHaveLength(count);
+    expect(calls("loginAssistanceStatus")).toHaveLength(count);
     expect(
       JSON.stringify(
         client
@@ -312,19 +318,14 @@ describe("one-message login assistance", () => {
     statusResponse = listener("RECEIVED");
     await tick();
     const pending = deferred<ReturnType<typeof listener>>();
-    const original = invokeMock.getMockImplementation()!;
-    invokeMock.mockImplementation(async (command, args) =>
-      command === "login_assistance_start"
-        ? pending.promise
-        : original(command, args),
-    );
+    apiSpies.loginAssistanceStart.mockImplementation(() => pending.promise);
     fireEvent.click(screen.getByRole("button", { name: "再次监听" }));
     expect(screen.queryByLabelText("本次登录验证码")).not.toBeInTheDocument();
     await act(async () =>
       pending.resolve(listener("LISTENING", nextListenerId)),
     );
     expect(screen.getByText("正在监听")).toBeVisible();
-    expect(calls("login_assistance_start")).toHaveLength(2);
+    expect(calls("loginAssistanceStart")).toHaveLength(2);
   });
 
   it("cancels an active listener and stops polling only after confirmed cancellation", async () => {
@@ -333,20 +334,17 @@ describe("one-message login assistance", () => {
     await start();
     fireEvent.click(screen.getByRole("button", { name: "取消监听" }));
     expect(await screen.findByText("监听已取消")).toBeVisible();
-    expect(calls("login_assistance_cancel")[0]?.[1]).toEqual({ listenerId });
-    const count = calls("login_assistance_status").length;
+    expect(calls("loginAssistanceCancel")[0]?.[0]).toBe(listenerId);
+    const count = calls("loginAssistanceStatus").length;
     await tick(6_000);
-    expect(calls("login_assistance_status")).toHaveLength(count);
+    expect(calls("loginAssistanceStatus")).toHaveLength(count);
     expect(screen.getByRole("button", { name: "再次监听" })).toBeEnabled();
   });
 
   it("keeps the listener active when cancellation cannot be confirmed", async () => {
-    const original = invokeMock.getMockImplementation()!;
-    invokeMock.mockImplementation(async (command, args) => {
-      if (command === "login_assistance_cancel")
-        throw new Error("synthetic transport failure");
-      return original(command, args);
-    });
+    apiSpies.loginAssistanceCancel.mockRejectedValue(
+      new Error("synthetic transport failure"),
+    );
     await renderDashboard();
     await openPage();
     await start();
@@ -355,7 +353,7 @@ describe("one-message login assistance", () => {
     expect(screen.queryByText("监听已取消")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "取消监听" })).toBeEnabled();
     await tick();
-    expect(calls("login_assistance_current").length).toBeGreaterThan(1);
+    expect(calls("loginAssistanceCurrent").length).toBeGreaterThan(1);
   });
 
   it("shows timeout without an old code and permits another attempt", async () => {
@@ -368,9 +366,9 @@ describe("one-message login assistance", () => {
       screen.getByText("监听已超时，请重新监听后再发送验证码"),
     ).toBeVisible();
     expect(screen.queryByLabelText("本次登录验证码")).not.toBeInTheDocument();
-    const count = calls("login_assistance_status").length;
+    const count = calls("loginAssistanceStatus").length;
     await tick(6_000);
-    expect(calls("login_assistance_status")).toHaveLength(count);
+    expect(calls("loginAssistanceStatus")).toHaveLength(count);
     expect(screen.getByRole("button", { name: "再次监听" })).toBeEnabled();
   });
 
@@ -381,23 +379,20 @@ describe("one-message login assistance", () => {
     statusResponse = listener("RECEIVED");
     await tick();
     expect(screen.getByLabelText("本次登录验证码")).toHaveTextContent("123456");
-    const count = calls("login_assistance_status").length;
+    const count = calls("loginAssistanceStatus").length;
     await tick(120_000);
     expect(screen.queryByLabelText("本次登录验证码")).not.toBeInTheDocument();
     expect(
       screen.getByText("验证码已过期，请重新监听后再发送验证码"),
     ).toBeVisible();
-    expect(calls("login_assistance_status")).toHaveLength(count);
+    expect(calls("loginAssistanceStatus")).toHaveLength(count);
     expect(screen.getByRole("button", { name: "再次监听" })).toBeEnabled();
   });
 
   it("does not cancel or fake a timeout when the server cannot confirm local expiry", async () => {
-    const original = invokeMock.getMockImplementation()!;
-    invokeMock.mockImplementation(async (command, args) => {
-      if (command === "login_assistance_current" && serverListenerExists)
-        throw new Error("synthetic unavailable");
-      return original(command, args);
-    });
+    apiSpies.loginAssistanceCurrent.mockRejectedValue(
+      new Error("synthetic unavailable"),
+    );
     await renderDashboard();
     await openPage();
     await start();
@@ -407,10 +402,10 @@ describe("one-message login assistance", () => {
     ).toBeNull();
     expect(screen.getByRole("button", { name: "再次监听" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "取消监听" })).toBeEnabled();
-    expect(calls("login_assistance_cancel")).toHaveLength(0);
-    const count = calls("login_assistance_status").length;
+    expect(calls("loginAssistanceCancel")).toHaveLength(0);
+    const count = calls("loginAssistanceStatus").length;
     await tick(6_000);
-    expect(calls("login_assistance_status")).toHaveLength(count);
+    expect(calls("loginAssistanceStatus")).toHaveLength(count);
   });
 
   it("uses a safe fixed message for an OAuth failure without displaying its raw error code", async () => {
@@ -475,8 +470,8 @@ describe("one-message login assistance", () => {
     fireEvent.click(screen.getByRole("button", { name: "重新读取邮箱配置" }));
     await screen.findByText("team@example.com");
     expect(screen.getByRole("button", { name: "监听邮件" })).toBeEnabled();
-    expect(calls("login_assistance_info")).toHaveLength(2);
-    expect(calls("login_assistance_start")).toHaveLength(0);
+    expect(calls("loginAssistanceInfo")).toHaveLength(2);
+    expect(calls("loginAssistanceStart")).toHaveLength(0);
   });
 
   it("allows an inactive failed listener to reload mailbox details without fabricating listener recovery", async () => {
@@ -498,18 +493,17 @@ describe("one-message login assistance", () => {
 
   it("keeps listening on leaving the page and ignores a disposed current response", async () => {
     const pending = deferred<ReturnType<typeof listener>>();
-    const original = invokeMock.getMockImplementation()!;
-    invokeMock.mockImplementation(async (command, args) =>
-      command === "login_assistance_current" && serverListenerExists
+    apiSpies.loginAssistanceCurrent.mockImplementation(() =>
+      serverListenerExists
         ? pending.promise.then((value) => ({ listener: value }))
-        : original(command, args),
+        : Promise.resolve({ listener: null }),
     );
     await renderDashboard();
     await openPage();
     await start();
     await tick();
     fireEvent.click(screen.getByRole("button", { name: "额度总览" }));
-    expect(calls("login_assistance_cancel")).toHaveLength(0);
+    expect(calls("loginAssistanceCancel")).toHaveLength(0);
     serverListenerExists = false;
     await openPage();
     await act(async () => pending.resolve(listener("RECEIVED")));
@@ -519,19 +513,14 @@ describe("one-message login assistance", () => {
 
   it("ignores a late start response after unmount without cancelling the background task", async () => {
     const pending = deferred<ReturnType<typeof listener>>();
-    const original = invokeMock.getMockImplementation()!;
-    invokeMock.mockImplementation(async (command, args) =>
-      command === "login_assistance_start"
-        ? pending.promise
-        : original(command, args),
-    );
+    apiSpies.loginAssistanceStart.mockImplementation(() => pending.promise);
     const { unmount } = await renderDashboard();
     await openPage();
     fireEvent.click(screen.getByRole("button", { name: "监听邮件" }));
     unmount();
     await act(async () => pending.resolve(listener("LISTENING")));
-    expect(calls("login_assistance_cancel")).toHaveLength(0);
-    expect(calls("login_assistance_status")).toHaveLength(0);
+    expect(calls("loginAssistanceCancel")).toHaveLength(0);
+    expect(calls("loginAssistanceStatus")).toHaveLength(0);
   });
 
   it("clears a received code when the signed-in product user changes", async () => {
@@ -543,16 +532,15 @@ describe("one-message login assistance", () => {
     expect(screen.getByLabelText("本次登录验证码")).toHaveTextContent("123456");
     switchUser();
     expect(screen.queryByLabelText("本次登录验证码")).not.toBeInTheDocument();
-    await waitFor(() => expect(calls("login_assistance_info")).toHaveLength(2));
+    await waitFor(() => expect(calls("loginAssistanceInfo")).toHaveLength(2));
   });
 
   it("ignores an active old-user current result when the user changes", async () => {
     const pending = deferred<ReturnType<typeof listener>>();
-    const original = invokeMock.getMockImplementation()!;
-    invokeMock.mockImplementation(async (command, args) =>
-      command === "login_assistance_current" && serverListenerExists
+    apiSpies.loginAssistanceCurrent.mockImplementation(() =>
+      serverListenerExists
         ? pending.promise.then((value) => ({ listener: value }))
-        : original(command, args),
+        : Promise.resolve({ listener: null }),
     );
     const { switchUser } = await renderDashboard();
     await openPage();
@@ -561,7 +549,7 @@ describe("one-message login assistance", () => {
     switchUser();
     await act(async () => pending.resolve(listener("RECEIVED")));
     expect(screen.queryByLabelText("本次登录验证码")).not.toBeInTheDocument();
-    expect(calls("login_assistance_cancel")).toHaveLength(0);
+    expect(calls("loginAssistanceCancel")).toHaveLength(0);
   });
 
   it("clears local codes and delegates authenticated cancellation to system logout", async () => {
@@ -569,7 +557,7 @@ describe("one-message login assistance", () => {
     await openPage();
     await start();
     fireEvent.click(screen.getByRole("button", { name: "退出系统" }));
-    expect(calls("login_assistance_cancel")).toHaveLength(0);
+    expect(calls("loginAssistanceCancel")).toHaveLength(0);
     expect(onLogout).toHaveBeenCalledOnce();
     expect(
       screen.queryByRole("button", { name: "取消监听" }),
@@ -580,7 +568,7 @@ describe("one-message login assistance", () => {
     const { onLogout } = await renderDashboard(false);
     await start();
     fireEvent.click(screen.getByRole("button", { name: "退出系统" }));
-    expect(calls("login_assistance_cancel")).toHaveLength(0);
+    expect(calls("loginAssistanceCancel")).toHaveLength(0);
     expect(onLogout).toHaveBeenCalledOnce();
     expect(
       screen.queryByRole("button", { name: "取消监听" }),

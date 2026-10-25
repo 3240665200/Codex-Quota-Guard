@@ -1,10 +1,10 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Codex Quota Guard",
-  "version": "0.3.23",
+  "version": "0.3.25",
   "identifier": "com.codexquotaguard.desktop",
   "build": {
-    "beforeDevCommand": "pnpm build:backend && pnpm dev:renderer",
+    "beforeDevCommand": "pnpm dev:renderer",
     "beforeBuildCommand": "pnpm build:desktop",
     "beforeBundleCommand": "node verify-desktop-package.mjs",
     "features": ["custom-protocol"],
@@ -26,7 +26,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost; img-src 'self' asset: data:; style-src 'self' 'unsafe-inline'; script-src 'self'"
+      "csp": "default-src 'self'; connect-src 'self' ipc: http: https:; img-src 'self' asset: data:; style-src 'self' 'unsafe-inline'; script-src 'self'"
     }
   },
   "bundle": {
@@ -34,9 +34,12 @@
     "publisher": "codexquotaguard",
     "targets": "all",
     "resources": {
-      "resources/backend/codex-quota-guard-backend.jar": "backend/codex-quota-guard-backend.jar",
-      "resources/java/": "java/",
-      "resources/meter/*": "meter/"
+      "resources/meter/quota-guard-meter.exe": "meter/quota-guard-meter.exe",
+      "resources/meter/install-meter-service.ps1": "meter/install-meter-service.ps1",
+      "resources/meter/uninstall-meter-service.ps1": "meter/uninstall-meter-service.ps1",
+      "resources/meter/installer-meter.ps1": "meter/installer-meter.ps1",
+      "resources/meter/configure-meter-server.ps1": "meter/configure-meter-server.ps1",
+      "resources/meter/show-meter-logs.ps1": "meter/show-meter-logs.ps1"
     },
     "windows": {
       "nsis": {

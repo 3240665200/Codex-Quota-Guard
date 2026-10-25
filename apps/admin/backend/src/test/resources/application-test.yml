@@ -12,6 +12,7 @@ spring:
     open-in-view: false
 
 app:
+  official-quota-scheduler-enabled: false
   session-binding-scheduler-enabled: false
   jwt-secret: test-secret-that-is-longer-than-thirty-two-bytes
   codex-credential-encryption-key: test-credential-key-independent-from-jwt-secret

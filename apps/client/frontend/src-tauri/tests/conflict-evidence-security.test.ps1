@@ -1,9 +1,7 @@
 #requires -Version 5.1
 $ErrorActionPreference = 'Stop'
 $installer = Join-Path $PSScriptRoot '..\..\..\..\..\scripts\windows\install-meter-service.ps1'
-$startup = Join-Path $PSScriptRoot '..\..\..\..\..\scripts\windows\ensure-meter-service.ps1'
 . $installer
-. $startup
 $script:assertions = 0
 function Assert-Equal($Actual, $Expected) {
     $script:assertions++
@@ -233,20 +231,7 @@ Assert-Rejected { Initialize-MeterConflictEvidenceDirectory $sid }
 Assert-Equal $script:created.Count 0
 Assert-Equal $script:closed.Count $script:opened.Count
 
-# READY is subject to the same elevated preparation policy; standard users never mutate.
-$script:prepared = @()
-function Initialize-MeterConflictEvidenceDirectory([string]$UserSid) { $script:prepared += $UserSid }
-Assert-Equal (Initialize-MeterStartupConflictEvidence $false $sid) $false
-Assert-Equal $script:prepared.Count 0
-Assert-Equal (Initialize-MeterStartupConflictEvidence $true $sid) $true
-Assert-Equal $script:prepared.Count 1
-Assert-Equal $script:prepared[0] $sid
-function Initialize-MeterConflictEvidenceDirectory([string]$UserSid) { throw 'Fixture unsafe ACL.' }
-Assert-Equal (Initialize-MeterStartupConflictEvidence $true $sid 3>$null) $false
-$startupSource = Get-Content -LiteralPath $startup -Raw
-$prepareIndex = $startupSource.IndexOf('Initialize-MeterStartupConflictEvidence $isAdmin $currentSid')
-Assert-Equal ($prepareIndex -ge 0 -and $prepareIndex -lt $startupSource.IndexOf("if (`$action -eq 'READY')")) $true
-Assert-Equal ($startupSource -match 'if \(\$isAdmin -and \$bundledIdentity') $true
+# Only installation prepares the channel; a running desktop never repairs it.
 $parseErrors = $null; $parseTokens = $null
 $installerAst = [Management.Automation.Language.Parser]::ParseFile($installer, [ref]$parseTokens, [ref]$parseErrors)
 Assert-Equal $parseErrors.Count 0

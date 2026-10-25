@@ -1,7 +1,9 @@
 package com.codexquotaguard.backend.controlplane;
 
+import java.util.List;
+
 /**
- * Safe, current-user-only quota projection returned by the central service.
+ * Safe quota projection for the current user and their current team.
  * It deliberately contains neither Codex credentials nor any raw upstream
  * authentication payload.
  */
@@ -12,7 +14,8 @@ public record PersonalQuotaOverview(
         QuotaPolicy policy,
         QuotaUsage usage,
         boolean allowed,
-        String blockReason
+        String blockReason,
+        List<TeamMemberUsage> teamMembers
 ) {
 
     public PersonalQuotaOverview {
@@ -29,6 +32,13 @@ public record PersonalQuotaOverview(
             throw new IllegalArgumentException("Team quota does not match the current team.");
         }
         blockReason = optionalText(blockReason);
+        // A missing field means the central service does not support this projection yet.
+        teamMembers = teamMembers == null ? null : List.copyOf(teamMembers);
+    }
+
+    public PersonalQuotaOverview(SystemUser user, QuotaTeam team, TeamQuotaOverview teamQuota,
+            QuotaPolicy policy, QuotaUsage usage, boolean allowed, String blockReason) {
+        this(user, team, teamQuota, policy, usage, allowed, blockReason, null);
     }
 
     public PersonalQuotaOverview(SystemUser user, QuotaTeam team, QuotaPolicy policy,

@@ -373,34 +373,28 @@ fn launch_modes_only_accept_fixed_logon_elevation_and_uninstall_operations() {
 }
 
 #[test]
-fn manual_and_logon_unelevated_start_request_uac_before_initialization() {
-    for mode in [LaunchMode::Desktop, LaunchMode::Logon] {
-        assert_eq!(
-            startup_action(mode, false, true),
-            Ok(StartupAction::Elevate),
-            "{mode:?} must request permission before starting the client"
-        );
-    }
-}
-
-#[test]
-fn already_elevated_start_initializes_without_requesting_uac_again() {
+fn desktop_and_logon_start_do_not_require_administrator_permission() {
     for mode in [
         LaunchMode::Desktop,
         LaunchMode::Logon,
         LaunchMode::ElevatedLogon,
     ] {
-        assert_eq!(
-            startup_action(mode, true, true),
-            Ok(StartupAction::Initialize),
-            "{mode:?} must use its existing administrator permission"
-        );
+        for elevated in [false, true] {
+            assert_eq!(
+                startup_action(mode, elevated, true),
+                Ok(StartupAction::Initialize),
+                "{mode:?} must not force administrator permission"
+            );
+        }
     }
 }
 
 #[test]
-fn an_unelevated_child_rejects_startup_instead_of_requesting_uac_in_a_loop() {
-    assert!(startup_action(LaunchMode::ElevatedLogon, false, true).is_err());
+fn legacy_elevated_launch_mode_remains_non_interactive() {
+    assert_eq!(
+        startup_action(LaunchMode::ElevatedLogon, false, true),
+        Ok(StartupAction::Initialize)
+    );
 }
 
 #[test]

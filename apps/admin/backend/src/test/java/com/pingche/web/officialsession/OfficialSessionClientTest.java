@@ -315,6 +315,48 @@ class OfficialSessionClientTest {
         return new OfficialSessionClient(new ObjectMapper(), gateway, ignored -> http);
     }
 
+    @Test
+    void quotaUsesTheFixedOfficialReadEndpointAndDropsUnrelatedResponseFields() {
+        HttpClient http = mock(HttpClient.class);
+        List<HttpRequest> requests = new ArrayList<>();
+        when(http.sendAsync(any(HttpRequest.class), any(HttpResponse.BodyHandler.class))).thenAnswer(call -> {
+            requests.add(call.getArgument(0));
+            return CompletableFuture.completedFuture(response(200, """
+                {"account_id":"official-account-one","user_id":"official-user-one","plan_type":"plus",
+                 "rate_limit":{"primary_window":{"used_percent":12.5,"limit_window_seconds":18000,"reset_at":2000000000},
+                   "secondary_window":null},"private_token":"must-not-retain"}
+                """));
+        });
+        var quota = client(http).fetchQuota(credentials(), null, NODE_ID, "official-user-one", Instant.EPOCH);
+        assertThat(requests).hasSize(1);
+        HttpRequest request = requests.get(0);
+        assertThat(request.uri().toString()).isEqualTo("https://chatgpt.com/backend-api/wham/usage");
+        assertThat(request.method()).isEqualTo("GET");
+        assertThat(request.bodyPublisher()).isEmpty();
+        assertThat(request.headers().firstValue("Authorization")).contains("Bearer synthetic-access");
+        assertThat(request.headers().firstValue("ChatGPT-Account-ID")).contains("official-account-one");
+        assertThat(quota.windows()).hasSize(1);
+        assertThat(quota.windows().get(0).windowDurationMins()).isEqualTo(300);
+        assertThat(quota.windows().get(0).usedPercent()).isEqualByComparingTo("12.5");
+        assertThat(new ObjectMapper().writeValueAsString(quota)).doesNotContain("must-not-retain", "private_token");
+    }
+
+    @Test
+    void quotaHonorsRetryAfterAndRejectsRedirectsWithoutFollowingThem() {
+        for (int status : new int[]{302,401,403,429,500}) {
+            HttpClient http = mock(HttpClient.class);
+            HttpResponse<byte[]> reply = response(status, "{\"private_token\":\"must-not-echo\"}");
+            when(reply.headers()).thenReturn(HttpHeaders.of(Map.of("Content-Type", List.of("application/json"), "Retry-After", List.of("1800")), (a,b) -> true));
+            when(http.sendAsync(any(HttpRequest.class), any(HttpResponse.BodyHandler.class))).thenReturn(CompletableFuture.completedFuture(reply));
+            assertThatThrownBy(() -> client(http).fetchQuota(credentials(), null, NODE_ID, "official-user-one", Instant.EPOCH))
+                    .isInstanceOfSatisfying(DomainException.class, failure -> {
+                        assertThat(failure.getMessage()).doesNotContain("must-not-echo");
+                        if (status == 429) assertThat(((OfficialRateLimitedException) failure).retryAt()).isEqualTo(Instant.EPOCH.plusSeconds(1800));
+                    });
+            verify(http).sendAsync(any(HttpRequest.class), any(HttpResponse.BodyHandler.class));
+        }
+    }
+
     private void assertFailure(HttpClient http, String code) {
         assertThatThrownBy(() -> client(http).fetch(credentials(), NODE_ID)).isInstanceOfSatisfying(DomainException.class, error -> {
             assertThat(error.getCode()).isEqualTo(code);

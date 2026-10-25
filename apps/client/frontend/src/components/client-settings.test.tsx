@@ -12,6 +12,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ClientSettings } from "./client-settings";
+import {
+  quotaDisplayStorageKey,
+  quotaPercent,
+  setQuotaDisplayMode,
+} from "@/lib/quota-display";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
@@ -75,6 +80,7 @@ async function loadedSwitch() {
 
 describe("ClientSettings autostart synchronization", () => {
   beforeEach(() => {
+    setQuotaDisplayMode("remaining");
     enabled = true;
     clients = [];
     vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
@@ -93,6 +99,47 @@ describe("ClientSettings autostart synchronization", () => {
     cleanup();
     clients.forEach((client) => client.clear());
     vi.restoreAllMocks();
+  });
+
+  it("persists a single quota display selection without changing autostart", async () => {
+    const view = renderSettings();
+    await loadedSwitch();
+    expect(
+      screen.getByRole("radio", { name: "剩余" }),
+    ).toBeChecked();
+    fireEvent.click(screen.getByRole("radio", { name: "已用" }));
+    expect(
+      screen.getByRole("radio", { name: "已用" }),
+    ).toBeChecked();
+    expect(
+      screen.getByRole("radio", { name: "剩余" }),
+    ).not.toBeChecked();
+    expect(localStorage.getItem(quotaDisplayStorageKey)).toBe("used");
+    view.unmount();
+    renderSettings();
+    expect(
+      screen.getByRole("radio", { name: "已用" }),
+    ).toBeChecked();
+    expectNoAutostartWrites();
+  });
+
+  it("can change display with unavailable storage and never invents percentages for unlimited quotas", async () => {
+    renderSettings();
+    await loadedSwitch();
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("blocked");
+    });
+    fireEvent.click(screen.getByRole("radio", { name: "已用" }));
+    expect(
+      screen.getByRole("radio", { name: "已用" }),
+    ).toBeChecked();
+    expect(quotaPercent("used", 1, null, null)).toBeNull();
+    expect(quotaPercent("remaining", 1, null, 100)).toBeNull();
+    expect(quotaPercent("used", 120, 0, 100)).toBe(100);
+    expect(quotaPercent("remaining", 120, 0, 100)).toBe(0);
+    expect(quotaPercent("used", 0, 0, 0)).toBe(100);
+    expect(quotaPercent("remaining", 0, 0, 0)).toBe(0);
+    expectNoAutostartWrites();
   });
 
   it("reads actual disabled state when settings opens despite a fresh enabled cache", async () => {
@@ -284,22 +331,18 @@ describe("ClientSettings autostart synchronization", () => {
     expectNoAutostartWrites();
   });
 
-  it("explains Task Manager control, independent Rust service startup and UAC", async () => {
+  it("explains independent desktop autostart and Windows service recovery", async () => {
     renderSettings();
     await loadedSwitch();
 
     expect(
       screen.getByText(/任务管理器.*启动应用.*Codex Quota Guard/),
     ).toBeVisible();
-    expect(
-      screen.getByText(/关闭.*自启动不会影响.*统计服务.*后台运行/),
-    ).toBeVisible();
-    expect(screen.getByText(/首次以管理员身份启动时默认开启/)).toBeVisible();
-    expect(screen.getByText(/关闭后不会自动重开/)).toBeVisible();
-    expect(screen.getByText(/未提权时需确认管理员授权/)).toBeVisible();
-    expect(
-      screen.getByText(/取消管理员授权时，本次不启动客户端/),
-    ).toBeVisible();
+    expect(screen.getByText(/关闭不会影响统计服务在后台运行/)).toBeVisible();
+    expect(screen.getByText(/故障恢复由 Windows 负责/)).toBeVisible();
+    expect(screen.queryByText(/首次以管理员身份启动时默认开启/)).toBeNull();
+    expect(screen.queryByText(/未提权时需确认管理员授权/)).toBeNull();
+    expect(screen.queryByText(/取消管理员授权时，本次不启动客户端/)).toBeNull();
     expectNoAutostartWrites();
   });
 });

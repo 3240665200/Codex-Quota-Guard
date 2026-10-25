@@ -1,11 +1,37 @@
 #![cfg(windows)]
+
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
+};
+use zeroize::Zeroize;
+
+mod server_config {
+    pub struct ServerConfig {
+        pub url: String,
+    }
+
+    pub fn load(_app: &tauri::AppHandle) -> ServerConfig {
+        ServerConfig {
+            url: "https://meter.example".into(),
+        }
+    }
+}
+
+fn unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
 #[path = "../src/session_vault.rs"]
 #[allow(dead_code)]
 mod session_vault;
 
-use std::{fs, path::PathBuf, process::Command, sync::Arc, thread};
-
 struct Fixture(PathBuf);
+
 impl Fixture {
     fn new() -> Self {
         let path =
@@ -14,6 +40,7 @@ impl Fixture {
         Self(path)
     }
 }
+
 impl Drop for Fixture {
     fn drop(&mut self) {
         let temp = std::env::temp_dir().canonicalize().unwrap();
@@ -31,110 +58,98 @@ impl Drop for Fixture {
     }
 }
 
+fn protected_session(token: &str) -> Vec<u8> {
+    let value = serde_json::json!({
+        "serverOrigin": "https://meter.example",
+        "refreshToken": token,
+        "userId": uuid::Uuid::new_v4(),
+        "loginAtEpochSeconds": 1_800_000_000u64,
+        "expiresAtEpochSeconds": 1_800_604_800u64
+    });
+    serde_json::to_vec(&value).unwrap()
+}
+
+fn round_trip(path: &Path, expected: &[u8]) {
+    let encrypted = session_vault::read_protected(path).unwrap().unwrap();
+    let mut plaintext = session_vault::unprotect(&encrypted).unwrap();
+    assert_eq!(plaintext, expected);
+    plaintext.zeroize();
+}
+
 #[test]
-fn windows_key_survives_restart_without_a_plaintext_key_file() {
+fn first_save_creates_missing_secure_directory_and_overwrite_rotates_the_value() {
     let fixture = Fixture::new();
-    let first = session_vault::load_or_create_key(&fixture.0).unwrap();
-    let second = session_vault::load_or_create_key(&fixture.0).unwrap();
-    assert_eq!(first.hex().len(), 64);
-    assert_eq!(first.hex(), second.hex());
-    let encrypted = fs::read(fixture.0.join("key.dpapi")).unwrap();
+    let directory = fixture.0.join("secure-session");
+    let path = directory.join("session-vault.dpapi");
+    session_vault::prepare_secure_directory(&directory).unwrap();
+
+    let first = protected_session("refresh-token-private-canary-one");
+    let encrypted = session_vault::protect(&first).unwrap();
     assert!(!encrypted
-        .windows(64)
-        .any(|bytes| bytes == first.hex().as_bytes()));
-    assert_ne!(format!("{first:?}"), first.hex());
+        .windows(b"refresh-token-private-canary-one".len())
+        .any(|window| window == b"refresh-token-private-canary-one"));
+    session_vault::write_atomically(&path, &encrypted).unwrap();
+    round_trip(&path, &first);
+
+    let second = protected_session("refresh-token-private-canary-two");
+    let encrypted = session_vault::protect(&second).unwrap();
+    session_vault::write_atomically(&path, &encrypted).unwrap();
+    round_trip(&path, &second);
+    assert_eq!(fs::read_dir(directory).unwrap().count(), 1);
+    assert!(!fs::read(&path)
+        .unwrap()
+        .windows(b"refresh-token-private-canary-two".len())
+        .any(|window| window == b"refresh-token-private-canary-two"));
 }
 
 #[test]
-fn concurrent_first_launches_obtain_the_same_key_without_overwriting_each_other() {
+fn corrupted_and_oversized_vault_files_are_not_loaded_or_replaced() {
     let fixture = Fixture::new();
-    let path = Arc::new(fixture.0.clone());
-    let barrier = Arc::new(std::sync::Barrier::new(4));
-    let handles: Vec<_> = (0..4)
-        .map(|_| {
-            let path = Arc::clone(&path);
-            let barrier = Arc::clone(&barrier);
-            thread::spawn(move || {
-                barrier.wait();
-                session_vault::load_or_create_key(&path).unwrap().hex()
-            })
-        })
-        .collect();
-    let values: Vec<_> = handles
-        .into_iter()
-        .map(|handle| handle.join().unwrap())
-        .collect();
-    assert!(values.iter().all(|value| value == &values[0]));
-}
-
-#[test]
-fn corrupt_oversized_or_directory_keys_are_not_replaced() {
-    let fixture = Fixture::new();
-    let key_path = fixture.0.join("key.dpapi");
-    for bad in [b"not-a-protected-key".to_vec(), vec![1; 20_000]] {
-        fs::write(&key_path, &bad).unwrap();
-        assert!(session_vault::load_or_create_key(&fixture.0).is_err());
-        assert_eq!(fs::read(&key_path).unwrap(), bad);
+    let directory = fixture.0.join("secure-session");
+    session_vault::prepare_secure_directory(&directory).unwrap();
+    let path = directory.join("session-vault.dpapi");
+    for bytes in [b"not-dpapi".to_vec(), vec![7; 20_000]] {
+        fs::write(&path, &bytes).unwrap();
+        if bytes.len() <= 16 * 1024 {
+            let encrypted = session_vault::read_protected(&path).unwrap().unwrap();
+            assert!(session_vault::unprotect(&encrypted).is_err());
+        } else {
+            assert!(session_vault::read_protected(&path).unwrap().is_none());
+        }
+        assert_eq!(fs::read(&path).unwrap(), bytes);
     }
-    fs::remove_file(&key_path).unwrap();
-    fs::create_dir(&key_path).unwrap();
-    assert!(session_vault::load_or_create_key(&fixture.0).is_err());
 }
 
 #[test]
-fn linked_app_data_ancestors_cannot_redirect_key_creation() {
+fn linked_app_data_ancestors_cannot_redirect_vault_creation() {
     use std::os::windows::process::CommandExt;
     let fixture = Fixture::new();
     let target = fixture.0.join("outside-app-data");
     let linked = fixture.0.join("linked-app-data");
     fs::create_dir(&target).unwrap();
-    let status = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command",
-            "New-Item -ItemType Junction -Path $env:CQG_TEST_LINK -Target $env:CQG_TEST_TARGET -ErrorAction Stop | Out-Null"])
+    let status = std::process::Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "New-Item -ItemType Junction -Path $env:CQG_TEST_LINK -Target $env:CQG_TEST_TARGET -ErrorAction Stop | Out-Null",
+        ])
         .env("CQG_TEST_LINK", &linked)
         .env("CQG_TEST_TARGET", &target)
         .creation_flags(0x08000000)
-        .status().unwrap();
+        .status()
+        .unwrap();
     assert!(status.success());
-    let result = session_vault::load_or_create_key(&linked.join("secure-session"));
-    // Remove the junction itself, never its target, before checking the result.
+    let result = session_vault::prepare_secure_directory(&linked.join("secure-session"));
     fs::remove_dir(&linked).unwrap();
     assert!(result.is_err());
     assert!(!target.join("secure-session").exists());
 }
 
 #[test]
-fn only_the_owned_child_environment_receives_the_key_and_failure_never_uses_inherited_secrets() {
-    let fixture = Fixture::new();
-    let mut command = Command::new("java");
-    command.env(
-        "QUOTA_GUARD_SESSION_STORAGE_KEY",
-        "untrusted-inherited-value",
-    );
-    session_vault::configure(&mut command, &fixture.0);
-    let env: std::collections::HashMap<_, _> = command.get_envs().collect();
-    let get = |name: &str| {
-        env.get(std::ffi::OsStr::new(name))
-            .unwrap()
-            .unwrap()
-            .to_string_lossy()
-            .into_owned()
-    };
-    assert_eq!(get("QUOTA_GUARD_SESSION_STORAGE_REQUIRED"), "true");
-    assert_eq!(get("QUOTA_GUARD_SESSION_STORAGE_KEY").len(), 64);
-    assert_eq!(
-        PathBuf::from(get("QUOTA_GUARD_SESSION_STORAGE_DIR")),
-        fixture.0.join("secure-session")
-    );
-    assert_eq!(command.get_args().count(), 0);
-
-    fs::write(fixture.0.join("secure-session/key.dpapi"), b"broken").unwrap();
-    let mut rejected = Command::new("java");
-    rejected.env("QUOTA_GUARD_SESSION_STORAGE_KEY", "must-not-be-used");
-    session_vault::configure(&mut rejected, &fixture.0);
-    let entry = rejected
-        .get_envs()
-        .find(|(key, _)| *key == "QUOTA_GUARD_SESSION_STORAGE_KEY")
-        .unwrap();
-    assert!(entry.1.map_or(true, |value| value.is_empty()));
+fn a_second_desktop_process_cannot_acquire_the_refresh_token_lock() {
+    if let Ok(first) = session_vault::acquire_process_lock() {
+        assert!(session_vault::acquire_process_lock().is_err());
+        drop(first);
+    }
 }

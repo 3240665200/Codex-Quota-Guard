@@ -1,12 +1,15 @@
 package com.pingche.web.quota;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 public record QuotaOverviewResponse(
         QuotaSystemUserResponse user,
         TeamReference team,
         TeamQuotaOverviewResponse teamQuota,
+        @JsonInclude(JsonInclude.Include.NON_NULL) List<TeamMemberUsageResponse> teamMembers,
         Policy policy,
         Usage usage,
         boolean allowed,

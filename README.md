@@ -109,32 +109,24 @@ Codex Quota Guard 由桌面客户端、中央 Java 服务和 Web 管理后台组
 
 ## 快速开始
 
-桌面安装包面向 **Windows x64**，包含本地 Java 运行时、WebView2 离线安装器和 Rust 统计程序；用户电脑**不需要**安装 Java、Maven、Node.js、pnpm 或 Rust。请从 [GitHub 桌面版 0.3.22](https://github.com/3240665200/Codex-Quota-Guard/releases/tag/v0.3.22) 下载并核对安装包；服务器 `server-v0.3.23` 不提供新桌面安装包。
+当前 `0.3.24` 源码已调整为桌面 Axios 直连中央 API、独立 Rust 服务计量的架构，尚未发布本次重构的新安装包。已发布旧安装包及 `dist/desktop-v0.3.24` 中较早产物仍使用旧架构，不能用于验证这次迁移。
 
-1. 部署中央 Java API、PostgreSQL 和管理后台。Linux 服务器推荐使用上面的 [Docker 镜像部署](#docker-服务器部署)，默认支持 IP + HTTP；管理员创建系统用户、团队并设置额度。手动部署见[管理端后端文档](./apps/admin/backend/README.md)。
-2. 安装与服务器配套的 `0.3.22` 桌面版本。在登录页的“服务器设置”中保存中央服务地址，例如 `https://your-server.example.com` 或 `http://<服务器 IP>:8080`。保存后从**系统托盘菜单退出客户端**，不要只关闭窗口。`0.0.0.0` 是监听地址，不能作为其他电脑的连接地址。
-3. 以**管理员身份运行安装后的桌面程序**，让客户端安装、升级并启动 `CodexQuotaGuardMeter` Windows 服务；然后登录 Quota Guard **系统账户**完成设备配对。0.2.20 起每次启动都要求管理员权限，启动检查页也可保存服务器地址并重试。
-4. 在客户端「登录辅助」申请绑定，按引导取得登录名额后，在该电脑的**官方 Codex 应用或 CLI** 中自行登录对应官方账户。等待中央后台自动识别并保存绑定，当前访问核验允许后再查看官方额度、个人/团队用量、逐笔流水和统计程序状态；绑定记录保存不等于访问核验已通过。
+1. 部署中央 Java API、PostgreSQL 和管理网页，管理员配置系统用户、团队和额度。本次桌面需要包含 Tauri CORS 支持的中央后台代码。
+2. 新版安装程序会强制安装、启动统计服务，并配置 Windows 自动启动和故障恢复。安装时按当前 Windows 用户批准必要的管理员权限；服务安装或启动失败时不能完成安装。
+3. 正常打开桌面，在服务器设置中填写中央地址并登录系统账户，完成设备配对。修改地址会同步已有统计服务；服务缺失时重新运行安装器。
+4. 在「登录辅助」申请绑定，按引导在官方 Codex 应用或 CLI 自行登录。通过访问核验后，查看团队/官方 Token、成员进度条、流水、统计和服务运行信息。
 
-安装程序本身不会注册统计程序的 Windows 服务；若安装失败，可在客户端查看失败步骤，或参照[架构文档的排障章节](./docs/architecture/current-system-architecture.md#日志与排障)。正式部署应使用 HTTPS；局域网 HTTP 会明文传输本系统登录信息。
+关闭界面或从托盘完全退出都不会停止统计服务。计量由服务独立记录和上报，故障恢复交给 Windows SCM；桌面不运行 Java、本地 HTTP 后端或第二个统计扫描器。安装包仍带 WebView2 离线安装器，客户端用户不需要额外安装开发工具。
 
-0.3.10 起，Windows 桌面端会在本机加密保留 **Quota Guard 系统登录状态 7 天**。关闭窗口、从托盘退出或重启电脑后可自动恢复；首次升级需重新登录一次。期限从这次登录起计算，自动续期不会延长这 7 天。主动退出登录会清除本机状态，管理员强制下线或禁用账户后也需重新登录。不会保存密码，不改变官方 Codex 登录方式。详见[登录状态存储](./docs/architecture/current-system-architecture.md#桌面登录状态存储0310)。
+### 桌面自启动
 
-### 桌面自启动（0.3.8 普通启动项）
-
-Windows NSIS 使用 **currentUser** 安装方式，可自行选择安装目录，不要求放在 Program Files。安装器本身不登记自启动；正式版桌面程序首次以**当前 Windows 用户的管理员身份启动**时，才默认登记普通启动项 **Codex Quota Guard**。可以在 **任务管理器 → 启动应用** 或客户端 **设置 → 开机自启动** 中启用、禁用；回到客户端设置页会重新读取 Windows 状态，不会把外部禁用的启动项自动打开。
-
-这控制的是**用户登录 Windows 后打开桌面程序**，不是统计服务的开机启动；关闭它不会停止 `CodexQuotaGuardMeter`。普通启动项先启动未提权的程序，再通过 Windows 正常 UAC 流程请求当前用户的管理员权限；取消授权或改用另一账户的凭据时，不继续启动客户端、Java 或统计守卫。不创建静默管理员启动任务，也不绕过 UAC。开发版不会自动登记自启动。
-
-0.3.7 起，普通双击与登录自启动都会在权限不足时通过正常 UAC 请求管理员权限；已获得权限时不会重复请求，取消授权则退出启动器。请勿给主 EXE 永久勾选兼容性选项“以管理员身份运行”，否则普通登录启动入口可能在进入程序前被 Windows 阻止。这是需要用户授权的启动流程，不是静默提权。
-
-**旧版迁移**：新版首次获得管理员权限后，核对当前用户及安装目录，将本软件旧计划任务迁移为普通启动项并移除旧任务，避免重复启动；原来的关闭选择会保留。发现其他目录的同名记录、未知 Windows 状态或迁移失败时会提示，不擅自覆盖。只更新源码不会改变已安装版本，需要重新打包并升级。
+设置中的“开机自启动”只控制登录 Windows 后是否打开界面；统计服务自动启动由 Windows 管理。正常桌面运行无需为了启动统计而再次提权。服务和桌面界面分别启停，详细说明见[当前系统架构](./docs/architecture/current-system-architecture.md)。
 
 ### 旧版升级兼容（0.3.5 起）
 
 安装器同时检查“当前用户”和“所有用户”的旧安装记录，包括 32/64 位注册表视图；软件名称和应用 ID 保持不变。当前用户安装默认沿用原自选目录；发现所有用户版本时，先显示旧版本、原目录和目标目录，经确认后通过 Windows UAC 卸载旧程序，再安装当前用户版本。取消授权、卸载失败或旧版记录残留都会停止安装，不会继续创建第二份。
 
-迁移不清除应用数据，也不卸载独立统计服务；新程序首次获得管理员权限后按原开关恢复自启动。若发现多个安装目录或记录损坏，会提示处理，不猜测要删除哪份。**已发布的 0.3.4 安装包不包含这次兼容修复，源码更新不会自动改变旧安装包。**
+迁移不清除应用数据；更新阶段保留独立统计服务，由安装器升级并验证，原桌面自启动选择保持。若发现多个安装目录或记录损坏，会提示处理，不猜测要删除哪份。**已发布的 0.3.4 安装包不包含这次兼容修复，源码更新不会自动改变旧安装包。**
 
 ## 系统如何协作
 
@@ -142,26 +134,25 @@ Windows NSIS 使用 **currentUser** 安装方式，可自行选择安装目录�
 flowchart LR
     Codex[官方 Codex CLI / 桌面端] -->|本机会话日志| Meter[Windows Rust 统计程序]
     Meter -->|Token 事件与心跳| API[中央 Java API]
-    Desktop[React + Tauri 桌面端] --> Local[本地 Java 服务]
-    Codex -.->|官方额度摘要| Local
-    Local -->|系统登录与额度查询| API
+    Desktop[React + Tauri 桌面端] -->|Axios| API
+    Codex -.->|本机 CLI stdio RPC| Desktop
     Admin[Ant Design Pro 管理端] --> API
     API --> DB[(PostgreSQL)]
 ```
 
-桌面端的本地 Java 服务仅监听回环地址；中央 Java API 管理用户、团队、额度和已入库的用量事件。更完整的数据流见[当前系统架构](./docs/architecture/current-system-architecture.md)。
+桌面直接请求中央 Java API；原生层仅处理必要本机操作，中央 API 管理用户、团队、额度和已入库的用量事件。更完整的数据流见[当前系统架构](./docs/architecture/current-system-architecture.md)。
 
 ## 从源码运行
 
-开发电脑需要 Java 17、Maven 3.9+、Node.js 22+、pnpm 10.12.3；运行或构建桌面端还需要 Rust 1.85+ 和对应平台的 Tauri 依赖。中央服务需要 PostgreSQL。先参照 [`apps/admin/backend/.env.example`](./apps/admin/backend/.env.example) 将数据库和 JWT 配置注入启动环境。
+桌面开发需要 Node.js 22+、pnpm 10.12.3、Rust 1.85+ 和对应平台的 Tauri 依赖。中央后端开发另需 Java 17、Maven 3.9+ 和 PostgreSQL。先参照 [`apps/admin/backend/.env.example`](./apps/admin/backend/.env.example) 配置中央后端；桌面启动与独立服务测试见[本机桌面测试指南](./docs/local-desktop-test.md)。
 
-Windows 可直接使用仓库根目录的 [一键启动-管理后台.cmd](./一键启动-管理后台.cmd) 和 [一键启动-桌面客户端.cmd](./一键启动-桌面客户端.cmd)。桌面脚本会在 UAC 授权后以当前 Windows 用户提权启动 pnpm 桌面端；首次安装提示会先于 UAC 出现，批准时须使用启动脚本的同一 Windows 账户，取消或切换账户都会明确失败。也可以分别在终端运行：
+Windows 可使用仓库根目录的 [一键启动-管理后台.cmd](./一键启动-管理后台.cmd) 和 [一键启动-桌面客户端.cmd](./一键启动-桌面客户端.cmd)。桌面开发启动不安装、启动或修复统计服务，首次独立服务测试按[架构中的源码验证步骤](./docs/architecture/current-system-architecture.md#从源码验证)安装。也可分别在终端运行：
 
 ```bash
 pnpm install
 ```
 
-然后在**三个不同终端**分别运行 `pnpm dev:admin-backend`（中央 API，默认 8080）、`pnpm dev:admin`（管理页，默认 `http://localhost:8000`）和 `pnpm dev:client`（桌面端，Windows 需管理员终端）。Windows 一键启动桌面脚本还会检查、安装或启动独立统计程序。普通用户电脑请使用发布的安装包，不必配置源码开发环境。
+然后在**三个不同终端**分别运行 `pnpm dev:admin-backend`（中央 API，默认 8080）、`pnpm dev:admin`（管理页，默认 `http://localhost:8000`）和 `pnpm dev:client`（桌面端，普通终端）。统计服务由安装器或显式开发安装命令准备。普通用户电脑请使用发布的安装包，不必配置源码开发环境。
 
 ## 构建与验证
 
@@ -175,7 +166,7 @@ pnpm verify
 & .\scripts\windows\package-client.ps1
 ```
 
-默认产物目录为 `D:\BuildCache\pingche\desktop-package-target\release\bundle\nsis`。打包电脑没有 D 盘时，可传入 `-TargetDirectory 'C:\BuildCache\codex-quota-guard'` 自行指定目录；首次构建需要联网下载并校验随包运行时。也可双击 [一键打包-桌面客户端.cmd](./一键打包-桌面客户端.cmd) 使用默认设置。
+默认产物目录为项目内 `dist\build-target\release\bundle\nsis`。也可传入 `-TargetDirectory 'C:\BuildCache\codex-quota-guard'` 自行指定目录；首次构建需要联网下载并校验随包运行时。也可双击 [一键打包-桌面客户端.cmd](./一键打包-桌面客户端.cmd) 使用默认设置。
 
 ## 项目结构
 
@@ -186,7 +177,7 @@ apps/
     backend/    中央 Java API
   client/
     frontend/   React + Tauri 桌面端
-    backend/    本地 Java 服务
+    backend/    已退役 Java 迁移参考，不编译或打包
     meter/      Windows Rust 统计程序
 docs/          架构、API 与产品文档
 deploy/docker/ 镜像拉取、离线与源码构建部署

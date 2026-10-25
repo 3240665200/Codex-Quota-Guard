@@ -105,7 +105,7 @@ describe('统一预置授权与本机浏览器入口', () => {
     expect(screen.getByRole('button', { name: '使用预置授权' })).toBeDisabled();
     expect(screen.getByRole('button', { name: '保存授权' })).toBeDisabled();
     expect(screen.getByRole('button', { name: '刷新官方账户与会话' })).toBeDisabled();
-    expect(screen.getByRole('link', { name: '管理代理节点' })).toHaveAttribute('href', '/proxy-nodes');
+    expect(screen.getByRole('link', { name: '管理代理节点' })).toHaveAttribute('href', '#/proxy-nodes');
     expect(screen.getByText(/每个官方账户必须选择一个已启用的代理节点/)).toBeInTheDocument();
     expect(screen.queryByText('直连（不使用代理）')).not.toBeInTheDocument();
     expect(mocks.applyOfficialAuthorizationPreset).not.toHaveBeenCalled();

@@ -1,5 +1,4 @@
 use super::{
-    initialize_default,
     migration::{migrate, rollback, MigrationStore, RollbackStore},
     same_logon_user, startup_action,
     startup_entry::{EntrySnapshot, StartupEntry},
@@ -8,7 +7,7 @@ use super::{
 use std::{
     ffi::OsString,
     mem::size_of,
-    os::windows::ffi::{OsStrExt, OsStringExt},
+    os::windows::ffi::OsStringExt,
     path::{Path, PathBuf},
     ptr,
 };
@@ -19,7 +18,7 @@ use windows::{
         System::{
             Com::{
                 CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT,
-                COINIT_APARTMENTTHREADED, COINIT_MULTITHREADED,
+                COINIT_MULTITHREADED,
             },
             TaskScheduler::{
                 IExecAction, ILogonTrigger, IRegisteredTask, ITaskFolder, ITaskService,
@@ -32,13 +31,12 @@ use windows::{
 };
 use windows_sys::Win32::{
     Foundation::{
-        CloseHandle, GetLastError, LocalFree, ERROR_CANCELLED, ERROR_INSUFFICIENT_BUFFER, HANDLE,
+        CloseHandle, GetLastError, LocalFree, ERROR_INSUFFICIENT_BUFFER, HANDLE,
     },
     Security::{
         Authorization::{ConvertSidToStringSidW, ConvertStringSidToSidW},
         EqualSid, GetLengthSid, GetTokenInformation, IsValidSid, LookupAccountNameW,
-        SidTypeUnknown, TokenElevation, TokenUser, PSID, SECURITY_MAX_SID_SIZE, TOKEN_ELEVATION,
-        TOKEN_QUERY, TOKEN_USER,
+        SidTypeUnknown, TokenUser, PSID, SECURITY_MAX_SID_SIZE, TOKEN_QUERY, TOKEN_USER,
     },
     System::{
         Registry::{
@@ -50,10 +48,8 @@ use windows_sys::Win32::{
         },
     },
     UI::{
-        Shell::{ShellExecuteExW, SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW},
         WindowsAndMessaging::{
             GetShellWindow, GetWindowThreadProcessId, MessageBoxW, MB_ICONEXCLAMATION, MB_OK,
-            SW_SHOWNORMAL,
         },
     },
 };
@@ -254,9 +250,6 @@ impl TaskStore for WindowsTasks {
     }
 
     fn write(&mut self, enabled: bool) -> Result<(), &'static str> {
-        if !is_elevated()? {
-            return Err(WRITE_ERROR);
-        }
         let mut migration = NativeMigration {
             entry: self.entry()?,
             legacy: self.legacy()?,
@@ -266,9 +259,6 @@ impl TaskStore for WindowsTasks {
     }
 
     fn migrate(&mut self, enabled: bool) -> Result<(), &'static str> {
-        if !is_elevated()? {
-            return Err(WRITE_ERROR);
-        }
         let legacy = self.legacy()?;
         legacy.task()?;
         let entry = self.entry()?;
@@ -731,26 +721,6 @@ fn current_desktop_user() -> Result<String, &'static str> {
     Ok(sid)
 }
 
-fn is_elevated() -> Result<bool, &'static str> {
-    let handle = token(unsafe { GetCurrentProcess() })?;
-    let mut elevation = TOKEN_ELEVATION::default();
-    let mut returned = 0;
-    // SAFETY: The out buffer matches TOKEN_ELEVATION and the token is owned.
-    if unsafe {
-        GetTokenInformation(
-            handle.0,
-            TokenElevation,
-            (&mut elevation as *mut TOKEN_ELEVATION).cast(),
-            size_of::<TOKEN_ELEVATION>() as u32,
-            &mut returned,
-        )
-    } == 0
-    {
-        return Err(WRITE_ERROR);
-    }
-    Ok(elevation.TokenIsElevated != 0)
-}
-
 fn sid_text(sid: *mut core::ffi::c_void) -> Result<String, &'static str> {
     // SAFETY: Callers pass a SID from a successful Windows security API.
     if sid.is_null() || unsafe { IsValidSid(sid) } == 0 {
@@ -799,48 +769,13 @@ fn show_startup_error(message: &'static str) {
     };
 }
 
-fn request_elevation() -> Result<(), &'static str> {
-    // Shell extensions may require STA COM, and NOASYNC completes ShellExecute
-    // before this short-lived unelevated launcher exits.
-    let _apartment = ComApartment::initialize(COINIT_APARTMENTTHREADED)?;
-    let executable = std::env::current_exe().map_err(|_| PATH_ERROR)?;
-    let directory = executable.parent().ok_or(PATH_ERROR)?;
-    let verb = wide("runas");
-    let executable: Vec<u16> = executable
-        .as_os_str()
-        .encode_wide()
-        .chain(Some(0))
-        .collect();
-    let directory: Vec<u16> = directory.as_os_str().encode_wide().chain(Some(0)).collect();
-    let arguments = wide("--autostart-elevated");
-    let mut info = SHELLEXECUTEINFOW {
-        cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
-        fMask: SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI,
-        lpVerb: verb.as_ptr(),
-        lpFile: executable.as_ptr(),
-        lpParameters: arguments.as_ptr(),
-        lpDirectory: directory.as_ptr(),
-        nShow: SW_SHOWNORMAL,
-        ..Default::default()
-    };
-    // SAFETY: Only this process's literal OS-provided executable path and a
-    // fixed flag are supplied. Buffers stay alive through the synchronous call.
-    if unsafe { ShellExecuteExW(&mut info) } == 0 {
-        let error = unsafe { GetLastError() };
-        if error == ERROR_CANCELLED {
-            return Ok(());
-        }
-        return Err("无法请求客户端管理员权限，请以当前 Windows 用户的管理员身份启动客户端。");
-    }
-    Ok(())
-}
-
 pub(super) fn handle_startup(mode: LaunchMode) -> Option<i32> {
-    // Validate the new elevated child too: UAC may accept another administrator's
-    // credentials, which must never launch this user's guard, meter, or Java.
-    let action = current_desktop_user()
-        .and_then(|_| is_elevated())
-        .and_then(|elevated| startup_action(mode, elevated, true));
+    // Starting the desktop client never requests administrator approval.
+    let action = if mode == LaunchMode::Desktop {
+        startup_action(mode, false, true)
+    } else {
+        current_desktop_user().and_then(|_| startup_action(mode, false, true))
+    };
     let action = match action {
         Ok(action) => action,
         Err(message) => {
@@ -850,24 +785,8 @@ pub(super) fn handle_startup(mode: LaunchMode) -> Option<i32> {
     };
     match action {
         StartupAction::Initialize => {
-            // Development builds depend on a live Vite server and must not
-            // become a permanent Windows logon entry automatically.
-            if !cfg!(debug_assertions) {
-                if let Err(message) =
-                    WindowsTasks::connect().and_then(|mut tasks| initialize_default(&mut tasks))
-                {
-                    show_startup_error(message);
-                }
-            }
             None
         }
-        StartupAction::Elevate => match request_elevation() {
-            Ok(()) => Some(0),
-            Err(message) => {
-                show_startup_error(message);
-                Some(2)
-            }
-        },
         StartupAction::Uninstall => match remove_installation_tasks() {
             Ok(()) => Some(0),
             Err(message) => {

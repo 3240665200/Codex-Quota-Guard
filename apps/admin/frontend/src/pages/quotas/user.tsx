@@ -1,12 +1,13 @@
 import { ArrowLeftOutlined, ReloadOutlined } from '@ant-design/icons';
 import { history, useParams } from '@umijs/max';
 import { PageContainer } from '@ant-design/pro-components';
-import { Alert, App as AntApp, Button, Descriptions, Popconfirm, Progress, Space, Table, Tag, Typography } from 'antd';
+import { Alert, App as AntApp, Button, Descriptions, Popconfirm, Space, Table, Tag, Typography } from 'antd';
 import type { TableColumnsType } from 'antd';
 import { useCallback, useEffect, useState } from 'react';
 
 import { getErrorMessage } from '../../components/AdminState';
-import { TokenAmount } from '../../components/TokenAmount';
+import { QuotaAmount } from '../../components/QuotaAmount';
+import { useQuotaDisplay } from '../../services/quota-display';
 import { getUser, getUserMeterDevices, getUserOfficialQuota,
   getUserQuotaOverview } from '../../services/api';
 import { resetTeamQuota, resetUserQuota } from '../../services/api';
@@ -33,16 +34,7 @@ function TokenWindow({ label, used, limit, remaining }: {
   return (
     <div style={{ flex: '1 1 260px', minWidth: 0 }}>
       <Typography.Text strong>{label}</Typography.Text>
-      <div style={{ marginTop: 8 }}>
-        <Typography.Text><TokenAmount value={used} /> 已用</Typography.Text>
-        <Typography.Text type="secondary"> / {limit === null
-          ? '不设限' : <TokenAmount value={limit} />}</Typography.Text>
-      </div>
-      {limit !== null ? <Progress percent={limit === 0 ? 100 : Math.min(100, Math.round(used / limit * 100))}
-        showInfo={false} status={remaining === 0 ? 'exception' : 'normal'} /> : null}
-      <Typography.Text type={remaining === 0 ? 'danger' : 'secondary'}>
-        {remaining === null ? '不设限' : <>剩余 <TokenAmount value={remaining} /></>}
-      </Typography.Text>
+      <div style={{ marginTop: 8 }}><QuotaAmount label={label} used={used} limit={limit} remaining={remaining} /></div>
     </div>
   );
 }
@@ -56,6 +48,7 @@ const deviceColumns: TableColumnsType<MeterDeviceStatus> = [
 ];
 
 export function UserQuotaDetail({ userId }: { userId: string }) {
+  const { mode, label: displayLabel } = useQuotaDisplay();
   const { message } = AntApp.useApp();
   const [user, setUser] = useState<UserResponse | null>(null);
   const [overview, setOverview] = useState<UserQuotaOverview | null>(null);
@@ -128,10 +121,10 @@ export function UserQuotaDetail({ userId }: { userId: string }) {
           </Typography.Paragraph>
           <Space align="start" size={32} wrap style={{ width: '100%' }}>
             <TokenWindow label="5 小时" used={overview.usage.fiveHourUsedTokens}
-              limit={user.fiveHourTokenLimit}
+              limit={overview.policy.fiveHourTokenLimit}
               remaining={overview.usage.fiveHourRemainingTokens} />
             <TokenWindow label="7 天" used={overview.usage.weeklyUsedTokens}
-              limit={user.weeklyTokenLimit}
+              limit={overview.policy.weeklyTokenLimit}
               remaining={overview.usage.weeklyRemainingTokens} />
           </Space>
           {overview.blockReason ? <Alert style={{ marginTop: 16 }} showIcon type="warning"
@@ -163,10 +156,10 @@ export function UserQuotaDetail({ userId }: { userId: string }) {
           {official ? <Descriptions column={{ xs: 1, sm: 2, md: 3 }} size="small" bordered items={[
             { key: 'plan', label: '套餐', children: official.planType ?? '未知' },
             ...official.windows.filter((item) => item.windowDurationMins === 300).map((item) => ({
-              key: 'five', label: '官方 5 小时', children: `已使用 ${item.usedPercent}%`,
+              key: 'five', label: '官方 5 小时', children: `${displayLabel} ${mode === 'remaining' ? Math.max(0, 100 - item.usedPercent) : item.usedPercent}%`,
             })),
             ...official.windows.filter((item) => item.windowDurationMins === 10_080).map((item) => ({
-              key: 'week', label: '官方 7 天', children: `已使用 ${item.usedPercent}%`,
+              key: 'week', label: '官方 7 天', children: `${displayLabel} ${mode === 'remaining' ? Math.max(0, 100 - item.usedPercent) : item.usedPercent}%`,
             })),
             { key: 'at', label: '客户端最近上报', children: new Date(official.receivedAt).toLocaleString('zh-CN') },
           ]} /> : <Typography.Text type="secondary">暂无客户端上报的官方额度</Typography.Text>}

@@ -1,9 +1,7 @@
 use crate::{
-    backend::BackendState,
     codex_connection::{self, RestoreOutcome},
     conflict_evidence::{self, ConflictEvidence, ConflictSnapshot},
     conflict_notice::{ConflictNotices, NoticeEvent, RestoreNotice},
-    meter_service, tray,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -36,7 +34,6 @@ pub(crate) enum GateState {
     MeterUnavailable,
     GuardError,
     CodexRestoreFailed,
-    BackendUnavailable,
     #[cfg(not(windows))]
     Unsupported,
 }
@@ -438,32 +435,18 @@ impl StartupGate {
             return self.block(app, GateResult::new(GateState::GuardError));
         }
         self.ready.store(false, Ordering::Release);
-        if let Some(backend) = app.try_state::<BackendState>() {
-            backend.stop();
-        }
         #[cfg(not(windows))]
         return self.block(app, GateResult::new(GateState::Unsupported));
         #[cfg(windows)]
         {
-            if !is_elevated_admin() {
-                return self.block(app, GateResult::new(GateState::AdminRequired));
-            }
             let Some(lease_id) = self.ensure_lease(app) else {
                 return self.block(app, GateResult::new(GateState::GuardError));
             };
             if self.closed.load(Ordering::Acquire) {
                 return self.block(app, GateResult::new(GateState::GuardError));
             }
-            // The meter can answer faster than its next tick. This result only
-            // becomes usable after it echoes this exact lease ID.
-            if !matches!(
-                tray::ensure_meter_serialized(app),
-                meter_service::MeterStartOutcome::Running
-                    | meter_service::MeterStartOutcome::Started
-                    | meter_service::MeterStartOutcome::Installed
-            ) {
-                return self.block(app, GateResult::new(GateState::MeterUnavailable));
-            }
+            // The independent service is installed and recovered by the
+            // installer. The guard observes it without starting or repairing it.
             let deadline = Instant::now() + GUARD_WAIT;
             let guard = loop {
                 if self.closed.load(Ordering::Acquire)
@@ -487,18 +470,6 @@ impl StartupGate {
                 || self.current_lease_id().as_deref() != Some(lease_id.as_str())
             {
                 return self.block(app, GateResult::new(GateState::GuardError));
-            }
-            if let Some(backend) = app.try_state::<BackendState>() {
-                if backend.restart(app).is_err() {
-                    return self.block(app, GateResult::new(GateState::BackendUnavailable));
-                }
-            } else {
-                let Ok(backend) = BackendState::launch(app, self.ready_flag()) else {
-                    return self.block(app, GateResult::new(GateState::BackendUnavailable));
-                };
-                if !app.manage(backend) {
-                    return self.block(app, GateResult::new(GateState::BackendUnavailable));
-                }
             }
             if self.closed.load(Ordering::Acquire)
                 || self.current_lease_id().as_deref() != Some(lease_id.as_str())
@@ -547,7 +518,7 @@ impl StartupGate {
         }
         if !self.ready.load(Ordering::Acquire) {
             // We hold the operation lock, so no startup check is in flight.
-            // A previous monitor failure stopped Java and requires an explicit retry.
+            // A previous monitor failure requires an explicit guard recheck.
             return GateResult::new(GateState::GuardError);
         }
         if self.closed.load(Ordering::Acquire) {
@@ -557,10 +528,8 @@ impl StartupGate {
     }
 
     fn block(&self, app: &AppHandle, result: GateResult) -> GateResult {
+        let _ = app;
         self.ready.store(false, Ordering::Release);
-        if let Some(backend) = app.try_state::<BackendState>() {
-            backend.stop();
-        }
         result
     }
 }
@@ -737,45 +706,6 @@ fn process_is_same(record: &GuardLeaseRecord) -> bool {
 #[cfg(not(windows))]
 fn process_is_same(_record: &GuardLeaseRecord) -> bool {
     false
-}
-
-#[cfg(windows)]
-fn is_elevated_admin() -> bool {
-    use std::{mem::size_of, ptr};
-    use windows_sys::Win32::{
-        Foundation::CloseHandle,
-        Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY},
-        System::{
-            Services::{CloseServiceHandle, OpenSCManagerW, SC_MANAGER_CREATE_SERVICE},
-            Threading::{GetCurrentProcess, OpenProcessToken},
-        },
-    };
-    let mut token = ptr::null_mut();
-    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
-        return false;
-    }
-    let mut elevation = TOKEN_ELEVATION::default();
-    let mut returned = 0u32;
-    let elevated = unsafe {
-        GetTokenInformation(
-            token,
-            TokenElevation,
-            (&mut elevation as *mut TOKEN_ELEVATION).cast(),
-            size_of::<TOKEN_ELEVATION>() as u32,
-            &mut returned,
-        )
-    } != 0
-        && elevation.TokenIsElevated != 0;
-    unsafe { CloseHandle(token) };
-    if !elevated {
-        return false;
-    }
-    let manager = unsafe { OpenSCManagerW(ptr::null(), ptr::null(), SC_MANAGER_CREATE_SERVICE) };
-    if manager.is_null() {
-        return false;
-    }
-    unsafe { CloseServiceHandle(manager) };
-    true
 }
 
 #[cfg(test)]

@@ -92,9 +92,39 @@ function Write-PreviewState {
     $status=Join-Path $RunDirectory 'status.json';Assert-PreviewPath $status
     $temporary=Join-Path $RunDirectory ('status-'+[Guid]::NewGuid().ToString('N')+'.tmp')
     [IO.File]::WriteAllText($temporary,($State|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
-    Move-Item -LiteralPath $temporary -Destination $status -Force
+    # Replace an existing snapshot atomically so a reader never observes a
+    # Test-Path/Get-Content gap while startup or shutdown updates its state.
+    for ($attempt=0; ; $attempt++) {
+        try {
+            if ([IO.File]::Exists($status)) { [IO.File]::Replace($temporary, $status, [NullString]::Value) }
+            else { [IO.File]::Move($temporary, $status) }
+            break
+        } catch {
+            if ($attempt -ge 24 -or ($_.Exception -isnot [IO.IOException] -and $_.Exception.InnerException -isnot [IO.IOException])) { throw }
+            Start-Sleep -Milliseconds 20
+        }
+    }
     $entry=@{TimeUtc=$State.UpdatedUtc;Event=$Event;State=$State.Phase;Supervisor=$State.Supervisor;Backend=$State.Backend;Frontend=$State.Frontend;ErrorCode=$State.ErrorCode}
     [IO.File]::AppendAllText((Join-Path $RunDirectory 'events.jsonl'),(($entry|ConvertTo-Json -Depth 7 -Compress)+[Environment]::NewLine),[Text.UTF8Encoding]::new($false))
+}
+
+function Read-PreviewState {
+    param([Parameter(Mandatory)][string]$Path)
+    Assert-PreviewPath $Path
+    for ($attempt=0; ; $attempt++) {
+        $stream=$null; $reader=$null
+        try {
+            $stream=[IO.FileStream]::new($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+            $reader=[IO.StreamReader]::new($stream)
+            return ($reader.ReadToEnd() | ConvertFrom-Json)
+        } catch {
+            if ($attempt -ge 24 -or ($_.Exception -isnot [IO.IOException] -and $_.Exception.InnerException -isnot [IO.IOException])) { throw }
+            Start-Sleep -Milliseconds 20
+        } finally {
+            if ($null -ne $reader) { $reader.Dispose() }
+            elseif ($null -ne $stream) { $stream.Dispose() }
+        }
+    }
 }
 
 function Get-PreviewListener {
@@ -115,7 +145,7 @@ function Request-PreviewStop {
     param([Parameter(Mandatory)][string]$RunDirectory)
     Set-PreviewPrivateDirectory $RunDirectory
     $path=Join-Path $RunDirectory 'status.json';Assert-PreviewPath $path
-    $state=Get-Content -LiteralPath $path -Raw|ConvertFrom-Json
+    $state=Read-PreviewState -Path $path
     if($state.RunId -ne (Split-Path -Leaf $RunDirectory)){throw 'PREVIEW_RUN_ID_INVALID'}
     if($state.Phase -in @('EXITED','FAILED')){return @{StatusPath=$path;State=$state.Phase}}
     $process=[Diagnostics.Process]::GetProcessById([int]$state.Supervisor.Pid)
@@ -143,4 +173,4 @@ function Get-PreviewFailureCode {
     return 'PREVIEW_WORKER_FAILED'
 }
 
-Export-ModuleMember -Function Start-PreviewDetachedWorker,Assert-PreviewWorkerIdentity,Assert-PreviewPath,Resolve-PreviewToolPath,Set-PreviewPrivateDirectory,Get-PreviewBaseEnvironment,Write-PreviewState,Get-PreviewListener,Request-PreviewStop,New-PreviewBatchArguments,Get-PreviewFailureCode
+Export-ModuleMember -Function Start-PreviewDetachedWorker,Assert-PreviewWorkerIdentity,Assert-PreviewPath,Resolve-PreviewToolPath,Set-PreviewPrivateDirectory,Get-PreviewBaseEnvironment,Write-PreviewState,Read-PreviewState,Get-PreviewListener,Request-PreviewStop,New-PreviewBatchArguments,Get-PreviewFailureCode

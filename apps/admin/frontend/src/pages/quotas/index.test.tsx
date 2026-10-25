@@ -1,19 +1,22 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { App as AntApp } from 'antd';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import QuotasPage from './index';
-import { getTeamQuotaOverview, listTeams, listUsers, resetTeamQuota } from '../../services/api';
+import { getTeamQuotaOverview, getUserQuotaOverview, listTeams, listUsers, resetTeamQuota } from '../../services/api';
+import { setQuotaDisplayMode } from '../../services/quota-display';
 
 vi.mock('@umijs/max', () => ({ history: { push: vi.fn() } }));
 
 vi.mock('../../services/api', () => ({
   getTeamQuotaOverview: vi.fn(), listTeams: vi.fn(), listUsers: vi.fn(),
   resetTeamQuota: vi.fn(),
+  getUserQuotaOverview: vi.fn(),
 }));
 
 describe('额度查看页面', () => {
   beforeEach(() => {
+    setQuotaDisplayMode('used');
     vi.clearAllMocks();
     vi.mocked(listTeams).mockResolvedValue([{ id: 'team-1', name: '研发', memberCount: 2 } as never]);
     vi.mocked(getTeamQuotaOverview).mockResolvedValue({
@@ -32,13 +35,15 @@ describe('额度查看页面', () => {
       page: 0, size: 20, totalElements: 1, totalPages: 1,
     });
     vi.mocked(resetTeamQuota).mockResolvedValue(undefined);
+    vi.mocked(getUserQuotaOverview).mockResolvedValue({ policy: { fiveHourTokenLimit: 10_000, weeklyTokenLimit: 20_000 },
+      usage: { fiveHourUsedTokens: 250, weeklyUsedTokens: 600, fiveHourRemainingTokens: 9750, weeklyRemainingTokens: 19400 } });
   });
 
   it('shows shared team totals and lets an administrator refresh them', async () => {
     render(<AntApp><QuotasPage /></AntApp>);
     expect((await screen.findAllByTitle('精确值：510 Token')).length).toBe(2);
     expect(screen.getByTitle('精确值：500 Token')).toBeInTheDocument();
-    expect(screen.getByTitle('精确值：0 Token')).toBeInTheDocument();
+    expect(screen.getByRole('progressbar', { name: '研发 5 小时团队已用额度' })).toHaveAttribute('aria-valuenow', '100');
     expect(screen.getByTitle('精确值：1,000 Token')).toBeInTheDocument();
     expect(screen.getByText('Alice')).toBeInTheDocument();
     fireEvent.click(screen.getByText('刷新'));
@@ -93,5 +98,47 @@ describe('额度查看页面', () => {
     await waitFor(() => expect(resetTeamQuota).toHaveBeenCalledWith('team-1'));
     expect((await screen.findAllByTitle('精确值：0 Token')).length).toBe(3);
     expect(getTeamQuotaOverview).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows each user measured progress and switches value, label and fill without fetching again', async () => {
+    setQuotaDisplayMode('remaining');
+    render(<AntApp><QuotasPage /></AntApp>);
+    const region = screen.getByRole('region', { name: '用户额度' });
+    expect(await within(region).findByTitle('精确值：9,750 Token')).toBeInTheDocument();
+    expect(within(region).getByRole('progressbar', { name: 'Alice 5 小时个人剩余额度' })).toHaveAttribute('aria-valuenow', '97.5');
+    expect(within(region).getByRole('progressbar', { name: 'Alice 7 天个人剩余额度' })).toHaveAttribute('aria-valuenow', '97');
+    act(() => { setQuotaDisplayMode('used'); });
+    expect(within(region).getByTitle('精确值：250 Token')).toBeInTheDocument();
+    expect(within(region).getByRole('progressbar', { name: 'Alice 5 小时个人已用额度' })).toHaveAttribute('aria-valuenow', '2.5');
+    expect(getUserQuotaOverview).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not substitute zero progress when one user quota request fails', async () => {
+    vi.mocked(getUserQuotaOverview).mockRejectedValue(new Error('unavailable'));
+    render(<AntApp><QuotasPage /></AntApp>);
+    const region = screen.getByRole('region', { name: '用户额度' });
+    expect(await within(region).findAllByText('额度暂不可得')).toHaveLength(2);
+    expect(within(region).queryByRole('progressbar')).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: '团队额度' })).toHaveTextContent('研发');
+  });
+
+  it('ignores late quota data from a previous search', async () => {
+    let resolveOld!: (value: Awaited<ReturnType<typeof getUserQuotaOverview>>) => void;
+    const old = new Promise<Awaited<ReturnType<typeof getUserQuotaOverview>>>((resolve) => { resolveOld = resolve; });
+    vi.mocked(listUsers).mockResolvedValueOnce({ items: [{ id: 'old-user', displayName: '旧用户', email: 'old@example.com' } as never],
+      page: 0, size: 20, totalElements: 1, totalPages: 1 }).mockResolvedValue({ items: [{ id: 'new-user', displayName: '新用户', email: 'new@example.com' } as never],
+      page: 0, size: 20, totalElements: 1, totalPages: 1 });
+    const fresh = { policy: { fiveHourTokenLimit: 100, weeklyTokenLimit: 200 },
+      usage: { fiveHourUsedTokens: 20, weeklyUsedTokens: 30, fiveHourRemainingTokens: 80, weeklyRemainingTokens: 170 } };
+    vi.mocked(getUserQuotaOverview).mockImplementation((id) => id === 'old-user' ? old : Promise.resolve(fresh));
+    render(<AntApp><QuotasPage /></AntApp>);
+    await waitFor(() => expect(getUserQuotaOverview).toHaveBeenCalledWith('old-user'));
+    const search = screen.getByLabelText('搜索用户');
+    fireEvent.change(search, { target: { value: 'new' } });
+    fireEvent.keyDown(search, { key: 'Enter', code: 'Enter', keyCode: 13 });
+    expect(await screen.findByText('新用户')).toBeInTheDocument();
+    await act(async () => { resolveOld(fresh); });
+    expect(screen.queryByText('旧用户')).not.toBeInTheDocument();
+    expect(screen.getByText('新用户')).toBeInTheDocument();
   });
 });

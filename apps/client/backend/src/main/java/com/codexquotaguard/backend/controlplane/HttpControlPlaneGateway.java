@@ -93,7 +93,7 @@ final class HttpControlPlaneGateway implements ControlPlaneGateway {
 
     @Override
     public PersonalQuotaOverview quotaOverview(String accessToken) {
-        return sendJson(get("/api/v1/client/quota/overview", accessToken), PersonalQuotaOverview.class);
+        return sendJson(get("/api/v1/client/quota/overview?includeTeamMembers=true", accessToken), PersonalQuotaOverview.class);
     }
 
     @Override public ClientAccess clientAccess(String accessToken) {

@@ -24,6 +24,7 @@ export default defineConfig({
   },
   model: {},
   npmClient: 'pnpm',
+  outputPath: process.env.ADMIN_OUTPUT_DIRECTORY || 'dist',
   proxy: {
     '/api': {
       changeOrigin: true,

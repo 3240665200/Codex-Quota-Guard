@@ -2,9 +2,9 @@
 
 文档按用途分层维护，避免架构说明、接口契约和产品需求混在同一目录。
 
-当前服务器发布目标：[服务器 0.3.23 发布说明与升级注意事项](releases/server-v0.3.23.md)。桌面客户端保持 [0.3.22](releases/v0.3.22.md)，统计程序保持 `0.2.4`。
+已发布版本与当前源码须分开看待：服务器部署说明仍固定在 [服务器 0.3.23](releases/server-v0.3.23.md)。当前桌面源码 `0.3.24` 已改为 Axios 直连中央 API、安装包强制安装独立 Rust 服务的架构，见 [当前架构](architecture/current-system-architecture.md)。旧安装包不会因源码修改而改变。
 
-使用与本地验证：[Windows 本地管理网页测试](local-admin-test.md)、[订阅与前置／后置代理链](proxy-subscriptions-and-chains.md)。
+使用与本地验证：[Windows 本地管理网页测试](local-admin-test.md)、[桌面启动与独立统计测试](local-desktop-test.md)、[订阅与前置／后置代理链](proxy-subscriptions-and-chains.md)。
 
 ## 服务器部署
 

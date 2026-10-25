@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 
 const MAX_LOG_BYTES: u64 = 2 * 1024 * 1024;
 const LOG_BACKUPS: usize = 5;
+const MAX_PUBLIC_SUMMARY_BYTES: u64 = 64 * 1024;
 
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -43,6 +44,7 @@ struct AuditEntry<'a> {
 #[derive(Clone)]
 pub(super) struct AuditLog {
     directory: PathBuf,
+    public_summary_path: Option<PathBuf>,
     max_bytes: u64,
     backups: usize,
     write_lock: Arc<Mutex<()>>,
@@ -61,17 +63,18 @@ impl AuditLog {
         if !directory.is_absolute() || max_bytes < 256 || !(1..=20).contains(&backups) {
             return Err("METER_LOG_CONFIG_INVALID".into());
         }
-        fs::create_dir_all(directory).map_err(|_| "METER_LOG_UNAVAILABLE")?;
-        let metadata = fs::symlink_metadata(directory).map_err(|_| "METER_LOG_UNAVAILABLE")?;
-        if !metadata.file_type().is_dir() {
-            return Err("METER_LOG_UNAVAILABLE".into());
-        }
         Ok(Self {
             directory: directory.to_path_buf(),
+            public_summary_path: None,
             max_bytes,
             backups,
             write_lock: Arc::new(Mutex::new(())),
         })
+    }
+
+    pub(super) fn with_public_summary_path(mut self, path: PathBuf) -> Self {
+        self.public_summary_path = Some(path);
+        self
     }
 
     pub(super) fn append(
@@ -120,6 +123,20 @@ impl AuditLog {
         line.push(b'\n');
         if line.len() as u64 > self.max_bytes {
             return Err("METER_LOG_WRITE_FAILED".into());
+        }
+        let private_result = self.append_private(&line);
+        if let Some(path) = &self.public_summary_path {
+            let _ = append_public_summary(path, &line);
+        }
+        private_result
+    }
+
+    fn append_private(&self, line: &[u8]) -> Result<(), String> {
+        fs::create_dir_all(&self.directory).map_err(|_| "METER_LOG_UNAVAILABLE")?;
+        let metadata =
+            fs::symlink_metadata(&self.directory).map_err(|_| "METER_LOG_UNAVAILABLE")?;
+        if !metadata.file_type().is_dir() {
+            return Err("METER_LOG_UNAVAILABLE".into());
         }
         let current = self.current_path();
         if current.exists() {
@@ -174,6 +191,53 @@ impl AuditLog {
         }
         Ok(())
     }
+}
+
+fn append_public_summary(path: &Path, line: &[u8]) -> Result<(), String> {
+    if line.len() as u64 > MAX_PUBLIC_SUMMARY_BYTES {
+        return Err("METER_LOG_WRITE_FAILED".into());
+    }
+    let parent = path.parent().ok_or("METER_LOG_WRITE_FAILED")?;
+    fs::create_dir_all(parent).map_err(|_| "METER_LOG_WRITE_FAILED")?;
+    let parent_metadata = fs::symlink_metadata(parent).map_err(|_| "METER_LOG_WRITE_FAILED")?;
+    if !parent_metadata.file_type().is_dir() {
+        return Err("METER_LOG_WRITE_FAILED".into());
+    }
+
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if !metadata.file_type().is_file() {
+                return Err("METER_LOG_WRITE_FAILED".into());
+            }
+            if metadata.len().saturating_add(line.len() as u64) > MAX_PUBLIC_SUMMARY_BYTES {
+                let backup = path.with_extension("jsonl.1");
+                match fs::symlink_metadata(&backup) {
+                    Ok(backup_metadata) => {
+                        if !backup_metadata.file_type().is_file() {
+                            return Err("METER_LOG_WRITE_FAILED".into());
+                        }
+                        fs::remove_file(&backup).map_err(|_| "METER_LOG_WRITE_FAILED")?;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(_) => return Err("METER_LOG_WRITE_FAILED".into()),
+                }
+                fs::rename(path, &backup).map_err(|_| "METER_LOG_WRITE_FAILED")?;
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err("METER_LOG_WRITE_FAILED".into()),
+    }
+
+    let mut output = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(path)
+        .map_err(|_| "METER_LOG_WRITE_FAILED")?;
+    output
+        .write_all(line)
+        .map_err(|_| "METER_LOG_WRITE_FAILED")?;
+    output.sync_data().map_err(|_| "METER_LOG_WRITE_FAILED")?;
+    Ok(())
 }
 
 fn safe_guard(value: &str) -> &str {
@@ -264,6 +328,47 @@ mod tests {
             assert!(path.is_file(), "missing {}", name);
             assert!(fs::metadata(path).unwrap().len() <= 400);
         }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn writes_a_safe_public_summary_with_a_small_rotation() {
+        let root = temp_dir();
+        let private = root.join("private");
+        let public = root.join("status").join("meter-runtime-logs.jsonl");
+        let log = AuditLog::with_limits(&private, 2 * 1024 * 1024, 2)
+            .unwrap()
+            .with_public_summary_path(public.clone());
+        let status = test_status("REPORTED", Some("refresh_token=private-canary"));
+        for _ in 0..500 {
+            log.append(AuditKind::UsageReported, Some(&status), 321, false)
+                .unwrap();
+        }
+
+        let content = fs::read_to_string(&public).unwrap();
+        assert!(fs::metadata(&public).unwrap().len() <= MAX_PUBLIC_SUMMARY_BYTES);
+        assert!(public.with_extension("jsonl.1").is_file());
+        assert!(content.contains("METER_ERROR_REDACTED"));
+        assert!(content.contains("reportedTokens"));
+        assert!(!content.contains("private-canary"));
+        assert!(!content.contains("refresh_token"));
+        assert!(!content.contains("serverOrigin"));
+        assert!(!content.contains(root.to_string_lossy().as_ref()));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn public_summary_failure_does_not_fail_the_private_audit_write() {
+        let root = temp_dir();
+        let public = root.join("meter-runtime-logs.jsonl");
+        fs::create_dir(&public).unwrap();
+        let log = AuditLog::with_limits(&root.join("private"), 1024, 2)
+            .unwrap()
+            .with_public_summary_path(public);
+        assert!(log
+            .append(AuditKind::ServiceStarted, None, 0, false)
+            .is_ok());
+        assert!(root.join("private/meter.jsonl").is_file());
         fs::remove_dir_all(root).unwrap();
     }
 }

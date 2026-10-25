@@ -20,6 +20,10 @@ fn run_foreground(config_path: &Path, once: bool) -> Result<(), String> {
     let mut runtime = MeterRuntime::new(read_config(config_path)?)?;
     loop {
         let status = runtime.tick();
+        if let Some(code) = runtime.fatal_error() {
+            let _ = runtime.shutdown();
+            return Err(code.into());
+        }
         if once {
             runtime.shutdown()?;
             println!("{}", status.state);
@@ -243,6 +247,11 @@ mod windows_service_entry {
         );
         while !STOP.load(Ordering::SeqCst) {
             runtime.tick();
+            if runtime.fatal_error().is_some() {
+                let _ = runtime.shutdown();
+                set_status(handle, SERVICE_STOPPED, 0, 1, 0);
+                return;
+            }
             for _ in 0..30 {
                 if STOP.load(Ordering::SeqCst) {
                     break;

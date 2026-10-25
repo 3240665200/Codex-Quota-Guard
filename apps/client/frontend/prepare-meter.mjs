@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { copyFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { verifyNativeRuntime } from "./verify-native-runtime.mjs";
@@ -16,12 +16,8 @@ const manifest = path.join(
   "Cargo.toml",
 );
 const env = nativeBuildEnvironment();
-if (
-  process.platform === "win32" &&
-  !env.CARGO_TARGET_DIR &&
-  existsSync("D:\\")
-) {
-  env.CARGO_TARGET_DIR = "D:\\BuildCache\\pingche\\meter-target";
+if (process.platform === "win32" && !env.CARGO_TARGET_DIR) {
+  env.CARGO_TARGET_DIR = path.join(repositoryRoot, "dist", "build-target");
 }
 const targetDir =
   env.CARGO_TARGET_DIR ??
@@ -54,7 +50,8 @@ if (process.platform === "win32") {
     "install-meter-service.ps1",
     "uninstall-meter-service.ps1",
     "show-meter-logs.ps1",
-    "ensure-meter-service.ps1",
+    "installer-meter.ps1",
+    "configure-meter-server.ps1",
   ]) {
     copyFileSync(
       path.join(repositoryRoot, "scripts", "windows", script),

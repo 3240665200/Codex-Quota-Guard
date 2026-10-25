@@ -450,6 +450,14 @@ function Test-MeterStartedStatus($Status, [DateTime]$LastWrittenUtc, [string]$Ve
         [string]$Status.errorCode -notmatch '^METER_(OUTBOX|STATE)_'
 }
 
+function Set-MeterServiceRecovery([string]$Name) {
+    & sc.exe failure $Name reset= 86400 actions= restart/5000/restart/5000/restart/30000 | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Could not configure service recovery.' }
+    # Include explicit nonzero SERVICE_STOPPED failures, not only process crashes.
+    & sc.exe failureflag $Name 1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Could not enable recovery for non-crash service failures.' }
+}
+
 # Loading these helpers for regression checks never touches a service or config.
 if ($MyInvocation.InvocationName -eq '.') { return }
 
@@ -463,6 +471,7 @@ $connectionBackup = ''
 $connectionExisted = $false
 $setupLock = $null
 $transitionConfig = ''
+$createdService = $false
 trap {
     if ($rollbackNeeded -and $service) {
         try {
@@ -489,6 +498,17 @@ trap {
         } catch {
             $setupReason = 'ROLLBACK_FAILED'
         }
+    }
+    if ($createdService) {
+        try {
+            $partial = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+            if ($partial -and $partial.Status -ne 'Stopped') {
+                Stop-Service -Name $serviceName -ErrorAction Stop
+                $partial.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(20))
+            }
+            & sc.exe delete $serviceName | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'Could not remove the failed service registration.' }
+        } catch { $setupReason = 'ROLLBACK_FAILED' }
     }
     if ($stagedBinary) { Remove-Item -LiteralPath $stagedBinary -Force -ErrorAction SilentlyContinue }
     if ($transitionConfig) { Remove-Item -LiteralPath $transitionConfig -ErrorAction SilentlyContinue }
@@ -545,7 +565,7 @@ $pairingInbox = Join-Path $appData 'meter-pairing.json'
 $statusFile = Join-Path $appData 'meter-status.json'
 $userHome = [IO.Path]::GetFullPath($env:USERPROFILE)
 $codexHome = Join-Path $userHome '.codex'
-$stateDirectory = Join-Path $env:ProgramData 'CodexQuotaGuard\Meter'
+$stateDirectory = Join-Path (Get-MeterEvidenceCommonApplicationData) 'CodexQuotaGuard\Meter'
 $installedBinary = Join-Path $install 'quota-guard-meter.exe'
 $configPath = Join-Path $install 'meter-config.json'
 $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
@@ -688,6 +708,7 @@ if ($null -eq $service) {
     New-Service -Name $serviceName -BinaryPathName $imagePath -DisplayName 'Codex Quota Guard Meter' `
         -Description 'Reports local Codex token usage for one Windows profile.' `
         -StartupType Automatic | Out-Null
+    $createdService = $true
 } else {
     # CIM passes the quoted image path as one value; Windows PowerShell's
     # legacy native argument quoting can strip quotes around Program Files.
@@ -696,8 +717,7 @@ if ($null -eq $service) {
     if ($changed.ReturnValue -ne 0) { throw 'Could not update the existing meter service.' }
 }
 $setupStage = 'SERVICE_RECOVERY'
-& sc.exe failure $serviceName reset= 86400 actions= restart/5000/restart/5000/restart/30000 | Out-Null
-if ($LASTEXITCODE -ne 0) { throw 'Could not configure service recovery.' }
+Set-MeterServiceRecovery $serviceName
 $setupStage = 'SERVICE_START'
 $serviceStartedAtUtc = [DateTime]::UtcNow
 Start-Service -Name $serviceName -ErrorAction Stop
@@ -706,6 +726,11 @@ $running.WaitForStatus('Running', [TimeSpan]::FromSeconds(20))
 $setupStage = 'VERIFY_INSTALL'
 $setupReason = 'SERVICE_VERIFICATION_FAILED'
 $registeredAfterInstall = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
+$recovery = Get-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\$serviceName" -ErrorAction Stop
+if ($registeredAfterInstall.StartMode -ne 'Auto' -or $registeredAfterInstall.State -ne 'Running' -or
+    [int]$recovery.FailureActionsOnNonCrashFailures -ne 1) {
+    throw 'The required automatic startup and Windows recovery policy were not applied.'
+}
 $verifiedConfiguration = Get-MeterExistingConfiguration $registeredAfterInstall.PathName $appData
 if (-not $verifiedConfiguration.binaryPath.Equals($installedBinary, [StringComparison]::OrdinalIgnoreCase) -or
     -not $verifiedConfiguration.configPath.Equals($configPath, [StringComparison]::OrdinalIgnoreCase) -or
@@ -751,6 +776,7 @@ if (-not $statusReady) {
 }
 Write-MeterSetupStatus 'SUCCEEDED' 'READY'
 $rollbackNeeded = $false
+$createdService = $false
 Remove-Item -LiteralPath $stagedBinary -Force -ErrorAction SilentlyContinue
 foreach ($backup in @($backupBinary, $backupConfig, $connectionBackup)) {
     if ($backup) { Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue }

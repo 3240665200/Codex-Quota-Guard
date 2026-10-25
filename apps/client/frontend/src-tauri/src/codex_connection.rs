@@ -2,9 +2,9 @@
 //! confirmed its exit. Never replace the user's whole config or roll back OAuth
 //! tokens, and never write to the CC Switch database.
 use crate::conflict_evidence::ConflictSnapshot;
-use reqwest::Url;
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::Value as Json;
+use url::Url;
 use std::{
     fs::{self, OpenOptions},
     io::{Read, Write},

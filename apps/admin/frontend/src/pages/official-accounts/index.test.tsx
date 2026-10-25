@@ -27,12 +27,14 @@ describe('官方账户登记与授权入口', () => {
     }]);
   });
 
-  it('keeps reported quota and exposes a separate authorization and session entry', async () => {
+  it('shows cached official quota and exposes authorization, polling and authenticator settings', async () => {
     render(<AntApp><OfficialAccountsPage /></AntApp>);
     expect(await screen.findByText('研发账户')).toBeInTheDocument();
     expect(screen.getByText('7 天剩余 60%')).toBeInTheDocument();
     expect(screen.queryByText('5 小时剩余')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '授权登录 研发账户' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '额度检测 研发账户' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '验证器配置 研发账户' })).toBeInTheDocument();
   });
 
   it('registers an account estimate and reporting user, not a credential', async () => {
@@ -55,5 +57,16 @@ describe('官方账户登记与授权入口', () => {
       label: '团队账户', estimatedTotalTokens: 1_000_000,
       reporterEmail: 'alice@example.com',
     }));
+  });
+
+  it('does not show code-review limits as the general Codex allowance', async () => {
+    vi.mocked(listOfficialAccounts).mockResolvedValue([{
+      id: 'account-2', label: 'Review only', estimatedTotalTokens: 1000, reporterEmail: null,
+      createdAt: '', updatedAt: '', version: 0, quota: { planType: 'plus', fetchedAt: '', receivedAt: '',
+        windows: [{ limitId: 'code_review', slot: 'primary', windowDurationMins: 300, usedPercent: 10, resetsAt: null }] },
+    }]);
+    render(<AntApp><OfficialAccountsPage /></AntApp>);
+    expect(await screen.findByText('官方未返回额度窗口')).toBeInTheDocument();
+    expect(screen.queryByText('5 小时剩余 90%')).not.toBeInTheDocument();
   });
 });

@@ -1,123 +1,131 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { invoke } from "@tauri-apps/api/core";
+import { api, type AssistanceEvent } from "./api";
 import { subscribeToAssistanceEvents } from "./assistance-events";
 
-const channels = vi.hoisted(
-  () => [] as { onmessage: (event: unknown) => void }[],
-);
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(),
-  Channel: class {
-    onmessage = (_event: unknown) => {};
-    constructor() {
-      channels.push(this);
-    }
-  },
-}));
-const native = vi.mocked(invoke);
-const starts = () =>
-  native.mock.calls.filter(
-    ([name]) => name === "login_assistance_events_start",
-  );
-const stops = () =>
-  native.mock.calls.filter(([name]) => name === "login_assistance_events_stop");
+vi.mock("./api", () => ({ api: { streamLoginAssistanceEvents: vi.fn() } }));
+const openStream = vi.mocked(api.streamLoginAssistanceEvents);
+interface Stream {
+  notify: (event: AssistanceEvent) => void;
+  signal: AbortSignal;
+  finish: () => void;
+  fail: (error: Error) => void;
+}
+let streams: Stream[];
 let cleanups: (() => void)[];
 beforeEach(() => {
+  window.dispatchEvent(new Event("quota-guard:assistance-clear"));
   vi.useFakeTimers();
-  channels.length = 0;
-  native.mockReset();
-  native.mockResolvedValue(undefined);
+  streams = [];
   cleanups = [];
+  openStream.mockReset();
+  openStream.mockImplementation(
+    (notify, signal) =>
+      new Promise<void>((finish, fail) => {
+        streams.push({ notify, signal, finish, fail });
+        signal.addEventListener("abort", () => finish(), { once: true });
+      }),
+  );
 });
-afterEach(() => {
+afterEach(async () => {
   cleanups.forEach((stop) => stop());
+  window.dispatchEvent(new Event("quota-guard:assistance-clear"));
+  await vi.advanceTimersByTimeAsync(0);
   vi.useRealTimers();
 });
-function subscribe(owner: string, callback = vi.fn()) {
-  const stop = subscribeToAssistanceEvents(owner, callback);
+function subscribe(userId: string, callback = vi.fn()) {
+  const stop = subscribeToAssistanceEvents(userId, callback);
   cleanups.push(stop);
   return { stop, callback };
 }
-describe("shared native assistance SSE subscription", () => {
-  it("reuses the same user's stream across a StrictMode cleanup and immediate remount", async () => {
+
+describe("shared authenticated Axios assistance stream", () => {
+  it("reuses a stream across StrictMode cleanup and immediate remount", async () => {
     const first = subscribe("alice");
     first.stop();
     const next = subscribe("alice");
     await vi.advanceTimersByTimeAsync(0);
-    expect(starts()).toHaveLength(1);
-    expect(stops()).toHaveLength(0);
-    channels[0].onmessage({ type: "state_changed" });
+    expect(openStream).toHaveBeenCalledOnce();
+    expect(streams[0].signal.aborted).toBe(false);
+    streams[0].notify("state_changed");
     expect(first.callback).not.toHaveBeenCalled();
-    expect(next.callback).toHaveBeenCalledOnce();
+    expect(next.callback.mock.calls).toEqual([[{ type: "state_changed" }]]);
     next.stop();
     await vi.advanceTimersByTimeAsync(0);
-    expect(stops()).toHaveLength(1);
+    expect(streams[0].signal.aborted).toBe(true);
   });
-  it("shares one authenticated native channel and never forwards OTP-shaped payloads", async () => {
+
+  it("shares one connection and forwards only the API's invalidation events", async () => {
     const first = subscribe("alice");
     const second = subscribe("alice");
-    await Promise.resolve();
-    expect(starts()).toHaveLength(1);
-    channels[0].onmessage({ type: "connected" });
-    channels[0].onmessage({ type: "state_changed", code: "synthetic-otp" });
-    expect(first.callback).toHaveBeenCalledTimes(1);
-    expect(second.callback).toHaveBeenCalledTimes(1);
+    expect(openStream).toHaveBeenCalledOnce();
+    streams[0].notify("connected");
+    streams[0].notify("state_changed");
+    expect(first.callback.mock.calls).toEqual([
+      [{ type: "connected" }],
+      [{ type: "state_changed" }],
+    ]);
+    expect(second.callback.mock.calls).toEqual(first.callback.mock.calls);
     first.stop();
-    expect(stops()).toHaveLength(0);
+    expect(streams[0].signal.aborted).toBe(false);
     second.stop();
     await vi.advanceTimersByTimeAsync(0);
-    expect(stops()).toHaveLength(1);
-    expect(
-      native.mock.calls.some(([name]) => name === "login_assistance_cancel"),
-    ).toBe(false);
+    expect(streams[0].signal.aborted).toBe(true);
   });
-  it("backs off reconnect attempts instead of polling HTTP or refreshing every two seconds", async () => {
-    subscribe("alice");
-    await Promise.resolve();
-    channels[0].onmessage({ type: "disconnected" });
+
+  it("reconnects on an ended stream with exponential backoff", async () => {
+    const current = subscribe("alice");
+    streams[0].finish();
     await vi.advanceTimersByTimeAsync(999);
-    expect(starts()).toHaveLength(1);
+    expect(openStream).toHaveBeenCalledOnce();
+    expect(current.callback).toHaveBeenCalledWith({ type: "disconnected" });
     await vi.advanceTimersByTimeAsync(1);
-    expect(starts()).toHaveLength(2);
-    channels[1].onmessage({ type: "connected" });
-    channels[1].onmessage({ type: "disconnected" });
+    expect(openStream).toHaveBeenCalledTimes(2);
+    streams[1].fail(new Error("synthetic transport failure"));
     await vi.advanceTimersByTimeAsync(1999);
-    expect(starts()).toHaveLength(2);
+    expect(openStream).toHaveBeenCalledTimes(2);
     await vi.advanceTimersByTimeAsync(1);
-    expect(starts()).toHaveLength(3);
-    expect(
-      native.mock.calls.every(
-        ([name]) =>
-          name === "login_assistance_events_start" ||
-          name === "login_assistance_events_stop",
-      ),
-    ).toBe(true);
+    expect(openStream).toHaveBeenCalledTimes(3);
   });
-  it("ignores a disposed StrictMode channel and stops only its own late native start", async () => {
-    let finish!: () => void;
-    native.mockImplementationOnce(
-      () =>
-        new Promise<void>((resolve) => {
-          finish = resolve;
-        }),
-    );
+
+  it("resets backoff only after a connection has remained healthy", async () => {
+    subscribe("alice");
+    streams[0].fail(new Error("offline"));
+    await vi.advanceTimersByTimeAsync(1000);
+    streams[1].notify("connected");
+    await vi.advanceTimersByTimeAsync(15_000);
+    streams[1].finish();
+    await vi.advanceTimersByTimeAsync(999);
+    expect(openStream).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(openStream).toHaveBeenCalledTimes(3);
+  });
+
+  it("aborts the previous user's connection and ignores late events and completion", async () => {
     const first = subscribe("alice");
-    first.stop();
-    const second = subscribe("bob");
-    await Promise.resolve();
-    channels[0].onmessage({ type: "state_changed" });
-    expect(second.callback).not.toHaveBeenCalled();
-    finish();
-    await Promise.resolve();
-    await Promise.resolve();
-    const oldId = (starts()[0][1] as { subscriptionId: string }).subscriptionId;
-    expect(
-      stops().some(
-        ([, args]) =>
-          (args as { subscriptionId: string }).subscriptionId === oldId,
-      ),
-    ).toBe(true);
-    channels[1].onmessage({ type: "connected" });
-    expect(second.callback).toHaveBeenCalledOnce();
+    const next = subscribe("bob");
+    expect(streams[0].signal.aborted).toBe(true);
+    streams[0].notify("state_changed");
+    streams[0].finish();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(openStream).toHaveBeenCalledTimes(2);
+    expect(first.callback).not.toHaveBeenCalled();
+    expect(next.callback).not.toHaveBeenCalled();
+    streams[1].notify("connected");
+    expect(next.callback.mock.calls).toEqual([[{ type: "connected" }]]);
+  });
+
+  it("clears connections and pending reconnects on logout or server change", async () => {
+    const current = subscribe("alice");
+    streams[0].finish();
+    await vi.advanceTimersByTimeAsync(0);
+    window.dispatchEvent(new Event("quota-guard:assistance-clear"));
+    current.callback.mockClear();
+    streams[0].notify("state_changed");
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(streams[0].signal.aborted).toBe(true);
+    expect(openStream).toHaveBeenCalledOnce();
+    expect(current.callback).not.toHaveBeenCalled();
+    subscribe("alice");
+    expect(openStream).toHaveBeenCalledTimes(2);
   });
 });

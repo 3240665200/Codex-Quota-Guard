@@ -9,10 +9,21 @@ param(
     [string]$ProxyKernel = 'D:\codex-tools\sing-box-1.13.14\sing-box-1.13.14-windows-amd64\sing-box.exe',
     [switch]$EnableWebLogin,
     [string]$BrowserExecutable = '',
-    [string]$AuthorizationPresetFile = ''
+    [string]$AuthorizationPresetFile = '',
+    [string]$PackageDirectory = ''
 )
 $ErrorActionPreference='Stop'
 Import-Module (Join-Path $PSScriptRoot 'preview-lifecycle.psm1') -Force
+if ($PackageDirectory) {
+    if (![IO.Path]::IsPathRooted($PackageDirectory)) { throw 'PREVIEW_PACKAGE_PATH_INVALID' }
+    $PackageDirectory = (Resolve-Path -LiteralPath $PackageDirectory -ErrorAction Stop).Path
+    Assert-PreviewPath $PackageDirectory
+    foreach ($packageFile in @('backend.jar', 'web\index.html', 'package-manifest.json')) {
+        if (!(Test-Path -LiteralPath (Join-Path $PackageDirectory $packageFile) -PathType Leaf)) { throw 'PREVIEW_PACKAGE_INCOMPLETE' }
+    }
+    $packageManifest = Get-Content -LiteralPath (Join-Path $PackageDirectory 'package-manifest.json') -Raw | ConvertFrom-Json
+    if ((Get-FileHash -LiteralPath (Join-Path $PackageDirectory 'backend.jar') -Algorithm SHA256).Hash -ne $packageManifest.backendSha256) { throw 'PREVIEW_PACKAGE_HASH_MISMATCH' }
+}
 foreach($path in @($ConfigPath,$PreviewDirectory,$ProxyKernel)){Assert-PreviewPath $path}
 if(!(Test-Path -LiteralPath $ConfigPath -PathType Leaf)){throw 'PREVIEW_CONFIG_MISSING'}
 if(!(Test-Path -LiteralPath $ProxyKernel -PathType Leaf)){throw 'PREVIEW_PROXY_KERNEL_MISSING'}
@@ -32,14 +43,16 @@ Set-PreviewPrivateDirectory $PreviewDirectory
 $runs=Join-Path $PreviewDirectory 'runs';Set-PreviewPrivateDirectory $runs
 $runId=[Guid]::NewGuid().ToString('N');$run=Join-Path $runs $runId;Set-PreviewPrivateDirectory $run
 $tools=@{}
-foreach($tool in @(@('Maven','mvn.cmd'),@('Pnpm','pnpm.cmd'),@('Java','java.exe'),@('Node','node.exe'))) {
+$toolSpecs = @(@('Java','java.exe'),@('Node','node.exe'))
+if (!$PackageDirectory) { $toolSpecs += @(@('Maven','mvn.cmd'),@('Pnpm','pnpm.cmd')) }
+foreach($tool in $toolSpecs) {
     $tools[$tool[0]]=Resolve-PreviewToolPath (Get-Command $tool[1] -ErrorAction Stop|Select-Object -First 1).Source
 }
 $tools['ComSpec']=Join-Path $env:SystemRoot 'System32\cmd.exe';Assert-PreviewPath $tools.ComSpec
 $request=@{Schema=1;ExpectedSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;
     ConfigPath=[IO.Path]::GetFullPath($ConfigPath);PreviewDirectory=[IO.Path]::GetFullPath($PreviewDirectory);
     BackendPort=$BackendPort;FrontendPort=$FrontendPort;ProxyKernel=$ProxyKernel;EnableWebLogin=[bool]$EnableWebLogin;
-    BrowserExecutable=$BrowserExecutable;AuthorizationPresetFile=$AuthorizationPresetFile;Tools=$tools;StartupTimeoutSeconds=180}
+    BrowserExecutable=$BrowserExecutable;AuthorizationPresetFile=$AuthorizationPresetFile;PackageDirectory=$PackageDirectory;Tools=$tools;StartupTimeoutSeconds=180}
 [IO.File]::WriteAllText((Join-Path $run 'launch.json'),($request|ConvertTo-Json -Depth 5),[Text.UTF8Encoding]::new($false))
 $shell=[Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
 $worker=Join-Path $PSScriptRoot 'preview-supervisor.ps1';Assert-PreviewPath $worker
@@ -47,7 +60,7 @@ $identity=Start-PreviewDetachedWorker -Executable $shell -Arguments @('-NoLogo',
 $statusPath=Join-Path $run 'status.json';$deadline=[DateTime]::UtcNow.AddSeconds(195)
 while([DateTime]::UtcNow -lt $deadline) {
     if(Test-Path -LiteralPath $statusPath) {
-        $state=Get-Content -LiteralPath $statusPath -Raw|ConvertFrom-Json
+        $state=Read-PreviewState -Path $statusPath
         if($state.Supervisor.Pid -ne $identity.Pid -or ([DateTime]$state.Supervisor.CreatedUtc).ToUniversalTime().Ticks -ne ([DateTime]$identity.CreatedUtc).ToUniversalTime().Ticks){throw 'PREVIEW_SUPERVISOR_IDENTITY_CHANGED'}
         if($state.Phase -eq 'READY') {
             [pscustomobject]@{Url="http://localhost:$FrontendPort/#/official-accounts";LaunchMode='WMI';RunDirectory=$run;StatusPath=$statusPath;

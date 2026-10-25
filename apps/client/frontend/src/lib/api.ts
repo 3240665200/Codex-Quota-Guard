@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import axios, { type AxiosRequestConfig } from "axios";
 import { z } from "zod";
 
 const isoInstant = z.string().min(1);
@@ -9,27 +10,10 @@ const tokenCount = z
   .min(0)
   .max(Number.MAX_SAFE_INTEGER);
 
-const statusSchema = z.object({
-  service: z.string(),
-  state: z.string(),
-});
-
 const autostartSchema = z.object({
   supported: z.boolean(),
   enabled: z.boolean(),
 });
-
-const meterStartSchema = z.enum([
-  "RUNNING",
-  "STARTED",
-  "INSTALLED",
-  "NOT_INSTALLED",
-  "NEEDS_ADMIN",
-  "SERVER_UNAVAILABLE",
-  "INSTALL_FAILED",
-  "FAILED",
-  "UNSUPPORTED",
-]);
 
 const startupGateSchema = z.object({
   state: z.enum([
@@ -39,7 +23,6 @@ const startupGateSchema = z.object({
     "METER_UNAVAILABLE",
     "GUARD_ERROR",
     "CODEX_RESTORE_FAILED",
-    "BACKEND_UNAVAILABLE",
     "UNSUPPORTED",
   ]),
   ccSwitchTerminated: z.boolean(),
@@ -62,6 +45,27 @@ const meterVersionSchema = z.object({
 
 const serverConfigSchema = z.object({
   url: z.string().url(),
+  meterSync: z.enum(["NOT_INSTALLED", "UPDATED", "UNCHANGED"]).optional(),
+});
+
+const deviceIdentitySchema = z
+  .strictObject({
+    deviceId: z.string().uuid().nullable(),
+    enrollmentId: z.string().uuid().nullable(),
+  })
+  .refine(
+    ({ deviceId, enrollmentId }) =>
+      (deviceId === null && enrollmentId === null) ||
+      (deviceId !== null && deviceId === enrollmentId),
+    "安装设备标识无效。",
+  );
+
+const sessionVaultSchema = z.strictObject({
+  serverOrigin: z.string().url(),
+  refreshToken: z.string().min(1).max(500),
+  userId: z.string().uuid(),
+  loginAtEpochSeconds: tokenCount,
+  expiresAtEpochSeconds: tokenCount,
 });
 
 const systemUserSchema = z.object({
@@ -72,11 +76,15 @@ const systemUserSchema = z.object({
   status: z.string().min(1),
 });
 
-/**
- * The local bridge returns this safe projection only. Access and refresh
- * tokens stay inside the bridge/backend process and are never sent to the
- * renderer.
- */
+const authResponseSchema = z.strictObject({
+  accessToken: z.string().min(1).max(4096),
+  tokenType: z.string().min(1).max(32),
+  expiresIn: tokenCount.min(1).max(86400),
+  refreshToken: z.string().min(1).max(500),
+  refreshExpiresIn: tokenCount.min(1).max(365 * 86400),
+  user: systemUserSchema,
+});
+
 const systemSessionSchema = z.object({
   authenticated: z.boolean(),
   user: systemUserSchema.nullable(),
@@ -159,6 +167,28 @@ const loginAssistanceInfoSchema = z.strictObject({
   accountLabel: z.string().min(1).max(160).nullable(),
   recipientEmail: z.string().email().nullable(),
 });
+
+const authenticatorInfoSchema = z.strictObject({
+  available: z.boolean(),
+  reasonCode: z.string().max(64).nullable(),
+  officialAccountId: z.string().uuid().nullable(),
+  accountLabel: z.string().max(120).nullable(),
+});
+const authenticatorCodeSchema = z
+  .strictObject({
+    code: z.string().regex(/^(?:[0-9]{6}|[0-9]{8})$/),
+    serverTime: z.string().datetime({ offset: true }),
+    expiresAt: z.string().datetime({ offset: true }),
+    periodSeconds: z.number().int().min(15).max(120),
+    officialAccountId: z.string().uuid(),
+  })
+  .refine((value) => {
+    const remaining =
+      Date.parse(value.expiresAt) - Date.parse(value.serverTime);
+    return remaining > 0 && remaining <= value.periodSeconds * 1000;
+  });
+export type AuthenticatorInfo = z.infer<typeof authenticatorInfoSchema>;
+export type AuthenticatorCode = z.infer<typeof authenticatorCodeSchema>;
 const loginAssistanceListenerSchema = z
   .strictObject({
     id: z.string().uuid(),
@@ -225,6 +255,40 @@ const teamQuotaSchema = quotaTeamSchema.extend({
   measuredAt: isoInstant.nullable(),
 });
 
+const teamMemberUsageSchema = z
+  .object({
+    userId: z.string().uuid(),
+    displayName: z.string(),
+    status: z.enum(["ACTIVE", "DISABLED"]),
+    fiveHourUsedTokens: tokenCount,
+    weeklyUsedTokens: tokenCount,
+    totalUsedTokens: tokenCount,
+    fiveHourTokenLimit: tokenCount.nullable(),
+    weeklyTokenLimit: tokenCount.nullable(),
+    fiveHourRemainingTokens: tokenCount.nullable(),
+    weeklyRemainingTokens: tokenCount.nullable(),
+    measuredAt: z.iso.datetime({ offset: true }).nullable(),
+  })
+  .superRefine((member, context) => {
+    for (const [limitKey, remainingKey] of [
+      ["fiveHourTokenLimit", "fiveHourRemainingTokens"],
+      ["weeklyTokenLimit", "weeklyRemainingTokens"],
+    ] as const) {
+      const limit = member[limitKey];
+      const remaining = member[remainingKey];
+      if (
+        (limit === null) !== (remaining === null) ||
+        (remaining !== null && limit !== null && remaining > limit)
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: "成员个人剩余额度必须在已设置的个人限额内。",
+          path: [remainingKey],
+        });
+      }
+    }
+  });
+
 const quotaPolicySchema = z.object({
   fiveHourTokenLimit: tokenCount.nullable(),
   weeklyTokenLimit: tokenCount.nullable(),
@@ -243,51 +307,24 @@ const quotaUsageSchema = z.object({
   measuredAt: isoInstant.nullable(),
 });
 
-const usageStatusSchema = z.object({
-  fallback: z.object({
-    state: z.enum([
-      "SIGNED_OUT",
-      "WAITING_FOR_SESSIONS",
-      "BASELINE_READY",
-      "UP_TO_DATE",
-      "REPORTED",
-      "REPORT_FAILED",
-      "SCAN_FAILED",
-      "SERVICE_ACTIVE",
-    ]),
-    lastScannedAt: isoInstant.nullable(),
-    lastReportedAt: isoInstant.nullable(),
-    lastReportedEvents: tokenCount,
-    issues: z.array(z.string().min(1)),
-    issueCounts: z
-      .record(z.string().regex(/^[A-Z_]{1,64}$/), tokenCount.min(1))
-      .optional(),
-    errorCode: z
-      .string()
-      .regex(/^[A-Z_]{1,64}$/)
-      .nullable()
-      .optional(),
-  }),
-  service: z.object({
-    state: z.enum([
-      "NOT_INSTALLED",
-      "OFFLINE",
-      "BASELINE_READY",
-      "UNPAIRED",
-      "UP_TO_DATE",
-      "REPORTED",
-      "ERROR",
-    ]),
-    lastScanEpochSeconds: tokenCount.nullable(),
-    lastReportEpochSeconds: tokenCount.nullable(),
-    reportedEvents: tokenCount,
-    version: z.string().min(1).max(64).nullable().optional(),
-    errorCode: z
-      .string()
-      .regex(/^[A-Z_]{1,64}$/)
-      .nullable(),
-  }),
-  pairingState: z.enum(["NOT_INSTALLED", "PAIRING_SENT", "PAIRING_FAILED"]),
+const usageStatusSchema = z.strictObject({
+  state: z.enum([
+    "NOT_INSTALLED",
+    "OFFLINE",
+    "BASELINE_READY",
+    "UNPAIRED",
+    "UP_TO_DATE",
+    "REPORTED",
+    "ERROR",
+  ]),
+  lastScanEpochSeconds: tokenCount.nullable(),
+  lastReportEpochSeconds: tokenCount.nullable(),
+  reportedEvents: tokenCount,
+  errorCode: z
+    .string()
+    .regex(/^[A-Z_]{1,64}$/)
+    .nullable(),
+  version: z.string().min(1).max(64).nullable(),
 });
 
 const usageEventModelSchema = z
@@ -456,6 +493,12 @@ const quotaOverviewSchema = z
     user: systemUserSchema,
     team: quotaTeamSchema.nullable(),
     teamQuota: teamQuotaSchema.nullable().optional(),
+    // Older servers omit member usage. Preserve that absence instead of
+    // presenting an empty team or inventing zero usage.
+    teamMembers: z
+      .array(teamMemberUsageSchema)
+      .nullish()
+      .transform((members) => members ?? null),
     policy: quotaPolicySchema,
     usage: quotaUsageSchema,
     allowed: z.boolean(),
@@ -520,11 +563,10 @@ const quotaOverviewSchema = z
     }
   });
 
-export type StatusResponse = z.infer<typeof statusSchema>;
-export type MeterStartOutcome = z.infer<typeof meterStartSchema>;
 export type StartupGateResult = z.infer<typeof startupGateSchema>;
 export type MeterVersion = z.infer<typeof meterVersionSchema>;
 export type ServerConfig = z.infer<typeof serverConfigSchema>;
+export type SessionVault = z.infer<typeof sessionVaultSchema>;
 export type SystemUser = z.infer<typeof systemUserSchema>;
 export type SystemSession = z.infer<typeof systemSessionSchema>;
 export type SessionBinding = z.infer<typeof sessionBindingSchema>;
@@ -535,6 +577,7 @@ export type LoginAssistanceListener = z.infer<
   typeof loginAssistanceListenerSchema
 >;
 export type QuotaTeam = z.infer<typeof quotaTeamSchema>;
+export type TeamMemberUsage = z.infer<typeof teamMemberUsageSchema>;
 export type QuotaPolicy = z.infer<typeof quotaPolicySchema>;
 export type QuotaUsage = z.infer<typeof quotaUsageSchema>;
 export type QuotaOverview = z.infer<typeof quotaOverviewSchema>;
@@ -546,9 +589,839 @@ export type OfficialCodexRateLimits = z.infer<
   typeof officialCodexRateLimitsSchema
 >;
 
-// StrictMode and a fast renderer remount must not trigger duplicate UAC prompts.
-// An explicit dashboard retry uses a separate native command.
-let meterStartupPromise: Promise<MeterStartOutcome> | null = null;
+const signedOutSession: SystemSession = { authenticated: false, user: null };
+const authRequiredMessage = "请先登录系统账户。";
+const deviceIdentityUnavailableMessage =
+  "本设备绑定信息不可用，请检查统计程序设备登记或联系管理员。";
+const unauthorizedError = () => new Error(authRequiredMessage);
+
+type RequestController = {
+  controller: AbortController;
+  release: () => void;
+};
+
+type ActiveSession = {
+  accessToken: string;
+  accessExpiresAt: number;
+  refreshToken: string;
+  refreshExpiresAt: number;
+  localExpiresAt: number;
+  loginAtEpochSeconds: number;
+  origin: string;
+  user: SystemUser;
+  epoch: number;
+};
+
+let sessionEpoch = 0;
+let activeSession: ActiveSession | null = null;
+let currentConfig: ServerConfig | null = null;
+let identityPromise: Promise<z.infer<typeof deviceIdentitySchema>> | null =
+  null;
+let enrollmentAttemptEpoch = -1;
+let enrollmentStateEpoch = -1;
+let enrollmentPermanentFailureEpoch = -1;
+let enrollmentRetryAt = 0;
+let enrollmentFailureCount = 0;
+let enrollmentError:
+  "PAIRING_ENROLL_FAILED" | "PAIRING_IDENTITY_MISMATCH" | null = null;
+let enrollmentFlight: { epoch: number; promise: Promise<void> } | null = null;
+let refreshFlight: { epoch: number; promise: Promise<string> } | null = null;
+let restoreFlight: { epoch: number; promise: Promise<SystemSession> } | null =
+  null;
+let vaultOperations = Promise.resolve();
+let configRevision = 0;
+let configMutationQueue = Promise.resolve();
+let configMutationPromise: Promise<ServerConfig> | null = null;
+let sessionExpiryTimer: number | undefined;
+const activeControllers = new Set<AbortController>();
+const localLoginLifetimeSeconds = 7 * 86400;
+const maxSseBufferChars = 64 * 1024;
+const maxSseFrameChars = 16 * 1024;
+
+function serverOrigin(config: ServerConfig): string {
+  const parsed = new URL(config.url);
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("服务器地址须以 http:// 或 https:// 开头。");
+  }
+  return parsed.origin;
+}
+
+function assertEpoch(epoch: number) {
+  if (epoch !== sessionEpoch) throw new axios.CanceledError("Session changed");
+}
+
+async function assertSessionLifetime(epoch: number) {
+  assertEpoch(epoch);
+  if (
+    activeSession?.epoch === epoch &&
+    activeSession.localExpiresAt <= Date.now()
+  ) {
+    const expiredEpoch = invalidateRendererSession();
+    await clearVault(expiredEpoch);
+    window.dispatchEvent(new Event("quota-guard:session-expired"));
+    throw unauthorizedError();
+  }
+}
+
+function invalidateRendererSession() {
+  sessionEpoch += 1;
+  window.clearTimeout(sessionExpiryTimer);
+  sessionExpiryTimer = undefined;
+  activeSession = null;
+  refreshFlight = null;
+  restoreFlight = null;
+  for (const controller of activeControllers) controller.abort();
+  activeControllers.clear();
+  window.dispatchEvent(new Event("quota-guard:assistance-clear"));
+  return sessionEpoch;
+}
+
+function enqueueVaultOperation<T>(operation: () => Promise<T>): Promise<T> {
+  const result = vaultOperations.then(operation, operation);
+  vaultOperations = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
+async function clearVault(epoch?: number) {
+  await enqueueVaultOperation(async () => {
+    if (epoch !== undefined && epoch !== sessionEpoch) return;
+    await invoke("session_vault_clear");
+  });
+}
+
+function createRequestController(
+  externalSignal?: AbortSignal,
+): RequestController {
+  const controller = new AbortController();
+  const abortFromExternal = () => controller.abort();
+  if (externalSignal?.aborted) controller.abort();
+  else
+    externalSignal?.addEventListener("abort", abortFromExternal, {
+      once: true,
+    });
+  activeControllers.add(controller);
+  let released = false;
+  return {
+    controller,
+    release: () => {
+      if (released) return;
+      released = true;
+      externalSignal?.removeEventListener("abort", abortFromExternal);
+      activeControllers.delete(controller);
+    },
+  };
+}
+
+async function readNativeConfig(): Promise<ServerConfig> {
+  const payload: unknown = await invoke("server_config_get");
+  return serverConfigSchema.parse(payload);
+}
+
+async function adoptServerConfig(
+  config: ServerConfig,
+  expectedRevision: number,
+): Promise<ServerConfig> {
+  if (expectedRevision !== configRevision) return currentConfig ?? config;
+  const previousOrigin = currentConfig ? serverOrigin(currentConfig) : null;
+  const nextOrigin = serverOrigin(config);
+  if (previousOrigin !== null && previousOrigin !== nextOrigin) {
+    const epoch = invalidateRendererSession();
+    await clearVault(epoch);
+  }
+  if (expectedRevision !== configRevision) return currentConfig ?? config;
+  currentConfig = config;
+  return config;
+}
+
+async function getServerConfig(force = false): Promise<ServerConfig> {
+  if (configMutationPromise) {
+    await configMutationPromise.catch(() => undefined);
+    if (currentConfig) return currentConfig;
+  }
+  if (!force && currentConfig) return currentConfig;
+  const revision = configRevision;
+  const config = await readNativeConfig();
+  if (revision !== configRevision) {
+    if (configMutationPromise) {
+      await configMutationPromise.catch(() => undefined);
+    }
+    return currentConfig ?? config;
+  }
+  return adoptServerConfig(config, revision);
+}
+
+async function deviceIdentity() {
+  identityPromise ??= (async () => {
+    const payload: unknown = await invoke("device_identity");
+    return deviceIdentitySchema.parse(payload);
+  })();
+  return identityPromise;
+}
+
+async function deviceHeaders(): Promise<Record<string, string>> {
+  try {
+    const identity = await deviceIdentity();
+    return identity.deviceId
+      ? { "X-Quota-Guard-Device-ID": identity.deviceId }
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function isUnauthorized(error: unknown): boolean {
+  return axios.isAxiosError(error) && error.response?.status === 401;
+}
+
+function isBindingRequired(error: unknown): boolean {
+  if (!axios.isAxiosError(error) || error.response?.status !== 403)
+    return false;
+  const data: unknown = error.response.data;
+  return (
+    typeof data === "object" &&
+    data !== null &&
+    "code" in data &&
+    data.code === "SESSION_BINDING_REQUIRED"
+  );
+}
+
+function rethrowSafeCentralError(error: unknown): never {
+  if (isBindingRequired(error)) {
+    window.dispatchEvent(new Event(bindingGateEvent));
+    throw new Error(bindingRequiredMessage);
+  }
+  throw error;
+}
+
+async function sendOnce(
+  config: ServerConfig,
+  request: AxiosRequestConfig,
+  token: string | null,
+  epoch: number,
+  externalSignal?: AbortSignal,
+  keepController = false,
+): Promise<{
+  data: unknown;
+  release: () => void;
+  contentType: string | null;
+}> {
+  assertEpoch(epoch);
+  const tracked = createRequestController(externalSignal);
+  try {
+    const headers = {
+      ...(request.headers as Record<string, string> | undefined),
+      ...(await deviceHeaders()),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    };
+    const response = await axios.request<unknown>({
+      ...request,
+      baseURL: serverOrigin(config),
+      headers,
+      signal: tracked.controller.signal,
+      timeout: request.timeout ?? 10_000,
+    });
+    assertEpoch(epoch);
+    if (token) await assertSessionLifetime(epoch);
+    if (!keepController) tracked.release();
+    return {
+      data: response.data,
+      release: tracked.release,
+      contentType:
+        typeof (response.headers as Record<string, unknown>)["content-type"] ===
+        "string"
+          ? ((response.headers as Record<string, string>)["content-type"] ??
+            null)
+          : null,
+    };
+  } catch (error) {
+    tracked.release();
+    if (isBindingRequired(error)) rethrowSafeCentralError(error);
+    throw error;
+  }
+}
+
+async function loadVaultForOrigin(
+  config: ServerConfig,
+  epoch: number,
+): Promise<SessionVault | null> {
+  assertEpoch(epoch);
+  const payload: unknown = await invoke("session_vault_load");
+  assertEpoch(epoch);
+  if (payload === null) return null;
+  const vault = sessionVaultSchema.parse(payload);
+  const now = Math.floor(Date.now() / 1000);
+  if (
+    vault.serverOrigin !== serverOrigin(config) ||
+    vault.expiresAtEpochSeconds <= now ||
+    vault.loginAtEpochSeconds + localLoginLifetimeSeconds <= now ||
+    vault.expiresAtEpochSeconds - now > 365 * 86400
+  ) {
+    await clearVault(epoch);
+    return null;
+  }
+  return vault;
+}
+
+async function persistAuthResponse(
+  response: z.infer<typeof authResponseSchema>,
+  config: ServerConfig,
+  epoch: number,
+  loginAtEpochSeconds: number,
+): Promise<ActiveSession> {
+  assertEpoch(epoch);
+  const now = Math.floor(Date.now() / 1000);
+  if (loginAtEpochSeconds + localLoginLifetimeSeconds <= now) {
+    await clearVault(epoch);
+    throw unauthorizedError();
+  }
+  const vault: SessionVault = {
+    serverOrigin: serverOrigin(config),
+    refreshToken: response.refreshToken,
+    userId: response.user.id,
+    loginAtEpochSeconds,
+    expiresAtEpochSeconds: now + response.refreshExpiresIn,
+  };
+  await enqueueVaultOperation(async () => {
+    assertEpoch(epoch);
+    await invoke("session_vault_save", { session: vault });
+  });
+  assertEpoch(epoch);
+  const session: ActiveSession = {
+    accessToken: response.accessToken,
+    accessExpiresAt: Date.now() + response.expiresIn * 1000,
+    refreshToken: response.refreshToken,
+    refreshExpiresAt: vault.expiresAtEpochSeconds * 1000,
+    localExpiresAt: (loginAtEpochSeconds + localLoginLifetimeSeconds) * 1000,
+    loginAtEpochSeconds,
+    origin: vault.serverOrigin,
+    user: response.user,
+    epoch,
+  };
+  activeSession = session;
+  window.clearTimeout(sessionExpiryTimer);
+  sessionExpiryTimer = window.setTimeout(
+    () => {
+      if (
+        activeSession?.epoch === epoch &&
+        activeSession.localExpiresAt <= Date.now()
+      ) {
+        const expiredEpoch = invalidateRendererSession();
+        void clearVault(expiredEpoch);
+        window.dispatchEvent(new Event("quota-guard:session-expired"));
+      }
+    },
+    Math.max(0, session.localExpiresAt - Date.now()),
+  );
+  return session;
+}
+
+async function refreshSession(
+  config: ServerConfig,
+  epoch: number,
+): Promise<string> {
+  if (refreshFlight?.epoch === epoch) return refreshFlight.promise;
+  const promise = (async () => {
+    assertEpoch(epoch);
+    const existing = activeSession;
+    const vault =
+      existing?.epoch === epoch && existing.origin === serverOrigin(config)
+        ? {
+            serverOrigin: existing.origin,
+            refreshToken: existing.refreshToken,
+            userId: existing.user.id,
+            loginAtEpochSeconds: existing.loginAtEpochSeconds,
+            expiresAtEpochSeconds: Math.floor(existing.refreshExpiresAt / 1000),
+          }
+        : await loadVaultForOrigin(config, epoch);
+    if (!vault) throw unauthorizedError();
+    if (
+      vault.loginAtEpochSeconds + localLoginLifetimeSeconds <=
+      Math.floor(Date.now() / 1000)
+    ) {
+      const expiredEpoch = invalidateRendererSession();
+      await clearVault(expiredEpoch);
+      window.dispatchEvent(new Event("quota-guard:session-expired"));
+      throw unauthorizedError();
+    }
+    try {
+      const { data } = await sendOnce(
+        config,
+        {
+          method: "POST",
+          url: "/api/v1/auth/refresh",
+          data: { refreshToken: vault.refreshToken },
+        },
+        null,
+        epoch,
+      );
+      const response = authResponseSchema.parse(data);
+      if (response.user.id !== vault.userId) throw unauthorizedError();
+      const refreshed = await persistAuthResponse(
+        response,
+        config,
+        epoch,
+        vault.loginAtEpochSeconds,
+      );
+      return refreshed.accessToken;
+    } catch (error) {
+      if (isUnauthorized(error)) {
+        activeSession = null;
+        await clearVault(epoch);
+        throw unauthorizedError();
+      }
+      throw error;
+    }
+  })();
+  refreshFlight = { epoch, promise };
+  try {
+    return await promise;
+  } finally {
+    if (refreshFlight?.promise === promise) refreshFlight = null;
+  }
+}
+
+async function ensureAccessToken(
+  config: ServerConfig,
+  epoch: number,
+  forceRefresh = false,
+): Promise<string> {
+  assertEpoch(epoch);
+  const session = activeSession;
+  if (
+    !forceRefresh &&
+    session?.epoch === epoch &&
+    session.origin === serverOrigin(config) &&
+    session.localExpiresAt > Date.now() &&
+    session.accessExpiresAt > Date.now() + 30_000
+  ) {
+    return session.accessToken;
+  }
+  return refreshSession(config, epoch);
+}
+
+async function refreshAfterUnauthorized(
+  config: ServerConfig,
+  epoch: number,
+  usedToken: string,
+): Promise<string> {
+  const current = activeSession;
+  if (current?.epoch === epoch && current.localExpiresAt <= Date.now()) {
+    const expiredEpoch = invalidateRendererSession();
+    await clearVault(expiredEpoch);
+    window.dispatchEvent(new Event("quota-guard:session-expired"));
+    throw unauthorizedError();
+  }
+  if (
+    current?.epoch === epoch &&
+    current.accessToken !== usedToken &&
+    current.localExpiresAt > Date.now() &&
+    current.accessExpiresAt > Date.now()
+  ) {
+    return current.accessToken;
+  }
+  return ensureAccessToken(config, epoch, true);
+}
+
+async function centralRequest(
+  request: AxiosRequestConfig,
+  requiresAuth = true,
+  expectedEpoch = sessionEpoch,
+  externalSignal?: AbortSignal,
+): Promise<unknown> {
+  const config = await getServerConfig();
+  assertEpoch(expectedEpoch);
+  const token = requiresAuth
+    ? await ensureAccessToken(config, expectedEpoch)
+    : null;
+  try {
+    return (
+      await sendOnce(config, request, token, expectedEpoch, externalSignal)
+    ).data;
+  } catch (error) {
+    if (requiresAuth && isUnauthorized(error)) {
+      try {
+        const refreshed = await refreshAfterUnauthorized(
+          config,
+          expectedEpoch,
+          token!,
+        );
+        return (
+          await sendOnce(
+            config,
+            request,
+            refreshed,
+            expectedEpoch,
+            externalSignal,
+          )
+        ).data;
+      } catch (retryError) {
+        if (isUnauthorized(retryError)) {
+          activeSession = null;
+          await clearVault(expectedEpoch);
+          throw unauthorizedError();
+        }
+        rethrowSafeCentralError(retryError);
+      }
+    }
+    rethrowSafeCentralError(error);
+  }
+}
+
+async function centralJson<T>(
+  request: AxiosRequestConfig,
+  schema: z.ZodType<T>,
+  requiresAuth = true,
+  externalSignal?: AbortSignal,
+): Promise<T> {
+  return schema.parse(
+    await centralRequest(request, requiresAuth, sessionEpoch, externalSignal),
+  );
+}
+
+async function enrollMeterForSession(
+  config: ServerConfig,
+  userId: string,
+  epoch: number,
+): Promise<void> {
+  if (enrollmentStateEpoch !== epoch) {
+    enrollmentStateEpoch = epoch;
+    enrollmentAttemptEpoch = -1;
+    enrollmentPermanentFailureEpoch = -1;
+    enrollmentRetryAt = 0;
+    enrollmentFailureCount = 0;
+    enrollmentError = null;
+  }
+  if (enrollmentAttemptEpoch === epoch) return;
+  if (
+    enrollmentPermanentFailureEpoch === epoch ||
+    Date.now() < enrollmentRetryAt
+  )
+    return;
+  if (enrollmentFlight?.epoch === epoch) return enrollmentFlight.promise;
+  const promise = (async () => {
+    try {
+      const identity = await deviceIdentity();
+      assertEpoch(epoch);
+      if (!identity.deviceId || identity.enrollmentId !== identity.deviceId) {
+        enrollmentError = "PAIRING_IDENTITY_MISMATCH";
+        enrollmentPermanentFailureEpoch = epoch;
+        return;
+      }
+      const enrollment = z
+        .strictObject({
+          deviceId: z.string().uuid(),
+          deviceToken: z.string().min(1).max(500),
+          expiresAt: z.iso.datetime({ offset: true }),
+          userId: z.string().uuid(),
+        })
+        .parse(
+          await centralRequest(
+            {
+              method: "POST",
+              url: "/api/v1/client/meter/enroll",
+              data: { deviceId: identity.deviceId },
+            },
+            true,
+            epoch,
+          ),
+        );
+      assertEpoch(epoch);
+      if (
+        enrollment.userId !== userId ||
+        enrollment.deviceId !== identity.deviceId
+      ) {
+        enrollmentError = "PAIRING_IDENTITY_MISMATCH";
+        enrollmentPermanentFailureEpoch = epoch;
+        return;
+      }
+      await invoke("meter_pairing_write", {
+        pairing: {
+          deviceId: enrollment.deviceId,
+          deviceToken: enrollment.deviceToken,
+          userId: enrollment.userId,
+          serverOrigin: serverOrigin(config),
+        },
+      });
+      assertEpoch(epoch);
+      enrollmentAttemptEpoch = epoch;
+      enrollmentRetryAt = 0;
+      enrollmentFailureCount = 0;
+      enrollmentError = null;
+    } catch {
+      if (epoch !== sessionEpoch) return;
+      enrollmentError = "PAIRING_ENROLL_FAILED";
+      const delay = Math.min(
+        5 * 60_000,
+        5_000 * 2 ** Math.min(enrollmentFailureCount, 6),
+      );
+      enrollmentFailureCount += 1;
+      enrollmentRetryAt = Date.now() + delay;
+    }
+  })();
+  enrollmentFlight = { epoch, promise };
+  try {
+    await promise;
+  } finally {
+    if (enrollmentFlight?.promise === promise) enrollmentFlight = null;
+  }
+}
+
+async function restoreSystemSession(): Promise<SystemSession> {
+  const config = await getServerConfig();
+  const epoch = sessionEpoch;
+  const data = await centralJson(
+    { method: "GET", url: "/api/v1/users/me" },
+    systemUserSchema,
+  );
+  assertEpoch(epoch);
+  if (activeSession?.user.id !== data.id) {
+    activeSession = null;
+    await clearVault(epoch);
+    return signedOutSession;
+  }
+  await enrollMeterForSession(config, data.id, epoch);
+  return { authenticated: true, user: data };
+}
+
+async function systemSession(): Promise<SystemSession> {
+  const epoch = sessionEpoch;
+  if (restoreFlight?.epoch === epoch) return restoreFlight.promise;
+  const promise = (async () => {
+    try {
+      return await restoreSystemSession();
+    } catch (error) {
+      if (isAuthRequiredError(error)) return signedOutSession;
+      throw error;
+    }
+  })();
+  restoreFlight = { epoch, promise };
+  try {
+    return await promise;
+  } finally {
+    if (restoreFlight?.promise === promise) restoreFlight = null;
+  }
+}
+
+function isAuthRequiredError(error: unknown): boolean {
+  return error instanceof Error && error.message === authRequiredMessage;
+}
+
+async function login(email: string, password: string): Promise<SystemSession> {
+  const config = await getServerConfig();
+  const epoch = invalidateRendererSession();
+  await clearVault(epoch);
+  let response: z.infer<typeof authResponseSchema>;
+  try {
+    response = await centralJson(
+      {
+        method: "POST",
+        url: "/api/v1/auth/login",
+        data: { email, password },
+      },
+      authResponseSchema,
+      false,
+    );
+  } catch (error) {
+    if (isUnauthorized(error)) {
+      throw new Error("邮箱或密码不正确，请检查后重试。");
+    }
+    throw error;
+  }
+  const session = await persistAuthResponse(
+    response,
+    config,
+    epoch,
+    Math.floor(Date.now() / 1000),
+  );
+  await enrollMeterForSession(config, session.user.id, epoch);
+  return { authenticated: true, user: session.user };
+}
+
+async function logout(): Promise<void> {
+  const oldSession = activeSession;
+  const epoch = invalidateRendererSession();
+  const clearPromise = clearVault(epoch);
+  const config = currentConfig ?? (await getServerConfig());
+  let remoteError: unknown;
+  if (oldSession) {
+    try {
+      let token = oldSession.accessToken;
+      let refreshToken = oldSession.refreshToken;
+      let response: { data: unknown };
+      try {
+        response = await sendOnce(
+          config,
+          {
+            method: "POST",
+            url: "/api/v1/auth/logout",
+            data: { refreshToken },
+          },
+          token,
+          epoch,
+        );
+      } catch (error) {
+        if (!isUnauthorized(error)) throw error;
+        const renewed = authResponseSchema.parse(
+          await centralRequest(
+            {
+              method: "POST",
+              url: "/api/v1/auth/refresh",
+              data: { refreshToken },
+            },
+            false,
+            epoch,
+          ),
+        );
+        token = renewed.accessToken;
+        refreshToken = renewed.refreshToken;
+        response = await sendOnce(
+          config,
+          {
+            method: "POST",
+            url: "/api/v1/auth/logout",
+            data: { refreshToken },
+          },
+          token,
+          epoch,
+        );
+      }
+      void response;
+    } catch (error) {
+      remoteError = error;
+    }
+  }
+  await clearPromise;
+  if (remoteError) rethrowSafeCentralError(remoteError);
+}
+
+async function currentDeviceIdentity() {
+  const identity = await deviceIdentity();
+  if (!identity.deviceId || !identity.enrollmentId) {
+    throw new Error(deviceIdentityUnavailableMessage);
+  }
+  return identity;
+}
+
+export type AssistanceEvent = "connected" | "state_changed" | "disconnected";
+
+async function streamLoginAssistanceEvents(
+  handler: (event: AssistanceEvent) => void,
+  signal: AbortSignal,
+): Promise<void> {
+  const config = await getServerConfig();
+  const epoch = sessionEpoch;
+  let token = await ensureAccessToken(config, epoch);
+  let response: {
+    data: unknown;
+    release: () => void;
+    contentType: string | null;
+  };
+  const request: AxiosRequestConfig = {
+    method: "GET",
+    url: "/api/v1/client/login-assistance/events",
+    adapter: "fetch",
+    responseType: "stream",
+    timeout: 0,
+    headers: {
+      Accept: "text/event-stream",
+    },
+  };
+  try {
+    response = await sendOnce(config, request, token, epoch, signal, true);
+  } catch (error) {
+    if (!isUnauthorized(error)) rethrowSafeCentralError(error);
+    token = await refreshAfterUnauthorized(config, epoch, token);
+    response = await sendOnce(config, request, token, epoch, signal, true);
+  }
+  const stream = response.data instanceof ReadableStream ? response.data : null;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  try {
+    if (
+      response.contentType?.split(";", 1)[0].trim().toLowerCase() !==
+      "text/event-stream"
+    ) {
+      throw new Error("中央后台事件流格式无效。");
+    }
+    if (!stream) {
+      throw new Error("中央后台事件流格式无效。");
+    }
+    reader = stream.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (!signal.aborted) {
+      await assertSessionLifetime(epoch);
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      if (buffer.length > maxSseBufferChars) {
+        throw new Error("中央后台事件流数据超出限制。");
+      }
+      const frames = buffer.split(/\r?\n\r?\n/);
+      buffer = frames.pop() ?? "";
+      for (const frame of frames) {
+        await assertSessionLifetime(epoch);
+        if (frame.length > maxSseFrameChars) {
+          throw new Error("中央后台事件超出限制。");
+        }
+        const eventName = frame
+          .split(/\r?\n/)
+          .map((line) => line.match(/^event:\s*(.+)$/)?.[1]?.trim())
+          .find(Boolean);
+        if (eventName === "connected" || eventName === "state_changed") {
+          await assertSessionLifetime(epoch);
+          handler(eventName);
+        }
+      }
+    }
+  } finally {
+    if (reader) await reader.cancel().catch(() => undefined);
+    else if (stream) await stream.cancel().catch(() => undefined);
+    response.release();
+  }
+}
+
+async function saveServerConfigNow(
+  config: ServerConfig,
+): Promise<ServerConfig> {
+  const normalized = serverConfigSchema.parse(config);
+  const previous = currentConfig ?? (await readNativeConfig());
+  const revision = ++configRevision;
+  if (serverOrigin(previous) !== serverOrigin(normalized)) {
+    const epoch = invalidateRendererSession();
+    await clearVault(epoch);
+  }
+  const payload: unknown = await invoke("server_config_save", {
+    config: { url: normalized.url },
+  });
+  const saved = serverConfigSchema.parse(payload);
+  if (revision !== configRevision) return currentConfig ?? saved;
+  currentConfig = saved;
+  return saved;
+}
+
+function saveServerConfig(config: ServerConfig): Promise<ServerConfig> {
+  const normalized = serverConfigSchema.parse(config);
+  const operation = configMutationQueue.then(() =>
+    saveServerConfigNow(normalized),
+  );
+  configMutationQueue = operation.then(
+    () => undefined,
+    () => undefined,
+  );
+  configMutationPromise = operation;
+  void operation.then(
+    () => {
+      if (configMutationPromise === operation) configMutationPromise = null;
+    },
+    () => {
+      if (configMutationPromise === operation) configMutationPromise = null;
+    },
+  );
+  return operation;
+}
 
 async function invokeValidated<T>(
   command: string,
@@ -560,12 +1433,6 @@ async function invokeValidated<T>(
       args === undefined ? await invoke(command) : await invoke(command, args);
     return schema.parse(payload);
   } catch (error) {
-    if (
-      error === bindingRequiredMessage ||
-      (error instanceof Error && error.message === bindingRequiredMessage)
-    ) {
-      window.dispatchEvent(new Event(bindingGateEvent));
-    }
     throw error;
   }
 }
@@ -578,109 +1445,243 @@ export const api = {
     invokeValidated("startup_gate_check", startupGateSchema),
   startupGuardStatus: () =>
     invokeValidated("startup_guard_status", startupGateSchema),
-  ensureMeterService: () => {
-    meterStartupPromise ??= invokeValidated(
-      "meter_service_ensure",
-      meterStartSchema,
-    );
-    return meterStartupPromise;
-  },
-  retryMeterService: () => {
-    meterStartupPromise = invokeValidated(
-      "meter_service_retry",
-      meterStartSchema,
-    );
-    return meterStartupPromise;
-  },
-  meterSetupError: () =>
-    invokeValidated("meter_setup_error", z.string().max(300).nullable()),
   meterServiceVersion: () =>
     invokeValidated("meter_service_version", meterVersionSchema),
-  status: () => invokeValidated("status", statusSchema),
-  serverConfig: () => invokeValidated("server_config_get", serverConfigSchema),
-  saveServerConfig: (config: ServerConfig) =>
-    invokeValidated("server_config_save", serverConfigSchema, { config }),
-  systemSession: () => invokeValidated("system_current", systemSessionSchema),
-  clientAccess: () => invokeValidated("system_access", clientAccessSchema),
-  systemLogin: (email: string, password: string) =>
-    invokeValidated("system_login", systemSessionSchema, { email, password }),
-  systemLogout: async () => {
-    await invoke("system_logout");
+  meterStatus: () => invokeValidated("meter_status", usageStatusSchema),
+  usageStatus: () => invokeValidated("meter_status", usageStatusSchema),
+  meterPairingError: () => enrollmentError,
+  serverConfig: () => getServerConfig(true),
+  saveServerConfig,
+  deviceIdentity,
+  systemSession,
+  clientAccess: () =>
+    centralJson(
+      { method: "GET", url: "/api/v1/client/access" },
+      clientAccessSchema,
+    ),
+  systemLogin: login,
+  systemLogout: logout,
+  sessionBindingCurrent: async () => {
+    const identity = await currentDeviceIdentity();
+    return centralJson(
+      {
+        method: "GET",
+        url: "/api/v1/client/session-bindings/current",
+        params: {
+          deviceId: identity.deviceId,
+          enrollmentId: identity.enrollmentId,
+        },
+        headers: { "X-CQG-Queue-Version": "2" },
+      },
+      sessionBindingCurrentSchema.refine(({ attempt, binding }) => {
+        const owns = (value: SessionBinding | null) =>
+          value === null ||
+          (value.deviceId === identity.deviceId &&
+            value.enrollmentId === identity.enrollmentId);
+        return (
+          (!attempt ||
+            (attempt.deviceId === identity.deviceId &&
+              attempt.enrollmentId === identity.enrollmentId)) &&
+          owns(binding) &&
+          owns(attempt?.binding ?? null)
+        );
+      }),
+    );
   },
-  sessionBindingCurrent: () =>
-    invokeValidated("session_binding_current", sessionBindingCurrentSchema),
-  sessionBindingStart: () =>
-    invokeValidated("session_binding_start", sessionBindingAttemptSchema),
+  sessionBindingStart: async () => {
+    const identity = await currentDeviceIdentity();
+    return centralJson(
+      {
+        method: "POST",
+        url: "/api/v1/client/session-bindings/attempts",
+        data: {
+          deviceId: identity.deviceId,
+          enrollmentId: identity.enrollmentId,
+        },
+        headers: { "X-CQG-Queue-Version": "2" },
+      },
+      sessionBindingAttemptSchema.refine(
+        (attempt) =>
+          attempt.deviceId === identity.deviceId &&
+          attempt.enrollmentId === identity.enrollmentId,
+      ),
+    );
+  },
   sessionBindingAction: async (
     attemptId: string,
     action: "status" | "prepare" | "detect" | "confirm" | "cancel",
   ) => {
     z.string().uuid().parse(attemptId);
     z.enum(["status", "prepare", "detect", "confirm", "cancel"]).parse(action);
-    return invokeValidated(
-      `session_binding_${action}`,
-      sessionBindingAttemptSchema.refine((result) => result.id === attemptId),
-      { attemptId },
+    const identity = await currentDeviceIdentity();
+    let body: { sessionId: string } | undefined;
+    if (action !== "status") {
+      const previous = await centralJson(
+        {
+          method: "GET",
+          url: `/api/v1/client/session-bindings/attempts/${attemptId}`,
+          headers: { "X-CQG-Queue-Version": "2" },
+        },
+        sessionBindingAttemptSchema.refine(
+          (result) =>
+            result.id === attemptId &&
+            result.deviceId === identity.deviceId &&
+            result.enrollmentId === identity.enrollmentId,
+        ),
+      );
+      if (
+        action === "detect" &&
+        (previous.status !== "READY_FOR_LOGIN" || !previous.loginAllowed)
+      ) {
+        throw new Error("绑定任务当前不允许检测，请重新读取状态。");
+      }
+      if (action === "confirm") {
+        if (
+          previous.status !== "AWAITING_CONFIRMATION" ||
+          !previous.candidateSessionId
+        ) {
+          throw new Error("绑定确认信息无效，请重新读取状态。");
+        }
+        body = { sessionId: previous.candidateSessionId };
+      }
+    }
+    return centralJson(
+      {
+        method: action === "status" ? "GET" : "POST",
+        url: `/api/v1/client/session-bindings/attempts/${attemptId}${action === "status" ? "" : `/${action}`}`,
+        data: body,
+        headers: { "X-CQG-Queue-Version": "2" },
+      },
+      sessionBindingAttemptSchema.refine(
+        (result) =>
+          result.id === attemptId &&
+          result.deviceId === identity.deviceId &&
+          result.enrollmentId === identity.enrollmentId,
+      ),
     );
   },
   loginAssistanceInfo: () =>
-    invokeValidated("login_assistance_info", loginAssistanceInfoSchema),
+    centralJson(
+      { method: "GET", url: "/api/v1/client/login-assistance" },
+      loginAssistanceInfoSchema,
+    ),
+  authenticatorInfo: (signal?: AbortSignal) =>
+    centralJson(
+      { method: "GET", url: "/api/v1/client/login-assistance/authenticator" },
+      authenticatorInfoSchema,
+      true,
+      signal,
+    ),
+  authenticatorCode: (signal?: AbortSignal) =>
+    centralJson(
+      {
+        method: "POST",
+        url: "/api/v1/client/login-assistance/authenticator/code",
+      },
+      authenticatorCodeSchema,
+      true,
+      signal,
+    ),
   loginAssistanceCurrent: () =>
-    invokeValidated(
-      "login_assistance_current",
+    centralJson(
+      {
+        method: "GET",
+        url: "/api/v1/client/login-assistance/listeners/current",
+      },
       z.strictObject({ listener: loginAssistanceListenerSchema.nullable() }),
     ),
   loginAssistanceStart: () =>
-    invokeValidated("login_assistance_start", loginAssistanceListenerSchema),
+    centralJson(
+      { method: "POST", url: "/api/v1/client/login-assistance/listeners" },
+      loginAssistanceListenerSchema,
+    ),
   loginAssistanceStatus: async (listenerId: string) => {
     z.string().uuid().parse(listenerId);
-    return invokeValidated(
-      "login_assistance_status",
+    return centralJson(
+      {
+        method: "GET",
+        url: `/api/v1/client/login-assistance/listeners/${listenerId}`,
+      },
       loginAssistanceListenerSchema.refine(
         (listener) => listener.id === listenerId,
       ),
-      { listenerId },
     );
   },
   loginAssistanceCancel: async (listenerId: string) => {
     z.string().uuid().parse(listenerId);
-    return invokeValidated(
-      "login_assistance_cancel",
+    return centralJson(
+      {
+        method: "DELETE",
+        url: `/api/v1/client/login-assistance/listeners/${listenerId}`,
+      },
       loginAssistanceListenerSchema.refine(
         (listener) => listener.id === listenerId,
       ),
-      { listenerId },
     );
   },
-  quotaOverview: () => invokeValidated("quota_overview", quotaOverviewSchema),
-  usageStatus: () => invokeValidated("usage_status", usageStatusSchema),
+  streamLoginAssistanceEvents,
+  quotaOverview: () =>
+    centralJson(
+      {
+        method: "GET",
+        url: "/api/v1/client/quota/overview",
+        params: { includeTeamMembers: true },
+      },
+      quotaOverviewSchema,
+    ),
   usageEvents: async (page = 0, size = 10) => {
     z.number().int().min(0).max(100000).parse(page);
     z.number().int().min(1).max(100).parse(size);
-    return invokeValidated("usage_events", usageEventsSchema, { page, size });
+    return centralJson(
+      {
+        method: "GET",
+        url: "/api/v1/client/usage/events",
+        params: {
+          page,
+          size,
+          includeMetadata: true,
+          includeTokenBreakdown: true,
+        },
+      },
+      usageEventsSchema,
+    );
   },
   usageAnalytics: async (days: 1 | 7 | 30 = 7) => {
     z.union([z.literal(1), z.literal(7), z.literal(30)]).parse(days);
-    return invokeValidated("usage_analytics", usageAnalyticsSchema, { days });
+    return centralJson(
+      {
+        method: "GET",
+        url: "/api/v1/client/usage/analytics",
+        params: { days },
+      },
+      usageAnalyticsSchema,
+    );
   },
   meterRuntimeLogs: () =>
     invokeValidated("meter_runtime_logs", meterRuntimeLogsSchema),
-  scanUsage: () => invokeValidated("usage_scan", usageStatusSchema),
-  pairMeter: () => invokeValidated("usage_pair", usageStatusSchema),
-  codexRateLimits: () =>
-    invokeValidated("codex_rate_limits", officialCodexRateLimitsSchema),
+  codexRateLimits: async () => {
+    const snapshot = await invokeValidated(
+      "codex_rate_limits",
+      officialCodexRateLimitsSchema,
+    );
+    await centralRequest({
+      method: "PUT",
+      url: "/api/v1/client/official-quota",
+      data: snapshot,
+    });
+    return snapshot;
+  },
 };
 
 const safeBackendMessages = new Set([
   bindingRequiredMessage,
-  "本设备绑定信息不可用，请检查统计程序设备登记或联系管理员。",
+  authRequiredMessage,
+  deviceIdentityUnavailableMessage,
   "绑定任务无效或已失效，请重新读取状态。",
   "本设备绑定请求被拒绝，请联系管理员检查设备归属、官方账户与队列状态。",
-  "本机登录存储不可用，请关闭其他客户端并检查用户目录权限后重试。",
-  "本地服务启动失败，安装包可能不完整，请重新安装。",
-  "本地服务暂时不可用，请稍后重试。",
-  "中央后台暂不可用，请确认后台已启动且服务器地址正确。",
-  "本地服务返回了无效的数据。",
+  "系统会话有效期超出允许范围。",
+  "绑定确认信息无效，请重新读取状态。",
+  "服务器地址须以 http:// 或 https:// 开头。",
   "流水分页参数无效，请刷新后重试。",
   "统计范围须为 1、7 或 30 天。",
   "邮箱或密码不正确，请检查后重试。",
@@ -697,13 +1698,11 @@ const safeBackendMessages = new Set([
   "无法读取客户端设置目录。",
   "无法保存服务器设置，请检查目录权限。",
   "无法保存服务器设置，请稍后重试。",
-  "服务器地址未保存。同步统计程序地址需要管理员授权，取消授权后地址不会保存。",
-  "服务器地址未保存。安装包中的统计程序不完整，请重新安装客户端后重试。",
-  "服务器地址未保存。统计程序地址同步失败，请检查 Windows 服务后重试。",
-  "服务器地址未保存。无法确认统计程序地址已同步，请稍后重试。",
-  "服务器地址未保存。当前平台暂不支持同步统计程序地址。",
-  "无法保存客户端设置，统计程序已恢复原服务器地址。请检查目录权限后重试。",
-  "无法保存客户端设置，统计程序地址也未能恢复。请重新保存原服务器地址，确认同步成功后再使用。",
+  "已取消管理员授权，服务器地址未保存。",
+  "无法启动统计程序地址更新，请检查管理员授权。",
+  "统计程序地址更新超时，服务器地址未保存。",
+  "统计程序地址更新失败，服务器地址未保存。",
+  "统计程序地址更新脚本未随安装包提供。",
   "无法保存服务器设置，请检查目录权限后重试。",
   "无法同步统计程序地址，请重启客户端后重试。",
   "无法保存服务器地址，请重试。",
@@ -716,8 +1715,10 @@ const safeBackendMessages = new Set([
   "普通启动项已保存，但无法确认旧启动任务已清理，请重新启动客户端后重试。",
   "Windows 启动应用设置在操作期间发生变化，已停止修改，请重新读取后重试。",
   "无法设置开机自启动，请以管理员身份运行客户端后重试。",
+  "无法设置开机自启动，请检查当前 Windows 用户的启动应用权限。",
   "Windows 未保存开机自启动设置，请重试。",
   "开机自启动仅支持当前登录的管理员用户；请勿使用其他账户的管理员凭据设置。",
+  "开机自启动仅支持当前登录的 Windows 用户。",
   "无法读取客户端安装路径，请检查安装文件。",
   "检测到其他安装版本或不匹配的自启动任务，请先卸载原版本。",
   "开机自启动任务与当前用户或安装目录不匹配，已阻止自动修改，请检查旧版本残留任务。",
@@ -730,7 +1731,31 @@ const safeBackendMessages = new Set([
 /** Never render an arbitrary transport error, URL, or credential-like value. */
 export function getApiErrorMessage(error: unknown): string {
   if (error instanceof z.ZodError) {
-    return "本地接口返回的数据格式不完整，请重启应用后重试。";
+    return "服务返回的数据格式不完整，请重试或联系管理员。";
+  }
+  if (axios.isCancel(error)) return "请求已取消。";
+  if (axios.isAxiosError(error)) {
+    const status = error.response?.status;
+    const data: unknown = error.response?.data;
+    const code =
+      data && typeof data === "object" && "code" in data ? data.code : null;
+    if (code === "AUTHENTICATOR_UNAVAILABLE")
+      return "团队验证器不可用，请重新读取配置或联系管理员。";
+    if (
+      code === "AUTHENTICATOR_SECRET_UNAVAILABLE" ||
+      code === "AUTHENTICATOR_ENCRYPTION_UNAVAILABLE"
+    )
+      return "后台验证器密钥不可用，请联系管理员重新配置。";
+    if (code === "AUTHENTICATOR_RATE_LIMITED")
+      return "请稍后再获取验证器验证码。";
+    if (status === 400) return "请求内容无效，请刷新后重试。";
+    if (status === 401) return authRequiredMessage;
+    if (status === 403) return "中央后台拒绝请求，请检查本设备绑定状态。";
+    if (status === 404) return "中央后台不支持此功能，请确认服务器版本。";
+    if (status === 409) return "该账户当前已有任务正在处理，请稍后重试。";
+    if (status === 429) return "操作过于频繁，请稍后重试。";
+    if (status && status >= 500) return "中央后台暂不可用，请稍后重试。";
+    return "无法连接中央服务器，请检查地址、网络及服务器是否允许桌面访问。";
   }
   const message =
     typeof error === "string"
@@ -738,14 +1763,52 @@ export function getApiErrorMessage(error: unknown): string {
       : error instanceof Error
         ? error.message
         : null;
+  if (message?.startsWith("服务器地址未保存。")) {
+    if (message.includes("已取消管理员授权")) {
+      return "已取消管理员授权，服务器地址未保存。";
+    }
+    if (message.includes("统计程序地址更新超时")) {
+      return "统计程序地址更新超时，服务器地址未保存。";
+    }
+    if (message.includes("统计程序地址更新失败")) {
+      return "统计程序地址更新失败，服务器地址未保存。";
+    }
+    if (message.includes("无法启动统计程序地址更新")) {
+      return "无法启动统计程序地址更新，请检查管理员授权。";
+    }
+    if (message.includes("无法读取 Windows 统计服务状态")) {
+      return "无法读取 Windows 统计服务状态，请稍后重试。";
+    }
+    if (message.includes("脚本未随安装包提供")) {
+      return "安装包缺少统计程序地址更新脚本，请重新运行完整安装器。";
+    }
+    return "服务器地址未保存，请检查统计服务配置后重试。";
+  }
+  if (
+    message !== null &&
+    [
+      "无法安全保存登录状态",
+      "无法安全读取登录状态",
+      "无法安全保存登录状态。",
+      "无法读取本机登录状态。",
+      "无法访问安全登录状态目录。",
+      "无法安全访问登录状态目录。",
+      "无法创建登录状态目录。",
+      "无法保存登录状态。",
+      "无法保存本机登录状态。",
+      "无法提交本机登录状态。",
+      "无法清除本机登录状态。",
+    ].includes(message)
+  ) {
+    return "本机加密登录存储不可用，请检查用户目录权限后重试。";
+  }
   if (message !== null && safeBackendMessages.has(message.trim())) {
     return message.trim();
   }
-  return "暂时无法连接本地服务，请确认应用仍在运行。";
+  return "无法连接中央服务器，请检查地址、网络及服务器是否允许桌面访问。";
 }
 
 export const schemas = {
-  status: statusSchema,
   systemSession: systemSessionSchema,
   quotaOverview: quotaOverviewSchema,
   usageStatus: usageStatusSchema,

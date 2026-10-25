@@ -192,8 +192,30 @@ export interface OfficialAccountResponse {
   estimatedTotalTokens: number;
   reporterEmail: string | null;
   quota: OfficialQuotaSnapshot | null;
+  quotaPolling?: OfficialQuotaPolling;
   createdAt: string;
   updatedAt: string;
+  version: number;
+}
+
+export interface OfficialQuotaPolling {
+  enabled: boolean;
+  intervalSeconds: number;
+  status: string;
+  lastAttemptAt: string | null;
+  lastSuccessAt: string | null;
+  nextAttemptAt: string | null;
+  lastErrorCode: string | null;
+  version: number;
+  quota: OfficialQuotaSnapshot | null;
+}
+export interface OfficialAuthenticator {
+  configured: boolean;
+  encryptionReady: boolean;
+  enabled: boolean;
+  algorithm: string | null;
+  digits: number | null;
+  periodSeconds: number | null;
   version: number;
 }
 
@@ -709,6 +731,25 @@ export function updateOfficialAccount(id: string, body: OfficialAccountInput): P
 
 export function deleteOfficialAccount(id: string): Promise<void> {
   return request<void>(`/api/v1/admin/official-accounts/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+export function getOfficialQuotaPolling(id: string): Promise<OfficialQuotaPolling> {
+  return request<OfficialQuotaPolling>(`/api/v1/admin/official-accounts/${encodeURIComponent(id)}/quota-polling`);
+}
+export function saveOfficialQuotaPolling(id: string, body: { enabled: boolean; intervalSeconds: number; version: number }): Promise<OfficialQuotaPolling> {
+  return request<OfficialQuotaPolling>(`/api/v1/admin/official-accounts/${encodeURIComponent(id)}/quota-polling`, { method: 'PUT', body: JSON.stringify(body) });
+}
+export function refreshOfficialQuota(id: string): Promise<OfficialQuotaPolling> {
+  return request<OfficialQuotaPolling>(`/api/v1/admin/official-accounts/${encodeURIComponent(id)}/quota-polling/refresh`, { method: 'POST' });
+}
+export function getOfficialAuthenticator(id: string): Promise<OfficialAuthenticator> {
+  return request<OfficialAuthenticator>(`/api/v1/admin/official-accounts/${encodeURIComponent(id)}/authenticator`);
+}
+export function saveOfficialAuthenticator(id: string, body: { enabled: boolean; secret?: string; version: number }): Promise<OfficialAuthenticator> {
+  return request<OfficialAuthenticator>(`/api/v1/admin/official-accounts/${encodeURIComponent(id)}/authenticator`, { method: 'PUT', body: JSON.stringify(body) });
+}
+export function deleteOfficialAuthenticator(id: string): Promise<void> {
+  return request<void>(`/api/v1/admin/official-accounts/${encodeURIComponent(id)}/authenticator`, { method: 'DELETE' });
 }
 
 export function listMailboxProviders(): Promise<MailboxProvider[]> {

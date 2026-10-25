@@ -3,6 +3,7 @@ import { Check, Copy, LoaderCircle, Mail } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { AuthenticatorAssistance } from "./authenticator-assistance";
 import { useAssistanceRefresh } from "@/lib/use-assistance-refresh";
 import {
   api,
@@ -346,137 +347,140 @@ export function LoginAssistance({ userId }: { userId: string }) {
 
   const active = isActive(listener);
   return (
-    <section
-      className="cqg-surface min-w-0 p-5 sm:p-6"
-      aria-label="登录验证码辅助"
-    >
-      <div className="flex items-start gap-3">
-        <Mail
-          aria-hidden="true"
-          className="mt-0.5 size-5 shrink-0 text-primary"
-        />
-        <div className="min-w-0">
-          <h2 className="text-base font-semibold">监听登录邮件</h2>
-          <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-            只接收本次监听建立后新到的一封 ChatGPT
-            登录邮件，收到验证码后自动停止。
-          </p>
-          <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-            请等待“正在监听”，再到 ChatGPT 请求发送登录验证码。
-          </p>
-        </div>
-      </div>
-      {error ? (
-        <Alert variant="destructive" className="mt-5">
-          <AlertTitle>登录辅助提示</AlertTitle>
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
-      ) : null}
-      {infoLoading ? (
-        <p role="status" className="mt-6 text-sm text-muted-foreground">
-          正在读取登录辅助配置…
-        </p>
-      ) : !info ? (
-        <Button
-          className="mt-5"
-          variant="outline"
-          onClick={() => setInfoAttempt((value) => value + 1)}
-        >
-          重新读取
-        </Button>
-      ) : !info.available ? (
-        <p
-          role="status"
-          className="mt-6 rounded-md bg-muted/60 p-4 text-sm leading-relaxed"
-        >
-          {unavailableMessage(info.reasonCode)}
-        </p>
-      ) : (
-        <>
-          <dl className="mt-5 grid gap-4 rounded-md border bg-muted/30 p-4 text-sm sm:grid-cols-2">
-            <div className="min-w-0">
-              <dt className="text-xs text-muted-foreground">
-                所属团队的官方账户
-              </dt>
-              <dd className="mt-1 break-words font-medium">
-                {info.accountLabel ?? "团队官方账户"}
-              </dd>
-            </div>
-            <div className="min-w-0">
-              <dt className="text-xs text-muted-foreground">登录邮箱</dt>
-              <dd className="mt-1 break-all font-medium">
-                {info.recipientEmail ?? "已配置邮箱"}
-              </dd>
-            </div>
-          </dl>
-          <div className="mt-6 flex flex-wrap items-center gap-3">
-            <Button
-              onClick={() => void start()}
-              disabled={active || pending !== null}
-            >
-              {pending === "start" ? (
-                <LoaderCircle
-                  aria-hidden="true"
-                  className="motion-safe:animate-spin"
-                />
-              ) : (
-                <Mail aria-hidden="true" />
-              )}
-              {attempted ? "再次监听" : "监听邮件"}
-            </Button>
-            {active ? (
-              <Button
-                variant="outline"
-                onClick={() => void cancel()}
-                disabled={pending !== null}
-              >
-                {pending === "cancel" ? "正在取消…" : "取消监听"}
-              </Button>
-            ) : null}
+    <div className="space-y-6">
+      <AuthenticatorAssistance key={userId} userId={userId} />
+      <section
+        className="cqg-surface min-w-0 p-5 sm:p-6"
+        aria-label="登录验证码辅助"
+      >
+        <div className="flex items-start gap-3">
+          <Mail
+            aria-hidden="true"
+            className="mt-0.5 size-5 shrink-0 text-primary"
+          />
+          <div className="min-w-0">
+            <h2 className="text-base font-semibold">监听登录邮件</h2>
+            <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+              只接收本次监听建立后新到的一封 ChatGPT
+              登录邮件，收到验证码后自动停止。
+            </p>
+            <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+              请等待“正在监听”，再到 ChatGPT 请求发送登录验证码。
+            </p>
           </div>
-          <p role="status" className="mt-4 text-sm leading-relaxed">
-            {codeExpired
-              ? "验证码已过期，请重新监听后再发送验证码"
-              : stateMessage(listener, pending === "start")}
+        </div>
+        {error ? (
+          <Alert variant="destructive" className="mt-5">
+            <AlertTitle>登录辅助提示</AlertTitle>
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        ) : null}
+        {infoLoading ? (
+          <p role="status" className="mt-6 text-sm text-muted-foreground">
+            正在读取登录辅助配置…
           </p>
-          {listener?.state === "RECEIVED" &&
-          listener.code &&
-          Date.parse(listener.expiresAt) > Date.now() ? (
-            <div className="mt-5 flex flex-wrap items-center gap-4 rounded-md border bg-primary/5 p-4">
-              <output
-                aria-label="本次登录验证码"
-                className="font-mono text-3xl font-semibold tracking-[0.2em] tabular-nums"
-              >
-                {listener.code}
-              </output>
+        ) : !info ? (
+          <Button
+            className="mt-5"
+            variant="outline"
+            onClick={() => setInfoAttempt((value) => value + 1)}
+          >
+            重新读取
+          </Button>
+        ) : !info.available ? (
+          <p
+            role="status"
+            className="mt-6 rounded-md bg-muted/60 p-4 text-sm leading-relaxed"
+          >
+            {unavailableMessage(info.reasonCode)}
+          </p>
+        ) : (
+          <>
+            <dl className="mt-5 grid gap-4 rounded-md border bg-muted/30 p-4 text-sm sm:grid-cols-2">
+              <div className="min-w-0">
+                <dt className="text-xs text-muted-foreground">
+                  所属团队的官方账户
+                </dt>
+                <dd className="mt-1 break-words font-medium">
+                  {info.accountLabel ?? "团队官方账户"}
+                </dd>
+              </div>
+              <div className="min-w-0">
+                <dt className="text-xs text-muted-foreground">登录邮箱</dt>
+                <dd className="mt-1 break-all font-medium">
+                  {info.recipientEmail ?? "已配置邮箱"}
+                </dd>
+              </div>
+            </dl>
+            <div className="mt-6 flex flex-wrap items-center gap-3">
               <Button
-                variant="outline"
-                onClick={() => void copy()}
-                aria-label="复制验证码"
+                onClick={() => void start()}
+                disabled={active || pending !== null}
               >
-                {copied ? (
-                  <Check aria-hidden="true" />
+                {pending === "start" ? (
+                  <LoaderCircle
+                    aria-hidden="true"
+                    className="motion-safe:animate-spin"
+                  />
                 ) : (
-                  <Copy aria-hidden="true" />
+                  <Mail aria-hidden="true" />
                 )}
-                {copied ? "已复制" : "复制验证码"}
+                {attempted ? "再次监听" : "监听邮件"}
               </Button>
+              {active ? (
+                <Button
+                  variant="outline"
+                  onClick={() => void cancel()}
+                  disabled={pending !== null}
+                >
+                  {pending === "cancel" ? "正在取消…" : "取消监听"}
+                </Button>
+              ) : null}
             </div>
-          ) : null}
-          <p className="mt-5 text-xs leading-relaxed text-muted-foreground">
-            刷新或离开页面不会停止后台监听，重新打开可恢复；只有明确取消或退出系统才会取消监听。验证码仅保存在页面内存，过期后隐藏。
-          </p>
-        </>
-      )}
-      {!infoLoading && info && !active && pending === null ? (
-        <Button
-          className="mt-5"
-          variant="outline"
-          onClick={() => setInfoAttempt((value) => value + 1)}
-        >
-          重新读取邮箱配置
-        </Button>
-      ) : null}
-    </section>
+            <p role="status" className="mt-4 text-sm leading-relaxed">
+              {codeExpired
+                ? "验证码已过期，请重新监听后再发送验证码"
+                : stateMessage(listener, pending === "start")}
+            </p>
+            {listener?.state === "RECEIVED" &&
+            listener.code &&
+            Date.parse(listener.expiresAt) > Date.now() ? (
+              <div className="mt-5 flex flex-wrap items-center gap-4 rounded-md border bg-primary/5 p-4">
+                <output
+                  aria-label="本次登录验证码"
+                  className="font-mono text-3xl font-semibold tracking-[0.2em] tabular-nums"
+                >
+                  {listener.code}
+                </output>
+                <Button
+                  variant="outline"
+                  onClick={() => void copy()}
+                  aria-label="复制验证码"
+                >
+                  {copied ? (
+                    <Check aria-hidden="true" />
+                  ) : (
+                    <Copy aria-hidden="true" />
+                  )}
+                  {copied ? "已复制" : "复制验证码"}
+                </Button>
+              </div>
+            ) : null}
+            <p className="mt-5 text-xs leading-relaxed text-muted-foreground">
+              刷新或离开页面不会停止后台监听，重新打开可恢复；只有明确取消或退出系统才会取消监听。验证码仅保存在页面内存，过期后隐藏。
+            </p>
+          </>
+        )}
+        {!infoLoading && info && !active && pending === null ? (
+          <Button
+            className="mt-5"
+            variant="outline"
+            onClick={() => setInfoAttempt((value) => value + 1)}
+          >
+            重新读取邮箱配置
+          </Button>
+        ) : null}
+      </section>
+    </div>
   );
 }

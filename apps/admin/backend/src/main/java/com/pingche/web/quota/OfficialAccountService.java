@@ -27,10 +27,12 @@ public class OfficialAccountService {
     private final Clock clock;
     private final OfficialSessionLogoutFence logoutFence;
     private final JdbcTemplate jdbc;
+    private final com.pingche.web.officialsession.OfficialQuotaPollingService quotaPolling;
 
     public OfficialAccountService(OfficialAccountRepository accounts, OfficialQuotaSnapshotService snapshots,
             TeamRepository teams, UserRepository users, RefreshSessionRepository sessions, Clock clock,
-            OfficialSessionLogoutFence logoutFence, JdbcTemplate jdbc) {
+            OfficialSessionLogoutFence logoutFence, JdbcTemplate jdbc,
+            com.pingche.web.officialsession.OfficialQuotaPollingService quotaPolling) {
         this.accounts = accounts;
         this.snapshots = snapshots;
         this.teams = teams;
@@ -39,6 +41,7 @@ public class OfficialAccountService {
         this.clock = clock;
         this.logoutFence = logoutFence;
         this.jdbc = jdbc;
+        this.quotaPolling = quotaPolling;
     }
 
     @Transactional(readOnly = true)
@@ -114,10 +117,11 @@ public class OfficialAccountService {
     private OfficialAccountResponse response(OfficialAccount account) {
         UUID reporterId = account.getReporterUserId();
         User reporter = reporterId == null ? null : users.findById(reporterId).orElse(null);
+        var polling = quotaPolling.read(account.getId());
         return new OfficialAccountResponse(account.getId(), account.getLabel(),
                 account.getEstimatedTotalTokens(), reporter == null ? null : reporter.getEmail(),
-                reporter == null ? null : snapshots.read(reporterId),
-                account.getCreatedAt(), account.getUpdatedAt(), account.getVersion());
+                polling.quota(),
+                account.getCreatedAt(), account.getUpdatedAt(), account.getVersion(), polling);
     }
 
     private DomainException notFound() {

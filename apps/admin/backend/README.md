@@ -20,7 +20,7 @@
 - `PATCH /api/v1/admin/users/{id}`：修改邮箱、昵称、密码、状态或角色
 - `DELETE /api/v1/admin/users/{id}`：删除用户
 - `POST /api/v1/admin/users/{id}/force-logout`：强制用户所有会话下线
-- `GET /api/v1/client/quota/overview`：当前系统用户的个人用量、团队共享额度和可用量
+- `GET /api/v1/client/quota/overview`：当前系统用户的个人用量、团队共享额度和可用量；设置 `includeTeamMembers=true` 时额外返回当前团队成员用量
 - `GET /api/v1/client/access`：查询当前用户与安装实例的有效会话绑定，返回 `{allowed,bindingId,reason}`
 - `POST /api/v1/client/usage/events`：客户端幂等上报本机 Codex Token 事件，仅返回 `{acceptedEvents}` 接收回执
 - `PUT /api/v1/client/official-quota`：客户端上报不含凭据的官方额度摘要
@@ -43,6 +43,7 @@
 设备令牌单独存储 SHA-256 摘要，只允许 `/api/v1/meter/**`，默认 30 天失效；管理员撤销后不能通过再次登录自行恢复同一设备 ID。
 
 团队 Token 上限由全体成员共享；个人 Token 上限可作为额外约束。上报事件固定记录接收时的团队 ID，成员换队或删除后不会退回旧团队在当前滚动窗口内的已用量。V12 会按迁移时的成员归属回填旧事件；历史成员变动无法从旧数据中精确还原。
+配额概览默认保留旧客户端响应格式，不查询或返回 `teamMembers`；客户端需要成员用量时显式请求 `GET /api/v1/client/quota/overview?includeTeamMembers=true`。成员范围由登录用户所属团队确定，包含停用及零用量成员，按展示名称和用户 ID 稳定排序，无团队时为 `[]`。每项返回 `userId`、`displayName`、`status`、`fiveHourUsedTokens`、`weeklyUsedTokens`、`totalUsedTokens`、`measuredAt`、`fiveHourTokenLimit`、`weeklyTokenLimit`、`fiveHourRemainingTokens` 和 `weeklyRemainingTokens`。已用量只统计该成员在当前团队产生、符合团队滚动窗口和重置起点的事件，供计算团队用量占比；`measuredAt` 为这些有效事件的最新接收时间，无有效事件时为 `null`。个人额度及剩余量沿用个人统计口径：跨团队统计个人用量并应用个人重置起点，未设置某项个人额度时，该项额度和剩余量均为 `null`，零额度或超额时剩余量为 `0`。成员列表不包含离队成员，团队总用量仍保留其历史消耗，因此两者可能不相等。显式请求成员列表时，团队汇总和成员数据从同一可重复读快照中读取。
 额度重置只保存新的统计起点，旧事件和审计流水不会删除或改写。重置前发生的事件即使延迟补报，也不计入重置后的额度；客户端之后产生的新事件照常计费。管理员操作需要确认，两个重置接口均受 `ROLE_ADMIN` 保护。
 
 所有 `/api/v1/admin/**` 接口均由服务端强制要求 `ROLE_ADMIN`：未登录请求返回

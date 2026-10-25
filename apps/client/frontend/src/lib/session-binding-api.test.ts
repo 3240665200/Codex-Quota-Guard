@@ -1,17 +1,19 @@
-import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { invoke } from "@tauri-apps/api/core";
 import { api } from "./api";
+import { ApiHttpHarness, apiTestDeviceId } from "@/test/api-http-harness";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 const native = vi.mocked(invoke);
+const http = new ApiHttpHarness();
 const id = "11111111-1111-4111-8111-111111111111";
 const binding = {
   id,
   userId: id,
   userDisplayName: "Alice",
   userEmail: "alice@example.com",
-  deviceId: id,
-  enrollmentId: id,
+  deviceId: apiTestDeviceId,
+  enrollmentId: apiTestDeviceId,
   officialAccountId: id,
   sessionId: "official-session",
   status: "ACTIVE",
@@ -22,8 +24,8 @@ const binding = {
 };
 const attempt = {
   id,
-  deviceId: id,
-  enrollmentId: id,
+  deviceId: apiTestDeviceId,
+  enrollmentId: apiTestDeviceId,
   officialAccountId: id,
   status: "READY_FOR_LOGIN",
   queuePosition: 0,
@@ -38,9 +40,11 @@ const attempt = {
   retryAt: null,
   binding: null,
 };
-beforeEach(() => native.mockReset());
-describe("desktop binding transport", () => {
-  it("accepts only the explicit automatic queue states and an optional retry deadline", async () => {
+
+beforeEach(async () => http.prepare(api));
+
+describe("central session binding transport", () => {
+  it("accepts queue metadata states and sends only installation identity", async () => {
     for (const queueState of [
       "IDLE",
       "SETTLING",
@@ -48,57 +52,105 @@ describe("desktop binding transport", () => {
       "PREPARING",
       "ACTIVE",
     ]) {
-      native.mockResolvedValue({
-        ...attempt,
-        queueState,
-        retryAt: "2026-10-15T10:00:30Z",
-      });
+      http.respond({ ...attempt, queueState, retryAt: "2026-10-15T10:00:30Z" });
       expect((await api.sessionBindingStart()).queueState).toBe(queueState);
     }
-    native.mockResolvedValue({ ...attempt, queueState: "MANUAL_UNLOCK" });
+    const request = http
+      .requestsFor("POST", "/api/v1/client/session-bindings/attempts")
+      .at(-1)!;
+    expect(JSON.parse(String(request.data))).toEqual({
+      deviceId: apiTestDeviceId,
+      enrollmentId: apiTestDeviceId,
+    });
+    expect(
+      (request.headers as Record<string, string>)["X-CQG-Queue-Version"],
+    ).toBe("2");
+    http.respond({ ...attempt, queueState: "MANUAL_UNLOCK" });
     await expect(api.sessionBindingStart()).rejects.toThrow();
-    native.mockResolvedValue({ ...attempt, generation: 7 });
+    http.respond({ ...attempt, accessToken: "must-not-be-accepted" });
     await expect(api.sessionBindingStart()).rejects.toThrow();
   });
-  it("validates and restores a persisted safe binding", async () => {
-    native.mockResolvedValue({ attempt: null, binding });
+
+  it("restores a binding with installation identity and queue metadata v2", async () => {
+    http.respond({ attempt: null, binding });
     expect(await api.sessionBindingCurrent()).toEqual({
       attempt: null,
       binding,
     });
-    expect(native).toHaveBeenLastCalledWith("session_binding_current");
+    const request = http
+      .requestsFor("GET", "/api/v1/client/session-bindings/current")
+      .at(-1)!;
+    expect(request.params).toEqual({
+      deviceId: apiTestDeviceId,
+      enrollmentId: apiTestDeviceId,
+    });
+    expect(
+      (request.headers as Record<string, string>)["X-CQG-Queue-Version"],
+    ).toBe("2");
+    http.respond({ attempt: { ...attempt, deviceId: id }, binding: null });
+    await expect(api.sessionBindingCurrent()).rejects.toThrow();
   });
-  it("uses only a task ID for every native action and never takes a device or user override", async () => {
-    native.mockResolvedValue(attempt);
-    for (const action of [
-      "status",
-      "prepare",
-      "detect",
-      "confirm",
-      "cancel",
-    ] as const) {
-      await api.sessionBindingAction(id, action);
-      expect(native).toHaveBeenLastCalledWith(`session_binding_${action}`, {
-        attemptId: id,
-      });
-    }
-    await api.sessionBindingStart();
-    expect(native).toHaveBeenLastCalledWith("session_binding_start");
+
+  it("preflights task ownership and state before each binding action", async () => {
+    http.respond({ ...attempt, status: "QUEUED", loginAllowed: false });
+    await expect(api.sessionBindingAction(id, "detect")).rejects.toThrow();
+    expect(
+      http.requestsFor(
+        "POST",
+        `/api/v1/client/session-bindings/attempts/${id}/detect`,
+      ),
+    ).toHaveLength(0);
+
+    http.respond({ ...attempt, status: "READY_FOR_LOGIN", loginAllowed: true });
+    await api.sessionBindingAction(id, "detect");
+    expect(
+      http.requestsFor("GET", `/api/v1/client/session-bindings/attempts/${id}`),
+    ).toHaveLength(2);
+    const detect = http
+      .requestsFor(
+        "POST",
+        `/api/v1/client/session-bindings/attempts/${id}/detect`,
+      )
+      .at(-1)!;
+    expect(
+      (detect.headers as Record<string, string>)["X-CQG-Queue-Version"],
+    ).toBe("2");
+
+    http.respond({
+      ...attempt,
+      status: "AWAITING_CONFIRMATION",
+      candidateSessionId: "server-selected-session",
+    });
+    await api.sessionBindingAction(id, "confirm");
+    const confirm = http
+      .requestsFor(
+        "POST",
+        `/api/v1/client/session-bindings/attempts/${id}/confirm`,
+      )
+      .at(-1)!;
+    expect(JSON.parse(String(confirm.data))).toEqual({
+      sessionId: "server-selected-session",
+    });
+
+    http.respond({
+      ...attempt,
+      deviceId: "22222222-2222-4222-8222-222222222222",
+    });
+    await expect(api.sessionBindingAction(id, "cancel")).rejects.toThrow();
+    expect(
+      http.requestsFor(
+        "POST",
+        `/api/v1/client/session-bindings/attempts/${id}/cancel`,
+      ),
+    ).toHaveLength(0);
   });
-  it("rejects malformed and mismatched task IDs and unknown secret fields", async () => {
+
+  it("rejects malformed attempt IDs before sending a request", async () => {
+    const requestCount = http.requests.length;
     await expect(
       api.sessionBindingAction("https://evil.invalid", "confirm"),
     ).rejects.toThrow();
-    expect(native).not.toHaveBeenCalled();
-    native.mockResolvedValue({
-      ...attempt,
-      id: "22222222-2222-4222-8222-222222222222",
-    });
-    await expect(api.sessionBindingAction(id, "status")).rejects.toThrow();
-    native.mockResolvedValue({
-      ...attempt,
-      accessToken: "must-never-reach-renderer",
-    });
-    await expect(api.sessionBindingStart()).rejects.toThrow();
+    expect(http.requests).toHaveLength(requestCount);
+    expect(native).not.toHaveBeenCalledWith("session_binding_current");
   });
 });

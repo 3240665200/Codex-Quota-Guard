@@ -405,6 +405,27 @@ class AuthIntegrationTest {
                 ));
     }
 
+    @Test
+    void desktopCanPreflightAuthenticatedRequestsWithoutAllowingArbitraryOrigins() throws Exception {
+        for (String origin : java.util.List.of("http://tauri.localhost", "https://tauri.localhost", "tauri://localhost")) {
+            mvc.perform(options("/api/v1/client/session-bindings/attempts")
+                            .header(HttpHeaders.ORIGIN, origin)
+                            .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                            .header(HttpHeaders.ACCESS_CONTROL_REQUEST_HEADERS,
+                                    "authorization,content-type,x-quota-guard-device-id,x-cqg-queue-version"))
+                    .andExpect(status().isOk())
+                    .andExpect(header().string(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN, origin))
+                    .andExpect(header().doesNotExist(HttpHeaders.ACCESS_CONTROL_ALLOW_CREDENTIALS));
+        }
+        for (String origin : java.util.List.of("http://tauri.localhost.evil.example", "null", "http://localhost:34567")) {
+            mvc.perform(options("/api/v1/client/quota/overview")
+                            .header(HttpHeaders.ORIGIN, origin)
+                            .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "GET"))
+                    .andExpect(status().isForbidden())
+                    .andExpect(header().doesNotExist(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN));
+        }
+    }
+
     private Tokens register() throws Exception {
         return register(EMAIL, "User");
     }

@@ -11,5 +11,6 @@ public record OfficialAccountResponse(
         OfficialQuotaSnapshotResponse quota,
         Instant createdAt,
         Instant updatedAt,
-        long version
+        long version,
+        com.pingche.web.officialsession.OfficialQuotaPollingService.Response quotaPolling
 ) { }

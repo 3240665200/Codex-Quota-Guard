@@ -1,16 +1,16 @@
 # Docker Hub 拉取部署
 
-本配置面向服务器 `0.3.23`，后端与管理网页版本一致，平台为 **Linux amd64 / x86_64**，配套源码标签为 `server-v0.3.23`。生产部署固定版本，不依赖 `latest`；发布状态、镜像摘要与变更范围见 [服务器 0.3.23 发布说明](../../../docs/releases/server-v0.3.23.md)。
+本配置面向服务器 `0.3.25`，后端与管理网页版本一致，平台为 **Linux amd64 / x86_64**，配套源码标签为 `server-v0.3.25`。生产部署固定版本，不依赖 `latest`；发布状态、镜像摘要与变更范围见 [服务器 0.3.25 发布说明](../../../docs/releases/server-v0.3.25.md)。
 
 | 组件 | 镜像 |
 | --- | --- |
-| 普通后端，不含 Chromium | `minjm/codex-quota-guard-backend:0.3.23` |
-| 管理网页 | `minjm/codex-quota-guard-web:0.3.23` |
+| 普通后端，不含 Chromium | `minjm/codex-quota-guard-backend:0.3.25` |
+| 管理网页 | `minjm/codex-quota-guard-web:0.3.25` |
 | 数据库 | 官方 `postgres:17-alpine` |
 
 镜像仓库：[后端](https://hub.docker.com/r/minjm/codex-quota-guard-backend) · [管理网页](https://hub.docker.com/r/minjm/codex-quota-guard-web)。服务器不需要源码、Java、Node.js 或 Maven；需要 Docker Engine、Compose **v2.24.4+**、Bash、OpenSSL，以及访问 Docker Hub 的网络。下载配置另外需要 `curl`。这不是 Windows 容器或 ARM 镜像。
 
-0.3.23 只有普通后端，保留 sing-box，无内置 Chromium 或浏览器专用镜像，不需要额外 seccomp 权限。支持持久订阅、每账户前置／出口链和无需重填授权的链更新。每个官方账户必须选择已启用出口，任一所选节点缺失、禁用或故障时不会回退直连。Trojan URI 的证书例外默认关闭，只能按订阅明确许可；范围见[订阅说明](../../../docs/proxy-subscriptions-and-chains.md)。旧版镜像与历史源码标签保持原样。不要依赖 `latest` 判断版本或自动升级；数据库变化后，保留旧镜像也不表示可以直接切回。
+0.3.25 新增官方额度定时轮询、Google Authenticator 兼容验证码、团队成员用量进度条及两端额度显示设置；升级新增 V35/V36 数据表。0.3.25 只有普通后端，保留 sing-box，无内置 Chromium 或浏览器专用镜像，不需要额外 seccomp 权限。支持持久订阅、每账户前置／出口链和无需重填授权的链更新。每个官方账户必须选择已启用出口，任一所选节点缺失、禁用或故障时不会回退直连。Trojan URI 的证书例外默认关闭，只能按订阅明确许可；范围见[订阅说明](../../../docs/proxy-subscriptions-and-chains.md)。旧版镜像与历史源码标签保持原样。不要依赖 `latest` 判断版本或自动升级；数据库变化后，保留旧镜像也不表示可以直接切回。
 
 ## 首次部署
 
@@ -21,7 +21,7 @@
   set -e
   mkdir codex-quota-guard-server
   cd codex-quota-guard-server
-  qg_base="https://raw.githubusercontent.com/3240665200/Codex-Quota-Guard/server-v0.3.23/deploy/docker"
+  qg_base="https://raw.githubusercontent.com/3240665200/Codex-Quota-Guard/server-v0.3.25/deploy/docker"
   curl -fSL --fail-early --remote-name-all \
     "$qg_base/registry/compose.yaml" \
     "$qg_base/registry/start.sh" \
@@ -31,7 +31,7 @@
 )
 ```
 
-下载地址固定到与 `0.3.23` 镜像配套的 `server-v0.3.23` 源码标签。已有同名目录时下载步骤会停止，不覆盖已有部署。
+下载地址固定到与 `0.3.25` 镜像配套的 `server-v0.3.25` 源码标签。已有同名目录时下载步骤会停止，不覆盖已有部署。
 
 进入包含 `start.sh` 的目录（上述下载方式为 `cd codex-quota-guard-server`），替换服务器 IP 和管理员邮箱后执行：
 
@@ -46,9 +46,9 @@ bash start.sh up
 
 桌面端应为支持设备标识的 **0.3.14 或更高版本，建议使用 0.3.22**。桌面 `0.3.22` 包含 HTTP／HTTPS 地址修复与 CC Switch 共存判定，附带独立版本 `0.2.4` 的统计程序；本次服务器发布不更新桌面安装包。
 
-## 升级到 0.3.23
+## 升级到 0.3.25
 
-从 `0.3.22` 升级执行 **V32–V34**：V32 增加可空前置节点引用，原出口保留；V33 增加加密订阅表及节点来源关系；V34 增加默认 false 的 `allow_insecure_trojan` 许可，旧订阅不会自动获得证书例外。迁移不重新初始化数据库，也不重写已有授权或代理凭据。升级前用原配置停止所有旧应用、保留 PostgreSQL 运行并备份数据库与原 `.env`；保留项目名、数据库卷、全部密钥和自定义配置。后端、网页同时改为 `0.3.23`，桌面继续使用 `0.3.22`；不要覆盖原 `.env` 或重新生成密钥。
+从 `0.3.22` 升级执行 **V32–V34**：V32 增加可空前置节点引用，原出口保留；V33 增加加密订阅表及节点来源关系；V34 增加默认 false 的 `allow_insecure_trojan` 许可，旧订阅不会自动获得证书例外。迁移不重新初始化数据库，也不重写已有授权或代理凭据。升级前用原配置停止所有旧应用、保留 PostgreSQL 运行并备份数据库与原 `.env`；保留项目名、数据库卷、全部密钥和自定义配置。后端、网页同时改为 `0.3.25`，桌面继续使用 `0.3.22`；不要覆盖原 `.env` 或重新生成密钥。
 
 升级后确认 Flyway 到 **V34**。先验证原单出口账户与手动节点，再按需导入订阅、测试“前置 → 出口”并保存账户链；保存链后手动刷新官方账户与会话。订阅仅首次导入及手动“更新节点”时下载，没有后台定时更新。下载、解析或版本检查失败保留原节点，同订阅按唯一节点名保留 ID；来源缺失或曾主动停用的节点不会因更新而自动启用。
 
@@ -64,7 +64,7 @@ HTTP 部署保留基础 `APP_REQUIRE_HTTPS=false`；强制 HTTPS 部署继续使
 
 ## 从 0.3.11 或更早版本升级
 
-`0.3.23` 包含此前的自动绑定与交接、取得名额后 30 分钟登录期限、至少间隔 10 秒的官方会话监测、官方账户与会话管理，以及区分系统用户退出和官方会话退出的管理操作。从 `0.3.11` 升级会执行 **V22–V34 数据库迁移**，并启用上述官方账户必选代理规则。
+`0.3.25` 包含此前的自动绑定与交接、取得名额后 30 分钟登录期限、至少间隔 10 秒的官方会话监测、官方账户与会话管理，以及区分系统用户退出和官方会话退出的管理操作。从 `0.3.11` 升级会执行 **V22–V34 数据库迁移**，并启用上述官方账户必选代理规则。
 
 **V29 要求所有旧应用写入进程先停止，禁止新旧队列 writer 混跑。** 迁移增加代际校验字段，旧程序不会检查它们。按以下顺序在原部署目录操作：
 
@@ -84,8 +84,8 @@ bash start.sh backup
 普通部署的两个镜像改为：
 
 ```text
-minjm/codex-quota-guard-backend:0.3.23
-minjm/codex-quota-guard-web:0.3.23
+minjm/codex-quota-guard-backend:0.3.25
+minjm/codex-quota-guard-web:0.3.25
 ```
 
 旧 Compose 的 `services.backend.environment` 合并下列映射（若文件为 JSON，使用等价的 JSON 键值格式）：
@@ -138,7 +138,7 @@ HTTP 与 HTTPS 使用相同镜像、预置和文件导入。需要强制 HTTPS �
 ```bash
 (
   set -e
-  qg_base="https://raw.githubusercontent.com/3240665200/Codex-Quota-Guard/server-v0.3.23/deploy/docker"
+  qg_base="https://raw.githubusercontent.com/3240665200/Codex-Quota-Guard/server-v0.3.25/deploy/docker"
   curl -fSL --fail-early --remote-name-all \
     "$qg_base/compose.https.yaml" \
     "$qg_base/nginx.https.conf"

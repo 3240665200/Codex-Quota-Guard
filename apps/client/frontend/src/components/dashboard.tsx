@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   useCallback,
   useEffect,
@@ -17,6 +17,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   RefreshCw,
+  Search,
   Settings2,
   ShieldCheck,
   UserCircle,
@@ -37,6 +38,7 @@ import {
   type OfficialCodexRateLimits,
   type QuotaOverview,
   type SystemSession,
+  type TeamMemberUsage,
 } from "@/lib/api";
 import {
   formatCompactTokenCount,
@@ -55,6 +57,7 @@ import {
   serviceLabels,
 } from "@/components/usage-activity-panel";
 import { ThemeSwitcher } from "@/components/theme-switcher";
+import { quotaPercent, useQuotaDisplay } from "@/lib/quota-display";
 import "./quota-layout.css";
 
 function describeBlockReason(reason: string | null): string {
@@ -91,14 +94,17 @@ function TokenAmount({ value }: { value: number }) {
 }
 
 function QuotaProgress({
+  used,
   remaining,
   limit,
   label,
 }: {
+  used: number;
   remaining: number | null;
   limit: number | null;
   label: string;
 }) {
+  const { mode, label: displayLabel } = useQuotaDisplay();
   if (limit === null || remaining === null) {
     return (
       <div className="flex justify-between gap-3 text-xs text-muted-foreground">
@@ -107,19 +113,19 @@ function QuotaProgress({
       </div>
     );
   }
-  const percent =
-    limit === 0 ? 0 : Math.min(100, Math.max(0, (remaining * 100) / limit));
+  const percent = quotaPercent(mode, used, remaining, limit)!;
+  const remainingPercent = quotaPercent("remaining", used, remaining, limit)!;
   const exhausted = remaining <= 0 || limit === 0;
   return (
     <div
       className="flex flex-col gap-2"
       role="group"
-      aria-label={`${label}剩余额度`}
+      aria-label={`${label}${displayLabel}额度`}
     >
       <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
         <span>{label}</span>
         <span className="tabular-nums font-medium text-foreground">
-          剩余{" "}
+          {displayLabel}{" "}
           {new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 1 }).format(
             percent,
           )}
@@ -127,12 +133,12 @@ function QuotaProgress({
         </span>
       </div>
       <Progress
-        aria-label={`${label}剩余额度`}
+        aria-label={`${label}${displayLabel}额度`}
         className="h-2 bg-muted"
         indicatorClassName={
           exhausted
             ? "bg-[var(--cqg-status-error)]"
-            : percent <= 20
+            : remainingPercent <= 20
               ? "bg-[var(--cqg-status-warning)]"
               : "bg-primary"
         }
@@ -176,84 +182,76 @@ function EmptyState({
 }
 
 function TeamCard({ overview }: { overview: QuotaOverview }) {
-  const { team, teamQuota } = overview;
+  const { mode, label: displayLabel } = useQuotaDisplay();
+  const { teamQuota } = overview;
+  const windows = teamQuota
+    ? [
+        {
+          label: "5 小时团队",
+          remaining: teamQuota.fiveHourRemainingTokens,
+          limit: teamQuota.fiveHourTokenLimit,
+          used: teamQuota.fiveHourUsedTokens,
+        },
+        {
+          label: "7 天团队",
+          remaining: teamQuota.weeklyRemainingTokens,
+          limit: teamQuota.weeklyTokenLimit,
+          used: teamQuota.weeklyUsedTokens,
+        },
+        {
+          label: "累计总额",
+          remaining: teamQuota.totalRemainingTokens,
+          limit: teamQuota.totalTokenLimit,
+          used: teamQuota.totalUsedTokens,
+        },
+      ]
+    : [];
   return (
     <section
       className="cqg-surface cqg-summary-card min-w-0 p-4"
-      aria-label="团队共享额度"
+      aria-labelledby="team-shared-quota-heading"
     >
-      <div className="cqg-summary-card-header mb-4 flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h2 className="text-base font-semibold">团队共享额度</h2>
-          <p className="mt-1 truncate text-xs text-muted-foreground">
-            {teamQuota
-              ? `${teamQuota.name} · ${teamQuota.memberCount} 位成员`
-              : team
-                ? team.name
-                : "未加入团队"}
-          </p>
-        </div>
-        <Users aria-hidden="true" className="size-5 shrink-0 text-primary" />
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+        <h3 id="team-shared-quota-heading" className="text-sm font-semibold">
+          团队共享额度
+        </h3>
+        {teamQuota?.status === "DISABLED" ? (
+          <span className="text-xs text-[var(--cqg-status-warning)]">
+            团队已停用
+          </span>
+        ) : null}
       </div>
       {teamQuota ? (
-        <div className="cqg-summary-card-content space-y-3">
-          <div>
-            <QuotaProgress
-              label="累计总额"
-              remaining={teamQuota.totalRemainingTokens}
-              limit={teamQuota.totalTokenLimit}
-            />
-            <div className="mt-3 flex flex-wrap justify-between gap-2 text-xs tabular-nums text-muted-foreground">
-              {teamQuota.totalRemainingTokens !== null ? (
-                <span>
-                  <TokenAmount value={teamQuota.totalRemainingTokens} /> 剩余
-                </span>
-              ) : null}
-              {teamQuota.totalTokenLimit !== null ? (
-                <span>
-                  上限 <TokenAmount value={teamQuota.totalTokenLimit} />
-                </span>
-              ) : null}
+        <div className="cqg-shared-windows cqg-summary-card-content">
+          {windows.map((window) => (
+            <div className="cqg-shared-window" key={window.label}>
+              <QuotaProgress
+                used={window.used}
+                label={window.label}
+                remaining={window.remaining}
+                limit={window.limit}
+              />
+              <div className="mt-3 flex flex-wrap justify-between gap-x-3 gap-y-1 text-xs tabular-nums text-muted-foreground">
+                {mode === "used" || window.remaining !== null ? (
+                  <span>
+                    <TokenAmount
+                      value={mode === "used" ? window.used : window.remaining!}
+                    />{" "}
+                    {displayLabel}
+                  </span>
+                ) : (
+                  <span>
+                    已用 <TokenAmount value={window.used} />
+                  </span>
+                )}
+                {window.limit !== null ? (
+                  <span>
+                    上限 <TokenAmount value={window.limit} />
+                  </span>
+                ) : null}
+              </div>
             </div>
-          </div>
-          <div className="border-t pt-3">
-            <QuotaProgress
-              label="5 小时团队"
-              remaining={teamQuota.fiveHourRemainingTokens}
-              limit={teamQuota.fiveHourTokenLimit}
-            />
-            <div className="mt-3 flex flex-wrap justify-between gap-2 text-xs tabular-nums text-muted-foreground">
-              {teamQuota.fiveHourRemainingTokens !== null ? (
-                <span>
-                  <TokenAmount value={teamQuota.fiveHourRemainingTokens} /> 剩余
-                </span>
-              ) : null}
-              {teamQuota.fiveHourTokenLimit !== null ? (
-                <span>
-                  上限 <TokenAmount value={teamQuota.fiveHourTokenLimit} />
-                </span>
-              ) : null}
-            </div>
-          </div>
-          <div className="border-t pt-3">
-            <QuotaProgress
-              label="7 天团队"
-              remaining={teamQuota.weeklyRemainingTokens}
-              limit={teamQuota.weeklyTokenLimit}
-            />
-            <div className="mt-3 flex flex-wrap justify-between gap-2 text-xs tabular-nums text-muted-foreground">
-              {teamQuota.weeklyRemainingTokens !== null ? (
-                <span>
-                  <TokenAmount value={teamQuota.weeklyRemainingTokens} /> 剩余
-                </span>
-              ) : null}
-              {teamQuota.weeklyTokenLimit !== null ? (
-                <span>
-                  上限 <TokenAmount value={teamQuota.weeklyTokenLimit} />
-                </span>
-              ) : null}
-            </div>
-          </div>
+          ))}
         </div>
       ) : (
         <p className="cqg-summary-card-content text-sm text-muted-foreground">
@@ -264,15 +262,333 @@ function TeamCard({ overview }: { overview: QuotaOverview }) {
   );
 }
 
+function MemberUsageMetric({
+  label,
+  ariaLabel,
+  percent,
+  detail,
+  unavailableLabel = "暂不可得",
+  exhausted = false,
+  tone = "personal",
+}: {
+  label: string;
+  ariaLabel: string;
+  percent: number | null;
+  detail: string;
+  unavailableLabel?: string;
+  exhausted?: boolean;
+  tone?: "personal" | "team";
+}) {
+  const percentText =
+    percent === null
+      ? unavailableLabel
+      : `${new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 1 }).format(percent)}%`;
+  return (
+    <div className="cqg-member-window" role="group" aria-label={ariaLabel}>
+      <div className="cqg-member-window-label">
+        <span>{label}</span>
+        <span
+          className={
+            exhausted
+              ? "text-[var(--cqg-status-error)]"
+              : "font-medium text-foreground"
+          }
+        >
+          {percentText}
+          {exhausted ? " · 已用尽" : ""}
+        </span>
+      </div>
+      {percent !== null ? (
+        <Progress
+          aria-label={ariaLabel}
+          aria-valuetext={percentText}
+          className="h-1.5 bg-muted"
+          indicatorClassName={
+            exhausted
+              ? "bg-[var(--cqg-status-error)]"
+              : tone === "team"
+                ? "cqg-member-contribution-bar"
+                : "bg-primary"
+          }
+          value={Math.min(100, Math.max(0, percent))}
+        />
+      ) : null}
+      <p className="cqg-member-window-detail">{detail}</p>
+    </div>
+  );
+}
+
+function MemberRemainingWindow({
+  label,
+  limit,
+  remaining,
+}: {
+  label: string;
+  limit: number | null;
+  remaining: number | null;
+}) {
+  const { mode, label: displayLabel } = useQuotaDisplay();
+  // Personal remaining and team-contribution usage have different reset boundaries.
+  // In used mode show the consumed quota percentage, without relabeling team usage as personal usage.
+  const consumedQuota =
+    limit === null || remaining === null ? 0 : Math.max(0, limit - remaining);
+  const percent = quotaPercent(mode, consumedQuota, remaining, limit);
+  return (
+    <MemberUsageMetric
+      label={label}
+      ariaLabel={`${label}个人${displayLabel}额度`}
+      percent={percent}
+      exhausted={remaining === 0 && limit !== null}
+      unavailableLabel={limit === null ? "未设个人限额" : "暂不可得"}
+      detail={
+        limit !== null && remaining !== null
+          ? mode === "remaining"
+            ? `剩余 ${formatTokenCount(remaining)} / 上限 ${formatTokenCount(limit)} Token`
+            : `个人上限 ${formatTokenCount(limit)} Token${remaining === 0 ? " · 已达到上限" : ""}`
+          : limit === null
+            ? "受团队共享额度约束"
+            : `个人上限 ${formatTokenCount(limit)} Token`
+      }
+    />
+  );
+}
+
+function MemberTeamShareWindow({
+  label,
+  used,
+  teamUsed,
+}: {
+  label: string;
+  used: number;
+  teamUsed: number | undefined;
+}) {
+  const inconsistent = teamUsed !== undefined && used > teamUsed;
+  return (
+    <MemberUsageMetric
+      label={label}
+      ariaLabel={`${label}团队用量占比`}
+      tone="team"
+      percent={
+        teamUsed === undefined || inconsistent
+          ? null
+          : teamUsed === 0
+            ? 0
+            : (used * 100) / teamUsed
+      }
+      unavailableLabel={inconsistent ? "待刷新" : "暂不可得"}
+      detail={
+        teamUsed === undefined
+          ? `已用 ${formatTokenCount(used)} Token · 团队总量暂不可得`
+          : `已用 ${formatTokenCount(used)} / 团队 ${formatTokenCount(teamUsed)} Token${inconsistent ? " · 待刷新" : ""}`
+      }
+    />
+  );
+}
+
+function TeamMemberRow({
+  member,
+  overview,
+}: {
+  member: TeamMemberUsage;
+  overview: QuotaOverview;
+}) {
+  const { user, teamQuota } = overview;
+  return (
+    <tr className={member.userId === user.id ? "cqg-member-self" : undefined}>
+      <th scope="row">
+        <div className="cqg-member-identity">
+          <span className="cqg-member-name">
+            {member.displayName || "未命名成员"}
+          </span>
+          {member.userId === user.id ? (
+            <span className="cqg-member-self-label">我</span>
+          ) : null}
+        </div>
+        <span
+          className={cn(
+            "cqg-member-status",
+            member.status === "DISABLED" && "cqg-member-disabled",
+          )}
+        >
+          {member.status === "DISABLED" ? "已停用" : "正常"}
+        </span>
+      </th>
+      <td>
+        <div className="cqg-member-windows">
+          <MemberRemainingWindow
+            label="5 小时"
+            limit={member.fiveHourTokenLimit}
+            remaining={member.fiveHourRemainingTokens}
+          />
+          <MemberRemainingWindow
+            label="7 天"
+            limit={member.weeklyTokenLimit}
+            remaining={member.weeklyRemainingTokens}
+          />
+        </div>
+      </td>
+      <td>
+        <div className="cqg-member-windows">
+          <MemberTeamShareWindow
+            label="5 小时"
+            used={member.fiveHourUsedTokens}
+            teamUsed={teamQuota?.fiveHourUsedTokens}
+          />
+          <MemberTeamShareWindow
+            label="7 天"
+            used={member.weeklyUsedTokens}
+            teamUsed={teamQuota?.weeklyUsedTokens}
+          />
+          <MemberTeamShareWindow
+            label="累计"
+            used={member.totalUsedTokens}
+            teamUsed={teamQuota?.totalUsedTokens}
+          />
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+function TeamMembersCard({ overview }: { overview: QuotaOverview }) {
+  const { label: displayLabel } = useQuotaDisplay();
+  const [search, setSearch] = useState("");
+  const { team, teamMembers } = overview;
+  const query = search.trim().toLocaleLowerCase("zh-CN");
+  const members = teamMembers
+    ?.filter((member) =>
+      member.displayName.toLocaleLowerCase("zh-CN").includes(query),
+    )
+    .sort(
+      (left, right) =>
+        right.totalUsedTokens - left.totalUsedTokens ||
+        left.displayName.localeCompare(right.displayName, "zh-CN") ||
+        left.userId.localeCompare(right.userId),
+    );
+  return (
+    <section
+      className="cqg-surface cqg-members-card min-w-0"
+      aria-labelledby="team-members-heading"
+    >
+      <div className="cqg-members-toolbar">
+        <div className="min-w-0">
+          <h3 id="team-members-heading" className="text-sm font-semibold">
+            成员用量
+          </h3>
+          <p className="mt-1 text-xs text-muted-foreground" aria-live="polite">
+            {team && teamMembers
+              ? `显示 ${members!.length} / ${teamMembers.length} 位成员 · 单位 Token`
+              : "当前团队成员的 Token 用量"}
+          </p>
+        </div>
+        {team && teamMembers && teamMembers.length > 0 ? (
+          <label className="cqg-member-search">
+            <Search className="size-4 shrink-0" aria-hidden="true" />
+            <input
+              type="search"
+              aria-label="搜索成员"
+              placeholder="搜索成员姓名"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+            />
+          </label>
+        ) : null}
+      </div>
+      {!team ? (
+        <p className="cqg-members-empty">加入团队后，可查看团队成员用量。</p>
+      ) : teamMembers === null ? (
+        <p className="cqg-members-empty" role="status">
+          服务器尚未提供成员用量，请更新服务器
+        </p>
+      ) : teamMembers.length === 0 ? (
+        <p className="cqg-members-empty">团队暂无成员</p>
+      ) : (
+        <>
+          <div
+            className="cqg-members-scroll"
+            role="region"
+            aria-label="团队成员用量表格，可横向和纵向滚动"
+            tabIndex={0}
+          >
+            <table className="cqg-members-table">
+              <caption className="sr-only">
+                当前团队全部成员，按累计用量从高到低排序。个人{displayLabel}
+                额度及团队用量占比分窗口显示，单位 Token。
+              </caption>
+              <thead>
+                <tr>
+                  <th scope="col">成员</th>
+                  <th scope="col">个人{displayLabel}额度</th>
+                  <th scope="col">团队用量占比</th>
+                </tr>
+              </thead>
+              <tbody>
+                {members!.length === 0 ? (
+                  <tr>
+                    <td colSpan={3} className="cqg-members-empty">
+                      未找到匹配的成员
+                    </td>
+                  </tr>
+                ) : (
+                  members!.map((member) => (
+                    <TeamMemberRow
+                      key={member.userId}
+                      member={member}
+                      overview={overview}
+                    />
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+          <p className="cqg-members-note">
+            占比 = 成员已用 ÷
+            团队已用；团队总用量可能包含已离队成员的历史用量，当前成员占比合计可能不足100%。
+          </p>
+        </>
+      )}
+    </section>
+  );
+}
+
+function TeamTokenSection({ overview }: { overview: QuotaOverview }) {
+  const memberCount =
+    overview.teamQuota?.memberCount ?? overview.teamMembers?.length;
+  return (
+    <section className="cqg-quota-section" aria-labelledby="team-token-heading">
+      <header className="cqg-quota-section-heading">
+        <Users className="cqg-quota-section-icon" aria-hidden="true" />
+        <div className="min-w-0">
+          <h2 id="team-token-heading">团队 Token</h2>
+          <p>
+            {overview.team
+              ? `${overview.team.name}${memberCount !== undefined ? ` · ${memberCount} 位成员` : ""}`
+              : "未加入团队"}
+          </p>
+        </div>
+      </header>
+      <TeamCard overview={overview} />
+      <UsageCard overview={overview} />
+      <TeamMembersCard
+        key={overview.team?.id ?? "no-team"}
+        overview={overview}
+      />
+    </section>
+  );
+}
+
 function UsageWindow({
   label,
+  usedTokens,
   remainingTokens,
   limitTokens,
 }: {
   label: string;
+  usedTokens: number;
   remainingTokens: number | null;
   limitTokens: number | null;
 }) {
+  const { mode, label: displayLabel } = useQuotaDisplay();
   const nearLimit =
     remainingTokens !== null &&
     limitTokens !== null &&
@@ -280,19 +596,21 @@ function UsageWindow({
   return (
     <article className="cqg-window cqg-usage-window min-w-0 p-4">
       <header className="cqg-usage-window-header flex items-start justify-between gap-3">
-        <h3 className="text-sm font-semibold">{label}</h3>
+        <h4 className="text-sm font-semibold">{label}</h4>
         <span className="text-xs text-muted-foreground">
           {limitTokens === null ? "不设限" : "个人上限"}
         </span>
       </header>
       <div className="cqg-usage-window-primary">
         <p className="cqg-usage-window-label text-xs text-muted-foreground">
-          个人剩余
+          个人{displayLabel}
         </p>
         <p
           className={`cqg-usage-window-value break-words font-semibold tracking-tight tabular-nums ${nearLimit ? "text-[var(--cqg-status-warning)]" : "text-foreground"}`}
         >
-          {limitTokens === null ? (
+          {mode === "used" ? (
+            <TokenAmount value={usedTokens} />
+          ) : limitTokens === null ? (
             "不限额"
           ) : remainingTokens === null ? (
             "暂不可得"
@@ -309,6 +627,7 @@ function UsageWindow({
         ) : (
           <>
             <QuotaProgress
+              used={usedTokens}
               label={`${label}个人额度`}
               remaining={remainingTokens}
               limit={limitTokens}
@@ -331,13 +650,13 @@ function UsageCard({ overview }: { overview: QuotaOverview }) {
     <section aria-labelledby="personal-quota-heading">
       <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
         <div>
-          <h2
+          <h3
             id="personal-quota-heading"
             className="text-base font-semibold"
             title="个人额度按事件发生时间滚动统计"
           >
             个人 Token
-          </h2>
+          </h3>
           <p className="mt-1 text-xs text-muted-foreground">
             {usage.measuredAt
               ? `最后上报 ${new Date(usage.measuredAt).toLocaleString("zh-CN")}`
@@ -348,11 +667,13 @@ function UsageCard({ overview }: { overview: QuotaOverview }) {
       <div className="cqg-quota-grid">
         <UsageWindow
           label="5 小时"
+          usedTokens={usage.fiveHourUsedTokens}
           remainingTokens={usage.fiveHourRemainingTokens}
           limitTokens={policy.fiveHourTokenLimit}
         />
         <UsageWindow
           label="7 天"
+          usedTokens={usage.weeklyUsedTokens}
           remainingTokens={usage.weeklyRemainingTokens}
           limitTokens={policy.weeklyTokenLimit}
         />
@@ -368,21 +689,26 @@ function OfficialRateLimitWindow({
   label: string;
   window: OfficialCodexRateLimits["windows"][number];
 }) {
+  const { mode, label: displayLabel } = useQuotaDisplay();
   const remainingPercent = Math.min(100, Math.max(0, 100 - window.usedPercent));
+  const percent =
+    mode === "remaining"
+      ? remainingPercent
+      : Math.min(100, Math.max(0, window.usedPercent));
   return (
     <div className="min-w-0">
       <div className="flex items-center justify-between gap-3 text-xs leading-4">
         <span className="font-medium">{label}</span>
         <span className="font-semibold tabular-nums text-primary">
-          剩余 {formatPercent(remainingPercent)}
+          {displayLabel} {formatPercent(percent)}
         </span>
       </div>
       <div className="mt-2">
         <Progress
-          aria-label={`${label}官方剩余额度`}
+          aria-label={`${label}官方${displayLabel}额度`}
           className="h-2 bg-muted"
           indicatorClassName="bg-primary"
-          value={remainingPercent}
+          value={percent}
         />
       </div>
       <p className="mt-3 text-xs text-muted-foreground">
@@ -409,15 +735,15 @@ function OfficialRateLimitsCard({
   );
   return (
     <section
-      className="cqg-surface cqg-summary-card min-w-0 p-4"
+      className="cqg-quota-section min-w-0"
       aria-labelledby="official-quota-heading"
     >
-      <div className="cqg-summary-card-header mb-4 flex items-start justify-between gap-3">
+      <header className="cqg-quota-section-heading">
+        <Gauge className="cqg-quota-section-icon" aria-hidden="true" />
         <div className="min-w-0">
-          <h2 id="official-quota-heading" className="text-base font-semibold">
-            官方 Codex 额度
-          </h2>
-          <p className="mt-1 text-xs text-muted-foreground">
+          <h2 id="official-quota-heading">官方 Token</h2>
+          <p>
+            官方额度百分比 ·{" "}
             {loading
               ? "正在读取…"
               : failed
@@ -427,11 +753,10 @@ function OfficialRateLimitsCard({
                   : "账户级参考"}
           </p>
         </div>
-        <Gauge aria-hidden="true" className="size-5 shrink-0 text-primary" />
-      </div>
-      <div className="cqg-summary-card-content">
+      </header>
+      <div className="cqg-surface min-w-0 p-4">
         {fiveHour || weekly ? (
-          <div className="grid gap-5">
+          <div className="cqg-quota-grid gap-5">
             {fiveHour ? (
               <OfficialRateLimitWindow label="5 小时窗口" window={fiveHour} />
             ) : null}
@@ -442,10 +767,10 @@ function OfficialRateLimitsCard({
         ) : (
           <p className="text-sm text-muted-foreground">暂无可显示的官方额度</p>
         )}
+        <p className="mt-4 border-t pt-3 text-xs text-muted-foreground">
+          官方仅提供额度百分比，不提供 Token 数量；账户额度仅作参考。
+        </p>
       </div>
-      <p className="mt-4 border-t pt-3 text-xs text-muted-foreground">
-        官方账户额度仅作参考，不计入个人 Token。
-      </p>
     </section>
   );
 }
@@ -510,7 +835,7 @@ const workspaces = [
     id: "quota",
     label: "额度总览",
     title: "额度仪表盘",
-    description: "个人、团队与官方账户额度，分别查看。",
+    description: "团队共享额度、成员用量与官方额度百分比。",
     Icon: Gauge,
   },
   {
@@ -641,12 +966,6 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
     setWorkspace(next);
     if (scrollArea.current) scrollArea.current.scrollTop = 0;
   };
-  const statusQuery = useQuery({
-    queryKey: ["status"],
-    queryFn: api.status,
-    retry: false,
-    refetchInterval: 30_000,
-  });
   const quotaQuery = useQuery({
     queryKey: ["quota-overview"],
     queryFn: api.quotaOverview,
@@ -659,7 +978,6 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
     queryFn: api.usageStatus,
     retry: false,
     refetchInterval: 5_000,
-    enabled: bindingAllowed,
   });
   // Keep version detection active even when the diagnostics page is closed.
   const meterVersionQuery = useQuery({
@@ -667,86 +985,6 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
     queryFn: api.meterServiceVersion,
     retry: false,
     refetchInterval: 30_000,
-    enabled: bindingAllowed,
-  });
-  const scanMutation = useMutation({
-    mutationFn: api.scanUsage,
-    onSuccess: async (status) => {
-      queryClient.setQueryData(["usage-status"], status);
-      void queryClient.invalidateQueries({
-        queryKey: ["usage-events", session.user?.id],
-      });
-      void queryClient.invalidateQueries({
-        queryKey: ["meter-runtime-logs", session.user?.id],
-      });
-      await quotaQuery.refetch();
-      toast[
-        status.fallback.state === "REPORT_FAILED" ||
-        status.fallback.state === "SCAN_FAILED"
-          ? "error"
-          : "success"
-      ]("扫描完成，请查看统计程序状态。");
-    },
-    onError: (error) => toast.error(`扫描失败：${getApiErrorMessage(error)}`),
-  });
-  const pairMutation = useMutation({
-    mutationFn: api.pairMeter,
-    onSuccess: (status) => {
-      queryClient.setQueryData(["usage-status"], status);
-      toast[status.pairingState === "PAIRING_SENT" ? "success" : "error"](
-        status.pairingState === "PAIRING_SENT"
-          ? "设备配对已发送，统计程序会在几秒内接收。"
-          : "设备配对未完成，请检查统计程序与后台连接。",
-      );
-    },
-    onError: (error) => toast.error(`配对失败：${getApiErrorMessage(error)}`),
-  });
-  const startMeterMutation = useMutation({
-    mutationFn: api.retryMeterService,
-    onSuccess: async (result) => {
-      if (
-        result === "RUNNING" ||
-        result === "STARTED" ||
-        result === "INSTALLED"
-      ) {
-        toast.success(
-          result === "INSTALLED"
-            ? "统计程序已安装或更新并启动。"
-            : "统计程序已启动，会在关闭客户端后继续运行。",
-        );
-        await Promise.all([
-          usageStatusQuery.refetch(),
-          queryClient.invalidateQueries({
-            queryKey: ["meter-service-version"],
-          }),
-        ]);
-      } else if (result === "NEEDS_ADMIN") {
-        toast.error(
-          "请从托盘退出客户端，再右键以管理员身份运行，然后重试更新统计程序。",
-        );
-      } else if (result === "NOT_INSTALLED") {
-        toast.warning("安装包缺少统计程序文件，请重新安装最新版客户端。");
-      } else if (result === "SERVER_UNAVAILABLE") {
-        toast.error("无法连接后台，请先检查服务器地址，再重试安装。");
-      } else if (result === "INSTALL_FAILED") {
-        toast.error(
-          (await api.meterSetupError().catch(() => null)) ??
-            "统计程序安装失败，请查看应用数据目录中的 meter-setup-status.json。",
-        );
-      } else {
-        toast.error("统计程序仍未运行，请检查 Windows 服务状态。");
-      }
-      if (
-        result !== "RUNNING" &&
-        result !== "STARTED" &&
-        result !== "INSTALLED"
-      ) {
-        void queryClient.invalidateQueries({
-          queryKey: ["meter-service-version"],
-        });
-      }
-    },
-    onError: () => toast.error("统计程序启动请求失败，请稍后重试。"),
   });
   const overview = quotaQuery.data;
   const rateLimitsQuery = useQuery({
@@ -757,7 +995,6 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
     enabled: bindingAllowed,
   });
   const isRefreshing =
-    statusQuery.isFetching ||
     quotaQuery.isFetching ||
     usageStatusQuery.isFetching ||
     rateLimitsQuery.isFetching;
@@ -770,7 +1007,6 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
     }
     try {
       const results = await Promise.all([
-        statusQuery.refetch(),
         quotaQuery.refetch(),
         usageStatusQuery.refetch(),
         rateLimitsQuery.refetch(),
@@ -791,16 +1027,13 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
     }
   };
 
-  const requestError = [statusQuery.error, quotaQuery.error].find(Boolean);
-  const statusOnline = statusQuery.data?.state === "online";
-  const meterState = usageStatusQuery.data?.service.state;
+  const requestError = quotaQuery.error;
+  const statusOnline = accessQuery.isSuccess && !accessQuery.isError;
+  const meterState = usageStatusQuery.data?.state;
   const meterVersion = meterVersionQuery.data;
-  const runtimeVersion = usageStatusQuery.data?.service.version;
+  const runtimeVersion = usageStatusQuery.data?.version;
   const upgradeRequired =
     meterVersion?.needsUpgrade || meterVersion?.status === "UPGRADE_REQUIRED";
-  const fallbackFailed = ["REPORT_FAILED", "SCAN_FAILED"].includes(
-    usageStatusQuery.data?.fallback.state ?? "",
-  );
   const versionUnverified =
     meterVersionQuery.isError ||
     meterVersionQuery.isPending ||
@@ -813,7 +1046,6 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
   const meterHealthy =
     !usageStatusQuery.isError &&
     !upgradeRequired &&
-    !fallbackFailed &&
     !versionUnverified &&
     (meterState === "UP_TO_DATE" ||
       meterState === "REPORTED" ||
@@ -822,18 +1054,16 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
     ? "统计状态读取失败"
     : upgradeRequired
       ? "统计程序待更新"
-      : fallbackFailed
-        ? "回退上报异常"
-        : meterState === "NOT_INSTALLED" ||
-            meterState === "OFFLINE" ||
-            meterState === "ERROR" ||
-            meterState === "UNPAIRED"
-          ? serviceLabels[meterState]
-          : versionUnverified
-            ? "统计版本待确认"
-            : meterState
-              ? serviceLabels[meterState]
-              : "正在读取统计状态…";
+      : meterState === "NOT_INSTALLED" ||
+          meterState === "OFFLINE" ||
+          meterState === "ERROR" ||
+          meterState === "UNPAIRED"
+        ? serviceLabels[meterState]
+        : versionUnverified
+          ? "统计版本待确认"
+          : meterState
+            ? serviceLabels[meterState]
+            : "正在读取统计状态…";
 
   return (
     <div className="cqg-dashboard cqg-shell" data-collapsed={collapsed}>
@@ -1042,6 +1272,11 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
                   {accessQuery.isError
                     ? "无法确认有效绑定，其他菜单暂不可用。已保存的绑定记录不代表当前访问权限已核验通过，请检查连接后重新核对。"
                     : "完成本设备官方会话绑定后，中央后台确认有效才会开放其他菜单。"}
+                  {usageStatusQuery.data?.state === "NOT_INSTALLED" ? (
+                    <p className="mt-2">
+                      统计程序未安装。请重新运行客户端安装器；此处不会自动安装。
+                    </p>
+                  ) : null}
                   {accessQuery.isError ? (
                     <p>{getApiErrorMessage(accessQuery.error)}</p>
                   ) : null}
@@ -1052,15 +1287,6 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
                     onClick={recheckAccess}
                   >
                     重新核对绑定
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="ml-3"
-                    disabled={pairMutation.isPending}
-                    onClick={() => pairMutation.mutate()}
-                  >
-                    配对统计程序
                   </Button>
                 </AlertDescription>
               </Alert>
@@ -1095,15 +1321,12 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
               ) : overview ? (
                 <>
                   <AccessCard overview={overview} />
-                  <UsageCard overview={overview} />
-                  <div className="cqg-quota-grid">
-                    <OfficialRateLimitsCard
-                      rateLimits={rateLimitsQuery.data}
-                      loading={rateLimitsQuery.isPending}
-                      failed={rateLimitsQuery.isError}
-                    />
-                    <TeamCard overview={overview} />
-                  </div>
+                  <TeamTokenSection overview={overview} />
+                  <OfficialRateLimitsCard
+                    rateLimits={rateLimitsQuery.data}
+                    loading={rateLimitsQuery.isPending}
+                    failed={rateLimitsQuery.isError}
+                  />
                 </>
               ) : (
                 <EmptyState
@@ -1134,12 +1357,6 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
                 measuredAt={overview?.usage.measuredAt ?? null}
                 status={usageStatusQuery.data}
                 statusError={usageStatusQuery.error}
-                scanning={scanMutation.isPending}
-                pairing={pairMutation.isPending}
-                starting={startMeterMutation.isPending}
-                onScan={() => scanMutation.mutate()}
-                onPair={() => pairMutation.mutate()}
-                onStart={() => startMeterMutation.mutate()}
               />
             ) : null}
           </div>

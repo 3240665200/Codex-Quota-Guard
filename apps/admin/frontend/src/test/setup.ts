@@ -1,7 +1,8 @@
-import '@testing-library/jest-dom/vitest';
-
+import * as domMatchers from '@testing-library/jest-dom/matchers';
 import { cleanup } from '@testing-library/react';
-import { afterEach } from 'vitest';
+import { afterEach, expect } from 'vitest';
+
+expect.extend(domMatchers);
 
 if (!window.matchMedia) {
   Object.defineProperty(window, 'matchMedia', {

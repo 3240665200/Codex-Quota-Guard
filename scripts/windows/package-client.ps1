@@ -1,12 +1,13 @@
 #requires -Version 5.1
 [CmdletBinding()]
 param(
-    [string]$TargetDirectory = 'D:\BuildCache\pingche\desktop-package-target'
+    [string]$TargetDirectory = ''
 )
 
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
 $frontendDirectory = Join-Path $repositoryRoot 'apps\client\frontend'
+if (-not $TargetDirectory) { $TargetDirectory = Join-Path $repositoryRoot 'dist\build-target' }
 $targetDirectory = [System.IO.Path]::GetFullPath($TargetDirectory)
 $targetDrive = [System.IO.Path]::GetPathRoot($targetDirectory)
 
@@ -24,12 +25,8 @@ function Require-Command([string]$Name) {
 
 $pnpm = Require-Command 'pnpm.cmd'
 $node = Require-Command 'node.exe'
-Require-Command 'mvn.cmd' | Out-Null
-Require-Command 'java.exe' | Out-Null
 Require-Command 'cargo.exe' | Out-Null
 Require-Command 'rustc.exe' | Out-Null
-Require-Command 'curl.exe' | Out-Null
-Require-Command 'tar.exe' | Out-Null
 
 New-Item -ItemType Directory -Path $targetDirectory -Force | Out-Null
 Write-Host "Building desktop installer. Rust output: $targetDirectory"
@@ -56,10 +53,6 @@ try {
 }
 
 $bundleDirectory = Join-Path $targetDirectory 'release\bundle\nsis'
-$javaLauncher = Join-Path $frontendDirectory 'src-tauri\resources\java\bin\javaw.exe'
-if (-not (Test-Path -LiteralPath $javaLauncher -PathType Leaf)) {
-    throw "Packaging finished without the bundled Java runtime: $javaLauncher"
-}
 $meterManifest = Join-Path $repositoryRoot 'apps\client\meter\Cargo.toml'
 $meterResource = Join-Path $frontendDirectory 'src-tauri\resources\meter\quota-guard-meter.exe'
 $builtMeter = Join-Path $targetDirectory 'release\quota-guard-meter.exe'
@@ -82,10 +75,9 @@ Write-Host 'Windows installer is ready:'
 foreach ($installer in $installers) {
     Write-Host $installer.FullName
 }
-Write-Host 'The installer includes a verified Eclipse Temurin Java 17 runtime and offline WebView2 installer.'
+Write-Host 'The installer includes the independent Rust statistics service and the offline WebView2 runtime installer.'
 Write-Host 'The target PC does not need Java, Maven, Node.js, pnpm, or Rust installed.'
 Write-Host 'The Rust meter executable, install script, and safe log viewer are bundled in the app meter directory.'
 Write-Host 'The installer uses the original current-user scope and allows a custom installation directory.'
-Write-Host 'Autostart is initialized only when the app first runs with the current user administrator approval, never by the installer.'
-Write-Host 'Desktop autostart is a current-user Run entry shown in Task Manager. Verified old scheduled tasks migrate on first launch.'
-Write-Host 'Logon startup uses the normal Windows UAC flow. Settings can disable it; manual launches still require Administrator.'
+Write-Host 'The statistics service is mandatory. Setup configures automatic Windows startup and failure recovery.'
+Write-Host 'The desktop uses Axios to contact the central server and includes no Java or local HTTP backend.'

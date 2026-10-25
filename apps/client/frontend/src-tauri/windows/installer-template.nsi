@@ -622,6 +622,12 @@ Section Install
     File /a "/oname={{this}}" "{{no-escape @key}}"
   {{/each}}
 
+  ; Required service installation must succeed before ARP registration and the
+  ; successful-install verification below. Updates retain journals and identity.
+  !ifmacrodef NSIS_HOOK_POSTINSTALL
+    !insertmacro NSIS_HOOK_POSTINSTALL
+  !endif
+
   ; Create file associations
   {{#each file_associations as |association| ~}}
     {{#each association.ext as |ext| ~}}
@@ -690,10 +696,6 @@ Section Install
   ${OrIf} ${Silent}
     Call CreateOrUpdateDesktopShortcut
   ${EndIf}
-
-  !ifmacrodef NSIS_HOOK_POSTINSTALL
-    !insertmacro NSIS_HOOK_POSTINSTALL
-  !endif
 
   ; Auto close this page for passive mode
   ${If} $PassiveMode = 1

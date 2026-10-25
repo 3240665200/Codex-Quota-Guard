@@ -1,9 +1,9 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { UsageAnalytics } from "@/lib/api";
+import { api, type UsageAnalytics } from "@/lib/api";
+import { ApiHttpHarness } from "@/test/api-http-harness";
 import { UsageStatistics } from "./usage-statistics";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -18,7 +18,7 @@ vi.mock("recharts", () => ({
   XAxis: () => null,
   YAxis: () => null,
 }));
-const invokeMock = vi.mocked(invoke);
+const http = new ApiHttpHarness();
 const summary: UsageAnalytics["summary"] = {
   eventCount: 2,
   totalTokens: 1200,
@@ -53,9 +53,9 @@ const queryClient = () =>
   new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
 
 describe("personal usage statistics", () => {
-  beforeEach(() => {
-    invokeMock.mockReset();
-    invokeMock.mockResolvedValue(data);
+  beforeEach(async () => {
+    await http.prepare(api);
+    http.respond(data);
   });
 
   it("shows USD coverage and token components and switches trend units and ranges", async () => {
@@ -79,15 +79,17 @@ describe("personal usage statistics", () => {
     expect(screen.getByRole("img", { name: "USD 用量趋势图" })).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "近 24 小时" }));
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenLastCalledWith("usage_analytics", {
-        days: 1,
-      }),
+      expect(
+        http.requestsFor("GET", "/api/v1/client/usage/analytics").at(-1)
+          ?.params,
+      ).toEqual({ days: 1 }),
     );
     await userEvent.click(screen.getByRole("button", { name: "近 30 天" }));
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenLastCalledWith("usage_analytics", {
-        days: 30,
-      }),
+      expect(
+        http.requestsFor("GET", "/api/v1/client/usage/analytics").at(-1)
+          ?.params,
+      ).toEqual({ days: 30 }),
     );
   });
 
@@ -96,10 +98,12 @@ describe("personal usage statistics", () => {
     const { rerender } = render(view(client));
     await screen.findByText("0.00325");
     let resolveNext!: (value: UsageAnalytics) => void;
-    invokeMock.mockImplementation(
+    http.route(
+      "GET",
+      "/api/v1/client/usage/analytics",
       () =>
         new Promise((resolve) => {
-          resolveNext = resolve;
+          resolveNext = (value) => resolve({ data: value });
         }),
     );
     rerender(view(client, "user-b"));
@@ -112,15 +116,15 @@ describe("personal usage statistics", () => {
   });
 
   it("distinguishes failed retrieval from an empty usage range and supports refresh", async () => {
-    invokeMock.mockRejectedValueOnce(
-      "中央后台暂不可用，请确认后台已启动且服务器地址正确。",
-    );
+    http.route("GET", "/api/v1/client/usage/analytics", () => {
+      throw new Error("synthetic transport failure");
+    });
     render(view(queryClient()));
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "用量统计读取失败",
     );
     expect(screen.queryByText("当前范围暂无用量")).not.toBeInTheDocument();
-    invokeMock.mockResolvedValue({
+    http.respond({
       ...data,
       trend: [],
       summary: {
@@ -132,6 +136,9 @@ describe("personal usage statistics", () => {
         estimatedCostUsd: null,
       },
     });
+    http.route("GET", "/api/v1/client/usage/analytics", () => ({
+      data: http.centralResponse,
+    }));
     await userEvent.click(screen.getByRole("button", { name: "刷新用量统计" }));
     expect(await screen.findByText("当前范围暂无用量")).toBeVisible();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
