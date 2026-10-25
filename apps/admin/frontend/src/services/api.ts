@@ -218,6 +218,13 @@ export interface OfficialAuthenticator {
   periodSeconds: number | null;
   version: number;
 }
+export interface OfficialAuthenticatorCode {
+  code: string;
+  serverTime: string;
+  expiresAt: string;
+  periodSeconds: number;
+  officialAccountId: string;
+}
 
 export interface OfficialAccountInput {
   label: string;
@@ -750,6 +757,9 @@ export function saveOfficialAuthenticator(id: string, body: { enabled: boolean; 
 }
 export function deleteOfficialAuthenticator(id: string): Promise<void> {
   return request<void>(`/api/v1/admin/official-accounts/${encodeURIComponent(id)}/authenticator`, { method: 'DELETE' });
+}
+export function previewOfficialAuthenticator(id: string): Promise<OfficialAuthenticatorCode> {
+  return request<OfficialAuthenticatorCode>(`/api/v1/admin/official-accounts/${encodeURIComponent(id)}/authenticator/code`, { method: 'POST', cache: 'no-store' });
 }
 
 export function listMailboxProviders(): Promise<MailboxProvider[]> {

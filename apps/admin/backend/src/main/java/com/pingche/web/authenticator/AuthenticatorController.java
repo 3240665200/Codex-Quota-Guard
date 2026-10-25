@@ -26,6 +26,10 @@ public class AuthenticatorController {
     }
     @DeleteMapping("/admin/official-accounts/{id}/authenticator") @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<Void> delete(@PathVariable UUID id) { service.delete(id); return ResponseEntity.noContent().cacheControl(CacheControl.noStore()).build(); }
+    @PostMapping("/admin/official-accounts/{id}/authenticator/code") @PreAuthorize("hasRole('ADMIN')")
+    public ResponseEntity<AuthenticatorService.Code> preview(@PathVariable UUID id, Authentication auth, HttpServletRequest http) {
+        requireTransport(http); return noStore(service.preview(id, (UUID) auth.getPrincipal()));
+    }
     @GetMapping("/client/login-assistance/authenticator")
     public ResponseEntity<AuthenticatorService.Availability> availability(Authentication auth) { return noStore(service.availability((UUID) auth.getPrincipal())); }
     @PostMapping("/client/login-assistance/authenticator/code")

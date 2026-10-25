@@ -17,6 +17,7 @@
     "@umijs/max": "^4.7.3",
     "antd": "^6.6.0",
     "antd-style": "^4.1.0",
+    "jsqr": "1.4.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "recharts": "^3.10.1"

@@ -96,22 +96,39 @@ public class AuthenticatorService {
             if (account == null) throw error("AUTHENTICATOR_UNAVAILABLE", "所属团队或官方账户不可用。", HttpStatus.FORBIDDEN);
             Saved config = saved(account.getId());
             if (reason(config) != null) throw error("AUTHENTICATOR_UNAVAILABLE", "团队验证器尚未启用，请联系管理员配置。", HttpStatus.CONFLICT);
-            Instant now = clock.instant();
-            AtomicBoolean allowed = new AtomicBoolean();
-            lastCode.asMap().compute(userId, (id, last) -> {
-                if (last == null || !last.plusSeconds(1).isAfter(now)) { allowed.set(true); return now; }
-                return last;
-            });
-            if (!allowed.get()) throw error("AUTHENTICATOR_RATE_LIMITED", "请稍后再获取验证码。", HttpStatus.TOO_MANY_REQUESTS);
-            try {
-                String secret = cipher.decrypt(config.encrypted, aad(account.getId()));
-                String code = Totp.code(secret, config.algorithm, config.digits, config.period, now);
-                Instant expiresAt = Instant.ofEpochSecond((now.getEpochSecond() / config.period + 1) * config.period);
-                return new Code(code, now, expiresAt, config.period, account.getId());
-            } catch (RuntimeException ignoredCrypto) {
-                throw error("AUTHENTICATOR_SECRET_UNAVAILABLE", "验证器密钥无法读取，请联系管理员重新配置。", HttpStatus.SERVICE_UNAVAILABLE);
-            }
+            return generate(account.getId(), config, userId);
         });
+    }
+    public Code preview(UUID accountId, UUID administratorId) {
+        return tx.execute(ignored -> {
+            User administrator = users.findByIdForUpdate(administratorId).orElse(null);
+            if (administrator == null || administrator.getStatus() != User.Status.ACTIVE || administrator.getRole() != User.Role.ADMIN) {
+                throw error("AUTHENTICATOR_ADMIN_REQUIRED", "仅管理员可以查看官方账户验证码。", HttpStatus.FORBIDDEN);
+            }
+            requireAccount(accountId, true);
+            requireEncryption();
+            Saved config = saved(accountId);
+            if (config == null) throw error("AUTHENTICATOR_UNAVAILABLE", "请先保存此账户的验证器配置。", HttpStatus.CONFLICT);
+            // Administrator verification does not enable access for team members.
+            return generate(accountId, config, administratorId);
+        });
+    }
+    private Code generate(UUID accountId, Saved config, UUID requesterId) {
+        Instant now = clock.instant();
+        AtomicBoolean allowed = new AtomicBoolean();
+        lastCode.asMap().compute(requesterId, (id, last) -> {
+            if (last == null || !last.plusSeconds(1).isAfter(now)) { allowed.set(true); return now; }
+            return last;
+        });
+        if (!allowed.get()) throw error("AUTHENTICATOR_RATE_LIMITED", "请稍后再获取验证码。", HttpStatus.TOO_MANY_REQUESTS);
+        try {
+            String secret = cipher.decrypt(config.encrypted, aad(accountId));
+            String code = Totp.code(secret, config.algorithm, config.digits, config.period, now);
+            Instant expiresAt = Instant.ofEpochSecond((now.getEpochSecond() / config.period + 1) * config.period);
+            return new Code(code, now, expiresAt, config.period, accountId);
+        } catch (RuntimeException ignoredCrypto) {
+            throw error("AUTHENTICATOR_SECRET_UNAVAILABLE", "验证器密钥无法读取，请联系管理员重新配置。", HttpStatus.SERVICE_UNAVAILABLE);
+        }
     }
     private OfficialAccount access(UUID userId, boolean lock) {
         User user = (lock ? users.findByIdForUpdate(userId) : users.findById(userId)).orElse(null);

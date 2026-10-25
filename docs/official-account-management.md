@@ -20,13 +20,14 @@
 
 ### Google Authenticator 登录验证码
 
-1. 管理员在“账户管理 → 对应账户 → 验证器”中配置该官方账户的原始 Base32 TOTP 密钥，或二维码里的标准 `otpauth://totp/…` 链接。不要配置管理员个人 Google 账户的密钥，也不要把真实密钥发到聊天或提交到仓库。
-2. 默认兼容 SHA1、6 位、30 秒；标准 URI 还支持 SHA256 / SHA512、8 位和 15～120 秒周期。Google Authenticator 的导出迁移二维码 `otpauth-migration://…` 和 HOTP 不在此范围。不能从手机当前显示的六位数恢复原密钥。
+1. 管理员在“账户管理 → 对应账户 → 验证器”中配置该官方账户的原始 Base32 TOTP 密钥，或二维码里的标准 `otpauth://totp/…` 链接。手机已绑定时，可在 Google Authenticator 中进入“转移账号 → 导出账号”，仅勾选当前 GPT 账户，导入其二维码图片或粘贴 `otpauth-migration://offline?data=…` 链接，无需重新绑定 MFA。手机不允许截屏时，可用另一台设备拍摄清晰二维码。不要配置管理员个人 Google 账户的密钥，也不要把真实密钥发到聊天或提交到仓库。
+2. 二维码图片仅在当前浏览器解码，支持不超过 5 MiB 的 PNG、JPEG、WebP；不上传图片，不调用第三方解码服务，不保存图片或迁移链接。仅导入单账户、单二维码的 TOTP 导出；多账户或多二维码批次须重新仅勾选所需账户导出。Google 迁移格式的周期为 30 秒，保留其 SHA1 / SHA256 / SHA512 与 6 / 8 位参数；拒绝 HOTP、MD5 及未知算法。原始密钥默认 SHA1、6 位、30 秒；标准 URI 还支持 15～120 秒周期。不能从手机当前显示的六位数恢复原密钥。
 3. 启用“允许所属团队成员获取验证码”后，成员在桌面“登录辅助 → Google Authenticator 验证码”中点击获取，再填入官方登录页面。绑定完成前也能获取，但后台始终核对当前用户、活动团队和该团队的官方账户，不接受客户端指定其他账户。
 4. 密钥使用现有 `OFFICIAL_SESSION_ENCRYPTION_KEY` 加密，并绑定到对应官方账户；后台接口只返回配置状态及当前短时验证码，从不回显密钥。沿用现有加密密钥，不要更换已使用的值。密钥输入在保存或关闭后清空。
 5. 验证码按后台时间生成，客户端依据服务器时间倒计时，不受电脑系统时间偏差直接影响；后台服务器本身需保持时钟同步。到期、页面隐藏、离开页面或退出登录后隐藏验证码，获取新码需再次点击。客户端通过 Axios 请求中央后台，没有增加本地后端。
+6. 保存后，管理员可点击“获取当前验证码”，与手机同一时刻的验证码对照。`POST /api/v1/admin/official-accounts/{id}/authenticator/code` 仅限活动管理员，沿用传输方式校验、按用户限流、账户绑定加密与 `Cache-Control: no-store`；不要求管理员属于该团队，不会替管理员开启团队成员访问。浏览器离开窗口或验证码到期会清除显示；不自动轮询或保存验证码。
 
-兼容性依据：[Google Authenticator URI 格式](https://github.com/google/google-authenticator/wiki/Key-Uri-Format) 与 [RFC 6238](https://www.rfc-editor.org/rfc/rfc6238.html)。后台生成使用 Java 标准 HMAC，无 Google API、手机联机或新增第三方依赖。已用 RFC 的三种摘要算法、六个时间点对照验证。
+兼容性依据：[Google Authenticator URI 格式](https://github.com/google/google-authenticator/wiki/Key-Uri-Format)、[RFC 6238](https://www.rfc-editor.org/rfc/rfc6238.html)、[Google 导出操作说明](https://support.google.com/accounts/answer/1066447)、[Aegis 项目的迁移格式定义](https://github.com/beemdevelopment/Aegis/blob/master/app/src/main/proto/google_auth.proto) 与 [Protobuf wire encoding](https://protobuf.dev/programming-guides/encoding/)。后台生成使用 Java 标准 HMAC，无 Google API 或手机联机；管理网页使用 jsQR 本地识别图片。已用 RFC 的三种摘要算法、六个时间点对照验证；导出格式与图片识别使用公开 RFC 示例密钥测试。
 
 以下按服务器 `0.3.23` 说明，包含持久订阅、前置／出口链和按订阅确认的 Trojan URI 证书例外；发布状态见[服务器发布说明](releases/server-v0.3.23.md)。旧 `0.3.22` 基线只有手动节点与单出口，需同时更新后台与管理网页。本机启动步骤见[本地管理网页测试指南](local-admin-test.md)，无需启动桌面客户端。
 

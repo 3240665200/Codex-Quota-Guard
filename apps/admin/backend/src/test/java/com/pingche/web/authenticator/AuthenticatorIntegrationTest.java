@@ -99,6 +99,42 @@ class AuthenticatorIntegrationTest {
         assertThat(service.availability(owner.getId()).available()).isFalse();
         assertThatThrownBy(() -> service.code(owner.getId())).hasMessageContaining("不可用");
     }
+    @Test void administratorsCanPreviewWithoutATeamAndWithoutEnablingMemberAccess() throws Exception {
+        service.save(account.getId(), new AuthenticatorService.Request(false, SECRET, 0L));
+        mvc.perform(post(configUrl() + "/code").header("Authorization", token(admin)))
+                .andExpect(status().isOk()).andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(header().string("Pragma", "no-cache"))
+                .andExpect(jsonPath("$.code").value(Totp.code(SECRET, "SHA1", 6, 30, NOW)))
+                .andExpect(jsonPath("$.serverTime").value(NOW.toString()))
+                .andExpect(jsonPath("$.expiresAt").value("2026-10-25T04:01:00Z"))
+                .andExpect(jsonPath("$.officialAccountId").value(account.getId().toString()))
+                .andExpect(jsonPath("$.secret").doesNotExist());
+        assertThat(service.read(account.getId()).enabled()).isFalse();
+        assertThat(service.availability(owner.getId()).available()).isFalse();
+        mvc.perform(post(configUrl() + "/code").header("Authorization", token(admin))).andExpect(status().isTooManyRequests());
+    }
+    @Test void previewRequiresAnAdministratorAndAnExistingSavedAccount() throws Exception {
+        service.save(account.getId(), new AuthenticatorService.Request(true, SECRET, 0L));
+        mvc.perform(post(configUrl() + "/code")).andExpect(status().isUnauthorized());
+        mvc.perform(post(configUrl() + "/code").header("Authorization", token(owner))).andExpect(status().isForbidden());
+        mvc.perform(post(configUrl() + "/code").header("Authorization", token(outsider))).andExpect(status().isForbidden());
+        assertThatThrownBy(() -> service.preview(account.getId(), owner.getId())).hasMessageContaining("仅管理员");
+        mvc.perform(post("/api/v1/admin/official-accounts/" + UUID.randomUUID() + "/authenticator/code")
+                .header("Authorization", token(admin))).andExpect(status().isNotFound());
+        service.delete(account.getId());
+        mvc.perform(post(configUrl() + "/code").header("Authorization", token(admin))).andExpect(status().isConflict());
+    }
+    @Test void previewUsesTheAccountBoundEncryptionAndNeverReturnsACopiedSecret() throws Exception {
+        service.save(account.getId(), new AuthenticatorService.Request(true, SECRET, 0L));
+        OfficialAccount another = accounts.saveAndFlush(new OfficialAccount("Another preview", 0, null, NOW));
+        service.save(another.getId(), new AuthenticatorService.Request(true, SECRET, 0L));
+        String encrypted = jdbc.queryForObject("select secret_cipher from official_account_authenticators where official_account_id=?", String.class, another.getId());
+        jdbc.update("update official_account_authenticators set secret_cipher=? where official_account_id=?", encrypted, account.getId());
+        String response = mvc.perform(post(configUrl() + "/code").header("Authorization", token(admin)))
+                .andExpect(status().isServiceUnavailable()).andExpect(jsonPath("$.code").value("AUTHENTICATOR_SECRET_UNAVAILABLE"))
+                .andReturn().getResponse().getContentAsString();
+        assertThat(response).doesNotContain(SECRET).doesNotContain(encrypted);
+    }
     private String configUrl() { return "/api/v1/admin/official-accounts/" + account.getId() + "/authenticator"; }
     private String token(User user) { return "Bearer " + jwt.create(user.getId(), user.getRole().name(), user.getSessionVersion()); }
 }
