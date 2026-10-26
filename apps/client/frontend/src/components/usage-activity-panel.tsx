@@ -18,6 +18,7 @@ import {
 import { formatCompactTokenCount, formatTokenCount } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { UsageStatistics } from "@/components/usage-statistics";
+import { MeterMaintenance } from "@/components/meter-maintenance";
 import { formatUsd } from "@/lib/usage-format";
 
 export const serviceLabels: Record<UsageStatus["state"], string> = {
@@ -78,7 +79,7 @@ function UsageTokens({ item }: { item: UsageEventPage["items"][number] }) {
     ["思考等级", item.reasoningEffort ?? "未知"],
     ["速度模式", item.billingModeStatus === 'FAST' ? `快速 ×${item.billingMultiplier}` : item.billingModeStatus === 'STANDARD' ? '普通 ×1' : item.billingOrigin === 'HISTORICAL_RECALC' ? '历史未记录（普通费率回算）' : '未记录（待确认）'],
     ["模式依据", item.billingModeSource === 'REPORTED' ? '日志明确记录' : item.billingModeSource === 'ADMIN_DECLARED' ? '管理员设备设置' : item.billingModeSource === 'ADMIN_CONFIRMED' ? '管理员逐笔确认' : '日志未记录'],
-    ["计费来源", item.billingOrigin === 'HISTORICAL_RECALC' ? '历史回算' : '实时入账'],
+    ["计费来源", item.billingOrigin === 'HISTORICAL_RECALC' ? '历史回算' : item.billingOrigin === 'ADMIN_REVIEW' ? '管理员核对入账' : '实时入账'],
     [
       "来源",
       item.source === "TOKEN_USAGE_RECORD" ? "官方用量记录" : "累计差值补录",
@@ -271,6 +272,12 @@ function explainError(code: string | null | undefined) {
       return "设备续期结果未通过校验，待传用量已保留。请确认后台与统计程序版本匹配，联系管理员核对后重新配对。";
     case "METER_EVENT_OUTSIDE_REPORT_WINDOW":
       return "部分用量超过后台接收时间范围或时间超前，记录已保留，后续有效用量仍会继续上报。请检查系统时间并联系管理员核对历史记录，不要修改记录时间。";
+    case "METER_REVIEW_SERVER_UPGRADE_REQUIRED":
+      return "中央后台尚不支持用量核对，请升级后台。原始记录仍保留在本机，正常用量继续上报。";
+    case "METER_REVIEW_RECEIPT_INVALID":
+      return "后台未返回完整核对收件凭据，记录仍保留在本机，统计程序会自动重试。";
+    case "METER_REVIEW_UPLOAD_FAILED":
+      return "待核对记录暂未成功提交，统计程序会自动重试；正常用量继续上报。";
     case "CONTROL_PLANE_REQUEST_REJECTED":
       return "后台拒绝了用量请求，请检查请求数据；这通常不是网络连接故障。";
     case "METER_LEGACY_DIRECT_LATE":
@@ -881,6 +888,10 @@ export function UsageActivityPanel({
                   <p className="mt-1">{explainError(status.warningCode)}</p>
                 </div>
               ) : null}
+              {(status?.reviewSubmittedEvents ?? 0) > 0 ? <p role="status" className="mt-2 text-xs text-muted-foreground">
+                已提交后台核对：{formatTokenCount(status!.reviewSubmittedEvents!)} 条（本设备累计收件数，非未处理数量）。请在后台“用量核对”查看、批量归档或按原始时间入账；收件不会自动计费。
+              </p> : null}
+              {status?.reviewErrorCode ? <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">{explainError(status.reviewErrorCode)}</p> : null}
               {serviceState === "UNPAIRED" || pairingError.data ? (
                 <p className="mt-2 text-xs text-destructive [overflow-wrap:anywhere]">
                   {pairingError.data === "PAIRING_IDENTITY_MISMATCH"
@@ -890,6 +901,7 @@ export function UsageActivityPanel({
                       : "统计程序尚未收到本设备配对信息，请确认服务器连接；客户端会在后续登录状态核验时重试。"}
                 </p>
               ) : null}
+              <MeterMaintenance />
             </div>
           </div>
           <h3 className="mb-2 mt-4 text-sm font-medium">

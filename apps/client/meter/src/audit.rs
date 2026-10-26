@@ -291,6 +291,8 @@ mod tests {
             reported_events: 2,
             pending_events: Some(1),
             deferred_events: 0,
+            review_submitted_events: 0,
+            review_error_code: None,
             warning_code: None,
             error_code: error.map(str::to_owned),
             cc_switch_guard: "INACTIVE".into(),

@@ -44,6 +44,19 @@ const meterVersionSchema = z.object({
   ]),
 });
 
+const meterDiagnosticsSchema = z.object({
+  supported: z.boolean(),
+  checkedAtEpochSeconds: tokenCount,
+  checks: z.array(z.object({
+    code: z.string().min(1).max(32),
+    label: z.string().min(1).max(100),
+    state: z.enum(["PASS", "WARNING"]),
+    detail: z.string().min(1).max(512),
+    repairable: z.boolean(),
+  })).max(20),
+});
+export type MeterDiagnostics = z.infer<typeof meterDiagnosticsSchema>;
+
 const serverConfigSchema = z.object({
   url: z.string().url(),
   meterSync: z.enum(["NOT_INSTALLED", "UPDATED", "UNCHANGED"]).optional(),
@@ -327,6 +340,8 @@ const usageStatusSchema = z.strictObject({
     .nullable()
     .optional(),
   deferredEvents: tokenCount.optional(),
+  reviewSubmittedEvents: tokenCount.optional(),
+  reviewErrorCode: z.string().regex(/^[A-Z_]{1,64}$/).nullable().optional(),
   errorCode: z
     .string()
     .regex(/^[A-Z_]{1,64}$/)
@@ -1447,6 +1462,10 @@ export const api = {
     invokeValidated("startup_guard_status", startupGateSchema),
   meterServiceVersion: () =>
     invokeValidated("meter_service_version", meterVersionSchema),
+  meterServiceDiagnose: () =>
+    invokeValidated("meter_service_diagnose", meterDiagnosticsSchema),
+  meterServiceRepair: () =>
+    invokeValidated("meter_service_repair", meterDiagnosticsSchema),
   meterStatus: () => invokeValidated("meter_status", usageStatusSchema),
   usageStatus: () => invokeValidated("meter_status", usageStatusSchema),
   meterPairingError: () => enrollmentError,

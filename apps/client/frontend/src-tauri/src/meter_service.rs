@@ -1,6 +1,6 @@
-//! Read-only observations and the one user-requested server-origin update.
-//! Installation, replacement, repair, and service recovery belong to the
-//! desktop installer, never to this application process.
+//! Read-only observations and explicit user-requested maintenance.
+//! Repairs run the bundled installer helper with Windows administrator approval;
+//! application startup never installs or restarts the independent service.
 
 use serde::Serialize;
 
@@ -51,6 +51,29 @@ pub(crate) fn observe_service() -> ServiceObservation {
     }
 }
 
+pub(crate) fn service_settings() -> (Option<bool>, Option<bool>) {
+    #[cfg(windows)]
+    {
+        windows::service_settings()
+    }
+    #[cfg(not(windows))]
+    {
+        (None, None)
+    }
+}
+
+pub(crate) fn repair_service(app: &tauri::AppHandle) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        windows::repair_service(app)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        Err("自修复目前仅支持 Windows。".into())
+    }
+}
+
 #[cfg(windows)]
 pub(crate) fn version_status(app: &tauri::AppHandle) -> MeterVersionStatus {
     windows::version_status(app)
@@ -87,9 +110,7 @@ pub(crate) fn configure_existing_service(
 
 #[cfg(windows)]
 mod windows {
-    use super::{
-        MeterSync, MeterVersionState, MeterVersionStatus, ServiceObservation,
-    };
+    use super::{MeterSync, MeterVersionState, MeterVersionStatus, ServiceObservation};
     use sha2::{Digest, Sha256};
     use std::{
         ffi::{OsStr, OsString},
@@ -102,21 +123,24 @@ mod windows {
         },
         path::{Path, PathBuf},
         process::{Command, Stdio},
-        ptr,
-        thread,
+        ptr, thread,
         time::{Duration, Instant},
     };
     use tauri::{path::BaseDirectory, AppHandle, Manager};
     use windows_sys::Win32::{
-        Foundation::{CloseHandle, GetLastError, LocalFree, HANDLE, ERROR_SERVICE_DOES_NOT_EXIST},
+        Foundation::{CloseHandle, GetLastError, LocalFree, ERROR_SERVICE_DOES_NOT_EXIST, HANDLE},
         Security::{
             Authorization::ConvertSidToStringSidW, GetTokenInformation, TokenUser, TOKEN_QUERY,
             TOKEN_USER,
         },
         System::{
             Services::{
-                CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatusEx,
-                SC_HANDLE, SC_MANAGER_CONNECT, SC_STATUS_PROCESS_INFO, SERVICE_QUERY_STATUS,
+                CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceConfig2W,
+                QueryServiceConfigW, QueryServiceStatusEx, QUERY_SERVICE_CONFIGW, SC_ACTION,
+                SC_ACTION_RESTART, SC_HANDLE, SC_MANAGER_CONNECT, SC_STATUS_PROCESS_INFO,
+                SERVICE_AUTO_START, SERVICE_CONFIG_FAILURE_ACTIONS,
+                SERVICE_CONFIG_FAILURE_ACTIONS_FLAG, SERVICE_FAILURE_ACTIONSW,
+                SERVICE_FAILURE_ACTIONS_FLAG, SERVICE_QUERY_CONFIG, SERVICE_QUERY_STATUS,
                 SERVICE_RUNNING, SERVICE_STATUS_PROCESS,
             },
             SystemInformation::GetSystemDirectoryW,
@@ -164,20 +188,14 @@ mod windows {
         path.is_file().then_some(path)
     }
 
-    fn service() -> Result<Option<Service>, String> {
+    fn service_with_access(access: u32) -> Result<Option<Service>, String> {
         let manager = unsafe { OpenSCManagerW(ptr::null(), ptr::null(), SC_MANAGER_CONNECT) };
         if manager.is_null() {
             return Err("无法读取 Windows 统计服务状态。".into());
         }
         let manager = Service(manager);
         let name = wide(OsStr::new(SERVICE_NAME));
-        let raw = unsafe {
-            OpenServiceW(
-                manager.0,
-                name.as_ptr(),
-                SERVICE_QUERY_STATUS,
-            )
-        };
+        let raw = unsafe { OpenServiceW(manager.0, name.as_ptr(), access) };
         if raw.is_null() {
             return if unsafe { GetLastError() } == ERROR_SERVICE_DOES_NOT_EXIST {
                 Ok(None)
@@ -186,6 +204,75 @@ mod windows {
             };
         }
         Ok(Some(Service(raw)))
+    }
+
+    fn service() -> Result<Option<Service>, String> {
+        service_with_access(SERVICE_QUERY_STATUS)
+    }
+
+    pub(super) fn service_settings() -> (Option<bool>, Option<bool>) {
+        let Ok(Some(service)) = service_with_access(SERVICE_QUERY_CONFIG) else {
+            return (None, None);
+        };
+        // SCM configuration is bounded to 8 KiB. Word alignment is required by
+        // the structures returned by Windows; no executable path is exposed.
+        let mut buffer = vec![0usize; 8192 / size_of::<usize>()];
+        let mut needed = 0u32;
+        let automatic = if unsafe {
+            QueryServiceConfigW(service.0, buffer.as_mut_ptr().cast(), 8192, &mut needed)
+        } != 0
+        {
+            Some(
+                unsafe { &*buffer.as_ptr().cast::<QUERY_SERVICE_CONFIGW>() }.dwStartType
+                    == SERVICE_AUTO_START,
+            )
+        } else {
+            None
+        };
+        let recovery = if unsafe {
+            QueryServiceConfig2W(
+                service.0,
+                SERVICE_CONFIG_FAILURE_ACTIONS,
+                buffer.as_mut_ptr().cast(),
+                8192,
+                &mut needed,
+            )
+        } != 0
+        {
+            let policy = unsafe { &*buffer.as_ptr().cast::<SERVICE_FAILURE_ACTIONSW>() };
+            let start = buffer.as_ptr() as usize;
+            let actions = policy.lpsaActions as usize;
+            let count = policy.cActions as usize;
+            let bounded = count >= 3
+                && count <= 64
+                && actions >= start
+                && actions
+                    .checked_add(count * size_of::<SC_ACTION>())
+                    .is_some_and(|end| end <= start + 8192)
+                && actions % std::mem::align_of::<SC_ACTION>() == 0;
+            let restarts = bounded
+                && unsafe { std::slice::from_raw_parts(policy.lpsaActions, count) }
+                    .iter()
+                    .all(|action| action.Type == SC_ACTION_RESTART && action.Delay <= 60_000);
+            let mut flag = SERVICE_FAILURE_ACTIONS_FLAG::default();
+            let flag_ok = unsafe {
+                QueryServiceConfig2W(
+                    service.0,
+                    SERVICE_CONFIG_FAILURE_ACTIONS_FLAG,
+                    (&mut flag as *mut SERVICE_FAILURE_ACTIONS_FLAG).cast(),
+                    size_of::<SERVICE_FAILURE_ACTIONS_FLAG>() as u32,
+                    &mut needed,
+                )
+            } != 0;
+            if flag_ok {
+                Some(restarts && flag.fFailureActionsOnNonCrashFailures != 0)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        (automatic, recovery)
     }
 
     pub(super) fn observe_service() -> ServiceObservation {
@@ -254,10 +341,15 @@ mod windows {
         let version = text.strip_prefix("quota-guard-meter ")?;
         let core = version.split(['-', '+']).next()?;
         let mut parts = core.split('.');
-        if !(0..3).all(|_| parts.next().is_some_and(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit())))
-            || parts.next().is_some()
+        if !(0..3).all(|_| {
+            parts
+                .next()
+                .is_some_and(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+        }) || parts.next().is_some()
             || version.len() > 64
-            || !version.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+'))
+            || !version
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+'))
         {
             return None;
         }
@@ -353,9 +445,8 @@ mod windows {
             while end < 256 && unsafe { *sid.add(end) } != 0 {
                 end += 1;
             }
-            let text = (end < 256).then(|| {
-                String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(sid, end) })
-            });
+            let text = (end < 256)
+                .then(|| String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(sid, end) }));
             unsafe { LocalFree(sid.cast()) };
             text.filter(|value| value.starts_with("S-1-") && value.len() < 256)
         })();
@@ -375,10 +466,40 @@ mod windows {
         };
         let script = resource(app, "configure-meter-server.ps1")
             .ok_or_else(|| "统计程序地址更新脚本未随安装包提供。".to_owned())?;
+        let exit_code = run_maintenance(&script, server_url)?;
+        if exit_code != 0 {
+            return Err("统计程序地址更新失败，服务器地址未保存。".into());
+        }
+        Ok(MeterSync::Updated)
+    }
+
+    pub(super) fn repair_service(app: &AppHandle) -> Result<(), String> {
+        static REPAIR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _lock = REPAIR_LOCK
+            .try_lock()
+            .map_err(|_| "统计程序正在修复，请等待完成。".to_owned())?;
+        let script = resource(app, "repair-meter-service.ps1")
+            .ok_or_else(|| "安装包缺少修复脚本，请重新安装最新版客户端。".to_owned())?;
+        match run_maintenance(&script, &crate::server_config::load(app).url)? {
+            0 => Ok(()),
+            20 => Err("统计服务属于其他 Windows 用户，请由原用户或管理员处理。".into()),
+            21 => {
+                Err("统计服务与客户端的服务器地址不同，请先在设置中保存正确地址，再修复。".into())
+            }
+            22 => Err(
+                "服务注册已丢失但仍有历史配置。为保留原始队列，请由管理员恢复原服务配置。".into(),
+            ),
+            _ => Err(
+                "修复未完成。原始用量队列已保留，请检查服务权限、磁盘空间和安装状态后重试。".into(),
+            ),
+        }
+    }
+
+    fn run_maintenance(script: &Path, server_url: &str) -> Result<u32, String> {
         let executable = system_powershell()
-            .ok_or_else(|| "无法找到 Windows PowerShell，统计程序地址未更改。".to_owned())?;
+            .ok_or_else(|| "无法找到 Windows PowerShell，无法执行统计程序维护。".to_owned())?;
         let sid = current_user_sid()
-            .ok_or_else(|| "无法校验当前 Windows 用户，统计程序地址未更改。".to_owned())?;
+            .ok_or_else(|| "无法校验当前 Windows 用户，无法执行统计程序维护。".to_owned())?;
         let parameters = format!(
             "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {} -ServerUrl {} -ExpectedUserSid {}",
             quote(&script.to_string_lossy()),
@@ -400,24 +521,24 @@ mod windows {
         if unsafe { ShellExecuteExW(&mut info) } == 0 {
             let error = unsafe { GetLastError() };
             let message = if error == 1223 {
-                "已取消管理员授权，服务器地址未保存。"
+                "已取消管理员授权，统计程序未更改。"
             } else {
-                "无法启动统计程序地址更新，请检查管理员授权。"
+                "无法启动统计程序维护，请检查管理员授权。"
             };
             return Err(message.into());
         }
         if info.hProcess.is_null() {
-            return Err("无法确认统计程序地址是否已更新。".into());
+            return Err("无法确认统计程序维护结果，请重新自检。".into());
         }
         let process = Handle(info.hProcess);
         let wait = unsafe { WaitForSingleObject(process.0, CONFIGURE_TIMEOUT.as_millis() as u32) };
         if wait != 0 {
-            return Err("统计程序地址更新超时，服务器地址未保存。".into());
+            return Err("统计程序维护仍未完成，请稍后重新自检，勿重复操作。".into());
         }
         let mut exit_code = 1u32;
-        if unsafe { GetExitCodeProcess(process.0, &mut exit_code) } == 0 || exit_code != 0 {
-            return Err("统计程序地址更新失败，服务器地址未保存。".into());
+        if unsafe { GetExitCodeProcess(process.0, &mut exit_code) } == 0 {
+            return Err("无法读取统计程序维护结果，请重新自检。".into());
         }
-        Ok(MeterSync::Updated)
+        Ok(exit_code)
     }
 }

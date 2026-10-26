@@ -1,0 +1,294 @@
+.cqg-usd-overview {
+  container: cqg-usd / inline-size;
+  display: grid;
+  min-width: 0;
+  gap: 16px;
+}
+.cqg-usd-budget-grid {
+  display: grid;
+  min-width: 0;
+  grid-template-areas: "personal" "team" "account";
+  gap: 16px;
+}
+.cqg-usd-personal {
+  grid-area: personal;
+}
+.cqg-usd-team {
+  grid-area: team;
+}
+.cqg-usd-account {
+  grid-area: account;
+}
+.cqg-usd-card {
+  min-width: 0;
+  overflow: hidden;
+}
+.cqg-usd-card .cqg-usd-card-heading {
+  padding: 16px 20px 12px;
+}
+.cqg-usd-card-heading h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+}
+.cqg-usd-card-heading p {
+  margin-top: 4px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  line-height: 18px;
+}
+.cqg-usd-card .cqg-usd-card-content {
+  padding: 0 20px 16px;
+}
+.cqg-usd-personal-windows,
+.cqg-usd-member-personal {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.cqg-usd-team-windows {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.cqg-usd-window {
+  min-width: 0;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  padding: 12px;
+}
+.cqg-usd-window-label,
+.cqg-usd-share-heading {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 500;
+}
+.cqg-usd-window-label > span {
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+  font-weight: 400;
+}
+.cqg-usd-window-amount {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 5px;
+  margin: 8px 0 10px;
+}
+.cqg-usd-window-amount strong {
+  font-size: 22px;
+  line-height: 28px;
+  letter-spacing: -0.4px;
+  overflow-wrap: anywhere;
+}
+.cqg-usd-window-amount small {
+  font-size: 10px;
+  color: hsl(var(--muted-foreground));
+}
+.cqg-usd-money {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.cqg-usd-window-amount .cqg-usd-money {
+  white-space: normal;
+}
+.cqg-usd-window-meta {
+  display: grid;
+  gap: 4px;
+  margin-top: 9px;
+  font-size: 11px;
+  line-height: 16px;
+  color: hsl(var(--muted-foreground));
+}
+.cqg-usd-window-meta p {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 2px 8px;
+}
+.cqg-usd-no-limit {
+  height: 6px;
+  border-radius: 999px;
+  background: hsl(var(--muted) / 0.45);
+}
+.cqg-usd-warning,
+.cqg-usd-error,
+.cqg-usd-note {
+  margin-top: 5px;
+  font-size: 11px;
+  line-height: 17px;
+  overflow-wrap: anywhere;
+}
+.cqg-usd-warning {
+  color: var(--cqg-status-warning);
+}
+.cqg-usd-error {
+  color: var(--cqg-status-error);
+}
+.cqg-usd-note {
+  color: hsl(var(--muted-foreground));
+}
+.cqg-usd-member-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.cqg-usd-member-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 220px;
+  max-width: 100%;
+  border: 1px solid hsl(var(--input));
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: hsl(var(--muted-foreground));
+}
+.cqg-usd-member-search input {
+  width: 100%;
+  min-width: 0;
+  background: transparent;
+  outline: none;
+  color: hsl(var(--foreground));
+  font-size: 12px;
+}
+.cqg-usd-member-search:focus-within {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+.cqg-usd-members-head {
+  display: none;
+}
+.cqg-usd-member {
+  display: grid;
+  min-width: 0;
+  gap: 12px;
+  padding: 16px 0;
+  border-top: 1px solid hsl(var(--border));
+}
+.cqg-usd-member-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.cqg-usd-member-name h3 {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 600;
+}
+.cqg-usd-member-status {
+  border-radius: 999px;
+  padding: 1px 7px;
+  background: hsl(var(--muted) / 0.65);
+  color: hsl(var(--muted-foreground));
+  font-size: 10px;
+  line-height: 16px;
+}
+.cqg-usd-member-status.is-disabled {
+  color: var(--cqg-status-warning);
+}
+.cqg-usd-window-compact {
+  border: 0;
+  background: hsl(var(--muted) / 0.2);
+  padding: 10px;
+}
+.cqg-usd-window-compact .cqg-usd-window-amount {
+  margin: 6px 0 8px;
+}
+.cqg-usd-window-compact .cqg-usd-window-amount strong {
+  font-size: 18px;
+  line-height: 24px;
+}
+.cqg-usd-member-shares {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.cqg-usd-share {
+  min-width: 0;
+}
+.cqg-usd-share-heading {
+  margin-bottom: 6px;
+  font-size: 11px;
+}
+.cqg-usd-share-heading strong {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.cqg-usd-share-bar {
+  background: #7e9fbe;
+}
+.cqg-usd-share .cqg-usd-note {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 4px;
+  font-size: 10px;
+}
+.cqg-usd-member-footnote {
+  border-top: 1px solid hsl(var(--border));
+  padding-top: 12px;
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  line-height: 18px;
+}
+@container cqg-usd (min-width: 680px) {
+  .cqg-usd-budget-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-areas: "personal account" "team team";
+  }
+}
+@container cqg-usd (min-width: 700px) {
+  .cqg-usd-member,
+  .cqg-usd-members-head {
+    grid-template-columns: minmax(80px, 0.6fr) minmax(0, 2fr) minmax(0, 1.5fr);
+    column-gap: 20px;
+  }
+  .cqg-usd-members-head {
+    display: grid;
+    padding-bottom: 10px;
+    color: hsl(var(--muted-foreground));
+    font-size: 11px;
+  }
+  .cqg-usd-member-name {
+    display: block;
+    align-self: start;
+    padding-top: 5px;
+  }
+  .cqg-usd-member-status {
+    display: inline-block;
+    margin-top: 6px;
+  }
+  .cqg-usd-member-shares {
+    grid-template-columns: minmax(0, 1fr);
+    align-content: start;
+    gap: 10px;
+  }
+}
+@container cqg-usd (max-width: 420px) {
+  .cqg-usd-team-windows {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .cqg-usd-card .cqg-usd-card-heading {
+    padding: 14px 14px 10px;
+  }
+  .cqg-usd-card .cqg-usd-card-content {
+    padding: 0 14px 14px;
+  }
+}

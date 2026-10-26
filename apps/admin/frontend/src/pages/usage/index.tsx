@@ -10,7 +10,7 @@ import { formatUsd, UsageCost, UsageTokens } from '../../components/UsageAmounts
 import { getUsageAnalytics, getUsageOptions, listUsageModelPrices } from '../../services/api';
 import type { UsageAnalytics, UsageAnalyticsParams, UsageGroup, UsageLedgerItem, UsageModelPrice, UsageOptions } from '../../services/api';
 import { formatTokenAmount } from '../../utils/token';
-import { usageEventColumns } from '../users/usage-events';
+import { usageEventColumns, usageEventsTableWidth } from '../users/usage-events';
 import { dateQuery, initialDates, localDate, trendPoints } from './chart-data';
 import { ModelPrices } from './model-prices';
 
@@ -194,8 +194,8 @@ export default function UsagePage() {
             ]} />
           </section>
           <section className="cqg-usage-section" aria-label="全部用量流水">
-            <div className="cqg-usage-section-head"><h2>用量流水</h2><span className="cqg-usage-muted">入账时价格快照 · 非官方账单</span></div>
-            <Table rowKey="id" columns={ledgerColumns} dataSource={data.events.items} size="small" scroll={{ x: 2070 }}
+            <div className="cqg-usage-section-head"><h2>用量流水</h2><span className="cqg-usage-muted">左右滚动查看 Token 分项与费用 · 非官方账单</span></div>
+            <Table className="cqg-ledger-table" tableLayout="fixed" rowKey="id" columns={ledgerColumns} dataSource={data.events.items} size="small" scroll={{ x: usageEventsTableWidth + 300 }}
               locale={{ emptyText: '当前筛选下暂无流水' }}
               pagination={{ current: (query.page ?? 0) + 1, pageSize: query.size ?? 20, total: data.events.totalElements,
                 showSizeChanger: true, pageSizeOptions: [10, 20, 50, 100], showTotal: (total) => `共 ${total.toLocaleString()} 条`,

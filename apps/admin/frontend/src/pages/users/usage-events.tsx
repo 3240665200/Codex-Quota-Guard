@@ -11,14 +11,22 @@ import type { UsageEventLogPage } from '../../services/api';
 const PAGE_SIZE = 10;
 type UsageEvent = UsageEventLogPage['items'][number];
 
+function LedgerTime({ value }: { value: string }) {
+  const at = new Date(value);
+  return <time className="cqg-ledger-date" dateTime={value} title={at.toLocaleString('zh-CN')}>
+    <span>{at.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' })}</span>
+    <span className="cqg-usage-muted">{at.toLocaleTimeString('zh-CN', { hour12: false })}</span>
+  </time>;
+}
+
 export const usageEventColumns = [
-  { title: '服务端收到', dataIndex: 'receivedAt',
-    render: (value: string) => new Date(value).toLocaleString('zh-CN') },
-  { title: '本机发生', dataIndex: 'occurredAt',
-    render: (value: string) => new Date(value).toLocaleString('zh-CN') },
-  { title: 'Token', dataIndex: 'totalTokens',
+  { title: '服务端收到', dataIndex: 'receivedAt', width: 160,
+    render: (value: string) => <LedgerTime value={value} /> },
+  { title: '本机发生', dataIndex: 'occurredAt', width: 160,
+    render: (value: string) => <LedgerTime value={value} /> },
+  { title: 'Token', dataIndex: 'totalTokens', width: 160,
     render: (value: number) => <TokenAmount value={value} /> },
-  { title: '来源', dataIndex: 'source',
+  { title: '来源', dataIndex: 'source', width: 170,
     render: (value: UsageEvent['source']) => value === 'TOKEN_USAGE_RECORD'
       ? 'Codex 用量记录' : '旧日志累计差值' },
   { title: '模型名称', dataIndex: 'model', width: 190, ellipsis: true,
@@ -27,7 +35,7 @@ export const usageEventColumns = [
     render: (value: string | null | undefined) => value ?? '未知' },
   { title: '速度模式 / 倍率', width: 180, render: (_, item) => item.billingModeStatus === 'FAST' ? `快速 ×${item.billingMultiplier}` : item.billingModeStatus === 'STANDARD' ? '普通 ×1' : item.billingOrigin === 'HISTORICAL_RECALC' ? '历史未记录（普通费率回算）' : '未记录（待确认）' },
   { title: '模式依据', width: 150, render: (_, item) => item.billingModeSource === 'REPORTED' ? '日志明确记录' : item.billingModeSource === 'ADMIN_DECLARED' ? '管理员设备设置' : item.billingModeSource === 'ADMIN_CONFIRMED' ? '管理员逐笔确认' : '日志未记录' },
-  { title: '计费来源', width: 135, render: (_, item) => item.billingOrigin === 'HISTORICAL_RECALC' ? '历史回算' : '实时入账' },
+  { title: '计费来源', width: 135, render: (_, item) => item.billingOrigin === 'HISTORICAL_RECALC' ? '历史回算' : item.billingOrigin === 'ADMIN_REVIEW' ? '管理员核对入账' : '实时入账' },
   { title: '输入 Token', dataIndex: 'inputTokens', width: 130, render: (value) => <UsageTokens value={value} /> },
   { title: '缓存读 Token', dataIndex: 'cachedInputTokens', width: 130, render: (value) => <UsageTokens value={value} /> },
   { title: '缓存写 Token', dataIndex: 'cacheWriteInputTokens', width: 130, render: (value) => <UsageTokens value={value} /> },
@@ -36,6 +44,7 @@ export const usageEventColumns = [
   { title: '账本费用 (USD)', dataIndex: 'estimatedCostUsd', width: 180,
     render: (value, item) => <UsageCost value={value} status={item.costStatus} /> },
 ] satisfies TableColumnsType<UsageEvent>;
+export const usageEventsTableWidth = usageEventColumns.reduce((total, column) => total + column.width, 0);
 
 export function UsageEventsTable({ userId }: { userId: string }) {
   const { modal, message } = App.useApp();
@@ -87,6 +96,8 @@ export function UsageEventsTable({ userId }: { userId: string }) {
       </Space>
       {error ? <Alert showIcon type="error" title="用量流水读取失败" description={error} /> : null}
       <Table<UsageEvent>
+        className="cqg-ledger-table"
+        tableLayout="fixed"
         columns={usageEventColumns}
         dataSource={data?.items ?? []}
         loading={loading}
@@ -97,7 +108,7 @@ export function UsageEventsTable({ userId }: { userId: string }) {
         rowKey="id"
         rowSelection={{ selectedRowKeys: selected, onChange: (keys) => setSelected(keys.map(String)),
           getCheckboxProps: (item) => ({ disabled: confirming || item.estimatedCostUsd != null || item.billingModeStatus !== 'UNRECORDED' }) }}
-        scroll={{ x: 1770 }}
+        scroll={{ x: usageEventsTableWidth }}
         size="small"
       />
     </section>

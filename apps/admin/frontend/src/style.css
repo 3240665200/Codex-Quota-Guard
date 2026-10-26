@@ -587,6 +587,20 @@ textarea {
 .cqg-usage-section-head { margin-bottom: 16px; }
 .cqg-usage-chart { width: 100%; height: 280px; min-width: 0; }
 .cqg-usage-page .ant-table-wrapper { max-width: 100%; }
+.cqg-ledger-table { width: 100%; min-width: 0; }
+.cqg-ledger-table .ant-table-thead > tr > th,
+.cqg-ledger-table .ant-table-tbody > tr > td { padding: 12px 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; line-height: 1.65; }
+.cqg-ledger-table .ant-table-thead > tr > th { font-size: 13px; }
+.cqg-ledger-table .ant-table-tbody > tr > td { font-size: 14px; }
+.cqg-ledger-table .ant-table-content { overflow-x: auto !important; }
+.cqg-ledger-date { display: grid; gap: 2px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+.cqg-review-date-filter { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; align-items: end; gap: 12px; margin-bottom: 12px; }
+.cqg-review-date-filter > label { display: grid; min-width: 0; gap: 6px; color: inherit; font-size: 12px; }
+.cqg-review-jobs { border: 1px solid var(--ant-color-border, #d9d9d9); border-radius: 12px; padding: 20px; }
+.cqg-review-job { padding: 16px 0; border-bottom: 1px solid var(--ant-color-border, #d9d9d9); }
+.cqg-review-job:last-child { border-bottom: 0; padding-bottom: 0; }
+@media (max-width: 960px) { .cqg-review-date-filter { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 1200px) {
   .cqg-dashboard-analysis-grid {
     grid-template-columns: minmax(0, 1fr);

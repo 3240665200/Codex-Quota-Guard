@@ -22,6 +22,8 @@ pub(super) struct Outbox {
     user_id: Option<uuid::Uuid>,
     #[serde(default)]
     quarantined: Vec<QuarantinedUsage>,
+    #[serde(default)]
+    review_submitted_events: usize,
     scan_state: ScanState,
     pub(super) pending: Vec<UsageEvent>,
 }
@@ -66,6 +68,7 @@ impl Outbox {
                 codex_home: config.codex_home.clone(),
                 user_id,
                 quarantined: Vec::new(),
+                review_submitted_events: 0,
                 scan_state: previous.clone(),
                 pending: Vec::new(),
             })
@@ -160,6 +163,7 @@ impl Outbox {
         next_state: ScanState,
     ) {
         if self.user_id != user_id {
+            self.review_submitted_events = 0;
             // Device UUIDs can be reused after deletion of a system user. Keep
             // that owner's records in this same atomic journal, never attach
             // them to a newly authenticated owner or replay their source logs.
@@ -247,6 +251,26 @@ impl Outbox {
 
     pub(super) fn scan_state(&self) -> &ScanState {
         &self.scan_state
+    }
+
+    pub(super) fn review_submitted_events(&self) -> usize {
+        self.review_submitted_events
+    }
+
+    /// The backend receipt means the original payload is durably quarantined,
+    /// not billed. A crash before this atomic save retries the same event IDs.
+    pub(super) fn acknowledge_review_latest(
+        config: &MeterConfig, expected_user_id: uuid::Uuid, events: &[UsageEvent],
+    ) -> Result<Self, String> {
+        let mut current = Self::load_current(config)?;
+        if current.user_id != Some(expected_user_id) {
+            return Err("METER_OUTBOX_OWNER_CHANGED".into());
+        }
+        let ids: BTreeSet<_> = events.iter().map(|event| event.event_id.as_str()).collect();
+        let removed = current.pending.iter().filter(|event| ids.contains(event.event_id.as_str())).count();
+        current.review_submitted_events = current.review_submitted_events.saturating_add(removed);
+        current.acknowledge(config, events)?;
+        Ok(current)
     }
 
     pub(super) fn pending_count(&self) -> usize {

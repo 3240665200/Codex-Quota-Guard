@@ -11,6 +11,9 @@ import org.springframework.data.repository.query.Param;
 
 public interface CodexUsageEventRepository extends JpaRepository<CodexUsageEvent, String> {
 
+    @Query(value="select count(*) from usage_review_queue where id=:id", nativeQuery=true)
+    long countReviewReceiptById(@Param("id") String id);
+
     Page<CodexUsageEvent> findByUserIdOrderByReceivedAtDescIdDesc(UUID userId, Pageable pageable);
 
     @Query("""

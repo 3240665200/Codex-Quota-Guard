@@ -43,6 +43,8 @@ pub(crate) struct MeterStatus {
     pub warning_code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deferred_events: Option<u64>,
+    pub review_submitted_events: u64,
+    pub review_error_code: Option<String>,
     pub version: Option<String>,
 }
 
@@ -121,6 +123,13 @@ pub(crate) fn meter_status(app: &AppHandle) -> MeterStatus {
     parse_status(&bytes)
 }
 
+pub(crate) fn meter_connection_matches(app: &AppHandle) -> bool {
+    app.path().app_config_dir().ok().is_some_and(|directory| {
+        safe_directory(&directory)
+            && connection_matches(&directory.join(CONNECTION_FILE), &crate::server_config::load(app).url)
+    })
+}
+
 fn empty_status(state: &'static str) -> MeterStatus {
     MeterStatus {
         state,
@@ -130,6 +139,8 @@ fn empty_status(state: &'static str) -> MeterStatus {
         error_code: None,
         warning_code: None,
         deferred_events: None,
+        review_submitted_events: 0,
+        review_error_code: None,
         version: None,
     }
 }
@@ -185,6 +196,9 @@ fn parse_status(bytes: &[u8]) -> MeterStatus {
             .filter(|text| valid_error(text)).map(str::to_owned),
         deferred_events: object.get("deferredEvents").and_then(Value::as_u64)
             .filter(|count| *count > 0).map(|count| count.min(MAX_SAFE_NUMBER)),
+        review_submitted_events: object.get("reviewSubmittedEvents").and_then(Value::as_u64).unwrap_or(0).min(MAX_SAFE_NUMBER),
+        review_error_code: object.get("reviewErrorCode").and_then(Value::as_str)
+            .filter(|text| valid_error(text)).map(str::to_owned),
         version,
     }
 }

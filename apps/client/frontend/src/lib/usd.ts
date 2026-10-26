@@ -35,6 +35,15 @@ export function formatUsd(value: string): string {
   if (!parts) return '暂不可得';
   return '$' + parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',') + '.' + parts[1].padEnd(2, '0') + ' USD';
 }
+/** Compact display only. Accounting retains the original decimal string. */
+export function formatUsdCompact(value: string): string {
+  const parts = decimalParts(value);
+  if (!parts) return '暂不可得';
+  if (compareUsd(value, '0') > 0 && compareUsd(value, '0.01') < 0) return '<$0.01';
+  let cents = BigInt(parts[0]) * 100n + BigInt(parts[1].padEnd(2, '0').slice(0, 2));
+  if (parts[1].length > 2 && parts[1][2] >= '5') cents++;
+  return '$' + (cents / 100n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',') + '.' + (cents % 100n).toString().padStart(2, '0');
+}
 /** Exact comparisons also protect the allowed/exhausted contract at large balances. */
 export function compareUsd(left: string, right: string): number {
   const a = decimalParts(left), b = decimalParts(right);

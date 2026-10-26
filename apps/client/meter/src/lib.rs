@@ -13,6 +13,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod audit;
 mod outbox;
+mod review_upload;
 mod speed_mode;
 pub fn speed_detection_probe(home: &Path) -> BTreeMap<String, usize> {
     let mut modes = BTreeMap::new();
@@ -1266,6 +1267,10 @@ pub struct MeterStatus {
     pub pending_events: Option<usize>,
     #[serde(default)]
     pub deferred_events: usize,
+    #[serde(default)]
+    pub review_submitted_events: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_error_code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warning_code: Option<String>,
     pub error_code: Option<String>,
@@ -1883,6 +1888,8 @@ fn publish_capture_progress(config: &MeterConfig, pending_events: usize, status_
         reported_events: 0,
         pending_events: None,
         deferred_events: 0,
+            review_submitted_events: 0,
+            review_error_code: None,
         warning_code: None,
         error_code: None,
         cc_switch_guard: "INACTIVE".into(),
@@ -1909,6 +1916,9 @@ fn ensure_current_owner(config: &MeterConfig, expected_user_id: uuid::Uuid) -> R
 
 pub struct MeterRuntime {
     last_speed_review: Option<Instant>,
+    last_review_upload: Option<(Instant, bool)>,
+    review_submitted_events: usize,
+    review_error_code: Option<String>,
     config: MeterConfig,
     client: reqwest::blocking::Client,
     audit: AuditLog,
@@ -1983,6 +1993,7 @@ impl MeterRuntime {
         })?;
         Ok(Self {
             last_speed_review: None,
+            last_review_upload: None,
             config,
             client,
             audit,
@@ -1993,6 +2004,8 @@ impl MeterRuntime {
             last_report_epoch_seconds: None,
             pending_events: None,
             deferred_events: 0,
+            review_submitted_events: 0,
+            review_error_code: None,
             warning_code: None,
             guard,
             capture,
@@ -2032,6 +2045,8 @@ impl MeterRuntime {
                 reported_events,
                 pending_events: self.pending_events,
                 deferred_events: self.deferred_events,
+            review_submitted_events: self.review_submitted_events,
+            review_error_code: self.review_error_code.clone(),
                 warning_code: self.warning_code.clone(),
                 error_code: None,
                 cc_switch_guard: guard.state.into(),
@@ -2046,6 +2061,8 @@ impl MeterRuntime {
                 reported_events: 0,
                 pending_events: self.pending_events,
                 deferred_events: self.deferred_events,
+            review_submitted_events: self.review_submitted_events,
+            review_error_code: self.review_error_code.clone(),
                 warning_code: self.warning_code.clone(),
                 error_code: Some(code),
                 cc_switch_guard: guard.state.into(),
@@ -2123,6 +2140,8 @@ impl MeterRuntime {
             reported_events: 0,
             pending_events: self.pending_events,
             deferred_events: self.deferred_events,
+            review_submitted_events: self.review_submitted_events,
+            review_error_code: self.review_error_code.clone(),
             warning_code: self.warning_code.clone(),
             error_code: None,
             cc_switch_guard: "INACTIVE".into(),
@@ -2190,6 +2209,7 @@ impl MeterRuntime {
         )?;
         self.pending_events = Some(outbox.pending_count());
         self.record_capture_progress(&outbox);
+        self.review_submitted_events = outbox.review_submitted_events();
         if !credential.owner_verified || credential.user_id.is_none() {
             self.ensure_operational()?;
             let user_id = renew_device_credential(&self.client, &self.config, &credential)?;
@@ -2366,6 +2386,8 @@ impl MeterRuntime {
                 reported_events: reported.events.len(),
                 pending_events: self.pending_events,
                 deferred_events: self.deferred_events,
+            review_submitted_events: self.review_submitted_events,
+            review_error_code: self.review_error_code.clone(),
                 warning_code: self.warning_code.clone(),
                 error_code: None,
                 cc_switch_guard: guard.state.into(),
@@ -2399,6 +2421,8 @@ impl MeterRuntime {
                 reported_events: 0,
                 pending_events: self.pending_events,
                 deferred_events: self.deferred_events,
+            review_submitted_events: self.review_submitted_events,
+            review_error_code: self.review_error_code.clone(),
                 warning_code: self.warning_code.clone(),
                 error_code: None,
                 cc_switch_guard: guard.state.into(),
@@ -2412,6 +2436,9 @@ impl MeterRuntime {
         if let Some(code) = warning {
             return Err(code.into());
         }
+        // Valid real-time use and heartbeats always run first. Review uploads
+        // are bounded, optional on older servers, and cannot suppress billing.
+        self.upload_deferred_review(&credential, &mut outbox)?;
         Ok((
             if reported.events.is_empty() {
                 "UP_TO_DATE"
@@ -2420,6 +2447,42 @@ impl MeterRuntime {
             },
             reported.events.len(),
         ))
+    }
+
+    fn upload_deferred_review(&mut self, credential: &MeterCredential, outbox: &mut outbox::Outbox) -> Result<(), String> {
+        if self.deferred_events == 0 { return Ok(()); }
+        if self.last_review_upload.is_some_and(|(last, success)| last.elapsed() < Duration::from_secs(if success { 10 } else { 60 })) {
+            return Ok(());
+        }
+        let now = Utc::now();
+        let candidates: Vec<_> = outbox.pending.iter().filter(|event| !reportable_at(event, now)).take(500).cloned().collect();
+        self.last_review_upload = Some((Instant::now(), false));
+        let owner = credential.user_id.ok_or("METER_CREDENTIAL_INVALID")?;
+        for batch in candidates.chunks(100) {
+            self.ensure_operational()?;
+            ensure_current_owner(&self.config, owner)?;
+            match review_upload::send(&self.client, &self.config, credential, batch, || self.ensure_operational()) {
+                Ok(()) => {
+                    let current = {
+                        let _guard = self.journal_lock.lock().unwrap_or_else(|p| p.into_inner());
+                        ensure_current_owner(&self.config, owner)?;
+                        self.guard.with_allowed(|| outbox::Outbox::acknowledge_review_latest(&self.config, owner, batch))?
+                    };
+                    *outbox = current;
+                    self.review_submitted_events = outbox.review_submitted_events();
+                    self.review_error_code = None;
+                    self.pending_events = Some(outbox.pending_count());
+                    self.deferred_events = outbox.pending.iter().filter(|event| !reportable_at(event, now)).count();
+                    self.warning_code = (self.deferred_events > 0).then(|| "METER_EVENT_OUTSIDE_REPORT_WINDOW".into());
+                }
+                Err(code) => {
+                    self.review_error_code = Some(code);
+                    return Ok(());
+                }
+            }
+        }
+        self.last_review_upload = Some((Instant::now(), true));
+        Ok(())
     }
 }
 
@@ -4347,7 +4410,7 @@ mod tests {
     #[test]
     fn stale_usage_is_retained_while_new_usage_continues_to_upload() {
         let root = TestDir::new();
-        let (url, receiver) = mock_meter_http(vec![(200, "{}".into()); 4]);
+        let (url, receiver) = mock_meter_http(vec![(200, "{}".into()); 6]);
         let config = MeterConfig {
             server_url: url,
             codex_home: root.path().join(".codex"),
@@ -4401,11 +4464,13 @@ mod tests {
         let requests = receiver.join().unwrap();
         assert_eq!(
             requests.len(),
-            4,
+            6,
             "invalid old records must not prevent valid uploads or heartbeat"
         );
         assert!(String::from_utf8_lossy(&requests[0]).contains("\"totalTokens\":99"));
-        assert!(String::from_utf8_lossy(&requests[2]).contains("\"totalTokens\":15"));
+        assert!(String::from_utf8_lossy(&requests[3]).contains("\"totalTokens\":15"));
+        assert!(requests[2].starts_with(b"POST /api/v1/meter/usage/reviews "));
+        assert!(requests[5].starts_with(b"POST /api/v1/meter/usage/reviews "));
         assert!(requests.iter().all(|request| !String::from_utf8_lossy(request)
             .to_ascii_lowercase().contains("authorization:")));
         assert_eq!(status.state, "REPORTED");
@@ -4422,8 +4487,50 @@ mod tests {
         assert_eq!(public["deferredEvents"], 2);
         assert_eq!(public["state"], "REPORTED");
         assert!(public["errorCode"].is_null());
+        assert_eq!(public["reviewErrorCode"], "METER_REVIEW_RECEIPT_INVALID");
         assert_eq!(outbox["pending"][0]["occurredAt"], stale);
         assert_eq!(outbox["pending"][1]["occurredAt"], future);
+    }
+
+    #[test]
+    fn deferred_usage_moves_only_after_durable_review_receipt_and_survives_restart() {
+        let root = TestDir::new();
+        let stale = (Utc::now() - TimeDelta::days(31)).to_rfc3339();
+        let line = record_at("review-history", 10, &stale);
+        let event = parse_direct_record(line.trim().as_bytes()).unwrap();
+        let receipt = serde_json::json!({"quarantinedEventIds":[event.event_id]}).to_string();
+        let (url, receiver) = mock_meter_http(vec![(200, "{}".into()), (200, receipt), (200, "{}".into())]);
+        let config = MeterConfig {
+            server_url: url, codex_home: root.path().join(".codex"), pairing_inbox: root.path().join("pairing.json"),
+            state_dir: root.path().join("state"), status_file: root.path().join("status.json"), device_id: uuid::Uuid::new_v4(),
+            owner_user_sid: None, log_dir: None,
+        };
+        fs::create_dir_all(config.codex_home.join("sessions")).unwrap();
+        save_state(&config.state_dir.join("scan-state.json"), &ScanState::default()).unwrap();
+        save_credential(&config.state_dir, &MeterCredential {
+            device_id: config.device_id, device_token: "A".repeat(43), user_id: Some(uuid::Uuid::from_u128(1)), owner_verified: true,
+        }).unwrap();
+        fs::write(config.codex_home.join("sessions/run.jsonl"), line).unwrap();
+        let mut runtime = MeterRuntime::new_for_test(config.clone()).unwrap();
+        let status = runtime.tick();
+        runtime.shutdown().unwrap();
+        assert_eq!(status.state, "UP_TO_DATE");
+        assert_eq!(status.reported_events, 0, "quarantine receipt must not be shown as billed usage");
+        assert_eq!(status.deferred_events, 0);
+        assert_eq!(status.review_submitted_events, 1);
+        assert_eq!(status.review_error_code, None);
+        let mut restarted = MeterRuntime::new_for_test(config.clone()).unwrap();
+        let status = restarted.tick();
+        restarted.shutdown().unwrap();
+        assert_eq!(status.review_submitted_events, 1);
+        let requests = receiver.join().unwrap();
+        assert_eq!(requests.len(), 3);
+        assert!(requests[1].starts_with(b"POST /api/v1/meter/usage/reviews "));
+        assert!(String::from_utf8_lossy(&requests[1]).contains(&stale));
+        assert!(requests.iter().all(|r| !r.starts_with(b"POST /api/v1/meter/usage/events ")));
+        let journal: serde_json::Value = serde_json::from_slice(&fs::read(config.state_dir.join("usage-outbox.json")).unwrap()).unwrap();
+        assert!(journal["pending"].as_array().unwrap().is_empty());
+        assert_eq!(journal["reviewSubmittedEvents"], 1);
     }
 
     #[test]
@@ -4837,6 +4944,8 @@ mod tests {
             error_code: Some("METER_BACKEND_UNAVAILABLE".into()),
             pending_events: None,
             deferred_events: 0,
+            review_submitted_events: 0,
+            review_error_code: None,
             warning_code: None,
             cc_switch_guard: "INACTIVE".into(),
             cc_switch_guard_checked_at: 1_000,

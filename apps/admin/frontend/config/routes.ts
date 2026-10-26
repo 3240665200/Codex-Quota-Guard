@@ -80,6 +80,13 @@ export default [
   },
   {
     access: 'canAdmin',
+    component: './usage-review',
+    icon: 'audit',
+    name: '用量核对',
+    path: '/usage-review',
+  },
+  {
+    access: 'canAdmin',
     component: './settings',
     icon: 'setting',
     name: '设置',

@@ -4,7 +4,8 @@ param(
     [string]$ServerUrl = 'http://127.0.0.1:8080',
     [string]$InstallDirectory = '',
     [string]$BinaryPath = '',
-    [string]$ExpectedUserSid = ''
+    [string]$ExpectedUserSid = '',
+    [switch]$RepairOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -458,6 +459,15 @@ function Set-MeterServiceRecovery([string]$Name) {
     if ($LASTEXITCODE -ne 0) { throw 'Could not enable recovery for non-crash service failures.' }
 }
 
+function Stop-MeterServiceBounded($Service) {
+    $Service.Refresh()
+    if ($Service.Status -eq 'Stopped') { return }
+    # Stop-Service itself can wait indefinitely before WaitForStatus executes.
+    # ServiceController.Stop sends the control once; every wait stays bounded.
+    if ($Service.Status -ne 'StopPending') { $Service.Stop() }
+    $Service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(20))
+}
+
 # Loading these helpers for regression checks never touches a service or config.
 if ($MyInvocation.InvocationName -eq '.') { return }
 
@@ -477,8 +487,7 @@ trap {
         try {
             $current = Get-Service -Name $serviceName -ErrorAction Stop
             if ($current.Status -ne 'Stopped') {
-                Stop-Service -Name $serviceName -ErrorAction Stop
-                $current.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(20))
+                Stop-MeterServiceBounded $current
             }
             Copy-Item -LiteralPath $backupBinary -Destination $installedBinary -Force
             Copy-Item -LiteralPath $backupConfig -Destination $configPath -Force
@@ -503,8 +512,7 @@ trap {
         try {
             $partial = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
             if ($partial -and $partial.Status -ne 'Stopped') {
-                Stop-Service -Name $serviceName -ErrorAction Stop
-                $partial.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(20))
+                Stop-MeterServiceBounded $partial
             }
             & sc.exe delete $serviceName | Out-Null
             if ($LASTEXITCODE -ne 0) { throw 'Could not remove the failed service registration.' }
@@ -606,6 +614,9 @@ New-Item -ItemType Directory -Path $appData, $stateDirectory, $install -Force | 
 # The service directory is administrator-owned. Serialize manual and desktop setup.
 $setupLock = [IO.File]::Open((Join-Path $install '.meter-setup.lock'), [IO.FileMode]::OpenOrCreate,
     [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+if ($RepairOnly -and [bool](Get-Service -Name $serviceName -ErrorAction SilentlyContinue) -ne [bool]$service) {
+    throw 'The service registration changed during repair. Run diagnostics again.'
+}
 if ($service) {
     # Re-read under the exclusive lock: another completed setup may have changed
     # the selected context after the initial ownership preflight.
@@ -616,6 +627,11 @@ if ($service) {
     }
     $existingConfiguration = $existing.config
     $ownerUserSid = Resolve-MeterOwnerSid $identity.User.Value ([string]$existingConfiguration.ownerUserSid)
+    if ($RepairOnly -and
+        -not (Resolve-MeterServerUri ([string]$existingConfiguration.serverUrl)).GetLeftPart([UriPartial]::Authority).Equals(
+            $uri.GetLeftPart([UriPartial]::Authority), [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Repair cannot change the service server origin.'
+    }
 }
 if (Test-Path -LiteralPath $deviceIdFile -PathType Leaf) {
     $deviceId = [Guid]::Parse((Get-Content -LiteralPath $deviceIdFile -Raw).Trim())
@@ -672,8 +688,7 @@ $wasRunning = $service -and $service.Status -ne 'Stopped'
 if ($service) { $rollbackNeeded = $true }
 if ($wasRunning) {
     $setupStage = 'SERVICE_STOP'
-    Stop-Service -Name $serviceName -ErrorAction Stop
-    $service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(20))
+    Stop-MeterServiceBounded $service
 }
 $setupStage = 'REPLACE_BINARY'
 Copy-Item -LiteralPath $stagedBinary -Destination $installedBinary -Force

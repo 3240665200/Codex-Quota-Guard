@@ -53,6 +53,7 @@ if (process.platform === "win32") {
     "show-meter-logs.ps1",
     "installer-meter.ps1",
     "configure-meter-server.ps1",
+    "repair-meter-service.ps1",
   ]) {
     copyFileSync(
       path.join(repositoryRoot, "scripts", "windows", script),

@@ -64,7 +64,7 @@ public class CodexUsageReportService {
                         "Codex 用量事件时间超出允许范围。", HttpStatus.BAD_REQUEST);
             }
             String key = eventKey(userId, event.eventId());
-            if (queued.add(key) && !events.existsById(key)) {
+            if (queued.add(key) && !events.existsById(key) && events.countReviewReceiptById(key) == 0) {
                 CodexUsageEvent stored = new CodexUsageEvent(key, userId, user.getTeamId(),
                         event.totalTokens(), event.occurredAt(), now, event.source().name(),
                         event.model(), event.reasoningEffort(), event.inputTokens(), event.cachedInputTokens(),
@@ -90,7 +90,7 @@ public class CodexUsageReportService {
         return updated;
     }
 
-    private String eventKey(UUID userId, String eventId) {
+    static String eventKey(UUID userId, String eventId) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             digest.update(userId.toString().getBytes(StandardCharsets.UTF_8));

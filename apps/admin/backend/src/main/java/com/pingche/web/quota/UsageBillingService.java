@@ -44,6 +44,14 @@ public class UsageBillingService {
         }
     }
 
+    /** Explicit administrator import preserves the account captured at review receipt. */
+    @Transactional
+    public void recordReviewed(CodexUsageEvent event, UUID officialAccountId) {
+        if (jdbc.queryForObject("select count(*) from usage_billing_entries where event_id=?", Integer.class, event.getId()) == 0) {
+            write(event, officialAccountId, "ADMIN_REVIEW", resolveMode(event), false);
+        }
+    }
+
     /** Only unresolved missing-price rows may be completed; PRICED rows are never updated. */
     @Transactional
     public int reconcileMissingPrices() {

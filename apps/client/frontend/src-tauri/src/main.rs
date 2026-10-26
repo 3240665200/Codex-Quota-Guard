@@ -7,6 +7,7 @@ mod codex_rate_limits;
 mod conflict_evidence;
 mod conflict_notice;
 mod meter_service;
+mod meter_diagnostics;
 mod meter_status;
 mod package_check;
 mod package_smoke;
@@ -85,6 +86,20 @@ async fn meter_service_version(
     tauri::async_runtime::spawn_blocking(move || meter_service::version_status(&app))
         .await
         .map_err(|_| "统计程序版本查询失败。".to_owned())
+}
+
+#[tauri::command]
+async fn meter_service_diagnose(app: tauri::AppHandle) -> CommandResult<meter_diagnostics::Diagnostics> {
+    tauri::async_runtime::spawn_blocking(move || meter_diagnostics::diagnose(&app))
+        .await.map_err(|_| "统计程序自检失败，请重试。".to_owned())
+}
+
+#[tauri::command]
+async fn meter_service_repair(app: tauri::AppHandle) -> CommandResult<meter_diagnostics::Diagnostics> {
+    tauri::async_runtime::spawn_blocking(move || {
+        meter_service::repair_service(&app)?;
+        Ok(meter_diagnostics::diagnose(&app))
+    }).await.map_err(|_| "统计程序修复失败，请重新自检。".to_owned())?
 }
 
 #[tauri::command]
@@ -290,6 +305,8 @@ fn main() {
             meter_runtime_logs,
             meter_pairing_write,
             meter_service_version,
+            meter_service_diagnose,
+            meter_service_repair,
             server_config_get,
             server_config_save,
             session_vault_load,

@@ -10,7 +10,7 @@ import java.time.Instant;
 import java.util.List;
 
 public record CodexUsageReportRequest(
-        @NotNull @Size(min = 1, max = 100) List<@Valid Event> events
+        @NotNull @Size(min = 1, max = 100) List<@NotNull @Valid Event> events
 ) {
     public record Event(
             @NotNull @Size(max = 100)
