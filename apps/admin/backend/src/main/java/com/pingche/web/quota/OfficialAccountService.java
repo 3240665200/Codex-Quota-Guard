@@ -28,11 +28,12 @@ public class OfficialAccountService {
     private final OfficialSessionLogoutFence logoutFence;
     private final JdbcTemplate jdbc;
     private final com.pingche.web.officialsession.OfficialQuotaPollingService quotaPolling;
+    private final UsdQuotaService usd;
 
     public OfficialAccountService(OfficialAccountRepository accounts, OfficialQuotaSnapshotService snapshots,
             TeamRepository teams, UserRepository users, RefreshSessionRepository sessions, Clock clock,
             OfficialSessionLogoutFence logoutFence, JdbcTemplate jdbc,
-            com.pingche.web.officialsession.OfficialQuotaPollingService quotaPolling) {
+            com.pingche.web.officialsession.OfficialQuotaPollingService quotaPolling, UsdQuotaService usd) {
         this.accounts = accounts;
         this.snapshots = snapshots;
         this.teams = teams;
@@ -42,6 +43,7 @@ public class OfficialAccountService {
         this.logoutFence = logoutFence;
         this.jdbc = jdbc;
         this.quotaPolling = quotaPolling;
+        this.usd = usd;
     }
 
     @Transactional(readOnly = true)
@@ -58,7 +60,9 @@ public class OfficialAccountService {
             throw conflict("REPORTER_ALREADY_ASSIGNED", "该系统用户已为另一官方账户上报额度。");
         }
         OfficialAccount account = accounts.saveAndFlush(new OfficialAccount(
-                label, request.estimatedTotalTokens(), reporterId, clock.instant()));
+                label, request.estimatedTotalTokens() == null ? 0 : request.estimatedTotalTokens(), reporterId, clock.instant()));
+        account.setBudgetUsd(request.budgetUsd());
+        accounts.saveAndFlush(account);
         return response(account);
     }
 
@@ -78,8 +82,11 @@ public class OfficialAccountService {
         }
         long previousEstimate = account.getEstimatedTotalTokens();
         Instant now = clock.instant();
-        account.update(label, request.estimatedTotalTokens(), reporterId, now);
+        account.update(label, request.estimatedTotalTokens() == null ? account.getEstimatedTotalTokens() : request.estimatedTotalTokens(), reporterId, now);
+        // Legacy Token-only clients cannot accidentally clear a configured USD budget.
+        if (request.budgetUsd() != null || request.estimatedTotalTokens() == null) account.setBudgetUsd(request.budgetUsd());
         accounts.saveAndFlush(account);
+        jdbc.update("update teams set total_usd_limit=? where official_account_id=?", account.getBudgetUsd(), id);
         if (previousEstimate != account.getEstimatedTotalTokens()) {
             for (Team team : teams.findByOfficialAccountId(id)) {
                 team.updateTokenLimits(team.getFiveHourTokenLimit(), team.getWeeklyTokenLimit(),
@@ -121,7 +128,7 @@ public class OfficialAccountService {
         return new OfficialAccountResponse(account.getId(), account.getLabel(),
                 account.getEstimatedTotalTokens(), reporter == null ? null : reporter.getEmail(),
                 polling.quota(),
-                account.getCreatedAt(), account.getUpdatedAt(), account.getVersion(), polling);
+                account.getCreatedAt(), account.getUpdatedAt(), account.getVersion(), polling, account.getBudgetUsd(), usd.officialAccount(account.getId()));
     }
 
     private DomainException notFound() {

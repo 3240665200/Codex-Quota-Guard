@@ -14,27 +14,29 @@ import { resetTeamQuota, resetUserQuota } from '../../services/api';
 import type { MeterDeviceStatus, OfficialQuotaSnapshot, UserQuotaOverview,
   UserResponse } from '../../services/api';
 import { UsageEventsTable } from '../users/usage-events';
+import { BillingModes } from './billing-modes';
 
 function describeLimitReason(reason: string): string {
   switch (reason) {
-    case 'TEAM_FIVE_HOUR_TOKEN_QUOTA_EXCEEDED': return '团队 5 小时共享额度已用尽';
-    case 'TEAM_WEEKLY_TOKEN_QUOTA_EXCEEDED': return '团队 7 天共享额度已用尽';
-    case 'TEAM_TOTAL_TOKEN_QUOTA_EXCEEDED': return '团队累计总额度已用尽';
-    case 'FIVE_HOUR_TOKEN_QUOTA_EXCEEDED': return '个人 5 小时额度已用尽';
-    case 'WEEKLY_TOKEN_QUOTA_EXCEEDED': return '个人 7 天额度已用尽';
-    case 'TOKEN_QUOTA_UNCONFIGURED': return '7 天基础额度尚未配置';
+    case 'BILLING_PENDING': return '部分用量待核算；请检查价格、Token 分项和速度模式，未知费用不计为 0 美元';
+    case 'OFFICIAL_ACCOUNT_USD_QUOTA_EXCEEDED': return '关联官方账户的美元预算已用尽';
+    case 'TEAM_FIVE_HOUR_USD_QUOTA_EXCEEDED': return '团队 5 小时共享额度已用尽';
+    case 'TEAM_WEEKLY_USD_QUOTA_EXCEEDED': return '团队 7 天共享额度已用尽';
+    case 'TEAM_TOTAL_USD_QUOTA_EXCEEDED': return '团队累计总额度已用尽';
+    case 'FIVE_HOUR_USD_QUOTA_EXCEEDED': return '个人 5 小时额度已用尽';
+    case 'WEEKLY_USD_QUOTA_EXCEEDED': return '个人 7 天额度已用尽';
     case 'TEAM_UNAVAILABLE': return '所属团队不可用';
     default: return '当前额度不可用';
   }
 }
 
-function TokenWindow({ label, used, limit, remaining }: {
-  label: string; used: number; limit: number | null; remaining: number | null;
+function TokenWindow({ label, quota }: {
+  label: string; quota?: import('../../services/usd-types').UsdWindow;
 }) {
   return (
     <div style={{ flex: '1 1 260px', minWidth: 0 }}>
       <Typography.Text strong>{label}</Typography.Text>
-      <div style={{ marginTop: 8 }}><QuotaAmount label={label} used={used} limit={limit} remaining={remaining} /></div>
+      <div style={{ marginTop: 8 }}><QuotaAmount label={`${label} USD`} quota={quota} /></div>
     </div>
   );
 }
@@ -115,17 +117,13 @@ export function UserQuotaDetail({ userId }: { userId: string }) {
       {loading ? <Typography.Text>正在读取额度…</Typography.Text> : null}
       {user && overview ? <div style={{ display: 'grid', gap: 28 }}>
         <section aria-label="个人用量">
-          <Typography.Title level={4}>个人 Token 用量</Typography.Title>
+          <Typography.Title level={4}>个人额度（USD）</Typography.Title>
           <Typography.Paragraph type="secondary">
             来自本机计费上报；这里的剩余值仅对应个人上限，团队限制在下方单独显示。
           </Typography.Paragraph>
           <Space align="start" size={32} wrap style={{ width: '100%' }}>
-            <TokenWindow label="5 小时" used={overview.usage.fiveHourUsedTokens}
-              limit={overview.policy.fiveHourTokenLimit}
-              remaining={overview.usage.fiveHourRemainingTokens} />
-            <TokenWindow label="7 天" used={overview.usage.weeklyUsedTokens}
-              limit={overview.policy.weeklyTokenLimit}
-              remaining={overview.usage.weeklyRemainingTokens} />
+            <TokenWindow label="5 小时" quota={overview.billing?.personal.fiveHour} />
+            <TokenWindow label="7 天" quota={overview.billing?.personal.weekly} />
           </Space>
           {overview.blockReason ? <Alert style={{ marginTop: 16 }} showIcon type="warning"
             title="额度受限" description={describeLimitReason(overview.blockReason)} /> : null}
@@ -142,17 +140,18 @@ export function UserQuotaDetail({ userId }: { userId: string }) {
               </Popconfirm>
             </Space>
             <Space align="start" size={32} wrap style={{ width: '100%' }}>
-              <TokenWindow label="5 小时" used={team.fiveHourUsedTokens}
-                limit={team.fiveHourTokenLimit} remaining={team.fiveHourRemainingTokens} />
-              <TokenWindow label="7 天" used={team.weeklyUsedTokens}
-                limit={team.weeklyTokenLimit} remaining={team.weeklyRemainingTokens} />
-              <TokenWindow label="累计总额" used={team.totalUsedTokens}
-                limit={team.totalTokenLimit} remaining={team.totalRemainingTokens} />
+              <TokenWindow label="5 小时" quota={overview.billing?.team?.fiveHour} />
+              <TokenWindow label="7 天" quota={overview.billing?.team?.weekly} />
+              <TokenWindow label="累计总额" quota={overview.billing?.team?.total} />
             </Space>
           </> : <Typography.Text type="secondary">未加入团队</Typography.Text>}
         </section>
+        <section aria-label="官方账户美元额度">
+          <Typography.Title level={4}>官方账户额度（USD）</Typography.Title>
+          <TokenWindow label={overview.billing?.officialAccount?.label ?? '官方账户'} quota={overview.billing?.officialAccount?.quota.total} />
+        </section>
         <section aria-label="官方额度">
-          <Typography.Title level={4}>官方额度</Typography.Title>
+          <Typography.Title level={4}>官方套餐参考（百分比）</Typography.Title>
           {official ? <Descriptions column={{ xs: 1, sm: 2, md: 3 }} size="small" bordered items={[
             { key: 'plan', label: '套餐', children: official.planType ?? '未知' },
             ...official.windows.filter((item) => item.windowDurationMins === 300).map((item) => ({
@@ -169,6 +168,7 @@ export function UserQuotaDetail({ userId }: { userId: string }) {
           <Table<MeterDeviceStatus> rowKey="deviceId" size="small" columns={deviceColumns}
             dataSource={devices} pagination={false} locale={{ emptyText: '未配对设备' }} />
         </section>
+        <BillingModes key={`mode-${userId}`} userId={userId} />
         <UsageEventsTable key={userId} userId={userId} />
       </div> : null}
     </PageContainer>

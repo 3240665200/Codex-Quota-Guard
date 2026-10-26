@@ -341,7 +341,7 @@ dependencies = [
 
 [[package]]
 name = "codex-quota-guard"
-version = "0.3.29"
+version = "0.4.3"
 dependencies = [
  "chrono",
  "rusqlite",

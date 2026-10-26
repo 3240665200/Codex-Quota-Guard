@@ -61,8 +61,8 @@ describe("personal usage statistics", () => {
   it("shows USD coverage and token components and switches trend units and ranges", async () => {
     render(view(queryClient()));
     expect(await screen.findByText("0.00325")).toBeVisible();
-    expect(screen.getByText("估算费用 (USD)")).toBeVisible();
-    expect(screen.getByText("估算费用 (USD)").closest("dl")).toHaveClass(
+    expect(screen.getByText("账本费用 (USD)")).toBeVisible();
+    expect(screen.getByText("账本费用 (USD)").closest("dl")).toHaveClass(
       "grid-cols-[repeat(auto-fit,minmax(min(100%,15rem),1fr))]",
     );
     expect(screen.getByLabelText("Token 分项汇总")).toHaveClass(

@@ -35,7 +35,8 @@ public class UsageAnalyticsService {
     public record LedgerItem(String id, UUID userId, String userName, UUID teamId, String teamName,
             Instant occurredAt, Instant receivedAt, long totalTokens, String source, String model,
             String reasoningEffort, Long inputTokens, Long cachedInputTokens, Long cacheWriteInputTokens,
-            Long outputTokens, Long reasoningOutputTokens, BigDecimal estimatedCostUsd, String costStatus) { }
+            Long outputTokens, Long reasoningOutputTokens, BigDecimal estimatedCostUsd, String costStatus,
+            String serviceTier, BigDecimal billingMultiplier, String billingModeStatus, String billingOrigin, String billingModeSource) { }
     public record LedgerPage(List<LedgerItem> items, int page, int size, long totalElements, int totalPages) { }
     public record Response(Instant from, Instant to, String currency, String timezone, Granularity granularity,
             Stats summary, List<Trend> trend, List<Group> models, List<Group> reasoningEfforts,
@@ -56,25 +57,17 @@ public class UsageAnalyticsService {
             and (e.reasoning_output_tokens is null
                  or (e.reasoning_output_tokens >= 0 and e.reasoning_output_tokens <= e.output_tokens))
             """;
-    private static final String COST = """
-            cast(((e.input_tokens - e.cached_input_tokens - e.cache_write_input_tokens) * p.input_price
-                 + e.output_tokens * p.output_price + e.cached_input_tokens * p.cache_read_price
-                 + e.cache_write_input_tokens * p.cache_write_price) / 1000000.0 as decimal(30,12))
-            """;
     private static final String SCOPE = """
             with scoped as (
                 select e.*, u.display_name as user_name, t.name as team_name,
                   case when %s then 1 else 0 end as valid_breakdown,
-                  case when (%s) and p.model is not null then %s end as estimated_cost_usd,
-                  case when e.input_tokens is null or e.output_tokens is null
-                         or e.cached_input_tokens is null or e.cache_write_input_tokens is null
-                       then 'MISSING_BREAKDOWN'
-                       when not (%s) then 'INVALID_BREAKDOWN'
-                       when p.model is null then 'MISSING_PRICE' else 'PRICED' end as cost_status
+                  b.cost_usd as estimated_cost_usd,
+                  coalesce(b.cost_status,'PENDING_BILLING') as cost_status,
+                  b.multiplier as billing_multiplier,b.mode_status as billing_mode_status,b.origin as billing_origin,b.mode_source as billing_mode_source
                 from codex_usage_events e
                 left join users u on u.id = e.user_id
                 left join teams t on t.id = e.team_id
-                left join usage_model_prices p on p.model = e.model
+                left join usage_billing_entries b on b.event_id = e.id
                 where e.occurred_at >= :from and e.occurred_at < :to %s
             )
             """;
@@ -145,7 +138,7 @@ public class UsageAnalyticsService {
         addFilter(predicates, params, "reasoning_effort", filter.reasoningEffort());
         addFilter(predicates, params, "user_id", filter.userId());
         addFilter(predicates, params, "team_id", filter.teamId());
-        return new Scope(from, to, SCOPE.formatted(VALID, VALID, COST, VALID, predicates), params);
+        return new Scope(from, to, SCOPE.formatted(VALID, predicates), params);
     }
 
     private Stats summary(Scope scope) {
@@ -222,6 +215,7 @@ public class UsageAnalyticsService {
                 row.getString("reasoning_effort"), nullableLong(row, "input_tokens"),
                 nullableLong(row, "cached_input_tokens"), nullableLong(row, "cache_write_input_tokens"),
                 nullableLong(row, "output_tokens"), nullableLong(row, "reasoning_output_tokens"),
-                row.getBigDecimal("estimated_cost_usd"), row.getString("cost_status"));
+                row.getBigDecimal("estimated_cost_usd"), row.getString("cost_status"), row.getString("service_tier"),
+                row.getBigDecimal("billing_multiplier"), row.getString("billing_mode_status"), row.getString("billing_origin"), row.getString("billing_mode_source"));
     }
 }

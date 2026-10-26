@@ -3,6 +3,8 @@ export type UserStatus = 'ACTIVE' | 'DISABLED';
 export type TeamStatus = 'ACTIVE' | 'DISABLED';
 
 export interface UserResponse {
+  fiveHourUsdLimit?: string | null;
+  weeklyUsdLimit?: string | null;
   id: string;
   email: string;
   displayName: string;
@@ -72,6 +74,9 @@ export type UserUpdate = Partial<
 >;
 
 export interface TeamResponse {
+  fiveHourUsdLimit?: string | null;
+  weeklyUsdLimit?: string | null;
+  totalUsdLimit?: string | null;
   id: string;
   name: string;
   description: string;
@@ -133,6 +138,15 @@ export interface UserTokenLimitUpdate {
   fiveHourTokenLimit: number | null;
   weeklyTokenLimit: number | null;
 }
+export function updateUserUsdLimits(id: string, body: import('./usd-types').UsdBudgetInput): Promise<import('./usd-types').UsdScope> {
+  return request(`/api/v1/admin/users/${encodeURIComponent(id)}/usd-limits`, { method: 'PUT', body: JSON.stringify(body) });
+}
+export function updateTeamUsdLimits(id: string, body: import('./usd-types').UsdBudgetInput): Promise<import('./usd-types').UsdScope> {
+  return request(`/api/v1/admin/teams/${encodeURIComponent(id)}/usd-limits`, { method: 'PUT', body: JSON.stringify(body) });
+}
+export function reconcileUsageBilling(): Promise<{ updated: number }> {
+  return request('/api/v1/admin/usage/billing/reconcile', { method: 'POST' });
+}
 
 export interface TeamTokenLimitUpdate extends UserTokenLimitUpdate {
   totalTokenLimit: number | null;
@@ -141,6 +155,7 @@ export interface TeamTokenLimitUpdate extends UserTokenLimitUpdate {
 }
 
 export interface UserQuotaOverview {
+  billing?: import('./usd-types').UsdOverview;
   allowed?: boolean;
   blockReason?: string | null;
   policy: {
@@ -157,6 +172,7 @@ export interface UserQuotaOverview {
 }
 
 export interface TeamQuotaOverview {
+  billing?: import('./usd-types').UsdScope;
   id: string;
   name: string;
   status: TeamStatus;
@@ -187,6 +203,8 @@ export interface OfficialQuotaSnapshot {
 }
 
 export interface OfficialAccountResponse {
+  budgetUsd?: string | null;
+  billing?: import('./usd-types').UsdOfficialAccount;
   id: string;
   label: string;
   estimatedTotalTokens: number;
@@ -227,8 +245,9 @@ export interface OfficialAuthenticatorCode {
 }
 
 export interface OfficialAccountInput {
+  budgetUsd?: string | null;
   label: string;
-  estimatedTotalTokens: number;
+  estimatedTotalTokens?: number;
   reporterEmail: string | null;
   version?: number;
 }
@@ -539,9 +558,14 @@ export interface MeterDeviceStatus {
   online: boolean;
 }
 
-export type UsageCostStatus = 'PRICED' | 'MISSING_PRICE' | 'MISSING_BREAKDOWN' | 'INVALID_BREAKDOWN';
+export type UsageCostStatus = 'PRICED' | 'MISSING_PRICE' | 'MISSING_BREAKDOWN' | 'INVALID_BREAKDOWN' | 'PENDING_BILLING' | 'MISSING_SERVICE_TIER';
 
 export interface UsageTokenBreakdown {
+  serviceTier?: string | null;
+  billingMultiplier?: number | null;
+  billingModeStatus?: string | null;
+  billingOrigin?: string | null;
+  billingModeSource?: string | null;
   inputTokens?: number | null;
   cachedInputTokens?: number | null;
   cacheWriteInputTokens?: number | null;
@@ -630,6 +654,7 @@ export interface UsageOptions {
 }
 
 export interface UsageModelPriceInput {
+  fastMultiplier?: number;
   model: string;
   inputPrice: number;
   outputPrice: number;
@@ -1150,4 +1175,19 @@ export function deleteTeam(id: string): Promise<void> {
   return request<void>(`/api/v1/admin/teams/${encodeURIComponent(id)}`, {
     method: 'DELETE',
   });
+}
+
+export interface MeterBillingMode {
+  deviceId: string; status: 'ACTIVE' | 'REVOKED'; serviceTier: 'standard' | 'fast' | 'unknown'; effectiveAt: string | null;
+}
+export function getUserBillingModes(id: string): Promise<MeterBillingMode[]> {
+  return request(`/api/v1/admin/users/${encodeURIComponent(id)}/billing-modes`);
+}
+export function setUserBillingMode(id: string, deviceId: string, serviceTier: MeterBillingMode['serviceTier']): Promise<MeterBillingMode[]> {
+  return request(`/api/v1/admin/users/${encodeURIComponent(id)}/billing-modes/${encodeURIComponent(deviceId)}`, {
+    method: 'PUT', body: JSON.stringify({ serviceTier }),
+  });
+}
+export function confirmUsageBillingMode(eventIds: string[], serviceTier: 'standard' | 'fast'): Promise<{ updated: number }> {
+  return request('/api/v1/admin/usage/billing/confirm-mode', { method: 'POST', body: JSON.stringify({ eventIds, serviceTier }) });
 }

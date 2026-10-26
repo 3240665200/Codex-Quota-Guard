@@ -13,13 +13,13 @@ import org.springframework.transaction.annotation.Transactional;
 public class UsageEventAuditService {
     private final UserRepository users;
     private final CodexUsageEventRepository events;
-    private final UsageModelPriceRepository prices;
+    private final UsageBillingService billing;
 
     public UsageEventAuditService(UserRepository users, CodexUsageEventRepository events,
-            UsageModelPriceRepository prices) {
+            UsageBillingService billing) {
         this.users = users;
         this.events = events;
-        this.prices = prices;
+        this.billing = billing;
     }
 
     @Transactional(readOnly = true)
@@ -27,8 +27,7 @@ public class UsageEventAuditService {
         if (!users.existsById(userId)) {
             throw new DomainException("USER_NOT_FOUND", "User not found", HttpStatus.NOT_FOUND);
         }
-        return UsageEventAuditPage.from(events.findByUserIdOrderByReceivedAtDescIdDesc(
-                userId, PageRequest.of(page, size)), prices.findAll().stream()
-                        .collect(Collectors.toMap(UsageModelPrice::getModel, price -> price)));
+        var pageData = events.findByUserIdOrderByReceivedAtDescIdDesc(userId, PageRequest.of(page,size));
+        return UsageEventAuditPage.from(pageData, billing.entries(pageData.getContent().stream().map(CodexUsageEvent::getId).toList()));
     }
 }

@@ -11,12 +11,13 @@ const environment = nativeBuildEnvironment();
 if (process.platform === "win32" && !environment.CARGO_TARGET_DIR) {
   environment.CARGO_TARGET_DIR = path.resolve(
     projectRoot,
-    "../../../dist/build-target",
+    "../../../.cache/rust",
   );
 }
 if (environment.CARGO_TARGET_DIR) {
   mkdirSync(environment.CARGO_TARGET_DIR, { recursive: true });
 }
+if (environment.TEMP) mkdirSync(environment.TEMP, { recursive: true });
 
 const tauriCli = path.join(
   projectRoot,

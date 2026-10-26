@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import axios, { type AxiosRequestConfig } from "axios";
 import { z } from "zod";
+import { compareUsd, usdOverviewSchema } from './usd';
 
 const isoInstant = z.string().min(1);
 const tokenCount = z
@@ -366,12 +367,19 @@ const usageEventsSchema = z.object({
           .nonnegative()
           .nullable()
           .default(null),
+        serviceTier: z.string().max(24).nullable().optional(),
+        billingMultiplier: z.number().finite().min(1).max(100).nullable().optional(),
+        billingModeStatus: z.enum(['FAST','STANDARD','UNRECORDED']).nullable().optional(),
+        billingOrigin: z.string().max(32).nullable().optional(),
+        billingModeSource: z.string().max(32).nullable().optional(),
         costStatus: z
           .enum([
             "PRICED",
             "MISSING_PRICE",
             "MISSING_BREAKDOWN",
             "INVALID_BREAKDOWN",
+            "PENDING_BILLING",
+            "MISSING_SERVICE_TIER",
           ])
           .nullable()
           .default(null),
@@ -507,6 +515,7 @@ const quotaOverviewSchema = z
       .transform((members) => members ?? null),
     policy: quotaPolicySchema,
     usage: quotaUsageSchema,
+    billing: usdOverviewSchema,
     allowed: z.boolean(),
     blockReason: z.string().nullable(),
   })
@@ -541,22 +550,14 @@ const quotaOverviewSchema = z
         path: ["usage"],
       });
     }
-    const personalExhausted =
-      (value.usage.fiveHourRemainingTokens !== null &&
-        value.usage.fiveHourRemainingTokens <= 0) ||
-      (value.usage.weeklyRemainingTokens !== null &&
-        value.usage.weeklyRemainingTokens <= 0);
-    const teamExhausted =
-      value.teamQuota &&
-      [
-        value.teamQuota.fiveHourRemainingTokens,
-        value.teamQuota.weeklyRemainingTokens,
-        value.teamQuota.totalRemainingTokens,
-      ].some((remaining) => remaining !== null && remaining <= 0);
-    if (value.allowed && (personalExhausted || teamExhausted)) {
+    const windows = [value.billing.personal.fiveHour, value.billing.personal.weekly,
+      ...(value.billing.team ? [value.billing.team.fiveHour,value.billing.team.weekly,value.billing.team.total] : []),
+      ...(value.billing.officialAccount ? [value.billing.officialAccount.quota.total] : [])];
+    const exhausted = windows.some((window) => window.limitUsd !== null && compareUsd(window.usedUsd, window.limitUsd) >= 0);
+    if (value.allowed !== value.billing.allowed || value.blockReason !== value.billing.blockReason || (value.allowed && exhausted)) {
       context.addIssue({
         code: "custom",
-        message: "可用状态不能包含已用尽的个人或团队额度。",
+        message: "USD 额度与服务端的可用状态不一致。",
         path: ["allowed"],
       });
     }

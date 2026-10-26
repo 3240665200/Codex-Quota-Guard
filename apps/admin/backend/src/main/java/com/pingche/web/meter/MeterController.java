@@ -37,7 +37,7 @@ public class MeterController {
     public ResponseEntity<Map<String, Integer>> report(Authentication authentication,
             @Valid @RequestBody CodexUsageReportRequest request) {
         MeterIdentity device = (MeterIdentity) authentication.getPrincipal();
-        usage.report(device.userId(), request);
+        usage.report(device.userId(), device.deviceId(), request);
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
                 .body(Map.of("acceptedEvents", request.events().size()));
     }
@@ -47,5 +47,13 @@ public class MeterController {
         MeterIdentity device = (MeterIdentity) authentication.getPrincipal();
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
                 .body(devices.renew(device.deviceId()));
+    }
+
+    @PostMapping("/usage/modes")
+    public ResponseEntity<Map<String,Integer>> correctModes(Authentication authentication,
+            @Valid @RequestBody com.pingche.web.quota.UsageModeCorrectionRequest request) {
+        MeterIdentity device=(MeterIdentity)authentication.getPrincipal();
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(Map.of("updatedEvents",usage.correctModes(device.userId(),device.deviceId(),request)));
     }
 }

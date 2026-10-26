@@ -1,3 +1,4 @@
+import { usdFixture, moneyScope, moneyWindow } from "@/test/usd-fixtures";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api, getApiErrorMessage } from "@/lib/api";
@@ -11,6 +12,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 const quotaOverview = {
+  billing: usdFixture(),
   user: {
     id: "user-1",
     email: "alice@example.com",
@@ -817,15 +819,15 @@ describe("Tauri API boundary", () => {
   );
 
   it.each([
-    { fiveHourTokenLimit: 0, fiveHourRemainingTokens: 0 },
-    { weeklyTokenLimit: 1_000, weeklyRemainingTokens: 0 },
-    { totalTokenLimit: 5_000, totalRemainingTokens: 0 },
+    ['fiveHour', '0', '0'],
+    ['weekly', '1000', '1000'],
+    ['total', '5000', '5000'],
   ])(
-    "still rejects an allowed response with an exhausted team limit %j",
-    async (exhausted) => {
+    "rejects an allowed response with an exhausted USD team window %s",
+    async (key, limit, used) => {
       harness.respond({
         ...unlimitedOverview,
-        teamQuota: { ...unlimitedOverview.teamQuota, ...exhausted },
+        billing: usdFixture({ team: { ...moneyScope(), [key]: moneyWindow(limit, used, '0') } }),
       });
       await expect(api.quotaOverview()).rejects.toThrow();
     },
@@ -845,8 +847,8 @@ describe("Tauri API boundary", () => {
         fiveHourRemainingTokens: null,
         weeklyRemainingTokens: null,
       },
-      allowed: false,
-      blockReason: "TOKEN_QUOTA_UNCONFIGURED",
+      allowed: true,
+      blockReason: null,
     });
 
     await expect(api.quotaOverview()).resolves.toMatchObject({

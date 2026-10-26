@@ -1,4 +1,6 @@
 # Local credentials and runtime state
+.local/
+.cache/
 .codex-quota-guard/
 codex-home/
 runtime-state.json

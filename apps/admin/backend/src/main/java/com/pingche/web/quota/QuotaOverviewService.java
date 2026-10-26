@@ -31,17 +31,19 @@ public class QuotaOverviewService {
     private final TeamRepository teams;
     private final CodexUsageEventRepository usage;
     private final Clock clock;
+    private final UsdQuotaService usd;
 
     public QuotaOverviewService(
             UserRepository users,
             TeamRepository teams,
             CodexUsageEventRepository usage,
-            Clock clock
+            Clock clock, UsdQuotaService usd
     ) {
         this.users = users;
         this.teams = teams;
         this.usage = usage;
         this.clock = clock;
+        this.usd = usd;
     }
 
     @Transactional(readOnly = true)
@@ -61,7 +63,8 @@ public class QuotaOverviewService {
         TeamQuotaOverviewResponse teamQuota = team == null ? null : teamQuota(team, now);
         QuotaOverviewResponse.Usage currentUsage = currentUsage(user, now);
 
-        String blockReason = blockReason(team, teamQuota, currentUsage, policy);
+        var billing = usd.overview(userId, includeTeamMembers);
+        String blockReason = billing.blockReason();
         return new QuotaOverviewResponse(
                 QuotaSystemUserResponse.from(user),
                 teamReference,
@@ -70,7 +73,7 @@ public class QuotaOverviewService {
                 policy,
                 currentUsage,
                 blockReason == null,
-                blockReason
+                blockReason, billing
         );
     }
 
@@ -96,7 +99,7 @@ public class QuotaOverviewService {
                 remaining(team.getFiveHourTokenLimit(), fiveHourUsed),
                 remaining(team.getWeeklyTokenLimit(), weeklyUsed),
                 remaining(team.getTotalTokenLimit(), totalUsed),
-                usage.latestTeamReceivedAt(team.getId())
+                usage.latestTeamReceivedAt(team.getId()), usd.team(team.getId())
         );
     }
 

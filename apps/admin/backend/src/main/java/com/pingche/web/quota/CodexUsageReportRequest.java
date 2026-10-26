@@ -24,8 +24,15 @@ public record CodexUsageReportRequest(
             @Min(0) @Max(100_000_000) Long cachedInputTokens,
             @Min(0) @Max(100_000_000) Long cacheWriteInputTokens,
             @Min(0) @Max(100_000_000) Long outputTokens,
-            @Min(0) @Max(100_000_000) Long reasoningOutputTokens
+            @Min(0) @Max(100_000_000) Long reasoningOutputTokens,
+            @Pattern(regexp = "default|standard|fast|priority|flex|auto|scale|unknown") String serviceTier
     ) {
+        public Event(String eventId, Instant occurredAt, long totalTokens, Source source,
+                String model, String reasoningEffort, Long inputTokens, Long cachedInputTokens,
+                Long cacheWriteInputTokens, Long outputTokens, Long reasoningOutputTokens) {
+            this(eventId, occurredAt, totalTokens, source, model, reasoningEffort, inputTokens, cachedInputTokens,
+                    cacheWriteInputTokens, outputTokens, reasoningOutputTokens, null);
+        }
         public Event(String eventId, Instant occurredAt, long totalTokens, Source source) {
             this(eventId, occurredAt, totalTokens, source, null, null);
         }

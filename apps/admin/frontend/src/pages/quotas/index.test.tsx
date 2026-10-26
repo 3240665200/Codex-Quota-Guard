@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import QuotasPage from './index';
 import { getTeamQuotaOverview, getUserQuotaOverview, listTeams, listUsers, resetTeamQuota } from '../../services/api';
 import { setQuotaDisplayMode } from '../../services/quota-display';
+import { usdOverview, usdScope, usdWindow } from '../../test/usd-fixtures';
 
 vi.mock('@umijs/max', () => ({ history: { push: vi.fn() } }));
 
@@ -20,6 +21,7 @@ describe('额度查看页面', () => {
     vi.clearAllMocks();
     vi.mocked(listTeams).mockResolvedValue([{ id: 'team-1', name: '研发', memberCount: 2 } as never]);
     vi.mocked(getTeamQuotaOverview).mockResolvedValue({
+      billing: usdScope(usdWindow('5', '5.1', '0'), usdWindow('10', '5.1', '4.9'), usdWindow('20', '8', '12')),
       id: 'team-1', name: '研发', status: 'ACTIVE', memberCount: 2,
       fiveHourTokenLimit: 500, weeklyTokenLimit: 1000,
       totalTokenLimit: 2000,
@@ -35,16 +37,16 @@ describe('额度查看页面', () => {
       page: 0, size: 20, totalElements: 1, totalPages: 1,
     });
     vi.mocked(resetTeamQuota).mockResolvedValue(undefined);
-    vi.mocked(getUserQuotaOverview).mockResolvedValue({ policy: { fiveHourTokenLimit: 10_000, weeklyTokenLimit: 20_000 },
+    vi.mocked(getUserQuotaOverview).mockResolvedValue({ billing: usdOverview({ personal: usdScope(usdWindow('100', '2.5', '97.5'), usdWindow('200', '6', '194')) }), policy: { fiveHourTokenLimit: 10_000, weeklyTokenLimit: 20_000 },
       usage: { fiveHourUsedTokens: 250, weeklyUsedTokens: 600, fiveHourRemainingTokens: 9750, weeklyRemainingTokens: 19400 } });
   });
 
   it('shows shared team totals and lets an administrator refresh them', async () => {
     render(<AntApp><QuotasPage /></AntApp>);
-    expect((await screen.findAllByTitle('精确值：510 Token')).length).toBe(2);
-    expect(screen.getByTitle('精确值：500 Token')).toBeInTheDocument();
-    expect(screen.getByRole('progressbar', { name: '研发 5 小时团队已用额度' })).toHaveAttribute('aria-valuenow', '100');
-    expect(screen.getByTitle('精确值：1,000 Token')).toBeInTheDocument();
+    expect((await screen.findAllByTitle('5.1 USD')).length).toBe(2);
+    expect(screen.getByTitle('5 USD')).toBeInTheDocument();
+    expect(screen.getByRole('progressbar', { name: '研发 5 小时团队 USD已用额度' })).toHaveAttribute('aria-valuenow', '100');
+    expect(screen.getByTitle('10 USD')).toBeInTheDocument();
     expect(screen.getByText('Alice')).toBeInTheDocument();
     fireEvent.click(screen.getByText('刷新'));
     await waitFor(() => expect(getTeamQuotaOverview).toHaveBeenCalledTimes(2));
@@ -52,6 +54,7 @@ describe('额度查看页面', () => {
 
   it('shows a large team total in units while preserving its exact value', async () => {
     vi.mocked(getTeamQuotaOverview).mockResolvedValue({
+      billing: usdScope(usdWindow('100000', '99999', '1'), usdWindow('1000000000', '808239710.123456789012', '191760289.876543210988'), usdWindow('2000000000', '900000000', '1100000000')),
       id: 'team-1', name: '研发', status: 'ACTIVE', memberCount: 2,
       fiveHourTokenLimit: 100_000, weeklyTokenLimit: 1_000_000_000,
       totalTokenLimit: 2_000_000_000,
@@ -62,16 +65,13 @@ describe('额度查看页面', () => {
       measuredAt: '2026-10-08T04:00:00Z',
     });
     render(<AntApp><QuotasPage /></AntApp>);
-    expect(await screen.findByText('约8.08亿 Token')).toHaveAttribute(
-      'title', '精确值：808,239,710 Token',
-    );
-    expect(screen.getByText('约10万 Token')).toHaveAttribute(
-      'title', '精确值：99,999 Token',
-    );
+    expect(await screen.findByText('$808,239,710.123456789012 USD')).toHaveAttribute('title', '808239710.123456789012 USD');
+    expect(screen.getByText('$99,999.00 USD')).toHaveAttribute('title', '99999 USD');
   });
 
   it('confirms a team reset and refreshes shared usage in place', async () => {
     vi.mocked(getTeamQuotaOverview).mockResolvedValueOnce({
+      billing: usdScope(usdWindow('5', '5.1', '0'), usdWindow('10', '5.1', '4.9'), usdWindow('20', '8', '12')),
       id: 'team-1', name: '研发', status: 'ACTIVE', memberCount: 2,
       fiveHourTokenLimit: 500, weeklyTokenLimit: 1000,
       totalTokenLimit: 2000,
@@ -81,6 +81,7 @@ describe('额度查看页面', () => {
       totalRemainingTokens: 1200,
       measuredAt: '2026-10-08T04:00:00Z',
     }).mockResolvedValue({
+      billing: usdScope(usdWindow('5', '0', '5'), usdWindow('10', '0', '10'), usdWindow('20', '0', '20')),
       id: 'team-1', name: '研发', status: 'ACTIVE', memberCount: 2,
       fiveHourTokenLimit: 500, weeklyTokenLimit: 1000,
       totalTokenLimit: 2000,
@@ -91,12 +92,12 @@ describe('额度查看页面', () => {
       measuredAt: '2026-10-08T04:00:00Z',
     });
     render(<AntApp><QuotasPage /></AntApp>);
-    expect((await screen.findAllByTitle('精确值：510 Token')).length).toBe(2);
+    expect((await screen.findAllByTitle('5.1 USD')).length).toBe(2);
     fireEvent.click(screen.getByRole('button', { name: '重置团队额度' }));
     expect(screen.getByText(/成员的个人用量不变/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '确认重置' }));
     await waitFor(() => expect(resetTeamQuota).toHaveBeenCalledWith('team-1'));
-    expect((await screen.findAllByTitle('精确值：0 Token')).length).toBe(3);
+    expect((await screen.findAllByTitle('0 USD')).length).toBe(3);
     expect(getTeamQuotaOverview).toHaveBeenCalledTimes(2);
   });
 
@@ -104,12 +105,12 @@ describe('额度查看页面', () => {
     setQuotaDisplayMode('remaining');
     render(<AntApp><QuotasPage /></AntApp>);
     const region = screen.getByRole('region', { name: '用户额度' });
-    expect(await within(region).findByTitle('精确值：9,750 Token')).toBeInTheDocument();
-    expect(within(region).getByRole('progressbar', { name: 'Alice 5 小时个人剩余额度' })).toHaveAttribute('aria-valuenow', '97.5');
-    expect(within(region).getByRole('progressbar', { name: 'Alice 7 天个人剩余额度' })).toHaveAttribute('aria-valuenow', '97');
+    expect(await within(region).findByTitle('97.5 USD')).toBeInTheDocument();
+    expect(within(region).getByRole('progressbar', { name: 'Alice 5 小时个人 USD剩余额度' })).toHaveAttribute('aria-valuenow', '97.5');
+    expect(within(region).getByRole('progressbar', { name: 'Alice 7 天个人 USD剩余额度' })).toHaveAttribute('aria-valuenow', '97');
     act(() => { setQuotaDisplayMode('used'); });
-    expect(within(region).getByTitle('精确值：250 Token')).toBeInTheDocument();
-    expect(within(region).getByRole('progressbar', { name: 'Alice 5 小时个人已用额度' })).toHaveAttribute('aria-valuenow', '2.5');
+    expect(within(region).getByTitle('2.5 USD')).toBeInTheDocument();
+    expect(within(region).getByRole('progressbar', { name: 'Alice 5 小时个人 USD已用额度' })).toHaveAttribute('aria-valuenow', '2.5');
     expect(getUserQuotaOverview).toHaveBeenCalledTimes(1);
   });
 

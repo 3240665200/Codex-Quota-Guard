@@ -30,18 +30,25 @@ public class CodexUsageReportService {
     private final CodexUsageEventRepository events;
     private final QuotaOverviewService overview;
     private final Clock clock;
+    private final UsageBillingService billing;
 
     public CodexUsageReportService(UserRepository users,
             CodexUsageEventRepository events,
-            QuotaOverviewService overview, Clock clock) {
+            QuotaOverviewService overview, Clock clock, UsageBillingService billing) {
         this.users = users;
         this.events = events;
         this.overview = overview;
         this.clock = clock;
+        this.billing = billing;
     }
 
     @Transactional
     public QuotaOverviewResponse report(UUID userId, CodexUsageReportRequest request) {
+        return report(userId, null, request);
+    }
+
+    @Transactional
+    public QuotaOverviewResponse report(UUID userId, UUID deviceId, CodexUsageReportRequest request) {
         User user = users.findByIdForUpdate(userId).orElseThrow(this::unavailable);
         if (user.getStatus() != User.Status.ACTIVE) {
             throw unavailable();
@@ -58,16 +65,29 @@ public class CodexUsageReportService {
             }
             String key = eventKey(userId, event.eventId());
             if (queued.add(key) && !events.existsById(key)) {
-                newEvents.add(new CodexUsageEvent(key, userId, user.getTeamId(),
+                CodexUsageEvent stored = new CodexUsageEvent(key, userId, user.getTeamId(),
                         event.totalTokens(), event.occurredAt(), now, event.source().name(),
                         event.model(), event.reasoningEffort(), event.inputTokens(), event.cachedInputTokens(),
-                        event.cacheWriteInputTokens(), event.outputTokens(), event.reasoningOutputTokens()));
+                        event.cacheWriteInputTokens(), event.outputTokens(), event.reasoningOutputTokens());
+                stored.setServiceTier(event.serviceTier());
+                stored.setMeterDeviceId(deviceId);
+                newEvents.add(stored);
             }
         }
         if (!newEvents.isEmpty()) {
             events.saveAllAndFlush(newEvents);
+            billing.record(newEvents);
         }
         return overview.overview(userId);
+    }
+
+    @Transactional
+    public int correctModes(UUID userId, UUID deviceId, UsageModeCorrectionRequest request) {
+        User user = users.findByIdForUpdate(userId).orElseThrow(this::unavailable);
+        if (user.getStatus() != User.Status.ACTIVE) throw unavailable();
+        int updated = 0;
+        for (var item : request.events()) updated += billing.correctReportedMode(userId, deviceId, eventKey(userId,item.eventId()),item.serviceTier());
+        return updated;
     }
 
     private String eventKey(UUID userId, String eventId) {

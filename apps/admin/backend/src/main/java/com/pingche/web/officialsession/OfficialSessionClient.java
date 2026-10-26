@@ -229,6 +229,16 @@ public class OfficialSessionClient {
         Boolean visible = bool(payload, "show_session_manager");
         JsonNode devices = payload.get("devices");
         if (visible == null || devices == null || !devices.isArray() || devices.size() > 500) throw invalidResponse();
+        // Never treat an explicitly paginated response as a complete absence check.
+        for (String key : List.of("has_more", "hasMore", "next_cursor", "nextCursor", "next_page", "nextPage")) {
+            JsonNode value=payload.get(key);
+            if (value!=null && !value.isNull() && !(value.isBoolean() && !value.asBoolean())
+                    && !(value.isString() && value.asString().isBlank())) throw invalidResponse();
+        }
+        for (String key : List.of("total", "total_count")) {
+            JsonNode value=payload.get(key);
+            if(value!=null && !value.isNull() && (!value.isIntegralNumber() || value.asLong()!=devices.size())) throw invalidResponse();
+        }
         List<OfficialSessionInfo> rows = new ArrayList<>();
         for (JsonNode device : devices) {
             if (!device.isObject()) throw invalidResponse();

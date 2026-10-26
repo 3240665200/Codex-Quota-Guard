@@ -11,6 +11,9 @@ import java.util.UUID;
 @Entity
 @Table(name = "official_accounts")
 public class OfficialAccount {
+    @Column(name = "budget_usd", precision = 30, scale = 12) private java.math.BigDecimal budgetUsd;
+    public java.math.BigDecimal getBudgetUsd() { return budgetUsd; }
+    public void setBudgetUsd(java.math.BigDecimal value) { budgetUsd = value; }
     @Id private UUID id;
     @Column(nullable = false, unique = true, length = 120) private String label;
     @Column(name = "estimated_total_tokens", nullable = false) private long estimatedTotalTokens;

@@ -23,6 +23,8 @@ public class UsageModelPrice {
     private BigDecimal cacheReadPrice;
     @Column(name = "cache_write_price", nullable = false, precision = 18, scale = 6)
     private BigDecimal cacheWritePrice;
+    @Column(name = "fast_multiplier", nullable = false, precision = 12, scale = 6)
+    private BigDecimal fastMultiplier = new BigDecimal("1.5");
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
     @Column(name = "price_source", nullable = false, length = 32)
@@ -50,6 +52,8 @@ public class UsageModelPrice {
     public BigDecimal getOutputPrice() { return outputPrice; }
     public BigDecimal getCacheReadPrice() { return cacheReadPrice; }
     public BigDecimal getCacheWritePrice() { return cacheWritePrice; }
+    public BigDecimal getFastMultiplier() { return fastMultiplier; }
+    public void setFastMultiplier(BigDecimal value) { this.fastMultiplier = value; }
     public Instant getUpdatedAt() { return updatedAt; }
     public String getPriceSource() { return priceSource; }
     public String getSourceReference() { return sourceReference; }

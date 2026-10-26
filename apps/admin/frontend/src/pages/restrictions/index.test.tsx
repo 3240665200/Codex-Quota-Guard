@@ -2,14 +2,14 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { App as AntApp, ConfigProvider } from 'antd';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import RestrictionsPage from './index';
-import { getRestrictionManagement, saveRestrictionSettings } from '../../services/restrictionsApi';
+import { getRestrictionManagement, saveRestrictionSettings, saveStaleBindingSettings } from '../../services/restrictionsApi';
 import type { RestrictionManagement } from '../../services/restrictionsApi';
 import routes from '../../../config/routes';
 
-vi.mock('../../services/restrictionsApi', () => ({ getRestrictionManagement: vi.fn(), saveRestrictionSettings: vi.fn() }));
+vi.mock('../../services/restrictionsApi', () => ({ getRestrictionManagement: vi.fn(), saveRestrictionSettings: vi.fn(), saveStaleBindingSettings: vi.fn() }));
 const state: RestrictionManagement = {
   policy: { personalQuotaLogoutEnabled: false, unboundCleanupEnabled: false, unboundCheckIntervalMinutes: 90,
-    quotaCheckIntervalSeconds: 30, version: 2, updatedAt: '2026-11-01T00:00:00Z' }, accounts: [], executions: [],
+    personalCheckIntervalMinutes: 1, quotaCheckIntervalSeconds: 60, version: 2, updatedAt: '2026-11-01T00:00:00Z' }, accounts: [], executions: [],
 };
 function page() { return render(<ConfigProvider theme={{ token: { motion: false } }}><AntApp><RestrictionsPage /></AntApp></ConfigProvider>); }
 async function ready() { await waitFor(() => expect(screen.getByRole('button', { name: '保存限制设置' })).toBeEnabled(), { timeout: 5000 }); }
@@ -24,6 +24,18 @@ describe('限制管理', () => {
     expect(screen.getByText(/保留官方标记的当前设备、受信任设备/)).toBeVisible();
     expect(saveRestrictionSettings).not.toHaveBeenCalled();
   });
+  it('shows minute-based stale binding cleanup and saves its switch without replaying other unsaved fields', async () => {
+    const next = { ...state, staleBindings: { enabled: true, intervalMinutes: 1, lastCheckedAt: null, nextCheckAt: null, removedCount: 4, lastErrorCode: null } };
+    vi.mocked(getRestrictionManagement).mockResolvedValue(next);
+    vi.mocked(saveStaleBindingSettings).mockResolvedValue({ ...next, policy: { ...state.policy, version: 3 }, staleBindings: { ...next.staleBindings, enabled: false } });
+    page(); await ready();
+    expect(screen.getByText(/每 1 分钟核对官方会话列表/)).toBeVisible();
+    expect(screen.getByText(/累计解除 4 条绑定/)).toBeVisible();
+    fireEvent.click(screen.getByRole('switch', { name: '自动清理失效会话绑定' }));
+    await waitFor(() => expect(saveStaleBindingSettings).toHaveBeenCalledWith(false, 2));
+    await waitFor(() => expect(screen.getByRole('switch', { name: '自动清理失效会话绑定' })).not.toBeChecked());
+    expect(saveRestrictionSettings).not.toHaveBeenCalled();
+  });
   it('saves independent rule switches and the chosen interval with the last loaded version', async () => {
     page(); await ready();
     fireEvent.click(screen.getByRole('switch', { name: '个人额度用尽后下线绑定会话' }));
@@ -33,7 +45,7 @@ describe('限制管理', () => {
     fireEvent.blur(screen.getByRole('spinbutton', { name: '未绑定会话检查间隔' }));
     fireEvent.click(screen.getByRole('button', { name: '保存限制设置' }));
     await waitFor(() => expect(saveRestrictionSettings).toHaveBeenCalledWith({ personalQuotaLogoutEnabled: true, unboundCleanupEnabled: true,
-      unboundCheckIntervalMinutes: 120, version: 2 }), { timeout: 5000 });
+      unboundCheckIntervalMinutes: 120, personalCheckIntervalMinutes: 1, version: 2 }), { timeout: 5000 });
   });
   it('keeps edited switches after a version conflict instead of overwriting another administrator', async () => {
     vi.mocked(saveRestrictionSettings).mockRejectedValue(new Error('限制设置已变化，请刷新后再保存。'));

@@ -17,7 +17,10 @@ public record TeamResponse(
         long memberCount,
         Instant createdAt,
         Instant updatedAt,
-        long version
+        long version,
+        @com.fasterxml.jackson.annotation.JsonFormat(shape = com.fasterxml.jackson.annotation.JsonFormat.Shape.STRING) java.math.BigDecimal fiveHourUsdLimit,
+        @com.fasterxml.jackson.annotation.JsonFormat(shape = com.fasterxml.jackson.annotation.JsonFormat.Shape.STRING) java.math.BigDecimal weeklyUsdLimit,
+        @com.fasterxml.jackson.annotation.JsonFormat(shape = com.fasterxml.jackson.annotation.JsonFormat.Shape.STRING) java.math.BigDecimal totalUsdLimit
 ) {
 
     static TeamResponse from(Team team, long memberCount) {
@@ -35,7 +38,7 @@ public record TeamResponse(
                 memberCount,
                 team.getCreatedAt(),
                 team.getUpdatedAt(),
-                team.getVersion()
+                team.getVersion(), team.getFiveHourUsdLimit(), team.getWeeklyUsdLimit(), team.getTotalUsdLimit()
         );
     }
 }

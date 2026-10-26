@@ -219,8 +219,8 @@ class QuotaPolicyIntegrationTest {
                 .andExpect(jsonPath("$.policy.fiveHourSource").value("USER"))
                 .andExpect(jsonPath("$.policy.weeklySource").value("UNCONFIGURED"))
                 .andExpect(jsonPath("$.usage.fiveHourRemainingTokens").value(0))
-                .andExpect(jsonPath("$.allowed").value(false))
-                .andExpect(jsonPath("$.blockReason").value("FIVE_HOUR_TOKEN_QUOTA_EXCEEDED"));
+                .andExpect(jsonPath("$.allowed").value(true))
+                .andExpect(jsonPath("$.blockReason").isEmpty());
         reportAndReadQuota(afterOverride.accessToken(), usageRequest(
                                 "codex-local-usage:v1:" + "b".repeat(64), 20))
                 .andExpect(status().isOk())
@@ -258,14 +258,14 @@ class QuotaPolicyIntegrationTest {
                 .andExpect(jsonPath("$.usage.fiveHourUsedTokens").value(230))
                 .andExpect(jsonPath("$.teamQuota.fiveHourUsedTokens").value(510))
                 .andExpect(jsonPath("$.teamQuota.fiveHourRemainingTokens").value(0))
-                .andExpect(jsonPath("$.blockReason").value("TEAM_FIVE_HOUR_TOKEN_QUOTA_EXCEEDED"));
+                .andExpect(jsonPath("$.blockReason").isEmpty());
         mvc.perform(get(OVERVIEW).with(boundRequest())
                         .header(HttpHeaders.AUTHORIZATION, bearer(aliceSession.accessToken())))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.usage.fiveHourUsedTokens").value(280))
                 .andExpect(jsonPath("$.usage.fiveHourRemainingTokens").value(720))
                 .andExpect(jsonPath("$.teamQuota.fiveHourUsedTokens").value(510))
-                .andExpect(jsonPath("$.allowed").value(false));
+                .andExpect(jsonPath("$.allowed").value(true));
         mvc.perform(get("/api/v1/admin/teams/{id}/quota-overview", firstTeam)
                         .header(HttpHeaders.AUTHORIZATION, bearer(admin)))
                 .andExpect(status().isOk())
@@ -431,7 +431,7 @@ class QuotaPolicyIntegrationTest {
     }
 
     @Test
-    void unsetWindowsKeepUsageWithoutLimitsAndExplicitWeeklyZeroStillBlocks() throws Exception {
+    void archivedTokenZeroDoesNotBlockUnconfiguredUsdWindows() throws Exception {
         User admin = administrator();
         authService.register("member@example.com", PASSWORD, "Member");
         User member = users.findByEmail("member@example.com").orElseThrow();
@@ -471,8 +471,8 @@ class QuotaPolicyIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.teamQuota.fiveHourRemainingTokens").value(nullValue()))
                 .andExpect(jsonPath("$.teamQuota.weeklyRemainingTokens").value(0))
-                .andExpect(jsonPath("$.allowed").value(false))
-                .andExpect(jsonPath("$.blockReason").value("TEAM_WEEKLY_TOKEN_QUOTA_EXCEEDED"));
+                .andExpect(jsonPath("$.allowed").value(true))
+                .andExpect(jsonPath("$.blockReason").isEmpty());
     }
 
     @Test
@@ -507,7 +507,7 @@ class QuotaPolicyIntegrationTest {
                 .andExpect(jsonPath("$.usage.fiveHourRemainingTokens").value(nullValue()))
                 .andExpect(jsonPath("$.teamQuota.totalUsedTokens").value(320))
                 .andExpect(jsonPath("$.teamQuota.totalRemainingTokens").value(0))
-                .andExpect(jsonPath("$.blockReason").value("TEAM_TOTAL_TOKEN_QUOTA_EXCEEDED"));
+                .andExpect(jsonPath("$.blockReason").isEmpty());
     }
 
     @Test

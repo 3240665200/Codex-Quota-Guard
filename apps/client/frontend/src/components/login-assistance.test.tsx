@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Dashboard } from "./dashboard";
 import { api, type LoginAssistanceInfo, type SystemSession } from "@/lib/api";
 import i18n from "@/lib/i18n";
+import { usdFixture } from "@/test/usd-fixtures";
 
 const handlers = vi.hoisted(() => new Set<(event: { type: string }) => void>());
 vi.mock("@/lib/assistance-events", () => ({
@@ -192,6 +193,7 @@ describe("one-message login assistance", () => {
       binding: null,
     });
     apiSpies.quotaOverview.mockResolvedValue({
+      billing: usdFixture(),
       user: session.user,
       team: { id: "team-1", name: "Design" },
       teamQuota: null,

@@ -13,8 +13,13 @@ public record QuotaOverviewResponse(
         Policy policy,
         Usage usage,
         boolean allowed,
-        String blockReason
+        String blockReason,
+        UsdQuotaService.Overview billing
 ) {
+    public QuotaOverviewResponse(QuotaSystemUserResponse user, TeamReference team, TeamQuotaOverviewResponse teamQuota,
+            List<TeamMemberUsageResponse> teamMembers, Policy policy, Usage usage, boolean allowed, String blockReason) {
+        this(user,team,teamQuota,teamMembers,policy,usage,allowed,blockReason,null);
+    }
 
     public record TeamReference(UUID id, String name) {
     }

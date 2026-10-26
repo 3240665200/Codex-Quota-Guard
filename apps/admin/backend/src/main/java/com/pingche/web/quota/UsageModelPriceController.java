@@ -41,15 +41,18 @@ public class UsageModelPriceController {
             @NotNull @DecimalMin("0") @DecimalMax("1000000") @Digits(integer = 7, fraction = 6) BigDecimal inputPrice,
             @NotNull @DecimalMin("0") @DecimalMax("1000000") @Digits(integer = 7, fraction = 6) BigDecimal outputPrice,
             @NotNull @DecimalMin("0") @DecimalMax("1000000") @Digits(integer = 7, fraction = 6) BigDecimal cacheReadPrice,
-            @NotNull @DecimalMin("0") @DecimalMax("1000000") @Digits(integer = 7, fraction = 6) BigDecimal cacheWritePrice) { }
+            @NotNull @DecimalMin("0") @DecimalMax("1000000") @Digits(integer = 7, fraction = 6) BigDecimal cacheWritePrice,
+            @DecimalMin("1") @DecimalMax("100") @Digits(integer = 3, fraction = 6) BigDecimal fastMultiplier) {
+        public PriceRequest(String model, BigDecimal input, BigDecimal output, BigDecimal cached, BigDecimal written) { this(model,input,output,cached,written,null); }
+    }
 
     public record PriceResponse(String model, BigDecimal inputPrice, BigDecimal outputPrice,
             BigDecimal cacheReadPrice, BigDecimal cacheWritePrice, String currency, Instant updatedAt,
-            String priceSource, String sourceReference, LocalDate sourceCheckedAt) {
+            String priceSource, String sourceReference, LocalDate sourceCheckedAt, BigDecimal fastMultiplier) {
         static PriceResponse from(UsageModelPrice price) {
             return new PriceResponse(price.getModel(), price.getInputPrice(), price.getOutputPrice(),
                     price.getCacheReadPrice(), price.getCacheWritePrice(), "USD", price.getUpdatedAt(),
-                    price.getPriceSource(), price.getSourceReference(), price.getSourceCheckedAt());
+                    price.getPriceSource(), price.getSourceReference(), price.getSourceCheckedAt(), price.getFastMultiplier());
         }
     }
 
@@ -62,8 +65,10 @@ public class UsageModelPriceController {
 
     @PutMapping
     public ResponseEntity<PriceResponse> save(@Valid @RequestBody PriceRequest request) {
-        var price = prices.save(new UsageModelPrice(request.model(), request.inputPrice(), request.outputPrice(),
-                request.cacheReadPrice(), request.cacheWritePrice(), clock.instant()));
+        var price = new UsageModelPrice(request.model(), request.inputPrice(), request.outputPrice(),
+                request.cacheReadPrice(), request.cacheWritePrice(), clock.instant());
+        price.setFastMultiplier(request.fastMultiplier() == null ? prices.findById(request.model()).map(UsageModelPrice::getFastMultiplier).orElse(new BigDecimal("1.5")) : request.fastMultiplier());
+        price = prices.save(price);
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(PriceResponse.from(price));
     }
 

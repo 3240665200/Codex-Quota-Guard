@@ -3,7 +3,7 @@ import { PageContainer } from '@ant-design/pro-components';
 import { Alert, App, Button, Card, Col, Empty, Form, InputNumber, Row, Space, Switch, Table, Tag, Typography } from 'antd';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getErrorMessage } from '../../components/AdminState';
-import { getRestrictionManagement, saveRestrictionSettings } from '../../services/restrictionsApi';
+import { getRestrictionManagement, saveRestrictionSettings, saveStaleBindingSettings } from '../../services/restrictionsApi';
 import type { RestrictionManagement, RestrictionSettings } from '../../services/restrictionsApi';
 
 const date = (value: string | null) => value ? new Date(value).toLocaleString('zh-CN') : '尚未检查';
@@ -21,6 +21,9 @@ const errors: Record<string, string> = {
   RESTRICTION_CHECK_FAILED: '本次检查失败，后台会稍后重新检查。',
   RESTRICTION_LOGOUT_FAILED: '下线请求未完成，已进入冷却期。',
   RESTRICTION_NO_ELIGIBLE_SESSION: '命中额度条件，但官方目标会话已缺失、受保护或状态不明确，稍后再核对。',
+  STALE_BINDING_SNAPSHOT_INCOMPLETE: '官方会话列表不完整，本次保留全部绑定，稍后重试。',
+  STALE_BINDING_CONTEXT_CHANGED: '官方账户或限制设置已变化，稍后重新检查。',
+  STALE_BINDING_CHECK_FAILED: '会话列表获取失败，本次保留全部绑定，稍后重试。',
 };
 const errorText = (code: string | null) => code ? errors[code] ?? '检查暂未完成，请到官方账户核对连接及会话状态。' : '—';
 
@@ -52,11 +55,21 @@ export default function RestrictionsPage() {
         personalQuotaLogoutEnabled: values.personalQuotaLogoutEnabled,
         unboundCleanupEnabled: values.unboundCleanupEnabled,
         unboundCheckIntervalMinutes: values.unboundCheckIntervalMinutes,
+        personalCheckIntervalMinutes: values.personalCheckIntervalMinutes,
         version: version.current,
       });
       setData(next); version.current = next.policy.version; form.setFieldsValue(next.policy); setError('');
       message.success('限制设置已保存，服务器将按规则自动检查。');
     } catch (failure) { setError(getErrorMessage(failure, '限制设置保存失败，请刷新后重试。')); }
+    finally { setSaving(false); }
+  };
+  const saveStaleBindings = async (enabled: boolean) => {
+    setSaving(true);
+    try {
+      const next = await saveStaleBindingSettings(enabled, version.current);
+      setData(next); version.current = next.policy.version; setError('');
+      message.success('失效会话绑定清理设置已保存。');
+    } catch (failure) { setError(getErrorMessage(failure, '设置保存失败，请刷新后重试。')); }
     finally { setSaving(false); }
   };
   return <PageContainer title="限制管理" content="配置官方会话的自动下线规则，检查由服务器持续执行。"
@@ -69,7 +82,10 @@ export default function RestrictionsPage() {
             <Form.Item name="personalQuotaLogoutEnabled" label="个人额度用尽后下线绑定会话" valuePropName="checked">
               <Switch aria-label="个人额度用尽后下线绑定会话" checkedChildren="已启用" unCheckedChildren="已关闭" />
             </Form.Item>
-            <Typography.Paragraph type="secondary">服务器每 {data?.policy.quotaCheckIntervalSeconds ?? 30} 秒检查个人 5 小时和 7 天额度，达到任一已设置上限后，对该用户精确绑定的官方会话发起下线请求。留空即无限制，填写 0 表示额度用尽。</Typography.Paragraph>
+            <Form.Item name="personalCheckIntervalMinutes" label="个人额度检查间隔（分钟）" rules={[{ required: true, type: 'number', min: 1, max: 1440, message: '请输入 1～1440 分钟的整数。' }]} extra="默认 1 分钟；官方限流或正在执行的任务会延后检查。">
+              <InputNumber aria-label="个人额度检查间隔" min={1} max={1440} precision={0} style={{ width: '100%' }} />
+            </Form.Item>
+            <Typography.Paragraph type="secondary">服务器按保存的分钟间隔检查个人 5 小时和 7 天美元（USD）额度，达到任一已设置上限后，对该用户精确绑定的官方会话发起下线请求。留空即无限制，填写 0 表示额度用尽。</Typography.Paragraph>
             <Typography.Text type="secondary">当前官方管理会话和身份状态不明确的目标会保留。</Typography.Text>
           </Card></Col>
           <Col xs={24} lg={12}><Card title="未绑定会话清理" loading={loading && !data}>
@@ -84,6 +100,17 @@ export default function RestrictionsPage() {
         </Row>
         <Button type="primary" loading={saving} disabled={loading || !data} onClick={() => void save()} style={{ marginTop: 20 }}>保存限制设置</Button>
       </Form>
+      <Card title="失效会话绑定清理" loading={loading && !data}>
+        <Space orientation="vertical" size={12}>
+          <Space><Switch aria-label="自动清理失效会话绑定" checked={data?.staleBindings?.enabled ?? false}
+            checkedChildren="已启用" unCheckedChildren="已关闭" loading={saving}
+            disabled={loading || saving || !data?.staleBindings} onChange={(enabled) => void saveStaleBindings(enabled)} />
+            <Typography.Text>每 1 分钟核对官方会话列表</Typography.Text></Space>
+          <Typography.Text type="secondary">用户退出官方账户、重新登录后，如果旧会话已不存在，自动解除该旧会话与用户的绑定，客户端需要重新绑定新会话。获取失败、身份变化或会话列表不完整时保留绑定。</Typography.Text>
+          {data?.staleBindings && <Typography.Text>最近检查：{date(data.staleBindings.lastCheckedAt)} · 累计解除 {data.staleBindings.removedCount} 条绑定</Typography.Text>}
+          {data?.staleBindings?.lastErrorCode && <Typography.Text type="warning">{errorText(data.staleBindings.lastErrorCode)}</Typography.Text>}
+        </Space>
+      </Card>
       <Card title="账户检查状态">
         <Table rowKey="officialAccountId" loading={loading} dataSource={data?.accounts ?? []} pagination={false} scroll={{ x: 900 }}
           locale={{ emptyText: <Empty description="暂无已配置官方连接的账户" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }} columns={[

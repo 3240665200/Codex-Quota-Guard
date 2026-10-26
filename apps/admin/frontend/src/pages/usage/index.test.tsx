@@ -75,11 +75,12 @@ describe('usage statistics', () => {
     await screen.findByText('请输入模型名称');
     expect(saveUsageModelPrice).not.toHaveBeenCalled();
     fireEvent.change(screen.getByLabelText('模型名称'), { target: { value: 'test-model' } });
-    const fields = screen.getAllByRole('spinbutton');
-    [2, 8, 0.5, 0].forEach((value, index) => fireEvent.change(fields[index], { target: { value: String(value) } }));
+    ['非缓存输入', '输出（含思考）', '缓存读', '缓存写'].forEach((label, index) =>
+      fireEvent.change(screen.getByRole('spinbutton', { name: `${label} (USD / 百万 Token)` }),
+        { target: { value: String([2, 8, 0.5, 0][index]) } }));
     fireEvent.click(screen.getByRole('button', { name: /保\s*存/ }));
     await waitFor(() => expect(saveUsageModelPrice).toHaveBeenCalledWith({
-      model: 'test-model', inputPrice: 2, outputPrice: 8, cacheReadPrice: 0.5, cacheWritePrice: 0,
+      model: 'test-model', inputPrice: 2, outputPrice: 8, cacheReadPrice: 0.5, cacheWritePrice: 0, fastMultiplier: 1.5,
     }));
   });
   it('shows the CC Switch snapshot source beside imported prices', async () => {

@@ -343,7 +343,7 @@ class ClientTeamMemberUsageIntegrationTest {
     }
 
     private QuotaOverviewService fixedOverview() {
-        return new QuotaOverviewService(users, teams, events, Clock.fixed(NOW, ZoneOffset.UTC));
+        return new QuotaOverviewService(users, teams, events, Clock.fixed(NOW, ZoneOffset.UTC), new UsdQuotaService(jdbc,Clock.fixed(NOW,ZoneOffset.UTC)));
     }
 
     private TeamMemberUsageResponse memberUsage(QuotaOverviewResponse response, User user) {

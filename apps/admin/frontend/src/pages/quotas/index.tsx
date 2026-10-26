@@ -34,16 +34,13 @@ function teamColumns(onReset: (team: TeamQuotaOverview) => Promise<void>,
     render: (status: string) => <Tag color={status === 'ACTIVE' ? 'success' : 'default'}>
       {status === 'ACTIVE' ? '启用' : '停用'}</Tag> },
   { title: '5 小时共享额度', width: 230, render: (_, row) => (
-    <QuotaAmount label={`${row.name} 5 小时团队`} used={row.fiveHourUsedTokens} limit={row.fiveHourTokenLimit}
-      remaining={row.fiveHourRemainingTokens} />
+    <QuotaAmount label={`${row.name} 5 小时团队 USD`} quota={row.billing?.fiveHour} />
   ) },
   { title: '7 天共享额度', width: 230, render: (_, row) => (
-    <QuotaAmount label={`${row.name} 7 天团队`} used={row.weeklyUsedTokens} limit={row.weeklyTokenLimit}
-      remaining={row.weeklyRemainingTokens} />
+    <QuotaAmount label={`${row.name} 7 天团队 USD`} quota={row.billing?.weekly} />
   ) },
   { title: '累计总额', width: 230, render: (_, row) => (
-    <QuotaAmount label={`${row.name}累计总额`} used={row.totalUsedTokens} limit={row.totalTokenLimit}
-      remaining={row.totalRemainingTokens} />
+    <QuotaAmount label={`${row.name}累计 USD 总额`} quota={row.billing?.total} />
   ) },
   { title: '最后上报', dataIndex: 'measuredAt', width: 170,
     render: (value: string | null) => value ? new Date(value).toLocaleString('zh-CN') : '暂无' },
@@ -62,12 +59,10 @@ function userColumns(quotas: Record<string, UserQuotaOverview | null>): TableCol
       <Typography.Text type="secondary">{row.email}</Typography.Text></Space>
   ) },
   { title: '5 小时个人额度', width: 250, render: (_, row) => quotas[row.id] ?
-    <QuotaAmount label={`${row.displayName} 5 小时个人`} used={quotas[row.id]!.usage.fiveHourUsedTokens}
-      limit={quotas[row.id]!.policy.fiveHourTokenLimit} remaining={quotas[row.id]!.usage.fiveHourRemainingTokens} />
+    <QuotaAmount label={`${row.displayName} 5 小时个人 USD`} quota={quotas[row.id]!.billing?.personal.fiveHour} />
     : <Typography.Text type="secondary">额度暂不可得</Typography.Text> },
   { title: '7 天个人额度', width: 250, render: (_, row) => quotas[row.id] ?
-    <QuotaAmount label={`${row.displayName} 7 天个人`} used={quotas[row.id]!.usage.weeklyUsedTokens}
-      limit={quotas[row.id]!.policy.weeklyTokenLimit} remaining={quotas[row.id]!.usage.weeklyRemainingTokens} />
+    <QuotaAmount label={`${row.displayName} 7 天个人 USD`} quota={quotas[row.id]!.billing?.personal.weekly} />
     : <Typography.Text type="secondary">额度暂不可得</Typography.Text> },
   { title: '操作', key: 'action', width: 125, render: (_, row) => (
     <Button type="link" onClick={() => history.push(`/quotas/users/${encodeURIComponent(row.id)}`)}>

@@ -1,4 +1,6 @@
 .git
+.local
+.cache
 **/.env
 **/.env.*
 **/*.clixml
@@ -22,6 +24,7 @@
 **/src-tauri
 **/.m2
 warm-dashboard-template
+demos/templates/warm-dashboard-template
 deploy/docker/backups
 deploy/docker/registry/backups
 deploy/docker/.env.tmp.*

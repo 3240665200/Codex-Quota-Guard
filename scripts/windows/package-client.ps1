@@ -1,13 +1,18 @@
 #requires -Version 5.1
 [CmdletBinding()]
 param(
-    [string]$TargetDirectory = ''
+    [string]$TargetDirectory = '',
+    [string]$OutputDirectory = '',
+    [switch]$BundleOnly
 )
 
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
 $frontendDirectory = Join-Path $repositoryRoot 'apps\client\frontend'
-if (-not $TargetDirectory) { $TargetDirectory = Join-Path $repositoryRoot 'dist\build-target' }
+$version = (Get-Content -LiteralPath (Join-Path $frontendDirectory 'package.json') -Raw | ConvertFrom-Json).version
+$cacheDirectory = 'D:\BuildCache\pingche\cache'
+if (-not $TargetDirectory) { $TargetDirectory = Join-Path $cacheDirectory 'rust' }
+if (-not $OutputDirectory) { $OutputDirectory = "D:\BuildCache\pingche\artifacts\desktop\$version" }
 $targetDirectory = [System.IO.Path]::GetFullPath($TargetDirectory)
 $targetDrive = [System.IO.Path]::GetPathRoot($targetDirectory)
 
@@ -29,15 +34,32 @@ Require-Command 'cargo.exe' | Out-Null
 Require-Command 'rustc.exe' | Out-Null
 
 New-Item -ItemType Directory -Path $targetDirectory -Force | Out-Null
+$temporaryDirectory = Join-Path $cacheDirectory 'tmp'
+$cargoHome = Join-Path $cacheDirectory 'cargo'
+New-Item -ItemType Directory -Path $temporaryDirectory,$cargoHome -Force | Out-Null
+# Seed public dependency downloads only; never copy registry credentials.
+$originalCargoHome = [Environment]::GetEnvironmentVariable('CARGO_HOME','Process')
+if (!$originalCargoHome) { $originalCargoHome = Join-Path ([Environment]::GetFolderPath('UserProfile')) '.cargo' }
+$registrySource = Join-Path $originalCargoHome 'registry'
+if (!(Test-Path -LiteralPath (Join-Path $cargoHome 'registry')) -and (Test-Path -LiteralPath $registrySource)) {
+    Copy-Item -LiteralPath $registrySource -Destination (Join-Path $cargoHome 'registry') -Recurse
+}
 Write-Host "Building desktop installer. Rust output: $targetDirectory"
+Write-Host "Build temporary files: $temporaryDirectory"
+Write-Host "Installer output: $OutputDirectory"
 $startedAt = Get-Date
-$previousTargetDirectory = [Environment]::GetEnvironmentVariable('CARGO_TARGET_DIR', 'Process')
+$buildEnvironment = @{CARGO_TARGET_DIR=$targetDirectory; CARGO_HOME=$cargoHome; TEMP=$temporaryDirectory; TMP=$temporaryDirectory; TMPDIR=$temporaryDirectory}
+$previousEnvironment = @{}
+foreach ($name in $buildEnvironment.Keys) {
+    $previousEnvironment[$name] = [Environment]::GetEnvironmentVariable($name,'Process')
+}
 
 try {
-    $env:CARGO_TARGET_DIR = $targetDirectory
+    foreach ($name in $buildEnvironment.Keys) { [Environment]::SetEnvironmentVariable($name,$buildEnvironment[$name],'Process') }
     Push-Location -LiteralPath $frontendDirectory
     try {
-        & $pnpm build --bundles nsis --ci
+        if ($BundleOnly) { & $pnpm exec tauri bundle --bundles nsis --ci }
+        else { & $pnpm build --bundles nsis --ci }
         if ($LASTEXITCODE -ne 0) {
             throw "Desktop packaging failed (exit code $LASTEXITCODE)."
         }
@@ -45,11 +67,7 @@ try {
         Pop-Location
     }
 } finally {
-    if ($null -eq $previousTargetDirectory) {
-        Remove-Item -LiteralPath 'Env:CARGO_TARGET_DIR' -ErrorAction SilentlyContinue
-    } else {
-        [Environment]::SetEnvironmentVariable('CARGO_TARGET_DIR', $previousTargetDirectory, 'Process')
-    }
+    foreach ($name in $previousEnvironment.Keys) { [Environment]::SetEnvironmentVariable($name,$previousEnvironment[$name],'Process') }
 }
 
 $bundleDirectory = Join-Path $targetDirectory 'release\bundle\nsis'
@@ -72,8 +90,17 @@ if ($installers.Count -eq 0) {
 
 Write-Host ''
 Write-Host 'Windows installer is ready:'
+$releaseDirectory = [IO.Path]::GetFullPath($OutputDirectory)
+$meterVersion = ((& $builtMeter --version) -replace '^quota-guard-meter ', '').Trim()
+New-Item -ItemType Directory -Path $releaseDirectory -Force | Out-Null
 foreach ($installer in $installers) {
-    Write-Host $installer.FullName
+    $destination = Join-Path $releaseDirectory $installer.Name
+    $sha256 = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash
+    Move-Item -LiteralPath $installer.FullName -Destination $destination -Force
+    if ((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash -ne $sha256) { throw 'Installer transfer verification failed.' }
+    [ordered]@{ version=$version; meterVersion=$meterVersion; installer=$installer.Name; sha256=$sha256; createdAt=[DateTime]::UtcNow.ToString('o') } |
+        ConvertTo-Json | Set-Content -LiteralPath (Join-Path $releaseDirectory 'package-manifest.json') -Encoding utf8
+    Write-Host $destination
 }
 Write-Host 'The installer includes the independent Rust statistics service and the offline WebView2 runtime installer.'
 Write-Host 'The target PC does not need Java, Maven, Node.js, pnpm, or Rust installed.'

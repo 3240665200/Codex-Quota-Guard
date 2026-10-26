@@ -33,6 +33,7 @@ import org.springframework.test.web.servlet.MockMvc;
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 class UsageAnalyticsIntegrationTest {
+    @Autowired UsageBillingService billing;
     @Autowired MockMvc mvc;
     @Autowired AuthService auth;
     @Autowired UserRepository users;
@@ -87,7 +88,7 @@ class UsageAnalyticsIntegrationTest {
                 .andExpect(status().isOk()).andExpect(jsonPath("$.currency").value("USD"));
         String body = """
                 {"events":[{"eventId":"codex-local-usage:v1:%s","occurredAt":"%s",
-                "totalTokens":1200,"source":"TOKEN_USAGE_RECORD","model":"%s","reasoningEffort":"high",
+                "totalTokens":1200,"source":"TOKEN_USAGE_RECORD","model":"%s","reasoningEffort":"high","serviceTier":"standard",
                 "inputTokens":1000,"cachedInputTokens":300,"cacheWriteInputTokens":100,
                 "outputTokens":200,"reasoningOutputTokens":150}]}
                 """.formatted(UUID.randomUUID().toString().replace("-", "").repeat(2), Instant.now().minusSeconds(60), model);
@@ -135,8 +136,8 @@ class UsageAnalyticsIntegrationTest {
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + adminToken)).andExpect(status().isNoContent());
         mvc.perform(get("/api/v1/admin/usage/analytics").param("model", model)
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + adminToken))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.summary.costedEventCount").value(0))
-                .andExpect(jsonPath("$.events.items[0].costStatus").value("MISSING_PRICE"));
+                .andExpect(status().isOk()).andExpect(jsonPath("$.summary.costedEventCount").value(1))
+                .andExpect(jsonPath("$.events.items[0].costStatus").value("PRICED"));
     }
 
     @Test
@@ -200,6 +201,7 @@ class UsageAnalyticsIntegrationTest {
         var one = events.saveAndFlush(event(session.user().id(), model, at, 1, 1L, 0L));
         events.saveAndFlush(event(session.user().id(), model, at.minusSeconds(1), 1, 1L, 0L));
         events.saveAndFlush(event(session.user().id(), model, at.minusSeconds(2), 7, null, null));
+        billing.record(events.findAll().stream().filter(event -> model.equals(event.getModel())).toList());
         var filter = new UsageAnalyticsService.Filter(at.minusSeconds(10), at.plusSeconds(1),
                 UsageAnalyticsService.Granularity.HOUR, model, null, session.user().id(), null, 0, 20);
         var data = analytics.analytics(filter);
@@ -212,9 +214,9 @@ class UsageAnalyticsIntegrationTest {
         assertThat(data.events().items().get(2).costStatus()).isEqualTo("MISSING_BREAKDOWN");
         prices.saveAndFlush(new UsageModelPrice(model, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
                 BigDecimal.ZERO, clock.instant()));
-        assertThat(analytics.analytics(filter).summary().estimatedCostUsd()).isEqualByComparingTo("0");
+        assertThat(analytics.analytics(filter).summary().estimatedCostUsd()).isEqualByComparingTo("0.000000000002");
         prices.deleteById(model);
-        assertThat(analytics.analytics(filter).summary().estimatedCostUsd()).isNull();
+        assertThat(analytics.analytics(filter).summary().estimatedCostUsd()).isEqualByComparingTo("0.000000000002");
     }
 
     @Test
@@ -242,8 +244,10 @@ class UsageAnalyticsIntegrationTest {
     }
 
     private CodexUsageEvent event(UUID userId, String model, Instant at, long total, Long input, Long output) {
-        return new CodexUsageEvent(UUID.randomUUID().toString().replace("-", "").repeat(2), userId, null, total,
+        var event = new CodexUsageEvent(UUID.randomUUID().toString().replace("-", "").repeat(2), userId, null, total,
                 at, at, "TOKEN_USAGE_RECORD", model, "high", input, 0L, 0L, output, 0L);
+        event.setServiceTier("standard");
+        return event;
     }
 
     private String adminToken() {

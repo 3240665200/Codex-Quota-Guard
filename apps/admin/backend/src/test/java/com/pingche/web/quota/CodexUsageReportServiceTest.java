@@ -25,7 +25,7 @@ class CodexUsageReportServiceTest {
     private final CodexUsageEventRepository events = mock(CodexUsageEventRepository.class);
     private final QuotaOverviewService overview = mock(QuotaOverviewService.class);
     private final CodexUsageReportService service = new CodexUsageReportService(users,
-            events, overview, Clock.fixed(NOW, ZoneOffset.UTC));
+            events, overview, Clock.fixed(NOW, ZoneOffset.UTC), mock(UsageBillingService.class));
 
     @Test
     void persistsOptionalModelMetadataWithoutChangingUsageDeduplication() {

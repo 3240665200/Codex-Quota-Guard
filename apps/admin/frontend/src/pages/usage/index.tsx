@@ -28,7 +28,7 @@ function Distribution({ groups, total }: { groups: UsageGroup[]; total: number }
     { title: 'Token', render: (_, item) => <TokenAmount value={item.stats.totalTokens} />, width: 150 },
     { title: '占比', render: (_, item) => <Progress aria-label={`${item.label} Token 占比`} size="small" strokeColor="#159979" percent={total > 0 ? Math.round(item.stats.totalTokens / total * 1000) / 10 : 0} />, width: 200 },
     { title: '事件数', render: (_, item) => item.stats.eventCount.toLocaleString(), width: 100 },
-    { title: '估算费用 (USD)', render: (_, item) => <UsageCost value={item.stats.estimatedCostUsd} />, width: 180 },
+    { title: '账本费用 (USD)', render: (_, item) => <UsageCost value={item.stats.estimatedCostUsd} />, width: 180 },
     { title: '可估价事件', render: (_, item) => `${item.stats.costedEventCount} / ${item.stats.eventCount}`, width: 140 },
   ];
   return <Table rowKey={(item) => item.key ?? 'unknown'} columns={columns} dataSource={groups} pagination={false}
@@ -149,7 +149,7 @@ export default function UsagePage() {
         {loading ? <LoadingState label="正在读取用量统计" /> : null}
         {data ? <>
           <section className="cqg-usage-metrics" aria-label="用量汇总">
-            <div className="cqg-usage-metric"><span><DollarOutlined /> 估算费用 (USD)</span>
+            <div className="cqg-usage-metric"><span><DollarOutlined /> 账本费用 (USD)</span>
               <strong>{data.summary.estimatedCostUsd == null ? '—' : formatUsd(data.summary.estimatedCostUsd)}</strong>
               <small>可估价 {data.summary.costedEventCount.toLocaleString()} / {data.summary.eventCount.toLocaleString()} 条 ({pricedPercent}%)</small></div>
             <div className="cqg-usage-metric"><span>总 Token</span><strong><TokenAmount value={data.summary.totalTokens} /></strong>
@@ -177,7 +177,7 @@ export default function UsagePage() {
                   <XAxis dataKey="label" minTickGap={40} tick={{ fontSize: 12 }} />
                   <YAxis width={88} tick={{ fontSize: 12 }} tickFormatter={(value: number) => chartMode === 'USD' ? formatUsd(value) : formatTokenAmount(value).replace(' Token', '')} />
                   <ChartTooltip labelFormatter={(_, payload) => `${payload[0]?.payload.bucket ?? ''} (UTC)`}
-                    formatter={(value) => [chartMode === 'USD' ? `USD ${formatUsd(Number(value))}` : formatTokenAmount(Number(value)), chartMode === 'USD' ? '估算费用' : '总 Token']} />
+                    formatter={(value) => [chartMode === 'USD' ? `USD ${formatUsd(Number(value))}` : formatTokenAmount(Number(value)), chartMode === 'USD' ? '账本费用' : '总 Token']} />
                   <Area type="monotone" dataKey={chartMode === 'USD' ? 'estimatedCostUsd' : 'totalTokens'} stroke={chartMode === 'USD' ? '#1769c2' : '#159979'}
                     fill={chartMode === 'USD' ? '#dbeafe' : '#d5f3e7'} strokeWidth={2} connectNulls={false} isAnimationActive={false} />
                 </AreaChart>
@@ -194,7 +194,7 @@ export default function UsagePage() {
             ]} />
           </section>
           <section className="cqg-usage-section" aria-label="全部用量流水">
-            <div className="cqg-usage-section-head"><h2>用量流水</h2><span className="cqg-usage-muted">当前单价估算 · 非官方账单</span></div>
+            <div className="cqg-usage-section-head"><h2>用量流水</h2><span className="cqg-usage-muted">入账时价格快照 · 非官方账单</span></div>
             <Table rowKey="id" columns={ledgerColumns} dataSource={data.events.items} size="small" scroll={{ x: 2070 }}
               locale={{ emptyText: '当前筛选下暂无流水' }}
               pagination={{ current: (query.page ?? 0) + 1, pageSize: query.size ?? 20, total: data.events.totalElements,

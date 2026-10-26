@@ -52,6 +52,13 @@ ${StrLoc}
 !define UNINSTALLERHEADERIMAGE "{{uninstaller_header_image}}"
 !define MAINBINARYNAME "{{main_binary_name}}"
 !define MAINBINARYSRCPATH "{{main_binary_path}}"
+; Hash the exact, already bundle-patched payload at compile time. Runtime
+; recovery can then recognize an interrupted install without trusting versions alone.
+!tempfile CQG_PAYLOAD_HASH_FILE
+!system 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${CQG_COMPATIBILITY_SCRIPT}" -Operation HashPayload -PayloadPath "${MAINBINARYSRCPATH}" -ResultFile "${CQG_PAYLOAD_HASH_FILE}"' = 0
+!define /file CQG_PAYLOAD_HASH "${CQG_PAYLOAD_HASH_FILE}"
+!delfile "${CQG_PAYLOAD_HASH_FILE}"
+!undef CQG_PAYLOAD_HASH_FILE
 !define BUNDLEID "{{bundle_id}}"
 !define COPYRIGHT "{{copyright}}"
 !define OUTFILE "{{out_file}}"
@@ -337,7 +344,7 @@ Function CqgRunPolicy
   Delete "$PLUGINSDIR\cqg-result.ini"
   ; Only fixed filenames and the internal operation are command arguments.
   ; User-selected/registry paths remain request data, never executable source.
-  nsExec::ExecToStack '"$CqgPowerShell" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\installer-compatibility.ps1" -Operation $CqgOperation -RequestFile "$PLUGINSDIR\cqg-request.ini" -ResultFile "$PLUGINSDIR\cqg-result.ini" -Version "${VERSION}" $CqgPolicyFlags'
+  nsExec::ExecToStack '"$CqgPowerShell" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\installer-compatibility.ps1" -Operation $CqgOperation -RequestFile "$PLUGINSDIR\cqg-request.ini" -ResultFile "$PLUGINSDIR\cqg-result.ini" -Version "${VERSION}" -PayloadHash "${CQG_PAYLOAD_HASH}" $CqgPolicyFlags'
   Pop $CqgPolicyExit
   Pop $CqgPolicyOutput
   ReadINIStr $CqgMessage "$PLUGINSDIR\cqg-result.ini" "Upgrade" "Message"

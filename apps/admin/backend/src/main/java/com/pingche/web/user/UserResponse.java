@@ -15,7 +15,9 @@ public record UserResponse(
         Long fiveHourTokenLimit,
         Long weeklyTokenLimit,
         Instant createdAt,
-        Instant updatedAt
+        Instant updatedAt,
+        @com.fasterxml.jackson.annotation.JsonFormat(shape = com.fasterxml.jackson.annotation.JsonFormat.Shape.STRING) java.math.BigDecimal fiveHourUsdLimit,
+        @com.fasterxml.jackson.annotation.JsonFormat(shape = com.fasterxml.jackson.annotation.JsonFormat.Shape.STRING) java.math.BigDecimal weeklyUsdLimit
 ) {
 
     public static UserResponse from(User user) {
@@ -31,7 +33,7 @@ public record UserResponse(
                 user.getFiveHourTokenLimit(),
                 user.getWeeklyTokenLimit(),
                 user.getCreatedAt(),
-                user.getUpdatedAt()
+                user.getUpdatedAt(), user.getFiveHourUsdLimit(), user.getWeeklyUsdLimit()
         );
     }
 }

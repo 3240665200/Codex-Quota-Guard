@@ -3,10 +3,11 @@ import { App as AntApp } from 'antd';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { UserQuotaDetail } from './user';
-import { getUser, getUserMeterDevices, getUserOfficialQuota,
+import { getUser, getUserBillingModes, getUserMeterDevices, getUserOfficialQuota,
   getUserQuotaOverview, getUserUsageEvents } from '../../services/api';
 import { resetTeamQuota, resetUserQuota } from '../../services/api';
 import { setQuotaDisplayMode } from '../../services/quota-display';
+import { usdOverview, usdScope, usdWindow } from '../../test/usd-fixtures';
 
 vi.mock('@umijs/max', () => ({ history: { push: vi.fn() }, useParams: () => ({ id: 'user-1' }) }));
 
@@ -14,16 +15,20 @@ vi.mock('../../services/api', () => ({
   getUser: vi.fn(), getUserMeterDevices: vi.fn(), getUserOfficialQuota: vi.fn(),
   getUserQuotaOverview: vi.fn(), getUserUsageEvents: vi.fn(),
   resetTeamQuota: vi.fn(), resetUserQuota: vi.fn(),
+  getUserBillingModes: vi.fn().mockResolvedValue([]), setUserBillingMode: vi.fn(), confirmUsageBillingMode: vi.fn(),
 }));
 
 describe('独立用户额度页面', () => {
   beforeEach(() => {
     setQuotaDisplayMode('used');
     vi.clearAllMocks();
+    vi.mocked(getUserBillingModes).mockResolvedValue([]);
     vi.mocked(getUser).mockResolvedValue({ id: 'user-1', displayName: 'Alice',
       email: 'alice@example.com', fiveHourTokenLimit: 1000,
       weeklyTokenLimit: 2000 } as never);
     vi.mocked(getUserQuotaOverview).mockResolvedValue({
+      billing: usdOverview({ personal: usdScope(usdWindow('10', '2.8', '7.2'), usdWindow('20', '2.8', '17.2')),
+        team: usdScope(usdWindow('5', '5.1', '0'), usdWindow('10', '5.1', '4.9'), usdWindow('20', '8', '12')) }),
       policy: { fiveHourTokenLimit: 1000, weeklyTokenLimit: 2000 },
       usage: { fiveHourUsedTokens: 280, weeklyUsedTokens: 280,
         fiveHourRemainingTokens: 0, weeklyRemainingTokens: 490 },
@@ -35,7 +40,7 @@ describe('独立用户额度页面', () => {
         fiveHourRemainingTokens: 0, weeklyRemainingTokens: 490,
         totalRemainingTokens: 1200,
         measuredAt: '2026-10-08T04:00:00Z' },
-      allowed: false, blockReason: 'TEAM_FIVE_HOUR_TOKEN_QUOTA_EXCEEDED',
+      allowed: false, blockReason: 'TEAM_FIVE_HOUR_USD_QUOTA_EXCEEDED',
     });
     vi.mocked(getUserOfficialQuota).mockResolvedValue({ planType: 'plus',
       fetchedAt: '2026-10-08T04:00:00Z', receivedAt: '2026-10-08T04:00:00Z',
@@ -55,8 +60,8 @@ describe('独立用户额度页面', () => {
   it('separates personal, shared team, official and ledger usage', async () => {
     render(<AntApp><UserQuotaDetail userId="user-1" /></AntApp>);
     expect(await screen.findByText('Alice的额度')).toBeInTheDocument();
-    expect(screen.getByRole('region', { name: '个人用量' })).toHaveTextContent('已用 280 Token');
-    expect(screen.getByRole('region', { name: '团队共享额度' })).toHaveTextContent('已用 510 Token');
+    expect(screen.getByRole('region', { name: '个人用量' })).toHaveTextContent('已用 $2.80 USD');
+    expect(screen.getByRole('region', { name: '团队共享额度' })).toHaveTextContent('已用 $5.10 USD');
     expect(screen.getByText('团队 5 小时共享额度已用尽')).toBeInTheDocument();
     expect(screen.getByRole('region', { name: '官方额度' })).toHaveTextContent('25.5%');
     expect(await screen.findByText('42 Token')).toBeInTheDocument();

@@ -28,17 +28,24 @@ import tools.jackson.databind.ObjectMapper;
 /** Persisted policy, per-account leases and clocks; provider writes use the shared logout journal/fence. */
 @Service
 public class RestrictionManagementService {
-    public static final int QUOTA_CHECK_SECONDS = 30;
+    public static final int QUOTA_CHECK_SECONDS = 60;
     public record Settings(@NotNull Boolean personalQuotaLogoutEnabled, @NotNull Boolean unboundCleanupEnabled,
-            @Min(30) @Max(1440) int unboundCheckIntervalMinutes, @NotNull @Min(0) Long version) { }
+            @Min(30) @Max(1440) int unboundCheckIntervalMinutes, @NotNull @Min(0) Long version,
+            @NotNull @Min(1) @Max(1440) Integer personalCheckIntervalMinutes) {
+        public Settings(Boolean quota, Boolean cleanup, int interval, Long version) { this(quota, cleanup, interval, version, 1); }
+    }
     public record Policy(boolean personalQuotaLogoutEnabled, boolean unboundCleanupEnabled,
-            int unboundCheckIntervalMinutes, int quotaCheckIntervalSeconds, long version, Instant updatedAt) { }
+            int unboundCheckIntervalMinutes, int quotaCheckIntervalSeconds, long version, Instant updatedAt,
+            int personalCheckIntervalMinutes) { }
     public record AccountStatus(UUID officialAccountId, String accountLabel, Instant quotaCheckedAt, Instant nextQuotaAt,
             Instant unboundCheckedAt, Instant nextUnboundAt, String lastErrorCode, UUID pendingPlanId, String operationStatus) { }
     public record Execution(UUID id, UUID officialAccountId, String accountLabel, String rule, Instant checkedAt,
             String status, int targetedCount, int excludedCount, int acceptedCount, int unknownCount, String errorCode) { }
-    public record Response(Policy policy, List<AccountStatus> accounts, List<Execution> executions) { }
-    private record State(boolean quota, boolean cleanup, int interval, long version, UUID owner, Instant updated) { }
+    public record StaleBindingSettings(@NotNull Boolean enabled, @NotNull @Min(0) Long version) { }
+    public record StaleBindingStatus(boolean enabled, int intervalMinutes, Instant lastCheckedAt,
+            Instant nextCheckAt, long removedCount, String lastErrorCode) { }
+    public record Response(Policy policy, List<AccountStatus> accounts, List<Execution> executions, StaleBindingStatus staleBindings) { }
+    private record State(boolean quota, boolean cleanup, int interval, long version, UUID owner, Instant updated, int personalInterval) { }
     private record Binding(UUID id, UUID user, String session) { }
     private record Work(UUID account, UUID lease, String rule, State policy) { }
     private final JdbcTemplate jdbc;
@@ -56,13 +63,13 @@ public class RestrictionManagementService {
 
     public Response read() {
         State state = policy(false);
-        Policy policy = new Policy(state.quota, state.cleanup, state.interval, QUOTA_CHECK_SECONDS, state.version, state.updated);
+        Policy policy = new Policy(state.quota, state.cleanup, state.interval, state.personalInterval * 60, state.version, state.updated, state.personalInterval);
         List<AccountStatus> statuses = jdbc.query("select a.id,a.label,s.quota_checked_at,s.next_quota_at,s.unbound_checked_at,s.next_unbound_at,s.cooldown_until,s.last_error_code,s.pending_plan_id,p.status as operation_status "
                 + "from official_accounts a join official_account_connections c on c.official_account_id=a.id "
                 + "left join restriction_account_checks s on s.official_account_id=a.id "
                 + "left join official_session_logout_plans p on p.id=s.pending_plan_id order by a.label,a.id", (rs, n) ->
                 new AccountStatus(rs.getObject("id", UUID.class), rs.getString("label"), instant(rs,"quota_checked_at"),
-                        state.quota ? later(fallback(instant(rs,"next_quota_at"), state.updated.plusSeconds(QUOTA_CHECK_SECONDS)), instant(rs,"cooldown_until")) : null,
+                        state.quota ? later(fallback(instant(rs,"next_quota_at"), state.updated.plusSeconds(state.personalInterval * 60L)), instant(rs,"cooldown_until")) : null,
                         instant(rs,"unbound_checked_at"), state.cleanup ? later(fallback(instant(rs,"next_unbound_at"), state.updated.plusSeconds(state.interval * 60L)), instant(rs,"cooldown_until")) : null,
                         rs.getString("last_error_code"), rs.getObject("pending_plan_id", UUID.class), rs.getString("operation_status")));
         List<Execution> executions = jdbc.query("select e.*,p.status as plan_status,p.results_json from restriction_executions e "
@@ -71,22 +78,42 @@ public class RestrictionManagementService {
                         rs.getString("rule"), instant(rs,"checked_at"), fallback(rs.getString("plan_status"), rs.getString("status")),
                         rs.getInt("targeted_count"), rs.getInt("excluded_count"), count(rs.getString("results_json"), "ACCEPTED"),
                         count(rs.getString("results_json"), "UNKNOWN"), fallback(rs.getString("error_code"), resultError(rs.getString("results_json")))));
-        return new Response(policy, List.copyOf(statuses), List.copyOf(executions));
+        boolean staleEnabled=Boolean.TRUE.equals(jdbc.queryForObject("select stale_binding_cleanup_enabled from restriction_policy where id=1",Boolean.class));
+        var stale=jdbc.query("select max(last_checked_at) as checked,min(next_check_at) as next,coalesce(sum(removed_count),0) as removed from stale_binding_checks",(rs,n)->
+                new StaleBindingStatus(staleEnabled,1,instant(rs,"checked"),staleEnabled?instant(rs,"next"):null,rs.getLong("removed"),null)).get(0);
+        var errors=jdbc.query("select last_error_code from stale_binding_checks order by last_checked_at desc nulls last limit 1",(rs,n)->rs.getString(1));
+        stale=new StaleBindingStatus(stale.enabled(),1,stale.lastCheckedAt(),stale.nextCheckAt(),stale.removedCount(),errors.isEmpty()?null:errors.get(0));
+        return new Response(policy, List.copyOf(statuses), List.copyOf(executions),stale);
+    }
+
+    public Response configureStaleBindings(UUID administrator,StaleBindingSettings request) {
+        if(administrator==null || request.enabled()==null || request.version()==null || request.version()<0)
+            throw new DomainException("RESTRICTION_SETTINGS_INVALID","失效会话绑定清理设置无效。",HttpStatus.BAD_REQUEST);
+        tx.executeWithoutResult(ignored -> {
+            State before=policy(true);
+            if(request.version()!=before.version) throw new DomainException("RESTRICTION_VERSION_CONFLICT","限制设置已变化，请刷新后再保存。",HttpStatus.CONFLICT);
+            jdbc.update("update restriction_policy set stale_binding_cleanup_enabled=?,updated_by=?,updated_at=?,version=version+1 where id=1",
+                    request.enabled(),administrator,at(clock.instant()));
+            if(request.enabled()) jdbc.update("update stale_binding_checks set next_check_at=?",at(clock.instant()));
+        });
+        return read();
     }
 
     public Response configure(UUID administrator, Settings request) {
         if (administrator == null || request.personalQuotaLogoutEnabled == null || request.unboundCleanupEnabled == null
-                || request.version == null || request.version < 0 || request.unboundCheckIntervalMinutes < 30 || request.unboundCheckIntervalMinutes > 1440)
-            throw new DomainException("RESTRICTION_SETTINGS_INVALID", "检查间隔应为 30～1440 分钟。", HttpStatus.BAD_REQUEST);
+                || request.version == null || request.version < 0 || request.unboundCheckIntervalMinutes < 30 || request.unboundCheckIntervalMinutes > 1440
+                || request.personalCheckIntervalMinutes == null || request.personalCheckIntervalMinutes < 1 || request.personalCheckIntervalMinutes > 1440)
+            throw new DomainException("RESTRICTION_SETTINGS_INVALID", "个人检查间隔应为 1～1440 分钟，未绑定会话检查间隔应为 30～1440 分钟。", HttpStatus.BAD_REQUEST);
         tx.executeWithoutResult(ignored -> {
             State before = policy(true);
             if (request.version != before.version) throw new DomainException("RESTRICTION_VERSION_CONFLICT", "限制设置已变化，请刷新后再保存。", HttpStatus.CONFLICT);
             Instant now = clock.instant();
-            jdbc.update("update restriction_policy set personal_quota_logout_enabled=?,unbound_cleanup_enabled=?,unbound_interval_minutes=?,updated_by=?,updated_at=?,version=version+1 where id=1",
-                    request.personalQuotaLogoutEnabled, request.unboundCleanupEnabled, request.unboundCheckIntervalMinutes, administrator, at(now));
+            jdbc.update("update restriction_policy set personal_quota_logout_enabled=?,unbound_cleanup_enabled=?,unbound_interval_minutes=?,updated_by=?,updated_at=?,personal_interval_minutes=?,version=version+1 where id=1",
+                    request.personalQuotaLogoutEnabled, request.unboundCleanupEnabled, request.unboundCheckIntervalMinutes, administrator, at(now), request.personalCheckIntervalMinutes);
             // Configuration never releases an existing official-write fence or an in-flight database lease.
-            if (request.personalQuotaLogoutEnabled != before.quota)
-                jdbc.update("update restriction_account_checks set next_quota_at=?", request.personalQuotaLogoutEnabled ? at(now) : null);
+            if (request.personalQuotaLogoutEnabled != before.quota || request.personalCheckIntervalMinutes != before.personalInterval)
+                jdbc.update("update restriction_account_checks set next_quota_at=?", request.personalQuotaLogoutEnabled
+                        ? at(before.quota ? now.plusSeconds(request.personalCheckIntervalMinutes * 60L) : now) : null);
             if (request.unboundCleanupEnabled != before.cleanup || request.unboundCheckIntervalMinutes != before.interval)
                 jdbc.update("update restriction_account_checks set next_unbound_at=?", request.unboundCleanupEnabled ? at(now.plusSeconds(request.unboundCheckIntervalMinutes * 60L)) : null);
         });
@@ -196,8 +223,12 @@ public class RestrictionManagementService {
 
     private boolean personalExhausted(UUID user) {
         var overview = quotas.overview(user);
-        return overview.policy().fiveHourTokenLimit() != null && overview.usage().fiveHourUsedTokens() >= overview.policy().fiveHourTokenLimit()
-                || overview.policy().weeklyTokenLimit() != null && overview.usage().weeklyUsedTokens() >= overview.policy().weeklyTokenLimit();
+        var billing = overview.billing();
+        if (billing == null) return false;
+        var five = billing.personal().fiveHour();
+        var week = billing.personal().weekly();
+        return five.limitUsd() != null && five.usedUsd().compareTo(five.limitUsd()) >= 0
+                || week.limitUsd() != null && week.usedUsd().compareTo(week.limitUsd()) >= 0;
     }
 
     private boolean authorized(Work work, List<Binding> candidates, Set<String> selected) {
@@ -244,10 +275,9 @@ public class RestrictionManagementService {
             boolean noQuotaTarget = quota && record && "NO_TARGETS".equals(result.status());
             String diagnostic = noQuotaTarget ? "RESTRICTION_NO_ELIGIBLE_SESSION" : result.errorCode();
             Instant cooldown = later(jdbc.queryForObject("select cooldown_until from restriction_account_checks where official_account_id=?", (rs,n) -> instant(rs,"cooldown_until"), work.account), result.retryAt());
-            Instant next = result.errorCode() == null ? now.plusSeconds(quota ? QUOTA_CHECK_SECONDS : work.policy.interval * 60L)
+            Instant next = result.errorCode() == null ? now.plusSeconds(quota ? work.policy.personalInterval * 60L : work.policy.interval * 60L)
                     : result.retryAt() != null && result.retryAt().isAfter(now) ? result.retryAt()
                     : now.plusSeconds("OFFICIAL_LOGOUT_BUSY".equals(result.errorCode()) ? 30 : 300);
-            if (noQuotaTarget) next = now.plusSeconds(300);
             if (currentPolicy.version == work.policy.version) {
                 jdbc.update("update restriction_account_checks set " + (quota ? "quota_checked_at=?,next_quota_at=?" : "unbound_checked_at=?,next_unbound_at=?")
                         + ",lease_id=null,lease_until=null,pending_plan_id=?,last_error_code=?,cooldown_until=? where official_account_id=? and lease_id=?",
@@ -263,7 +293,7 @@ public class RestrictionManagementService {
     private State policy(boolean lock) {
         return jdbc.queryForObject("select * from restriction_policy where id=1" + (lock ? " for update" : ""), (rs, n) ->
                 new State(rs.getBoolean("personal_quota_logout_enabled"), rs.getBoolean("unbound_cleanup_enabled"),
-                        rs.getInt("unbound_interval_minutes"), rs.getLong("version"), rs.getObject("updated_by", UUID.class), instant(rs,"updated_at")));
+                        rs.getInt("unbound_interval_minutes"), rs.getLong("version"), rs.getObject("updated_by", UUID.class), instant(rs,"updated_at"), rs.getInt("personal_interval_minutes")));
     }
     private boolean lockAccount(UUID account) { return !jdbc.query("select id from official_accounts where id=? for update", (rs, n) -> rs.getObject(1, UUID.class), account).isEmpty(); }
     private int count(String results, String status) {

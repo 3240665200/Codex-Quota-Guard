@@ -12,5 +12,7 @@ public record OfficialAccountResponse(
         Instant createdAt,
         Instant updatedAt,
         long version,
-        com.pingche.web.officialsession.OfficialQuotaPollingService.Response quotaPolling
+        com.pingche.web.officialsession.OfficialQuotaPollingService.Response quotaPolling,
+        @com.fasterxml.jackson.annotation.JsonFormat(shape = com.fasterxml.jackson.annotation.JsonFormat.Shape.STRING) java.math.BigDecimal budgetUsd,
+        UsdQuotaService.Account billing
 ) { }

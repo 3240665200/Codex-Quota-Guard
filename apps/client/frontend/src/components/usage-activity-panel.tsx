@@ -33,7 +33,9 @@ const costLabels = {
   MISSING_PRICE: "未定价",
   MISSING_BREAKDOWN: "分项缺失",
   INVALID_BREAKDOWN: "分项不一致",
-  PRICED: "已估算",
+  PRICED: "已入账",
+  PENDING_BILLING: "待核算",
+  MISSING_SERVICE_TIER: "待确认速度模式",
 };
 
 function TokenBreakdown({ value }: { value: number | null }) {
@@ -74,6 +76,9 @@ function UsageTokens({ item }: { item: UsageEventPage["items"][number] }) {
     ["后台接收", time(item.receivedAt)],
     ["模型名称", item.model ?? "未知"],
     ["思考等级", item.reasoningEffort ?? "未知"],
+    ["速度模式", item.billingModeStatus === 'FAST' ? `快速 ×${item.billingMultiplier}` : item.billingModeStatus === 'STANDARD' ? '普通 ×1' : item.billingOrigin === 'HISTORICAL_RECALC' ? '历史未记录（普通费率回算）' : '未记录（待确认）'],
+    ["模式依据", item.billingModeSource === 'REPORTED' ? '日志明确记录' : item.billingModeSource === 'ADMIN_DECLARED' ? '管理员设备设置' : item.billingModeSource === 'ADMIN_CONFIRMED' ? '管理员逐笔确认' : '日志未记录'],
+    ["计费来源", item.billingOrigin === 'HISTORICAL_RECALC' ? '历史回算' : '实时入账'],
     [
       "来源",
       item.source === "TOKEN_USAGE_RECORD" ? "官方用量记录" : "累计差值补录",
@@ -205,7 +210,7 @@ function EstimatedCost({ item }: { item: UsageEventPage["items"][number] }) {
       </span>
     );
   return (
-    <span className="tabular-nums" title={`USD ${value} · 当前配置单价估算`}>
+    <span className="tabular-nums" title={`USD ${value} · 入账时价格快照`}>
       USD {formatUsd(value)}
     </span>
   );

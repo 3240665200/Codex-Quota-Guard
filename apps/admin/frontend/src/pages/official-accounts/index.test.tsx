@@ -45,8 +45,8 @@ describe('官方账户登记与授权入口', () => {
     fireEvent.change(screen.getByRole('textbox', { name: '账户名称' }), {
       target: { value: '团队账户' },
     });
-    fireEvent.change(screen.getByRole('spinbutton', { name: '估算总 Token' }), {
-      target: { value: '1000000' },
+    fireEvent.change(screen.getByRole('spinbutton', { name: '账户预算（USD）' }), {
+      target: { value: '100.123456789012' },
     });
     fireEvent.change(screen.getByRole('textbox', { name: '上报用户的系统邮箱' }), {
       target: { value: 'alice@example.com' },
@@ -54,7 +54,7 @@ describe('官方账户登记与授权入口', () => {
     expect(screen.queryByLabelText(/凭证|密码|Token JSON/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /保\s*存/ }));
     await waitFor(() => expect(createOfficialAccount).toHaveBeenCalledWith({
-      label: '团队账户', estimatedTotalTokens: 1_000_000,
+      label: '团队账户', budgetUsd: '100.123456789012',
       reporterEmail: 'alice@example.com',
     }));
   });

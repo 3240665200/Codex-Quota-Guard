@@ -8,7 +8,7 @@ beforeEach(() => { setQuotaDisplayMode('remaining'); localStorage.clear(); });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); setQuotaDisplayMode('remaining'); });
 describe('额度显示设置', () => {
   it('defaults to remaining and saves a single selected display mode across remounts', () => {
-    const view = render(<><SettingsPage /><QuotaAmount label="个人" used={25} remaining={75} limit={100} /></>);
+    const view = render(<><SettingsPage /><QuotaAmount label="个人" quota={{usedUsd:'25',remainingUsd:'75',limitUsd:'100',pendingEvents:0,modeUnrecordedEvents:0,historicalEvents:0}} /></>);
     expect(screen.getByRole('radio', { name: '剩余' })).toBeChecked();
     expect(screen.getByRole('progressbar', { name: '个人剩余额度' })).toHaveAttribute('aria-valuenow', '75');
     fireEvent.click(screen.getByRole('radio', { name: '已用' }));

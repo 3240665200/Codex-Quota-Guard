@@ -120,7 +120,9 @@ class OfficialAccountIntegrationTest {
         mvc.perform(get("/api/v1/admin/official-accounts")
                         .header(HttpHeaders.AUTHORIZATION, bearer(adminToken)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$[0].quota.windows[0].usedPercent").value(40));
+                // Official-account management reads server polling, not a desktop report.
+                .andExpect(jsonPath("$[0].quota").isEmpty())
+                .andExpect(jsonPath("$[0].billing.quota.total.limitUsd").isEmpty());
 
         mvc.perform(put("/api/v1/admin/teams/{id}/token-limits", teamId)
                         .header(HttpHeaders.AUTHORIZATION, bearer(adminToken))

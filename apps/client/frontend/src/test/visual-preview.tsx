@@ -1,4 +1,5 @@
 /// <reference types="vite/client" />
+import { usdFixture, moneyScope, moneyWindow } from "@/test/usd-fixtures";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
@@ -54,6 +55,22 @@ const demoSession = {
 } satisfies SystemSession;
 
 const demoQuota = {
+  billing: usdFixture({
+    personal: { ...moneyScope(), fiveHour: moneyWindow(null, '7.42'), weekly: moneyWindow('120', '51.26', '68.74') },
+    team: { ...moneyScope(), fiveHour: moneyWindow(null, '16.80'), weekly: moneyWindow('240', '93.60', '146.40'), total: moneyWindow('1200', '418', '782') },
+    officialAccount: { id: 'preview-account', label: '演示官方账户', quota: { ...moneyScope(), total: moneyWindow('1200', '418', '782') } },
+    teamMembers: [
+      { userId: '11111111-1111-4111-8111-111111111111', displayName: '演示账户', status: 'ACTIVE',
+        personal: { ...moneyScope(), fiveHour: moneyWindow(null, '7.42'), weekly: moneyWindow('120', '51.26', '68.74') },
+        contribution: { ...moneyScope(), fiveHour: moneyWindow(null, '7.42'), weekly: moneyWindow(null, '51.26'), total: moneyWindow(null, '162.84') } },
+      { userId: '22222222-2222-4222-8222-222222222222', displayName: '林舟', status: 'ACTIVE',
+        personal: { ...moneyScope(), fiveHour: moneyWindow(null, '3.81'), weekly: moneyWindow(null, '22.04') },
+        contribution: { ...moneyScope(), fiveHour: moneyWindow(null, '3.81'), weekly: moneyWindow(null, '22.04'), total: moneyWindow(null, '120.16') } },
+      { userId: '33333333-3333-4333-8333-333333333333', displayName: '跨地区产品与基础架构协作团队的超长名称成员 Alexandra', status: 'ACTIVE',
+        personal: { ...moneyScope(), fiveHour: moneyWindow('0', '0', '0'), weekly: moneyWindow('40', '8.50', '31.50') },
+        contribution: { ...moneyScope(), fiveHour: moneyWindow(null, '2.10'), weekly: moneyWindow(null, '8.50'), total: moneyWindow(null, '38') } },
+    ],
+  }),
   user: demoSession.user,
   team: { id: "preview-team", name: "示例团队" },
   teamQuota: {
@@ -642,6 +659,22 @@ const previewAdapter: AxiosAdapter = async (config) => {
 };
 axios.defaults.adapter = previewAdapter;
 
+// SSE uses fetch rather than Axios. Keep this preview completely offline too.
+const originalPreviewFetch = globalThis.fetch;
+const previewFetch: typeof fetch = async (input, init) => {
+  const url = new URL(input instanceof Request ? input.url : String(input), window.location.href);
+  if (url.origin === 'http://preview.example.invalid:8080' && url.pathname === '/api/v1/client/login-assistance/events') {
+    return new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('event: connected\ndata: {}\n\n'));
+        init?.signal?.addEventListener('abort', () => { try { controller.close(); } catch { /* Already closed. */ } }, { once: true });
+      },
+    }), { headers: { 'Content-Type': 'text/event-stream' } });
+  }
+  return originalPreviewFetch(input, init);
+};
+globalThis.fetch = previewFetch;
+
 const previewSessionReady = api
   .systemLogin("preview@example.invalid", "preview-password")
   .then(
@@ -732,5 +765,6 @@ if (import.meta.hot) {
     root.unmount();
     queryClient.clear();
     clearMocks();
+    if (globalThis.fetch === previewFetch) globalThis.fetch = originalPreviewFetch;
   });
 }

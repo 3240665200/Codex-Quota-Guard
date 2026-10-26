@@ -25,5 +25,10 @@ public class RestrictionManagementController {
         if (!transport.isAllowed(http)) throw new DomainException("RESTRICTION_TRANSPORT_REQUIRED", "当前传输方式不允许修改限制规则。", HttpStatus.BAD_REQUEST);
         return result(service.configure((UUID) auth.getPrincipal(), settings));
     }
+    @PutMapping("/stale-bindings") public ResponseEntity<RestrictionManagementService.Response> configureStaleBindings(Authentication auth, HttpServletRequest http,
+            @Valid @RequestBody RestrictionManagementService.StaleBindingSettings settings) {
+        if (!transport.isAllowed(http)) throw new DomainException("RESTRICTION_TRANSPORT_REQUIRED", "当前传输方式不允许修改限制规则。", HttpStatus.BAD_REQUEST);
+        return result(service.configureStaleBindings((UUID)auth.getPrincipal(),settings));
+    }
     private <T> ResponseEntity<T> result(T value) { return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(value); }
 }

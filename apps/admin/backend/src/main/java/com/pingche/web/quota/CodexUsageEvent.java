@@ -54,6 +54,10 @@ public class CodexUsageEvent {
 
     @Column(name = "reasoning_output_tokens")
     private Long reasoningOutputTokens;
+    @Column(name = "service_tier", length = 24)
+    private String serviceTier;
+    @Column(name = "meter_device_id")
+    private UUID meterDeviceId;
 
     protected CodexUsageEvent() { }
 
@@ -108,4 +112,8 @@ public class CodexUsageEvent {
     public Long getCacheWriteInputTokens() { return cacheWriteInputTokens; }
     public Long getOutputTokens() { return outputTokens; }
     public Long getReasoningOutputTokens() { return reasoningOutputTokens; }
+    public String getServiceTier() { return serviceTier; }
+    public void setServiceTier(String value) { this.serviceTier = value; }
+    public UUID getMeterDeviceId() { return meterDeviceId; }
+    public void setMeterDeviceId(UUID value) { this.meterDeviceId = value; }
 }

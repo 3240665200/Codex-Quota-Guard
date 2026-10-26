@@ -11,8 +11,15 @@ import java.util.Objects;
 import java.util.UUID;
 
 @Entity
+@org.hibernate.annotations.DynamicUpdate
 @Table(name = "users")
 public class User {
+    @Column(name = "five_hour_usd_limit", precision = 30, scale = 12)
+    private java.math.BigDecimal fiveHourUsdLimit;
+    @Column(name = "weekly_usd_limit", precision = 30, scale = 12)
+    private java.math.BigDecimal weeklyUsdLimit;
+    public java.math.BigDecimal getFiveHourUsdLimit() { return fiveHourUsdLimit; }
+    public java.math.BigDecimal getWeeklyUsdLimit() { return weeklyUsdLimit; }
 
     @Id
     private UUID id;

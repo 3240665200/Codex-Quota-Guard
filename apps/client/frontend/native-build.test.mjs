@@ -46,6 +46,18 @@ test("non-Windows builders keep their own runtime flags", () => {
   });
 });
 
+test("Windows builds keep compiler, dependency and temporary data on D by default", () => {
+  const env = nativeBuildEnvironment({ TEMP: 'C:\\Temp', TMP: 'C:\\Temp' }, 'win32');
+  assert.equal(env.CARGO_TARGET_DIR, 'D:\\BuildCache\\pingche\\cache\\rust');
+  assert.equal(env.CARGO_HOME, 'D:\\BuildCache\\pingche\\cache\\cargo');
+  assert.equal(env.TEMP, 'D:\\BuildCache\\pingche\\cache\\tmp');
+  assert.equal(env.TMP, env.TEMP);
+  assert.equal(env.TMPDIR, env.TEMP);
+  const custom = nativeBuildEnvironment({ CARGO_TARGET_DIR: 'D:\\custom', CQG_BUILD_TEMP_DIR: 'D:\\scratch' }, 'win32');
+  assert.equal(custom.CARGO_TARGET_DIR, 'D:\\custom');
+  assert.equal(custom.TEMP, 'D:\\scratch');
+});
+
 test("nested packaging steps reuse the same static build flags", () => {
   const once = nativeBuildEnvironment({}, "win32");
   assert.deepEqual(nativeBuildEnvironment(once, "win32"), once);

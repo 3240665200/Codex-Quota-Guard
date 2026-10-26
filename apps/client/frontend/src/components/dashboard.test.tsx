@@ -1,10 +1,10 @@
+import { usdFixture } from "@/test/usd-fixtures";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   fireEvent,
   render,
   screen,
   waitFor,
-  within,
 } from "@testing-library/react";
 import { I18nextProvider } from "react-i18next";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -41,6 +41,7 @@ const session: SystemSession = {
   },
 };
 const quota: QuotaOverview = {
+  billing: usdFixture(),
   user: session.user!,
   team: { id: "team-1", name: "Design" },
   teamQuota: {
@@ -173,7 +174,7 @@ describe("Dashboard", () => {
     const warnings = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       await renderDashboard();
-      await screen.findByRole("heading", { name: "个人 Token" });
+      await screen.findByRole("heading", { name: "个人额度（USD）" });
       fireEvent.click(screen.getByRole("button", { name: "登录辅助" }));
       await screen.findByRole("heading", { name: "监听登录邮件" });
       expect(warnings.mock.calls.flat().join(" ")).not.toContain("same key");
@@ -319,465 +320,6 @@ describe("Dashboard", () => {
     });
   });
 
-  it("renders personal token limits separately from official account reference windows", async () => {
-    await renderDashboard();
-
-    expect(
-      await screen.findByRole("heading", { name: "额度仪表盘" }),
-    ).toBeVisible();
-    expect(
-      await screen.findByRole("heading", { name: "个人 Token" }),
-    ).toBeVisible();
-    expect(await screen.findByText(/Design/)).toBeVisible();
-    expect(screen.getByRole("heading", { name: "团队共享额度" })).toBeVisible();
-    expect(screen.getByText(/统计程序未安装/)).toBeVisible();
-    expect(screen.getAllByTitle("精确值：1,000 Token").length).toBeGreaterThan(
-      0,
-    );
-    const personalFiveHour = screen
-      .getByRole("heading", { name: "5 小时" })
-      .closest("article")!;
-    expect(within(personalFiveHour).getByText("个人剩余")).toBeVisible();
-    expect(screen.getByRole("heading", { name: "个人 Token" })).toHaveAttribute(
-      "title",
-      "个人额度按事件发生时间滚动统计",
-    );
-    expect(screen.getAllByTitle("精确值：100 Token").length).toBeGreaterThan(0);
-    expect(
-      screen.getByTitle("精确值：100 Token").parentElement,
-    ).toHaveTextContent("剩余");
-    expect(screen.getByRole("heading", { name: "官方 Token" })).toBeVisible();
-    expect(await screen.findByText("剩余 75%")).toBeVisible();
-    expect(
-      screen.getByRole("progressbar", { name: "5 小时个人额度剩余额度" }),
-    ).toHaveAttribute("aria-valuenow", "20");
-    expect(
-      screen.getByRole("progressbar", { name: "5 小时团队剩余额度" }),
-    ).toHaveAttribute("aria-valuenow", "10");
-    expect(
-      screen.getByRole("progressbar", { name: "累计总额剩余额度" }),
-    ).toHaveAttribute("aria-valuenow", "50");
-    expect(
-      screen.getByRole("progressbar", { name: "5 小时窗口官方剩余额度" }),
-    ).toHaveAttribute("aria-valuenow", "75");
-    expect(new Set(apiCalls.mock.calls.map(([command]) => command))).toEqual(
-      new Set([
-        "clientAccess",
-        "quotaOverview",
-        "codexRateLimits",
-        "usageStatus",
-        "meterServiceVersion",
-      ]),
-    );
-  });
-
-  it("groups shared quota, personal quota and all members under Team Token before Official Token", async () => {
-    await renderDashboard();
-    await screen.findByRole("heading", { name: "个人 Token" });
-    expect(
-      screen
-        .getAllByRole("heading", { level: 2 })
-        .map((heading) => heading.textContent),
-    ).toEqual(["团队 Token", "官方 Token"]);
-    const official = screen.getByRole("region", { name: "官方 Token" });
-    const team = screen.getByRole("region", { name: "团队 Token" });
-    expect(team.nextElementSibling).toBe(official);
-    expect(
-      within(team).getByRole("region", { name: "个人 Token" }),
-    ).toBeVisible();
-    expect(
-      within(team).getByRole("region", { name: "团队共享额度" }),
-    ).toBeVisible();
-    expect(within(team).getByRole("table")).toBeVisible();
-    expect(within(official).getByText(/官方额度百分比/)).toBeVisible();
-    expect(within(official).queryByText(/精确值/)).toBeNull();
-    expect(official.querySelector(".cqg-token-amount")).toBeNull();
-  });
-
-  it("switches personal, team, member and official quota displays through Settings", async () => {
-    await renderDashboard();
-    await screen.findByRole("heading", { name: "个人 Token" });
-    fireEvent.click(screen.getByRole("button", { name: "设置" }));
-    expect(screen.getByRole("radio", { name: "剩余" })).toBeChecked();
-    fireEvent.click(screen.getByRole("radio", { name: "已用" }));
-    fireEvent.click(screen.getByRole("button", { name: "额度总览" }));
-    expect(
-      await screen.findByRole("progressbar", {
-        name: "5 小时个人额度已用额度",
-      }),
-    ).toHaveAttribute("aria-valuenow", "80");
-    expect(
-      screen.getByRole("progressbar", { name: "5 小时团队已用额度" }),
-    ).toHaveAttribute("aria-valuenow", "90");
-    expect(
-      screen.getByRole("progressbar", { name: "5 小时窗口官方已用额度" }),
-    ).toHaveAttribute("aria-valuenow", "25");
-    const members = screen.getByRole("region", { name: "成员用量" });
-    expect(
-      within(members).getByRole("progressbar", { name: "5 小时个人已用额度" }),
-    ).toHaveAttribute("aria-valuenow", "80");
-    expect(
-      within(within(members).getAllByRole("row")[1]).getByRole("progressbar", {
-        name: "5 小时团队用量占比",
-      }),
-    ).toHaveAttribute("aria-valuenow", String((800 * 100) / 900));
-    expect(screen.getAllByText("个人已用").length).toBe(2);
-  });
-
-  it("shows every teammate including disabled, duplicate-name and zero-usage members", async () => {
-    const longName = "跨地区产品与基础架构协作团队的超长名称成员 Alexandra";
-    quotaResponse = {
-      ...quota,
-      teamMembers: [
-        ...quota.teamMembers!,
-        {
-          userId: "33333333-3333-4333-8333-333333333333",
-          displayName: "Bob",
-          status: "DISABLED",
-          fiveHourUsedTokens: 12,
-          weeklyUsedTokens: 42,
-          totalUsedTokens: 120,
-          fiveHourTokenLimit: 0,
-          weeklyTokenLimit: 100,
-          fiveHourRemainingTokens: 0,
-          weeklyRemainingTokens: 58,
-          measuredAt: null,
-        },
-        {
-          userId: "44444444-4444-4444-8444-444444444444",
-          displayName: longName,
-          status: "ACTIVE",
-          fiveHourUsedTokens: 1,
-          weeklyUsedTokens: 2,
-          totalUsedTokens: 3,
-          fiveHourTokenLimit: 10,
-          weeklyTokenLimit: 20,
-          fiveHourRemainingTokens: 9,
-          weeklyRemainingTokens: 18,
-          measuredAt: null,
-        },
-      ],
-    };
-    await renderDashboard();
-    const memberRegion = await screen.findByRole("region", {
-      name: "成员用量",
-    });
-    const rows = within(memberRegion).getAllByRole("row");
-    expect(rows).toHaveLength(5);
-    expect(within(rows[1]).getByRole("rowheader")).toHaveTextContent("Alice我");
-    expect(within(rows[2]).getByText("已停用")).toBeVisible();
-    expect(within(rows[2]).getByText("剩余 0 / 上限 0 Token")).toBeVisible();
-    expect(within(rows[2]).getByText("0% · 已用尽")).toBeVisible();
-    expect(within(rows[2]).getByText("已用 12 / 团队 900 Token")).toBeVisible();
-    expect(
-      within(rows[2]).getByText("已用 42 / 团队 4,700 Token"),
-    ).toBeVisible();
-    expect(
-      within(rows[2]).getByText("已用 120 / 团队 10,000 Token"),
-    ).toBeVisible();
-    expect(within(rows[3]).getByText(longName)).toBeVisible();
-    expect(within(rows[4]).getAllByText("无限制")).toHaveLength(2);
-    expect(within(rows[4]).getAllByRole("cell")[0]).not.toHaveTextContent(
-      "已用",
-    );
-    expect(within(rows[4]).getAllByText("0%")).toHaveLength(3);
-    expect(within(rows[4]).getByText("已用 0 / 团队 900 Token")).toBeVisible();
-    expect(within(memberRegion).getAllByText("Bob")).toHaveLength(2);
-    expect(
-      within(memberRegion).getByText(/已离队成员的历史用量/),
-    ).toBeVisible();
-    expect(within(memberRegion).getByRole("table")).toHaveAccessibleName(
-      /个人限额留空即无限制/,
-    );
-  });
-
-  it("keeps large teams fully accessible and filters members locally", async () => {
-    quotaResponse = {
-      ...quota,
-      teamMembers: Array.from({ length: 35 }, (_, index) => ({
-        userId: `11111111-1111-4111-8111-${String(index).padStart(12, "0")}`,
-        displayName: `成员 ${String(index).padStart(2, "0")}`,
-        status: "ACTIVE",
-        fiveHourUsedTokens: index,
-        weeklyUsedTokens: index,
-        totalUsedTokens: index,
-        fiveHourTokenLimit: 100,
-        weeklyTokenLimit: 1_000,
-        fiveHourRemainingTokens: 100 - index,
-        weeklyRemainingTokens: 1_000 - index,
-        measuredAt: null,
-      })),
-    };
-    await renderDashboard();
-    const memberRegion = await screen.findByRole("region", {
-      name: "成员用量",
-    });
-    expect(within(memberRegion).getAllByRole("row")).toHaveLength(36);
-    const requestCount = apiCalls.mock.calls.length;
-    fireEvent.change(screen.getByRole("searchbox", { name: "搜索成员" }), {
-      target: { value: "成员 34" },
-    });
-    expect(within(memberRegion).getAllByRole("row")).toHaveLength(2);
-    expect(within(memberRegion).getByText("成员 34")).toBeVisible();
-    expect(
-      within(memberRegion).getByText("显示 1 / 35 位成员 · 单位 Token"),
-    ).toBeVisible();
-    fireEvent.change(screen.getByRole("searchbox", { name: "搜索成员" }), {
-      target: { value: "不存在的成员" },
-    });
-    expect(within(memberRegion).getByText("未找到匹配的成员")).toBeVisible();
-    fireEvent.change(screen.getByRole("searchbox", { name: "搜索成员" }), {
-      target: { value: "" },
-    });
-    expect(within(memberRegion).getAllByRole("row")).toHaveLength(36);
-    expect(apiCalls.mock.calls).toHaveLength(requestCount);
-  });
-
-  it("uses each member's personal limits for remaining bars and team used totals for contribution bars", async () => {
-    await renderDashboard();
-    const row = (await screen.findAllByRole("row"))[1];
-    expect(
-      within(row).getByRole("progressbar", { name: "5 小时个人剩余额度" }),
-    ).toHaveAttribute("aria-valuenow", "20");
-    expect(
-      within(row).getByRole("progressbar", { name: "7 天个人剩余额度" }),
-    ).toHaveAttribute("aria-valuenow", "55");
-    expect(within(row).getByText("剩余 200 / 上限 1,000 Token")).toBeVisible();
-    expect(
-      within(row).getByText("剩余 5,500 / 上限 10,000 Token"),
-    ).toBeVisible();
-    const fiveHourShare = within(row).getByRole("progressbar", {
-      name: "5 小时团队用量占比",
-    });
-    expect(Number(fiveHourShare.getAttribute("aria-valuenow"))).toBeCloseTo(
-      (800 / 900) * 100,
-    );
-    expect(fiveHourShare).toHaveAttribute("aria-valuetext", "88.9%");
-    expect(
-      Number(
-        within(row)
-          .getByRole("progressbar", { name: "7 天团队用量占比" })
-          .getAttribute("aria-valuenow"),
-      ),
-    ).toBeCloseTo((4_500 / 4_700) * 100);
-    expect(
-      within(row).getByRole("progressbar", { name: "累计团队用量占比" }),
-    ).toHaveAttribute("aria-valuenow", "80");
-    expect(
-      within(row).getByText("已用 8,000 / 团队 10,000 Token"),
-    ).toBeVisible();
-    expect(within(row).getAllByRole("progressbar")).toHaveLength(5);
-  });
-
-  it("shows zero contribution when team used totals are zero", async () => {
-    quotaResponse = {
-      ...quota,
-      teamQuota: {
-        ...quota.teamQuota!,
-        fiveHourUsedTokens: 0,
-        weeklyUsedTokens: 0,
-        totalUsedTokens: 0,
-      },
-      teamMembers: quota.teamMembers!.map((member) => ({
-        ...member,
-        fiveHourUsedTokens: 0,
-        weeklyUsedTokens: 0,
-        totalUsedTokens: 0,
-        fiveHourRemainingTokens: member.fiveHourTokenLimit,
-        weeklyRemainingTokens: member.weeklyTokenLimit,
-      })),
-    };
-    await renderDashboard();
-    const rows = await screen.findAllByRole("row");
-    for (const row of rows.slice(1)) {
-      for (const label of ["5 小时", "7 天", "累计"]) {
-        expect(
-          within(row).getByRole("progressbar", {
-            name: `${label}团队用量占比`,
-          }),
-        ).toHaveAttribute("aria-valuenow", "0");
-      }
-      expect(within(row).getAllByText("已用 0 / 团队 0 Token")).toHaveLength(3);
-    }
-  });
-
-  it("does not invent contribution percentages without team totals", async () => {
-    quotaResponse = {
-      ...quota,
-      teamQuota: null,
-      teamMembers: [quota.teamMembers![0]],
-    };
-    await renderDashboard();
-    const row = (await screen.findAllByRole("row"))[1];
-    expect(within(row).getAllByText("暂不可得")).toHaveLength(3);
-    expect(within(row).getAllByRole("progressbar")).toHaveLength(2);
-    expect(
-      within(row).getByText("已用 8,000 Token · 团队总量暂不可得"),
-    ).toBeVisible();
-  });
-
-  it.each([0, 500])(
-    "marks inconsistent team totals %i as pending refresh instead of clipping the share",
-    async (teamUsed) => {
-      quotaResponse = {
-        ...quota,
-        teamQuota: { ...quota.teamQuota!, fiveHourUsedTokens: teamUsed },
-        teamMembers: [quota.teamMembers![0]],
-      };
-      await renderDashboard();
-      const row = (await screen.findAllByRole("row"))[1];
-      const metric = within(row).getByRole("group", {
-        name: "5 小时团队用量占比",
-      });
-      expect(within(metric).getByText("待刷新")).toBeVisible();
-      expect(within(metric).queryByRole("progressbar")).toBeNull();
-      expect(
-        within(metric).getByText(`已用 800 / 团队 ${teamUsed} Token · 待刷新`),
-      ).toBeVisible();
-    },
-  );
-
-  it("clearly reports older servers without inventing an empty team or zero usage", async () => {
-    const { teamMembers: _members, ...legacyOverview } = quota;
-    const original = apiCalls.getMockImplementation()!;
-    apiCalls.mockImplementation(async (command, args) =>
-      command === "quotaOverview"
-        ? { ...legacyOverview, teamMembers: null }
-        : original(command, args),
-    );
-    await renderDashboard();
-    expect(
-      await screen.findByText("服务器尚未提供成员用量，请更新服务器"),
-    ).toBeVisible();
-    expect(screen.queryByRole("table")).toBeNull();
-    expect(screen.queryByText("团队暂无成员")).toBeNull();
-    expect(screen.getByRole("region", { name: "个人 Token" })).toBeVisible();
-  });
-
-  it("preserves the personal quota when the user has no team", async () => {
-    quotaResponse = { ...quota, team: null, teamQuota: null, teamMembers: [] };
-    await renderDashboard();
-    expect(await screen.findByText("未加入团队")).toBeVisible();
-    expect(screen.getByText("加入团队后，可查看团队成员用量。")).toBeVisible();
-    expect(
-      screen.queryByText("服务器尚未提供成员用量，请更新服务器"),
-    ).toBeNull();
-    expect(screen.queryByRole("table")).toBeNull();
-    expect(screen.getByRole("region", { name: "个人 Token" })).toBeVisible();
-  });
-
-  it("distinguishes a returned empty member list from unavailable member data", async () => {
-    quotaResponse = { ...quota, teamMembers: [] };
-    await renderDashboard();
-    expect(await screen.findByText("团队暂无成员")).toBeVisible();
-    expect(
-      screen.queryByText("服务器尚未提供成员用量，请更新服务器"),
-    ).toBeNull();
-    expect(screen.queryByRole("searchbox")).toBeNull();
-  });
-
-  it("aligns unlimited and capped personal windows while preserving their quota semantics", async () => {
-    quotaResponse = {
-      ...quota,
-      policy: {
-        ...quota.policy,
-        fiveHourTokenLimit: null,
-        fiveHourSource: "UNCONFIGURED",
-      },
-      usage: { ...quota.usage, fiveHourRemainingTokens: null },
-      allowed: true,
-      blockReason: null,
-    };
-
-    await renderDashboard();
-
-    await screen.findByRole("heading", { name: "个人 Token" });
-    const fiveHour = screen
-      .getByRole("heading", { name: "5 小时" })
-      .closest("article")!;
-    const weekly = screen
-      .getByRole("heading", { name: "7 天" })
-      .closest("article")!;
-    for (const window of [fiveHour, weekly]) {
-      expect(window.children).toHaveLength(3);
-      expect(window.children[0]).toHaveClass("cqg-usage-window-header");
-      expect(window.children[1]).toHaveClass("cqg-usage-window-primary");
-      expect(window.children[2]).toHaveClass("cqg-usage-window-footer");
-    }
-
-    const unlimitedValue = within(fiveHour).getAllByText("无限制")[1];
-    expect(
-      unlimitedValue.closest(".cqg-usage-window-primary"),
-    ).toHaveTextContent("个人剩余");
-    expect(
-      within(fiveHour).queryByTitle("精确值：800 Token"),
-    ).not.toBeInTheDocument();
-    expect(
-      within(fiveHour).getByText("本窗口只记录用量，不参与个人限额判断"),
-    ).toBeVisible();
-    expect(fiveHour.querySelector('[role="progressbar"]')).toBeNull();
-
-    const cappedValue = within(weekly).getByTitle("精确值：5,500 Token");
-    expect(cappedValue.closest(".cqg-usage-window-primary")).toHaveTextContent(
-      "个人剩余",
-    );
-    expect(
-      within(weekly).getByRole("progressbar", {
-        name: "7 天个人额度剩余额度",
-      }),
-    ).toHaveAttribute("aria-valuenow", "55");
-    const weeklyMetrics = weekly.querySelector(".cqg-usage-window-metrics");
-    expect(weeklyMetrics).not.toHaveTextContent("个人已用");
-    expect(weeklyMetrics).toHaveTextContent("上限 1万 Token");
-    expect(within(weekly).getByTitle("精确值：10,000 Token")).toBeVisible();
-
-    const team = screen.getByRole("region", { name: "团队共享额度" });
-    expect(team.querySelector(".cqg-shared-windows")?.children).toHaveLength(3);
-  });
-
-  it.each([
-    { limit: 0, used: 0, remaining: 0, percent: 0 },
-    { limit: 1_000, used: 1_000, remaining: 0, percent: 0 },
-    { limit: 1_000, used: 1_500, remaining: 0, percent: 0 },
-    { limit: 1_000, used: 0, remaining: 1_000, percent: 100 },
-  ])(
-    "shows remaining quota for limit $limit and usage $used",
-    async ({ limit, used, remaining, percent }) => {
-      quotaResponse = {
-        ...quota,
-        policy: { ...quota.policy, fiveHourTokenLimit: limit },
-        usage: {
-          ...quota.usage,
-          fiveHourUsedTokens: used,
-          fiveHourRemainingTokens: remaining,
-        },
-        teamQuota: {
-          ...quota.teamQuota!,
-          totalTokenLimit: limit,
-          totalUsedTokens: used,
-          totalRemainingTokens: remaining,
-        },
-        allowed: remaining > 0,
-        blockReason: remaining > 0 ? null : "FIVE_HOUR_TOKEN_QUOTA_EXCEEDED",
-      };
-      await renderDashboard();
-      const personal = await screen.findByRole("progressbar", {
-        name: "5 小时个人额度剩余额度",
-      });
-      const team = screen.getByRole("progressbar", {
-        name: "累计总额剩余额度",
-      });
-      for (const bar of [personal, team]) {
-        expect(bar).toHaveAttribute("aria-valuenow", String(percent));
-        if (remaining === 0) {
-          expect(bar.firstElementChild).toHaveClass(
-            "bg-[var(--cqg-status-error)]",
-          );
-        }
-      }
-    },
-  );
-
   it.each([
     { used: 0, remaining: 100 },
     { used: 100, remaining: 0 },
@@ -814,7 +356,7 @@ describe("Dashboard", () => {
 
   it("does not offer credential download or managed Codex login", async () => {
     await renderDashboard();
-    await screen.findByRole("heading", { name: "官方 Token" });
+    await screen.findByRole("heading", { name: "官方套餐参考" });
     expect(
       screen.queryByRole("button", { name: "登录 Codex" }),
     ).not.toBeInTheDocument();
@@ -885,80 +427,6 @@ describe("Dashboard", () => {
     },
   );
 
-  it("warns when personal quota is exhausted without claiming official logout", async () => {
-    apiCalls.mockImplementation(async (command) => {
-      if (command === "status") return status;
-      if (command === "quotaOverview") {
-        return {
-          ...quota,
-          usage: {
-            ...quota.usage,
-            fiveHourRemainingTokens: 0,
-          },
-          allowed: false,
-          blockReason: "FIVE_HOUR_TOKEN_QUOTA_EXCEEDED",
-        };
-      }
-      if (command === "codexRateLimits") {
-        return { planType: null, windows: [], fetchedAt: null };
-      }
-      throw new Error(`Unexpected command: ${command}`);
-    });
-
-    await renderDashboard();
-
-    expect(await screen.findByText("Token 额度已用尽")).toBeVisible();
-    expect(
-      screen.getByText("已达到个人 5 小时 Token 限额。", { exact: false }),
-    ).toBeVisible();
-    expect(
-      screen.getByText(/本应用不会退出官方 Codex 应用或 CLI/),
-    ).toBeVisible();
-    expect(
-      screen.queryByRole("button", { name: "登录 Codex" }),
-    ).not.toBeInTheDocument();
-  });
-
-  it("identifies an exhausted shared team window", async () => {
-    apiCalls.mockImplementation(async (command) => {
-      if (command === "status") return status;
-      if (command === "quotaOverview")
-        return {
-          ...quota,
-          policy: { ...quota.policy, fiveHourSource: "USER" },
-          teamQuota: {
-            ...quota.teamQuota,
-            fiveHourUsedTokens: 1_000,
-            fiveHourRemainingTokens: 0,
-          },
-          usage: { ...quota.usage, fiveHourRemainingTokens: 200 },
-          allowed: false,
-          blockReason: "TEAM_FIVE_HOUR_TOKEN_QUOTA_EXCEEDED",
-        };
-      if (command === "codexRateLimits")
-        return { planType: null, windows: [], fetchedAt: null };
-      if (command === "usageStatus")
-        return {
-          state: "UP_TO_DATE",
-          lastScanEpochSeconds: null,
-          lastReportEpochSeconds: null,
-          reportedEvents: 0,
-          errorCode: null,
-        };
-      throw new Error(`Unexpected command: ${command}`);
-    });
-    await renderDashboard();
-    expect(
-      await screen.findByText(/所属团队的 5 小时共享 Token 额度已用尽/),
-    ).toBeVisible();
-    expect(
-      screen.getByRole("progressbar", { name: "5 小时团队剩余额度" }),
-    ).toHaveAttribute("aria-valuenow", "0");
-    expect(
-      screen.getByRole("progressbar", { name: "5 小时个人额度剩余额度" }),
-    ).toHaveAttribute("aria-valuenow", "20");
-  });
-
   it("treats an absent five-hour limit as unlimited", async () => {
     apiCalls.mockImplementation(async (command) => {
       if (command === "status") return status;
@@ -994,64 +462,10 @@ describe("Dashboard", () => {
     expect(screen.getAllByText("无限制").length).toBeGreaterThan(0);
   });
 
-  it.each(["remaining", "used"] as const)(
-    "keeps unset personal limits unlimited while distinguishing measured team contribution in %s mode",
-    async (mode) => {
-      setQuotaDisplayMode(mode);
-      quotaResponse = {
-        ...quota,
-        policy: {
-          fiveHourTokenLimit: null,
-          weeklyTokenLimit: null,
-          fiveHourSource: "UNCONFIGURED",
-          weeklySource: "UNCONFIGURED",
-        },
-        usage: {
-          ...quota.usage,
-          fiveHourRemainingTokens: null,
-          weeklyRemainingTokens: null,
-        },
-        teamQuota: {
-          ...quota.teamQuota!,
-          fiveHourTokenLimit: null,
-          weeklyTokenLimit: null,
-          fiveHourRemainingTokens: null,
-          weeklyRemainingTokens: null,
-        },
-        teamMembers: [
-          {
-            ...quota.teamMembers![0],
-            fiveHourTokenLimit: null,
-            weeklyTokenLimit: null,
-            fiveHourRemainingTokens: null,
-            weeklyRemainingTokens: null,
-          },
-        ],
-      };
-      await renderDashboard();
-      const members = await screen.findByRole("region", { name: "成员用量" });
-      const row = within(members).getAllByRole("row")[1];
-      const personal = within(row).getAllByRole("cell")[0];
-      expect(within(personal).getAllByText("无限制")).toHaveLength(2);
-      expect(within(personal).queryByRole("progressbar")).toBeNull();
-      expect(within(personal).queryByText("受团队共享额度约束")).toBeNull();
-      expect(
-        within(row).getByRole("progressbar", {
-          name: "5 小时团队用量占比",
-        }),
-      ).toHaveAttribute("aria-valuetext", "88.9%");
-      expect(
-        within(members).getByText(
-          /用量占比仅表示成员在团队已用 Token 中的占比/,
-        ),
-      ).toBeVisible();
-    },
-  );
-
   it("opens independent workspaces without fetching inactive usage pages", async () => {
     const user = (await import("@testing-library/user-event")).default.setup();
     await renderDashboard();
-    await screen.findByRole("heading", { name: "个人 Token" });
+    await screen.findByRole("heading", { name: "个人额度（USD）" });
     expect(apiCalls).not.toHaveBeenCalledWith(
       "usageAnalytics",
       expect.anything(),
@@ -1063,7 +477,7 @@ describe("Dashboard", () => {
       await screen.findByRole("region", { name: "个人用量统计" }),
     ).toBeVisible();
     expect(
-      screen.queryByRole("heading", { name: "个人 Token" }),
+      screen.queryByRole("heading", { name: "个人额度（USD）" }),
     ).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "用量统计" })).toHaveAttribute(
       "aria-current",
@@ -1076,7 +490,7 @@ describe("Dashboard", () => {
 
     await user.click(screen.getByRole("button", { name: "额度总览" }));
     expect(
-      await screen.findByRole("heading", { name: "个人 Token" }),
+      await screen.findByRole("heading", { name: "个人额度（USD）" }),
     ).toBeVisible();
     await user.click(screen.getByRole("button", { name: "收起导航" }));
     expect(screen.getByRole("button", { name: "展开导航" })).toHaveAttribute(
@@ -1116,7 +530,7 @@ describe("Dashboard", () => {
       return original(command, args);
     });
     await renderDashboard();
-    await screen.findByRole("heading", { name: "个人 Token" });
+    await screen.findByRole("heading", { name: "个人额度（USD）" });
     expect(apiCalls).not.toHaveBeenCalledWith("autostartStatus");
     await user.click(screen.getByRole("button", { name: "设置" }));
     expect(

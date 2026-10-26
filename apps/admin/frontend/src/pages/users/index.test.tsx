@@ -1,3 +1,4 @@
+import { usdScope } from '../../test/usd-fixtures';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { App as AntApp } from 'antd';
 import { history } from '@umijs/max';
@@ -16,7 +17,7 @@ import {
   listUsers,
   updateUser,
   updateUserQuotaPolicy,
-  updateUserTokenLimits,
+  updateUserUsdLimits,
 } from '../../services/api';
 import type { TeamResponse, UserResponse } from '../../services/api';
 import { getUserLogoutAllCurrent, previewUserLogoutAll } from '../../services/userLogoutApi';
@@ -38,7 +39,7 @@ vi.mock('../../services/api', () => ({
   listUsers: vi.fn(),
   updateUser: vi.fn(),
   updateUserQuotaPolicy: vi.fn(),
-  updateUserTokenLimits: vi.fn(),
+  updateUserUsdLimits: vi.fn(),
 }));
 vi.mock('../../services/userLogoutApi', () => ({
   getUserLogoutAllCurrent: vi.fn(), previewUserLogoutAll: vi.fn(),
@@ -56,11 +57,12 @@ afterEach(() => {
 });
 
 const team: TeamResponse = {
+  fiveHourTokenLimit: 50000, weeklyTokenLimit: 100000, totalTokenLimit: 200000,
   createdAt: '2026-01-01T00:00:00Z',
   description: '研发团队',
   fiveHourQuotaPercent: 80,
-  fiveHourTokenLimit: 50_000,
-  totalTokenLimit: 200_000,
+  fiveHourUsdLimit: '50',
+  totalUsdLimit: '200',
   officialAccountId: null,
   id: 'team-1',
   memberCount: 1,
@@ -69,22 +71,23 @@ const team: TeamResponse = {
   updatedAt: '2026-01-01T00:00:00Z',
   version: 1,
   weeklyQuotaPercent: 90,
-  weeklyTokenLimit: 100_000,
+  weeklyUsdLimit: '100',
 };
 
 const user: UserResponse = {
+  fiveHourTokenLimit: null, weeklyTokenLimit: null,
   createdAt: '2026-01-01T00:00:00Z',
   displayName: '张三',
   email: 'zhangsan@example.com',
   fiveHourQuotaPercent: null,
-  fiveHourTokenLimit: null,
+  fiveHourUsdLimit: null,
   id: 'user-1',
   role: 'USER',
   status: 'ACTIVE',
   teamId: team.id,
   updatedAt: '2026-01-01T00:00:00Z',
   weeklyQuotaPercent: null,
-  weeklyTokenLimit: null,
+  weeklyUsdLimit: null,
 };
 
 function renderPage() {
@@ -109,7 +112,7 @@ describe('用户额度策略配置', () => {
     vi.mocked(listTeams).mockResolvedValue([team]);
     vi.mocked(updateUser).mockResolvedValue(user);
     vi.mocked(updateUserQuotaPolicy).mockResolvedValue(undefined);
-    vi.mocked(updateUserTokenLimits).mockResolvedValue(user);
+    vi.mocked(updateUserUsdLimits).mockResolvedValue(usdScope());
     vi.mocked(getUserOfficialQuota).mockResolvedValue({
       planType: 'plus',
       fetchedAt: '2026-10-06T00:00:00Z',
@@ -139,21 +142,21 @@ describe('用户额度策略配置', () => {
     expect(await screen.findByText('张三')).toBeInTheDocument();
     fireEvent.click(
       await screen.findByRole('button', {
-        name: '配置 zhangsan@example.com 的团队与 Token 配额',
+        name: '配置 zhangsan@example.com 的团队与 USD 配额',
       }),
     );
     expect(screen.getByText('保存会使该用户当前会话失效')).toBeInTheDocument();
     expect(
-      screen.getByRole('spinbutton', { name: '7 天个人 Token 上限' }),
+      screen.getByRole('spinbutton', { name: '7 天个人 USD 上限' }),
     ).toHaveValue('');
 
     const fiveHourInput = screen.getByRole('spinbutton', {
-      name: '5 小时个人 Token 上限',
+      name: '5 小时个人 USD 上限',
     });
     fireEvent.input(fiveHourInput, { target: { value: '0' } });
-    fireEvent.click(screen.getByRole('button', { name: '保存 Token 配额' }));
+    fireEvent.click(screen.getByRole('button', { name: '保存 USD 配额' }));
 
-    expect((await screen.findAllByText('确认保存 Token 配额？')).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText('确认保存 USD 配额？')).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/现有会话失效/).length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole('button', { name: '确认保存' }));
 
@@ -164,9 +167,9 @@ describe('用户额度策略配置', () => {
       weeklyQuotaPercent: null,
     });
     await waitFor(() =>
-      expect(updateUserTokenLimits).toHaveBeenCalledWith(user.id, {
-        fiveHourTokenLimit: 0,
-        weeklyTokenLimit: null,
+      expect(updateUserUsdLimits).toHaveBeenCalledWith(user.id, {
+        fiveHourUsdLimit: '0',
+        weeklyUsdLimit: null,
       }),
     );
   });
@@ -175,8 +178,8 @@ describe('用户额度策略配置', () => {
     vi.mocked(listTeams).mockResolvedValue([]);
     renderPage();
 
-    expect(await screen.findByText('团队 Token 配额不可用')).toBeInTheDocument();
-    expect(screen.getByText('Token 配额暂不可用')).toBeInTheDocument();
+    expect(await screen.findByText('团队 USD 配额不可用')).toBeInTheDocument();
+    expect(screen.getByText('USD 配额暂不可用')).toBeInTheDocument();
     expect(screen.queryByText(/100%（系统默认）/)).not.toBeInTheDocument();
   });
 

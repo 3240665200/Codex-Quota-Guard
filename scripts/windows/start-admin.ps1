@@ -4,11 +4,12 @@ param(
     [switch]$Rebuild,
     [switch]$NoBrowser,
     [string]$BackendBindAddress = '0.0.0.0',
-    [string]$LogDirectory = 'D:\BuildCache\pingche\logs'
+    [string]$LogDirectory = ''
 )
 
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
+if (!$LogDirectory) { $LogDirectory = Join-Path $repositoryRoot '.local\logs\admin' }
 $backendRoot = Join-Path $repositoryRoot 'apps\admin\backend'
 $backendLauncher = Join-Path $backendRoot 'scripts\start-local.ps1'
 $backendJar = Join-Path $backendRoot 'target\web-backend-0.1.0-SNAPSHOT.jar'

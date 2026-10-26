@@ -17,5 +17,6 @@ public record TeamQuotaOverviewResponse(
         Long fiveHourRemainingTokens,
         Long weeklyRemainingTokens,
         Long totalRemainingTokens,
-        Instant measuredAt
+        Instant measuredAt,
+        UsdQuotaService.Scope billing
 ) { }

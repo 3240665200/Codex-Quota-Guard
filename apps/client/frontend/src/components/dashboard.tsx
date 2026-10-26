@@ -1,3 +1,4 @@
+import { UsdQuotaDashboard } from "./usd-quota-dashboard";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   useCallback,
@@ -17,11 +18,9 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   RefreshCw,
-  Search,
   Settings2,
   ShieldCheck,
   UserCircle,
-  Users,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -38,13 +37,10 @@ import {
   type OfficialCodexRateLimits,
   type QuotaOverview,
   type SystemSession,
-  type TeamMemberUsage,
 } from "@/lib/api";
 import {
-  formatCompactTokenCount,
   formatPercent,
   formatResetTime,
-  formatTokenCount,
   cn,
 } from "@/lib/utils";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -57,95 +53,30 @@ import {
   serviceLabels,
 } from "@/components/usage-activity-panel";
 import { ThemeSwitcher } from "@/components/theme-switcher";
-import { quotaPercent, useQuotaDisplay } from "@/lib/quota-display";
+import { useQuotaDisplay } from "@/lib/quota-display";
 import "./quota-layout.css";
 
 function describeBlockReason(reason: string | null): string {
   switch (reason) {
+    case "BILLING_PENDING": return "部分用量缺少价格、分项或速度模式，美元余额待核算，请联系管理员。";
+    case "OFFICIAL_ACCOUNT_USD_QUOTA_EXCEEDED": return "关联官方账户的美元预算已用尽。";
     case "TOKEN_QUOTA_UNCONFIGURED":
       return "7 天基础额度尚未配置。";
     case "TEAM_UNAVAILABLE":
       return "所属团队不可用。";
-    case "FIVE_HOUR_TOKEN_QUOTA_EXCEEDED":
-      return "已达到个人 5 小时 Token 限额。";
-    case "WEEKLY_TOKEN_QUOTA_EXCEEDED":
-      return "已达到个人 7 天 Token 限额。";
-    case "TEAM_FIVE_HOUR_TOKEN_QUOTA_EXCEEDED":
-      return "所属团队的 5 小时共享 Token 额度已用尽。";
-    case "TEAM_WEEKLY_TOKEN_QUOTA_EXCEEDED":
-      return "所属团队的 7 天共享 Token 额度已用尽。";
-    case "TEAM_TOTAL_TOKEN_QUOTA_EXCEEDED":
-      return "所属团队的累计 Token 总额度已用尽。";
+    case "FIVE_HOUR_USD_QUOTA_EXCEEDED":
+      return "已达到个人 5 小时 USD 限额。";
+    case "WEEKLY_USD_QUOTA_EXCEEDED":
+      return "已达到个人 7 天 USD 限额。";
+    case "TEAM_FIVE_HOUR_USD_QUOTA_EXCEEDED":
+      return "所属团队的 5 小时共享 USD 额度已用尽。";
+    case "TEAM_WEEKLY_USD_QUOTA_EXCEEDED":
+      return "所属团队的 7 天共享 USD 额度已用尽。";
+    case "TEAM_TOTAL_USD_QUOTA_EXCEEDED":
+      return "所属团队的累计 USD 总额度已用尽。";
     default:
-      return "服务端暂无法确认当前个人 Token 额度，请联系管理员。";
+      return "服务端暂无法确认当前个人 USD 额度，请联系管理员。";
   }
-}
-
-function TokenAmount({ value }: { value: number }) {
-  return (
-    <span
-      className="cqg-token-amount"
-      title={`精确值：${formatTokenCount(value)} Token`}
-    >
-      <span>{formatCompactTokenCount(value)}</span>{" "}
-      <span className="cqg-token-unit">Token</span>
-    </span>
-  );
-}
-
-function QuotaProgress({
-  used,
-  remaining,
-  limit,
-  label,
-}: {
-  used: number;
-  remaining: number | null;
-  limit: number | null;
-  label: string;
-}) {
-  const { mode, label: displayLabel } = useQuotaDisplay();
-  if (limit === null || remaining === null) {
-    return (
-      <div className="flex justify-between gap-3 text-xs text-muted-foreground">
-        <span>{label}</span>
-        <span>{limit === null ? "无限制" : "暂不可得"}</span>
-      </div>
-    );
-  }
-  const percent = quotaPercent(mode, used, remaining, limit)!;
-  const remainingPercent = quotaPercent("remaining", used, remaining, limit)!;
-  const exhausted = remaining <= 0 || limit === 0;
-  return (
-    <div
-      className="flex flex-col gap-2"
-      role="group"
-      aria-label={`${label}${displayLabel}额度`}
-    >
-      <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
-        <span>{label}</span>
-        <span className="tabular-nums font-medium text-foreground">
-          {displayLabel}{" "}
-          {new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 1 }).format(
-            percent,
-          )}
-          %
-        </span>
-      </div>
-      <Progress
-        aria-label={`${label}${displayLabel}额度`}
-        className="h-2 bg-muted"
-        indicatorClassName={
-          exhausted
-            ? "bg-[var(--cqg-status-error)]"
-            : remainingPercent <= 20
-              ? "bg-[var(--cqg-status-warning)]"
-              : "bg-primary"
-        }
-        value={percent}
-      />
-    </div>
-  );
 }
 
 function LoadingCard({ className = "" }: { className?: string }) {
@@ -181,516 +112,8 @@ function EmptyState({
   );
 }
 
-function TeamCard({ overview }: { overview: QuotaOverview }) {
-  const { mode, label: displayLabel } = useQuotaDisplay();
-  const { teamQuota } = overview;
-  const windows = teamQuota
-    ? [
-        {
-          label: "5 小时团队",
-          remaining: teamQuota.fiveHourRemainingTokens,
-          limit: teamQuota.fiveHourTokenLimit,
-          used: teamQuota.fiveHourUsedTokens,
-        },
-        {
-          label: "7 天团队",
-          remaining: teamQuota.weeklyRemainingTokens,
-          limit: teamQuota.weeklyTokenLimit,
-          used: teamQuota.weeklyUsedTokens,
-        },
-        {
-          label: "累计总额",
-          remaining: teamQuota.totalRemainingTokens,
-          limit: teamQuota.totalTokenLimit,
-          used: teamQuota.totalUsedTokens,
-        },
-      ]
-    : [];
-  return (
-    <section
-      className="cqg-surface cqg-summary-card min-w-0 p-4"
-      aria-labelledby="team-shared-quota-heading"
-    >
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-        <h3 id="team-shared-quota-heading" className="text-sm font-semibold">
-          团队共享额度
-        </h3>
-        {teamQuota?.status === "DISABLED" ? (
-          <span className="text-xs text-[var(--cqg-status-warning)]">
-            团队已停用
-          </span>
-        ) : null}
-      </div>
-      {teamQuota ? (
-        <div className="cqg-shared-windows cqg-summary-card-content">
-          {windows.map((window) => (
-            <div className="cqg-shared-window" key={window.label}>
-              <QuotaProgress
-                used={window.used}
-                label={window.label}
-                remaining={window.remaining}
-                limit={window.limit}
-              />
-              <div className="mt-3 flex flex-wrap justify-between gap-x-3 gap-y-1 text-xs tabular-nums text-muted-foreground">
-                {mode === "used" || window.remaining !== null ? (
-                  <span>
-                    <TokenAmount
-                      value={mode === "used" ? window.used : window.remaining!}
-                    />{" "}
-                    {displayLabel}
-                  </span>
-                ) : (
-                  <span>
-                    已用 <TokenAmount value={window.used} />
-                  </span>
-                )}
-                {window.limit !== null ? (
-                  <span>
-                    上限 <TokenAmount value={window.limit} />
-                  </span>
-                ) : null}
-              </div>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <p className="cqg-summary-card-content text-sm text-muted-foreground">
-          暂无团队共享额度
-        </p>
-      )}
-    </section>
-  );
-}
-
-function MemberUsageMetric({
-  label,
-  ariaLabel,
-  percent,
-  detail,
-  unavailableLabel = "暂不可得",
-  exhausted = false,
-  tone = "personal",
-}: {
-  label: string;
-  ariaLabel: string;
-  percent: number | null;
-  detail: string;
-  unavailableLabel?: string;
-  exhausted?: boolean;
-  tone?: "personal" | "team";
-}) {
-  const percentText =
-    percent === null
-      ? unavailableLabel
-      : `${new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 1 }).format(percent)}%`;
-  return (
-    <div className="cqg-member-window" role="group" aria-label={ariaLabel}>
-      <div className="cqg-member-window-label">
-        <span>{label}</span>
-        <span
-          className={
-            exhausted
-              ? "text-[var(--cqg-status-error)]"
-              : "font-medium text-foreground"
-          }
-        >
-          {percentText}
-          {exhausted ? " · 已用尽" : ""}
-        </span>
-      </div>
-      {percent !== null ? (
-        <Progress
-          aria-label={ariaLabel}
-          aria-valuetext={percentText}
-          className="h-1.5 bg-muted"
-          indicatorClassName={
-            exhausted
-              ? "bg-[var(--cqg-status-error)]"
-              : tone === "team"
-                ? "cqg-member-contribution-bar"
-                : "bg-primary"
-          }
-          value={Math.min(100, Math.max(0, percent))}
-        />
-      ) : null}
-      <p className="cqg-member-window-detail">{detail}</p>
-    </div>
-  );
-}
-
-function MemberRemainingWindow({
-  label,
-  limit,
-  remaining,
-}: {
-  label: string;
-  limit: number | null;
-  remaining: number | null;
-}) {
-  const { mode, label: displayLabel } = useQuotaDisplay();
-  // Personal remaining and team-contribution usage have different reset boundaries.
-  // In used mode show the consumed quota percentage, without relabeling team usage as personal usage.
-  const consumedQuota =
-    limit === null || remaining === null ? 0 : Math.max(0, limit - remaining);
-  const percent = quotaPercent(mode, consumedQuota, remaining, limit);
-  return (
-    <MemberUsageMetric
-      label={label}
-      ariaLabel={`${label}个人${displayLabel}额度`}
-      percent={percent}
-      exhausted={remaining === 0 && limit !== null}
-      unavailableLabel={limit === null ? "无限制" : "暂不可得"}
-      detail={
-        limit !== null && remaining !== null
-          ? mode === "remaining"
-            ? `剩余 ${formatTokenCount(remaining)} / 上限 ${formatTokenCount(limit)} Token`
-            : `个人上限 ${formatTokenCount(limit)} Token${remaining === 0 ? " · 已达到上限" : ""}`
-          : limit === null
-            ? "未设置个人上限"
-            : `个人上限 ${formatTokenCount(limit)} Token`
-      }
-    />
-  );
-}
-
-function MemberTeamShareWindow({
-  label,
-  used,
-  teamUsed,
-}: {
-  label: string;
-  used: number;
-  teamUsed: number | undefined;
-}) {
-  const inconsistent = teamUsed !== undefined && used > teamUsed;
-  return (
-    <MemberUsageMetric
-      label={label}
-      ariaLabel={`${label}团队用量占比`}
-      tone="team"
-      percent={
-        teamUsed === undefined || inconsistent
-          ? null
-          : teamUsed === 0
-            ? 0
-            : (used * 100) / teamUsed
-      }
-      unavailableLabel={inconsistent ? "待刷新" : "暂不可得"}
-      detail={
-        teamUsed === undefined
-          ? `已用 ${formatTokenCount(used)} Token · 团队总量暂不可得`
-          : `已用 ${formatTokenCount(used)} / 团队 ${formatTokenCount(teamUsed)} Token${inconsistent ? " · 待刷新" : ""}`
-      }
-    />
-  );
-}
-
-function TeamMemberRow({
-  member,
-  overview,
-}: {
-  member: TeamMemberUsage;
-  overview: QuotaOverview;
-}) {
-  const { user, teamQuota } = overview;
-  const { label: displayLabel } = useQuotaDisplay();
-  return (
-    <tr
-      role="row"
-      className={member.userId === user.id ? "cqg-member-self" : undefined}
-    >
-      <th scope="row" role="rowheader">
-        <div className="cqg-member-identity">
-          <span className="cqg-member-name">
-            {member.displayName || "未命名成员"}
-          </span>
-          {member.userId === user.id ? (
-            <span className="cqg-member-self-label">我</span>
-          ) : null}
-        </div>
-        <span
-          className={cn(
-            "cqg-member-status",
-            member.status === "DISABLED" && "cqg-member-disabled",
-          )}
-        >
-          {member.status === "DISABLED" ? "已停用" : "正常"}
-        </span>
-      </th>
-      <td role="cell">
-        <p className="cqg-member-column-label" aria-hidden="true">
-          个人{displayLabel}额度
-        </p>
-        <div className="cqg-member-windows">
-          <MemberRemainingWindow
-            label="5 小时"
-            limit={member.fiveHourTokenLimit}
-            remaining={member.fiveHourRemainingTokens}
-          />
-          <MemberRemainingWindow
-            label="7 天"
-            limit={member.weeklyTokenLimit}
-            remaining={member.weeklyRemainingTokens}
-          />
-        </div>
-      </td>
-      <td role="cell">
-        <p className="cqg-member-column-label" aria-hidden="true">
-          团队用量占比
-        </p>
-        <div className="cqg-member-windows">
-          <MemberTeamShareWindow
-            label="5 小时"
-            used={member.fiveHourUsedTokens}
-            teamUsed={teamQuota?.fiveHourUsedTokens}
-          />
-          <MemberTeamShareWindow
-            label="7 天"
-            used={member.weeklyUsedTokens}
-            teamUsed={teamQuota?.weeklyUsedTokens}
-          />
-          <MemberTeamShareWindow
-            label="累计"
-            used={member.totalUsedTokens}
-            teamUsed={teamQuota?.totalUsedTokens}
-          />
-        </div>
-      </td>
-    </tr>
-  );
-}
-
-function TeamMembersCard({ overview }: { overview: QuotaOverview }) {
-  const { label: displayLabel } = useQuotaDisplay();
-  const [search, setSearch] = useState("");
-  const { team, teamMembers } = overview;
-  const query = search.trim().toLocaleLowerCase("zh-CN");
-  const members = teamMembers
-    ?.filter((member) =>
-      member.displayName.toLocaleLowerCase("zh-CN").includes(query),
-    )
-    .sort(
-      (left, right) =>
-        right.totalUsedTokens - left.totalUsedTokens ||
-        left.displayName.localeCompare(right.displayName, "zh-CN") ||
-        left.userId.localeCompare(right.userId),
-    );
-  return (
-    <section
-      className="cqg-surface cqg-members-card min-w-0"
-      aria-labelledby="team-members-heading"
-    >
-      <div className="cqg-members-toolbar">
-        <div className="min-w-0">
-          <h3 id="team-members-heading" className="text-sm font-semibold">
-            成员用量
-          </h3>
-          <p className="mt-1 text-xs text-muted-foreground" aria-live="polite">
-            {team && teamMembers
-              ? `显示 ${members!.length} / ${teamMembers.length} 位成员 · 单位 Token`
-              : "当前团队成员的 Token 用量"}
-          </p>
-        </div>
-        {team && teamMembers && teamMembers.length > 0 ? (
-          <label className="cqg-member-search">
-            <Search className="size-4 shrink-0" aria-hidden="true" />
-            <input
-              type="search"
-              aria-label="搜索成员"
-              placeholder="搜索成员姓名"
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-            />
-          </label>
-        ) : null}
-      </div>
-      {!team ? (
-        <p className="cqg-members-empty">加入团队后，可查看团队成员用量。</p>
-      ) : teamMembers === null ? (
-        <p className="cqg-members-empty" role="status">
-          服务器尚未提供成员用量，请更新服务器
-        </p>
-      ) : teamMembers.length === 0 ? (
-        <p className="cqg-members-empty">团队暂无成员</p>
-      ) : (
-        <>
-          <div className="cqg-members-content">
-            <table className="cqg-members-table" role="table">
-              <caption className="cqg-members-caption">
-                个人限额留空即无限制；用量占比仅表示成员在团队已用 Token
-                中的占比。
-              </caption>
-              <thead role="rowgroup">
-                <tr role="row">
-                  <th scope="col" role="columnheader">
-                    成员
-                  </th>
-                  <th scope="col" role="columnheader">
-                    个人{displayLabel}额度
-                  </th>
-                  <th scope="col" role="columnheader">
-                    团队用量占比
-                  </th>
-                </tr>
-              </thead>
-              <tbody role="rowgroup">
-                {members!.length === 0 ? (
-                  <tr role="row">
-                    <td role="cell" colSpan={3} className="cqg-members-empty">
-                      未找到匹配的成员
-                    </td>
-                  </tr>
-                ) : (
-                  members!.map((member) => (
-                    <TeamMemberRow
-                      key={member.userId}
-                      member={member}
-                      overview={overview}
-                    />
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-          <p className="cqg-members-note">
-            占比 = 成员已用 ÷
-            团队已用；团队总用量可能包含已离队成员的历史用量，当前成员占比合计可能不足100%。
-          </p>
-        </>
-      )}
-    </section>
-  );
-}
-
-function TeamTokenSection({ overview }: { overview: QuotaOverview }) {
-  const memberCount =
-    overview.teamQuota?.memberCount ?? overview.teamMembers?.length;
-  return (
-    <section className="cqg-quota-section" aria-labelledby="team-token-heading">
-      <header className="cqg-quota-section-heading">
-        <Users className="cqg-quota-section-icon" aria-hidden="true" />
-        <div className="min-w-0">
-          <h2 id="team-token-heading">团队 Token</h2>
-          <p>
-            {overview.team
-              ? `${overview.team.name}${memberCount !== undefined ? ` · ${memberCount} 位成员` : ""}`
-              : "未加入团队"}
-          </p>
-        </div>
-      </header>
-      <TeamCard overview={overview} />
-      <UsageCard overview={overview} />
-      <TeamMembersCard
-        key={overview.team?.id ?? "no-team"}
-        overview={overview}
-      />
-    </section>
-  );
-}
-
-function UsageWindow({
-  label,
-  usedTokens,
-  remainingTokens,
-  limitTokens,
-}: {
-  label: string;
-  usedTokens: number;
-  remainingTokens: number | null;
-  limitTokens: number | null;
-}) {
-  const { mode, label: displayLabel } = useQuotaDisplay();
-  const nearLimit =
-    remainingTokens !== null &&
-    limitTokens !== null &&
-    remainingTokens <= Math.max(1, Math.floor(limitTokens * 0.2));
-  return (
-    <article className="cqg-window cqg-usage-window min-w-0 p-4">
-      <header className="cqg-usage-window-header flex items-start justify-between gap-3">
-        <h4 className="text-sm font-semibold">{label}</h4>
-        <span className="text-xs text-muted-foreground">
-          {limitTokens === null ? "无限制" : "个人上限"}
-        </span>
-      </header>
-      <div className="cqg-usage-window-primary">
-        <p className="cqg-usage-window-label text-xs text-muted-foreground">
-          个人{displayLabel}
-        </p>
-        <p
-          className={`cqg-usage-window-value break-words font-semibold tracking-tight tabular-nums ${nearLimit ? "text-[var(--cqg-status-warning)]" : "text-foreground"}`}
-        >
-          {mode === "used" ? (
-            <TokenAmount value={usedTokens} />
-          ) : limitTokens === null ? (
-            "无限制"
-          ) : remainingTokens === null ? (
-            "暂不可得"
-          ) : (
-            <TokenAmount value={remainingTokens} />
-          )}
-        </p>
-      </div>
-      <footer className="cqg-usage-window-footer">
-        {limitTokens === null ? (
-          <p className="text-xs leading-4 text-muted-foreground">
-            本窗口只记录用量，不参与个人限额判断
-          </p>
-        ) : (
-          <>
-            <QuotaProgress
-              used={usedTokens}
-              label={`${label}个人额度`}
-              remaining={remainingTokens}
-              limit={limitTokens}
-            />
-            <div className="cqg-usage-window-metrics mt-2 flex flex-wrap justify-between gap-x-2 gap-y-1 text-xs tabular-nums text-muted-foreground">
-              <span>
-                上限 <TokenAmount value={limitTokens} />
-              </span>
-            </div>
-          </>
-        )}
-      </footer>
-    </article>
-  );
-}
-
-function UsageCard({ overview }: { overview: QuotaOverview }) {
-  const { usage, policy } = overview;
-  return (
-    <section aria-labelledby="personal-quota-heading">
-      <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
-        <div>
-          <h3
-            id="personal-quota-heading"
-            className="text-base font-semibold"
-            title="个人额度按事件发生时间滚动统计"
-          >
-            个人 Token
-          </h3>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {usage.measuredAt
-              ? `最后上报 ${new Date(usage.measuredAt).toLocaleString("zh-CN")}`
-              : "尚无已接收的用量"}
-          </p>
-        </div>
-      </div>
-      <div className="cqg-quota-grid">
-        <UsageWindow
-          label="5 小时"
-          usedTokens={usage.fiveHourUsedTokens}
-          remainingTokens={usage.fiveHourRemainingTokens}
-          limitTokens={policy.fiveHourTokenLimit}
-        />
-        <UsageWindow
-          label="7 天"
-          usedTokens={usage.weeklyUsedTokens}
-          remainingTokens={usage.weeklyRemainingTokens}
-          limitTokens={policy.weeklyTokenLimit}
-        />
-      </div>
-    </section>
-  );
+function TeamUsdSection({ overview }: { overview: QuotaOverview }) {
+  return <UsdQuotaDashboard billing={overview.billing} />;
 }
 
 function OfficialRateLimitWindow({
@@ -752,7 +175,7 @@ function OfficialRateLimitsCard({
       <header className="cqg-quota-section-heading">
         <Gauge className="cqg-quota-section-icon" aria-hidden="true" />
         <div className="min-w-0">
-          <h2 id="official-quota-heading">官方 Token</h2>
+          <h2 id="official-quota-heading">官方套餐参考</h2>
           <p>
             官方额度百分比 ·{" "}
             {loading
@@ -779,7 +202,7 @@ function OfficialRateLimitsCard({
           <p className="text-sm text-muted-foreground">暂无可显示的官方额度</p>
         )}
         <p className="mt-4 border-t pt-3 text-xs text-muted-foreground">
-          官方仅提供额度百分比，不提供 Token 数量；账户额度仅作参考。
+          官方接口提供套餐百分比；美元预算与消耗在上方单独核算。
         </p>
       </div>
     </section>
@@ -799,18 +222,18 @@ function AccessCard({ overview }: { overview: QuotaOverview }) {
         />
         <span className="font-semibold">额度可用</span>
         <span className="text-sm text-muted-foreground">
-          尚未达到已设置的 Token 上限
+          尚未达到已设置的 USD 上限
         </span>
       </div>
     );
   }
 
   const exhausted =
-    overview.blockReason === "FIVE_HOUR_TOKEN_QUOTA_EXCEEDED" ||
-    overview.blockReason === "WEEKLY_TOKEN_QUOTA_EXCEEDED" ||
-    overview.blockReason === "TEAM_FIVE_HOUR_TOKEN_QUOTA_EXCEEDED" ||
-    overview.blockReason === "TEAM_WEEKLY_TOKEN_QUOTA_EXCEEDED" ||
-    overview.blockReason === "TEAM_TOTAL_TOKEN_QUOTA_EXCEEDED";
+    overview.blockReason === "FIVE_HOUR_USD_QUOTA_EXCEEDED" ||
+    overview.blockReason === "WEEKLY_USD_QUOTA_EXCEEDED" ||
+    overview.blockReason === "TEAM_FIVE_HOUR_USD_QUOTA_EXCEEDED" ||
+    overview.blockReason === "TEAM_WEEKLY_USD_QUOTA_EXCEEDED" ||
+    overview.blockReason === "TEAM_TOTAL_USD_QUOTA_EXCEEDED";
   return (
     <div
       className="cqg-status-strip cqg-status-error flex flex-wrap items-center gap-3 px-4 py-3"
@@ -822,14 +245,14 @@ function AccessCard({ overview }: { overview: QuotaOverview }) {
       />
       <span className="font-semibold">
         {exhausted
-          ? "Token 额度已用尽"
+          ? "USD 额度已用尽"
           : overview.blockReason === "TOKEN_QUOTA_UNCONFIGURED"
-            ? "Token 额度未配置"
+            ? "USD 额度未配置"
             : "额度暂不可用"}
       </span>
       <span className="text-sm text-muted-foreground">
         {describeBlockReason(overview.blockReason)}
-        本应用不会退出官方 Codex 应用或 CLI。
+        中央服务器会按管理员配置的额度限制规则处理绑定会话。
       </span>
     </div>
   );
@@ -1332,7 +755,7 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
               ) : overview ? (
                 <>
                   <AccessCard overview={overview} />
-                  <TeamTokenSection overview={overview} />
+                  <TeamUsdSection overview={overview} />
                   <OfficialRateLimitsCard
                     rateLimits={rateLimitsQuery.data}
                     loading={rateLimitsQuery.isPending}

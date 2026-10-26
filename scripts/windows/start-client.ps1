@@ -54,7 +54,7 @@ if ($running) {
 $listener = Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($listener) { throw "Development port 3000 is occupied (PID $($listener.OwningProcess))." }
 $pnpm = (Get-Command 'pnpm.cmd' -ErrorAction Stop).Source
-if (-not $LogDirectory) { $LogDirectory = Join-Path $repositoryRoot 'dist\development-logs' }
+if (-not $LogDirectory) { $LogDirectory = Join-Path $repositoryRoot '.local\logs\client' }
 New-Item -ItemType Directory -Path $LogDirectory -Force | Out-Null
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
 $stdout = Join-Path $LogDirectory "client-$stamp.out.log"

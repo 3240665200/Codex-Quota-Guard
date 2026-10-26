@@ -4,7 +4,7 @@
 
 <h1 align="center">Codex Quota Guard</h1>
 
-<p align="center">本机记录 Codex Token 用量，集中查看个人与团队额度。</p>
+<p align="center">本机记录 Codex Token 用量，集中核算个人与团队的 USD 额度。</p>
 
 <p align="center">
   <a href="https://github.com/3240665200/Codex-Quota-Guard/releases/latest"><img src="https://img.shields.io/github/v/release/3240665200/Codex-Quota-Guard?label=Release&color=1677ff" alt="最新版本"></a>
@@ -24,6 +24,8 @@
 </p>
 
 ---
+
+当前源码已升级为 **0.4.0（USD 计费）**，桌面安装流程使用 **0.4.1 修复版**，统计程序为 **0.2.8**。此版本需要后台与桌面配套升级；历史按升级时价格表回算，新美元上限需重新设置。快速模式默认 1.5 倍，日志未提供模式的新用量先待核算。安装、本机测试及设备模式设置见 [0.4.0 说明](./docs/releases/v0.4.0.md)，中断升级恢复见 [0.4.1 说明](./docs/releases/v0.4.1.md)。下方旧版本链接仍指向此前已发布版本。
 
 Codex Quota Guard 由桌面客户端、中央 Java 服务和 Web 管理后台组成。用户在**官方 Codex 应用或 CLI 自行登录**，桌面端不替换本机 `auth.json`。管理员可使用运行时私有授权预置或导入授权文件，验证官方账户后加密保存限定凭据。网页通过用户自己的浏览器打开官网，服务器镜像不安装浏览器。HTTP 与 HTTPS 都可用，推荐 HTTPS 保护密码与授权。Windows 统计程序从本机可读取的 Codex 会话日志采集 Token 事件，上报中央服务；管理员在后台配置团队与个人额度、查看用量和设备状态。
 
@@ -111,7 +113,7 @@ Codex Quota Guard 由桌面客户端、中央 Java 服务和 Web 管理后台组
 
 ## 快速开始
 
-当前桌面 **0.3.29**：[Windows x64 安装包](https://github.com/3240665200/Codex-Quota-Guard/releases/tag/v0.3.29)。桌面 Axios 直连中央 API，独立 Rust 服务负责计量。较早的 `dist/desktop-v0.3.24` 产物仍使用旧架构，请使用 `0.3.29` 安装包。
+当前桌面 **0.4.3**：[Windows x64 安装包](https://github.com/3240665200/Codex-Quota-Guard/releases/tag/v0.4.3)，内置独立 Rust 统计服务 **0.2.10**。桌面 Axios 直连中央 API，需要配套本次源码中的 USD 后台（0.4.2）或兼容版本。额度、用量记录按模型价格表核算 USD；Token 保留为明细。
 
 1. 部署中央 Java API、PostgreSQL 和管理网页，管理员配置系统用户、团队和额度。本次桌面需要包含 Tauri CORS 支持的中央后台代码。
 2. 新版安装程序会强制安装、启动统计服务，并配置 Windows 自动启动和故障恢复。安装时按当前 Windows 用户批准必要的管理员权限；服务安装或启动失败时不能完成安装。
@@ -168,7 +170,9 @@ pnpm verify
 & .\scripts\windows\package-client.ps1
 ```
 
-默认产物目录为项目内 `dist\build-target\release\bundle\nsis`。也可传入 `-TargetDirectory 'C:\BuildCache\codex-quota-guard'` 自行指定目录；首次构建需要联网下载并校验随包运行时。也可双击 [一键打包-桌面客户端.cmd](./一键打包-桌面客户端.cmd) 使用默认设置。
+Windows 打包缓存、依赖下载和临时文件默认使用 `D:\BuildCache\pingche\cache\`，安装包放在 `D:\BuildCache\pingche\artifacts\desktop\<版本>\`。可通过 `-TargetDirectory` 和 `-OutputDirectory` 指定其他目录；首次构建需要联网下载并校验随包运行时。也可双击 [一键打包-桌面客户端.cmd](./一键打包-桌面客户端.cmd) 使用默认设置。
+
+清理缓存可双击 [一键清理-项目缓存.cmd](./一键清理-项目缓存.cmd)。需要先预览时使用 `clean-project-cache.ps1 -IncludeLegacyCaches -OrganizeDist -WhatIf`。详细执行方法及保留范围见[项目目录与缓存清理](./docs/project-layout.md)。
 
 ## 项目结构
 
@@ -184,6 +188,10 @@ apps/
 docs/          架构、API 与产品文档
 deploy/docker/ 镜像拉取、离线与源码构建部署
 scripts/       启动、打包与诊断脚本
+demos/         示例与界面模板
+dist/          desktop/<版本>、backend/<版本> 发布包
+.cache/        可重新生成的构建缓存（不进入 Git）
+.local/        本机日志、备份与运行信息（不进入 Git）
 ```
 
 ## 使用边界

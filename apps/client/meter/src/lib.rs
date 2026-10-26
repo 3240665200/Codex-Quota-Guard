@@ -13,6 +13,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod audit;
 mod outbox;
+mod speed_mode;
+pub fn speed_detection_probe(home: &Path) -> BTreeMap<String, usize> {
+    let mut modes = BTreeMap::new();
+    for event in speed_mode::recent_corrections(home) { *modes.entry(event.service_tier).or_default() += 1; }
+    modes
+}
 mod server_state;
 use audit::{AuditKind, AuditLog};
 pub use server_state::prepare_server_state;
@@ -203,6 +209,8 @@ pub struct ScanState {
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 struct FileCursor {
+    #[serde(default)]
+    current_turn_hash: Option<String>,
     offset: u64,
     prefix_len: usize,
     prefix_hash: String,
@@ -240,12 +248,15 @@ struct CumulativeUsage {
 struct TurnMetadata {
     model: Option<String>,
     reasoning_effort: Option<String>,
+    #[serde(default)]
+    service_tier: Option<String>,
 }
 
 #[derive(Default)]
 struct MetadataOverrides {
     model: Option<Option<String>>,
     reasoning_effort: Option<Option<String>>,
+    service_tier: Option<Option<String>>,
 }
 
 impl FileCursor {
@@ -323,6 +334,7 @@ impl TurnMetadata {
                 .as_deref()
                 .and_then(validate_reasoning_effort)
                 .map(str::to_owned),
+            service_tier: self.service_tier.as_deref().and_then(validate_service_tier).map(str::to_owned),
         }
     }
 }
@@ -338,6 +350,8 @@ pub struct UsageEvent {
     pub model: Option<String>,
     #[serde(default)]
     pub reasoning_effort: Option<String>,
+    #[serde(default)]
+    pub service_tier: Option<String>,
     #[serde(default)]
     pub input_tokens: Option<u64>,
     #[serde(default)]
@@ -370,6 +384,7 @@ fn scan_with_boundary(
     next_state.sanitize_metadata_caches();
     let mut events = Vec::new();
     let mut emitted_event_ids = std::collections::BTreeSet::new();
+    let speed_reader = speed_mode::Reader::open(codex_home);
     if !sessions.is_dir() {
         return Ok(ScanOutcome { events, next_state });
     }
@@ -421,6 +436,7 @@ fn scan_with_boundary(
             .seek(SeekFrom::Start(start))
             .map_err(|_| "SESSION_READ_UNAVAILABLE")?;
         let mut reader = BufReader::new(input);
+        let speed = (metadata.len() > start).then(|| speed_reader.file(&file));
         let mut complete_offset = start;
 
         loop {
@@ -454,7 +470,7 @@ fn scan_with_boundary(
             if line.last() == Some(&b'\r') {
                 line.pop();
             }
-            if let Some(event) = process_session_record(&line, &mut cursor, true) {
+            if let Some(event) = process_session_record_with_speed(&line, &mut cursor, true, speed.as_ref()) {
                 if emitted_event_ids.insert(event.event_id.clone()) {
                     events.push(event);
                 }
@@ -602,6 +618,7 @@ fn hash_file_prefix(file: &Path, length: usize) -> Result<String, String> {
     Ok(hex_digest(&bytes))
 }
 
+#[cfg(test)]
 fn parse_direct_record(line: &[u8]) -> Option<UsageEvent> {
     let row: serde_json::Value = serde_json::from_slice(line).ok()?;
     parse_token_usage_record(&row, line, None, false)
@@ -617,14 +634,19 @@ fn process_session_record(
     cursor: &mut FileCursor,
     collect_fallback: bool,
 ) -> Option<UsageEvent> {
-    let row: serde_json::Value = serde_json::from_slice(line).ok()?;
+    process_session_record_with_speed(line, cursor, collect_fallback, None)
+}
+
+fn process_session_record_with_speed(line: &[u8], cursor: &mut FileCursor, collect_fallback: bool, speed: Option<&speed_mode::Timeline>) -> Option<UsageEvent> {
+    let mut row: serde_json::Value = serde_json::from_slice(line).ok()?;
+    if let Some(speed) = speed { speed.enrich(&mut row, cursor); }
     match row.get("type")?.as_str()? {
         "turn_context" => {
             update_turn_context(&row, cursor);
             None
         }
         "token_usage_record" => {
-            let (mut event, missing_reliable_time) = match parse_direct_record(line) {
+            let (mut event, missing_reliable_time) = match parse_token_usage_record(&row, line, None, false) {
                 Some(event) => (event, false),
                 None if cursor.legacy_fallback_released => {
                     (parse_late_direct_review_record(line, cursor)?, true)
@@ -644,6 +666,7 @@ fn process_session_record(
             let metadata = metadata_for_usage(row.get("payload")?, Some(cursor));
             event.model = metadata.model;
             event.reasoning_effort = metadata.reasoning_effort;
+            event.service_tier = metadata.service_tier;
             if overlaps_settled_fallback {
                 // A settled fallback may already have reached the server. Keep
                 // this direct record for review rather than charging both when
@@ -715,6 +738,7 @@ fn process_cumulative_snapshot(
         source: "CUMULATIVE_TOKEN_COUNT_FALLBACK".to_owned(),
         model: metadata.model,
         reasoning_effort: metadata.reasoning_effort,
+        service_tier: metadata.service_tier,
         input_tokens: delta.input_tokens,
         cached_input_tokens: delta.cached_input_tokens,
         cache_write_input_tokens: delta.cache_write_input_tokens,
@@ -819,6 +843,7 @@ fn component_delta(current: Option<u64>, previous: Option<u64>) -> Option<u64> {
 }
 
 fn update_turn_context(row: &serde_json::Value, cursor: &mut FileCursor) {
+    cursor.current_turn_hash = row.get("payload").and_then(|p| p.get("turn_id")).and_then(|v| v.as_str()).map(|id| hex_digest(id.as_bytes()));
     let Some(payload) = row.get("payload") else {
         cursor.current_metadata = TurnMetadata::default();
         return;
@@ -870,6 +895,7 @@ fn parse_token_usage_record(
         source: "TOKEN_USAGE_RECORD".to_owned(),
         model: metadata.model,
         reasoning_effort: metadata.reasoning_effort,
+        service_tier: metadata.service_tier,
         input_tokens: token_component(usage, "input_tokens", false),
         cached_input_tokens: token_component(usage, "cached_input_tokens", true),
         cache_write_input_tokens: token_component(usage, "cache_write_input_tokens", true),
@@ -907,6 +933,7 @@ fn metadata_for_usage(payload: &serde_json::Value, cursor: Option<&FileCursor>) 
     if let Some(reasoning_effort) = overrides.reasoning_effort {
         metadata.reasoning_effort = reasoning_effort;
     }
+    if let Some(service_tier) = overrides.service_tier { metadata.service_tier = service_tier; }
     metadata.sanitized()
 }
 
@@ -915,6 +942,7 @@ fn metadata_from_payload(payload: &serde_json::Value) -> TurnMetadata {
     TurnMetadata {
         model: overrides.model.flatten(),
         reasoning_effort: overrides.reasoning_effort.flatten(),
+        service_tier: overrides.service_tier.flatten(),
     }
     .sanitized()
 }
@@ -935,7 +963,13 @@ fn metadata_overrides(payload: &serde_json::Value) -> MetadataOverrides {
     MetadataOverrides {
         model,
         reasoning_effort,
+        service_tier: payload.get("service_tier").or_else(|| payload.get("serviceTier"))
+            .map(|value| value.as_str().and_then(validate_service_tier).map(str::to_owned)),
     }
+}
+
+fn validate_service_tier(value: &str) -> Option<&str> {
+    matches!(value, "default" | "standard" | "fast" | "priority" | "flex" | "auto" | "scale" | "unknown").then_some(value)
 }
 
 fn validate_model(value: &str) -> Option<&str> {
@@ -1874,6 +1908,7 @@ fn ensure_current_owner(config: &MeterConfig, expected_user_id: uuid::Uuid) -> R
 }
 
 pub struct MeterRuntime {
+    last_speed_review: Option<Instant>,
     config: MeterConfig,
     client: reqwest::blocking::Client,
     audit: AuditLog,
@@ -1947,6 +1982,7 @@ impl MeterRuntime {
             )
         })?;
         Ok(Self {
+            last_speed_review: None,
             config,
             client,
             audit,
@@ -2293,6 +2329,20 @@ impl MeterRuntime {
         self.deferred_events = outbox.pending.iter().filter(|event| !reportable_at(event, now)).count();
         self.warning_code = (self.deferred_events > 0)
             .then(|| "METER_EVENT_OUTSIDE_REPORT_WINDOW".to_owned());
+        if self.last_speed_review.is_none_or(|last| last.elapsed() >= Duration::from_secs(60)) {
+            self.last_speed_review = Some(Instant::now());
+            let corrections = speed_mode::recent_corrections(&self.config.codex_home);
+            for batch in corrections.chunks(100) {
+                if self.ensure_operational().is_err() { break; }
+                let owner = credential.user_id.ok_or("METER_CREDENTIAL_INVALID")?;
+                if ensure_current_owner(&self.config, owner).is_err() { break; }
+                // Optional on older servers; failures never block usage capture/upload.
+                let _ = self.client.post(meter_endpoint(&self.config, "/api/v1/meter/usage/modes")?)
+                    .header("X-Quota-Guard-Meter", &credential.device_token)
+                    .timeout(Duration::from_secs(3))
+                    .json(&serde_json::json!({"events":batch})).send();
+            }
+        }
         // Keep historical/future events with their original IDs, timestamps and
         // owner. Their review warning is separate from collector/network errors;
         // valid usage and device-only heartbeats continue without the desktop.
@@ -2693,6 +2743,31 @@ mod tests {
         let plain = parse_direct_record(usage.as_bytes()).unwrap();
         assert_eq!(plain.event_id, event.event_id);
         assert_eq!(plain.model, None);
+    }
+
+    #[test]
+    fn service_tier_is_scoped_to_the_record_or_matching_turn_and_survives_restart() {
+        let root = TestDir::new();
+        let home = root.path().join(".codex");
+        fs::create_dir_all(home.join("sessions")).unwrap();
+        let path = home.join("sessions/speed.jsonl");
+        fs::write(&path, concat!(
+            "{\"type\":\"turn_context\",\"payload\":{\"turn_id\":\"fast-turn\",\"service_tier\":\"fast\"}}\n",
+            "{\"type\":\"turn_context\",\"payload\":{\"turn_id\":\"normal-turn\",\"service_tier\":\"default\"}}\n"
+        )).unwrap();
+        let initial = scan(&home, &ScanState::default()).unwrap();
+        let restored: ScanState = serde_json::from_slice(&serde_json::to_vec(&initial.next_state).unwrap()).unwrap();
+        let fast = record("fast-speed-response",15).replace("\"response_id\":","\"turn_id\":\"fast-turn\",\"response_id\":");
+        let direct = record("direct-speed-response",16)
+            .replace("\"response_id\":","\"turn_id\":\"normal-turn\",\"service_tier\":\"priority\",\"response_id\":");
+        fs::OpenOptions::new().append(true).open(&path).unwrap().write_all((fast.clone()+&direct).as_bytes()).unwrap();
+        let outcome=scan(&home,&restored).unwrap();
+        assert_eq!(outcome.events[0].service_tier.as_deref(),Some("fast"));
+        assert_eq!(outcome.events[1].service_tier.as_deref(),Some("priority"));
+        assert_eq!(outcome.events[0].event_id,parse_direct_record(fast.as_bytes()).unwrap().event_id);
+        assert_eq!(serde_json::to_value(&outcome.events[0]).unwrap()["serviceTier"],"fast");
+        let unknown=record("unrecorded-speed",17);
+        assert_eq!(parse_direct_record(unknown.as_bytes()).unwrap().service_tier,None);
     }
 
     #[test]
@@ -5276,6 +5351,7 @@ mod tests {
             source: "TOKEN_USAGE_RECORD".into(),
             model: None,
             reasoning_effort: None,
+            service_tier: None,
             input_tokens: Some(15),
             cached_input_tokens: Some(5),
             cache_write_input_tokens: Some(0),

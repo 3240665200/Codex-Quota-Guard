@@ -38,6 +38,7 @@ fn run_foreground(config_path: &Path, once: bool) -> Result<(), String> {
 }
 
 enum Command {
+    SpeedProbe { home: PathBuf },
     Run {
         path: PathBuf,
         service: bool,
@@ -53,6 +54,12 @@ fn command_from_args(
     mut arguments: impl Iterator<Item = std::ffi::OsString>,
 ) -> Result<Command, String> {
     let mode = arguments.next().ok_or("METER_ARGUMENTS_INVALID")?;
+    if mode == "speed-probe" {
+        if arguments.next().as_deref()!=Some(std::ffi::OsStr::new("--codex-home")) { return Err("METER_ARGUMENTS_INVALID".into()); }
+        let home=PathBuf::from(arguments.next().ok_or("METER_ARGUMENTS_INVALID")?);
+        if !home.is_absolute() || arguments.next().is_some() { return Err("METER_ARGUMENTS_INVALID".into()); }
+        return Ok(Command::SpeedProbe { home });
+    }
     let service = mode == "service";
     let prepare = mode == "prepare-server-state";
     if !service && mode != "run" && !prepare {
@@ -103,6 +110,7 @@ fn main() {
     }
     let outcome = (|| {
         let (config_path, service, once) = match command_from_args(std::env::args_os().skip(1))? {
+            Command::SpeedProbe { home } => { println!("{}",serde_json::to_string(&quota_guard_meter::speed_detection_probe(&home)).map_err(|_|"METER_PROBE_INVALID")?);return Ok(()); }
             Command::PrepareServerState { path, state_dir } => {
                 prepare_server_state(&path, &state_dir)?;
                 println!("METER_SERVER_STATE_PREPARED");

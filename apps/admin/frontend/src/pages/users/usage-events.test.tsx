@@ -2,10 +2,10 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { App as AntApp } from 'antd';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { getUserUsageEvents } from '../../services/api';
+import { confirmUsageBillingMode, getUserUsageEvents } from '../../services/api';
 import { UsageEventsTable } from './usage-events';
 
-vi.mock('../../services/api', () => ({ getUserUsageEvents: vi.fn() }));
+vi.mock('../../services/api', () => ({ getUserUsageEvents: vi.fn(), confirmUsageBillingMode: vi.fn() }));
 
 function page(index: number, tokens: number, totalElements: number) {
   return {
@@ -41,6 +41,32 @@ describe('Token 用量流水', () => {
     render(<AntApp><UsageEventsTable userId="user-1" /></AntApp>);
     await screen.findByText('42 Token');
     expect(screen.getAllByText('未知')).toHaveLength(2);
+  });
+
+  it('confirms only the explicitly selected unbilled record and refreshes the ledger', async () => {
+    vi.mocked(getUserUsageEvents).mockResolvedValue({ ...page(0, 42, 1), items: [{
+      ...page(0, 42, 1).items[0], billingModeStatus: 'UNRECORDED', costStatus: 'MISSING_SERVICE_TIER', estimatedCostUsd: null,
+    }] });
+    vi.mocked(confirmUsageBillingMode).mockResolvedValue({ updated: 1 });
+    render(<AntApp><UsageEventsTable userId="user-1" /></AntApp>);
+    await screen.findByText('待确认速度模式');
+    expect(screen.getByRole('button', { name: '按快速模式确认' })).toBeDisabled();
+    fireEvent.click(screen.getAllByRole('checkbox')[1]);
+    fireEvent.click(screen.getByRole('button', { name: '按快速模式确认' }));
+    expect(confirmUsageBillingMode).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole('button', { name: '确认并核算' }));
+    await waitFor(() => expect(confirmUsageBillingMode).toHaveBeenCalledWith(['event-0'], 'fast'));
+    await waitFor(() => expect(getUserUsageEvents).toHaveBeenCalledTimes(2));
+  });
+
+  it('does not allow confirmation of an already priced record', async () => {
+    vi.mocked(getUserUsageEvents).mockResolvedValue({ ...page(0, 42, 1), items: [{
+      ...page(0, 42, 1).items[0], billingModeStatus: 'UNRECORDED', costStatus: 'PRICED', estimatedCostUsd: 0.01,
+    }] });
+    render(<AntApp><UsageEventsTable userId="user-1" /></AntApp>);
+    await screen.findByText('USD 0.01');
+    expect(screen.getAllByRole('checkbox')[1]).toBeDisabled();
+    expect(screen.getByRole('button', { name: '按普通模式确认' })).toBeDisabled();
   });
 
   it('pages accepted events without switching users', async () => {

@@ -53,6 +53,7 @@ class RestrictionManagementIntegrationTest {
     private static final String URL = "/api/v1/admin/restrictions";
     @Autowired MockMvc mvc;
     @Autowired RestrictionManagementService service;
+    @Autowired com.pingche.web.restriction.StaleBindingCleanupService stale;
     @Autowired OfficialAccountRepository accounts;
     @Autowired TeamRepository teams;
     @Autowired UserRepository users;
@@ -76,11 +77,12 @@ class RestrictionManagementIntegrationTest {
         now.set(NOW); when(clock.instant()).thenAnswer(call -> now.get());
         jdbc.update("delete from restriction_executions");
         jdbc.update("delete from restriction_account_checks");
+        jdbc.update("delete from stale_binding_checks");
         jdbc.update("delete from session_bindings");
         jdbc.update("delete from session_binding_attempts");
         jdbc.update("delete from official_session_logout_plans");
         sessions.deleteAll(); users.deleteAll(); teams.deleteAll(); accounts.deleteAll();
-        jdbc.update("update restriction_policy set personal_quota_logout_enabled=false,unbound_cleanup_enabled=false,unbound_interval_minutes=90,version=0,updated_by=null,updated_at=? where id=1", at(NOW));
+        jdbc.update("update restriction_policy set personal_quota_logout_enabled=false,unbound_cleanup_enabled=false,stale_binding_cleanup_enabled=true,unbound_interval_minutes=90,version=0,updated_by=null,updated_at=? where id=1", at(NOW));
         proxy = SyntheticProxyNodeFixture.insert(jdbc);
         admin = users.saveAndFlush(User.bootstrapAdministrator("restriction-admin@example.com", "unused", "Admin"));
         member = users.saveAndFlush(new User("restriction-member@example.com", "unused", "Member"));
@@ -112,6 +114,78 @@ class RestrictionManagementIntegrationTest {
         service.checkAccount(account.getId()); assertThat(service.dueAccounts()).isEmpty(); verifyNoInteractions(client);
     }
 
+    @Test void staleBindingCheckRunsEveryMinuteAndEndsBothTheBindingAndOldBoundAttempt() {
+        binding("bound"); now.set(NOW.plusSeconds(60));
+        when(client.fetch(any(OfficialSessionCredentials.class),eq(proxy))).thenReturn(snapshot(List.of(device("new-login",false,false))));
+        assertThat(stale.dueAccounts()).contains(account.getId()); stale.checkAccount(account.getId());
+        assertThat(jdbc.queryForObject("select status from session_bindings where session_id='bound'",String.class)).isEqualTo("ENDED");
+        assertThat(jdbc.queryForObject("select count(*) from session_bindings where active_device_id is not null or active_session_id is not null",Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("select status from session_binding_attempts",String.class)).isEqualTo("REJECTED");
+        assertThat(service.read().staleBindings().removedCount()).isEqualTo(1);
+        assertThat(service.read().staleBindings().nextCheckAt()).isEqualTo(NOW.plusSeconds(120));
+        verify(client,never()).revokeSession(any(OfficialSessionCredentials.class),any(),any());
+        clearInvocations(client); stale.checkAccount(account.getId()); verifyNoInteractions(client);
+    }
+
+    @Test void liveBindingsArePreservedAndASecondCheckIsNotRunBeforeSixtySeconds() {
+        binding("bound"); now.set(NOW.plusSeconds(60)); stale.checkAccount(account.getId());
+        assertThat(jdbc.queryForObject("select status from session_bindings",String.class)).isEqualTo("ACTIVE");
+        clearInvocations(client); now.set(NOW.plusSeconds(119)); stale.checkAccount(account.getId()); verifyNoInteractions(client);
+        now.set(NOW.plusSeconds(120)); assertThat(stale.dueAccounts()).contains(account.getId());
+    }
+
+    @Test void failedIncompleteAndWrongIdentitySnapshotsNeverRemoveBindings() {
+        binding("bound"); now.set(NOW.plusSeconds(60));
+        when(client.fetch(any(OfficialSessionCredentials.class),eq(proxy))).thenThrow(new com.pingche.web.auth.DomainException("OFFICIAL_RATE_LIMITED","Synthetic limit",org.springframework.http.HttpStatus.TOO_MANY_REQUESTS));
+        stale.checkAccount(account.getId());
+        assertThat(service.read().staleBindings().nextCheckAt()).isEqualTo(NOW.plusSeconds(960));
+        assertThat(jdbc.queryForObject("select status from session_bindings",String.class)).isEqualTo("ACTIVE");
+        now.set(NOW.plusSeconds(960));
+        when(client.fetch(any(OfficialSessionCredentials.class),eq(proxy))).thenReturn(snapshot(List.of(device(null,false,false))));
+        stale.checkAccount(account.getId());
+        assertThat(service.read().staleBindings().lastErrorCode()).isEqualTo("STALE_BINDING_SNAPSHOT_INCOMPLETE");
+        now.set(NOW.plusSeconds(1020));
+        var normal=snapshot(List.of()); var a=normal.account();
+        when(client.fetch(any(OfficialSessionCredentials.class),eq(proxy))).thenReturn(new OfficialSessionSnapshot(
+                new OfficialAccountInfo("another-owner",a.email(),a.userName(),a.accountId(),a.accountName(),a.planType(),a.accountUserRole(),a.deactivated(),a.activeSubscription()),normal.sessions()));
+        stale.checkAccount(account.getId());
+        assertThat(jdbc.queryForObject("select status from session_bindings",String.class)).isEqualTo("ACTIVE");
+        verify(client,never()).revokeSession(any(OfficialSessionCredentials.class),any(),any());
+    }
+
+    @Test void freshBindingsCreatedDuringTheFetchAreNeverRemovedByAnOlderCheck() {
+        binding("bound"); now.set(NOW.plusSeconds(60));
+        when(client.fetch(any(OfficialSessionCredentials.class),eq(proxy))).thenAnswer(call -> {
+            binding("created-during-fetch"); return snapshot(List.of());
+        });
+        stale.checkAccount(account.getId());
+        assertThat(jdbc.queryForObject("select status from session_bindings where session_id='bound'",String.class)).isEqualTo("ENDED");
+        assertThat(jdbc.queryForObject("select status from session_bindings where session_id='created-during-fetch'",String.class)).isEqualTo("ACTIVE");
+    }
+
+    @Test void aConnectionChangedDuringTheFetchPreservesTheOldRelationship() {
+        binding("bound"); now.set(NOW.plusSeconds(60));
+        when(client.fetch(any(OfficialSessionCredentials.class),eq(proxy))).thenAnswer(call -> {
+            jdbc.update("update official_account_connections set revision=? where official_account_id=?",UUID.randomUUID(),account.getId());
+            return snapshot(List.of());
+        });
+        stale.checkAccount(account.getId());
+        assertThat(jdbc.queryForObject("select status from session_bindings",String.class)).isEqualTo("ACTIVE");
+    }
+
+    @Test void staleCleanupIsEnabledByDefaultAndOnlyAdminsCanChangeItsVersionedSwitch() throws Exception {
+        binding("bound");
+        mvc.perform(get(URL).header(HttpHeaders.AUTHORIZATION,token(admin))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.staleBindings.enabled").value(true)).andExpect(jsonPath("$.staleBindings.intervalMinutes").value(1));
+        mvc.perform(put(URL+"/stale-bindings").header(HttpHeaders.AUTHORIZATION,token(member)).contentType(MediaType.APPLICATION_JSON).content("{\"enabled\":false,\"version\":0}"))
+                .andExpect(status().isForbidden());
+        mvc.perform(put(URL+"/stale-bindings").header(HttpHeaders.AUTHORIZATION,token(admin)).contentType(MediaType.APPLICATION_JSON).content("{\"enabled\":false,\"version\":0}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.staleBindings.enabled").value(false)).andExpect(jsonPath("$.policy.version").value(1));
+        now.set(NOW.plusSeconds(60)); stale.checkAccount(account.getId()); verifyNoInteractions(client);
+        mvc.perform(put(URL+"/stale-bindings").header(HttpHeaders.AUTHORIZATION,token(admin)).contentType(MediaType.APPLICATION_JSON).content("{\"enabled\":true,\"version\":0}"))
+                .andExpect(status().isConflict());
+    }
+
     @Test void settingsPersistAndConcurrentEditorsCannotOverwriteThePolicy() throws Exception {
         mvc.perform(put(URL).header(HttpHeaders.AUTHORIZATION,token(admin)).contentType(MediaType.APPLICATION_JSON).content(settings(true,true,90,0)))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.policy.version").value(1));
@@ -124,7 +198,7 @@ class RestrictionManagementIntegrationTest {
     }
 
     @Test void exhaustedPersonalQuotaRevokesOnlyTheExactBindingEvenWhenTheDeviceIsTrusted() throws Exception {
-        binding("bound"); jdbc.update("update users set weekly_token_limit=0 where id=?",member.getId());
+        binding("bound"); jdbc.update("update users set weekly_usd_limit=0 where id=?",member.getId());
         when(client.fetch(any(OfficialSessionCredentials.class),eq(proxy))).thenReturn(snapshot(List.of(device("bound",true,false),device("stranger",false,false),device(null,null,null))));
         enable(true,false); service.checkAccount(account.getId()); awaitFinished();
         verify(client,times(1)).revokeSession(any(OfficialSessionCredentials.class),eq(proxy),eq("bound"));
@@ -137,7 +211,7 @@ class RestrictionManagementIntegrationTest {
     }
 
     @Test void unsetPersonalLimitsAndExhaustedTeamLimitsDoNotTriggerPersonalEnforcement() {
-        binding("bound"); jdbc.update("update teams set weekly_token_limit=0 where id=?",team.getId());
+        binding("bound"); jdbc.update("update teams set weekly_usd_limit=0 where id=?",team.getId());
         enable(true,false); service.checkAccount(account.getId());
         verifyNoInteractions(client); assertThat(service.read().executions()).isEmpty();
         assertThat(jdbc.queryForObject("select status from session_bindings where session_id='bound'",String.class)).isEqualTo("ACTIVE");
@@ -172,7 +246,7 @@ class RestrictionManagementIntegrationTest {
     }
 
     @Test void resettingThePersonalLimitWhileTheWorkerIsReadingPreventsAStaleLogout() throws Exception {
-        pauseWorkerAndChange(() -> jdbc.update("update users set weekly_token_limit=null where id=?",member.getId()));
+        pauseWorkerAndChange(() -> jdbc.update("update users set weekly_usd_limit=null where id=?",member.getId()));
     }
 
     @Test void disablingThePolicyWhileTheWorkerIsReadingPreventsAStaleLogout() throws Exception {
@@ -180,7 +254,7 @@ class RestrictionManagementIntegrationTest {
     }
 
     @Test void anUnknownOfficialOutcomeRemainsFencedAcrossLaterChecks() throws Exception {
-        binding("bound"); jdbc.update("update users set five_hour_token_limit=0 where id=?",member.getId());
+        binding("bound"); jdbc.update("update users set five_hour_usd_limit=0 where id=?",member.getId());
         when(client.revokeSession(any(OfficialSessionCredentials.class),eq(proxy),eq("bound"))).thenReturn(new OfficialSessionWriteResult("UNKNOWN","OFFICIAL_LOGOUT_OUTCOME_UNKNOWN"));
         enable(true,false); service.checkAccount(account.getId()); awaitFinished();
         now.set(NOW.plusSeconds(86400)); service.checkAccount(account.getId());
@@ -190,7 +264,7 @@ class RestrictionManagementIntegrationTest {
     }
 
     @Test void theServerTimerEnforcesQuotaWithoutAnyClientOrAdministrativeHttpRequest() throws Exception {
-        binding("bound"); jdbc.update("update users set weekly_token_limit=0 where id=?",member.getId()); enable(true,false);
+        binding("bound"); jdbc.update("update users set weekly_usd_limit=0 where id=?",member.getId()); enable(true,false);
         RestrictionScheduler scheduler = new RestrictionScheduler(service,true);
         try {
             scheduler.start(); long end = System.nanoTime()+TimeUnit.SECONDS.toNanos(20);
@@ -201,7 +275,7 @@ class RestrictionManagementIntegrationTest {
     }
 
     @Test void aProviderReadCooldownSurvivesProcessRestartAndPolicyEdits() {
-        binding("bound"); jdbc.update("update users set weekly_token_limit=0 where id=?",member.getId()); enable(true,false);
+        binding("bound"); jdbc.update("update users set weekly_usd_limit=0 where id=?",member.getId()); enable(true,false);
         when(client.fetch(any(OfficialSessionCredentials.class),eq(proxy))).thenThrow(new OfficialRateLimitedException("3600",NOW));
         service.checkAccount(account.getId());
         assertThat(service.read().accounts().get(0).nextQuotaAt()).isEqualTo(NOW.plusSeconds(3600));
@@ -215,21 +289,22 @@ class RestrictionManagementIntegrationTest {
     }
 
     @Test void realUsageReportsTriggerThePersonalLimitOnlyAfterItHasBeenConsumed() throws Exception {
-        binding("bound"); jdbc.update("update users set five_hour_token_limit=100 where id=?",member.getId()); enable(true,false);
+        binding("bound"); jdbc.update("update users set five_hour_usd_limit=100 where id=?",member.getId()); enable(true,false);
+        jdbc.update("insert into usage_model_prices(model,input_price,output_price,cache_read_price,cache_write_price,fast_multiplier,updated_at,price_source) values('restriction-usd',1000000,0,0,0,1.5,?,'MANUAL')",at(NOW));
         service.checkAccount(account.getId()); verifyNoInteractions(client);
         for (int index = 0; index < 2; index++) {
             String event = "codex-local-usage:v1:" + (index == 0 ? "a" : "b").repeat(64);
             mvc.perform(post("/api/v1/client/usage/events").header(HttpHeaders.AUTHORIZATION,token(member)).contentType(MediaType.APPLICATION_JSON)
-                            .content(json.writeValueAsString(Map.of("events",List.of(Map.of("eventId",event,"occurredAt",NOW.toString(),"totalTokens",index == 0 ? 80 : 30,"source","TOKEN_USAGE_RECORD"))))))
+                            .content(json.writeValueAsString(Map.of("events",List.of(Map.of("eventId",event,"occurredAt",NOW.toString(),"totalTokens",index == 0 ? 80 : 30,"source","TOKEN_USAGE_RECORD","model","restriction-usd","inputTokens",index == 0 ? 80 : 30,"outputTokens",0,"cachedInputTokens",0,"cacheWriteInputTokens",0,"serviceTier","standard"))))))
                     .andExpect(status().isOk()).andExpect(jsonPath("$.acceptedEvents").value(1));
-            now.set(NOW.plusSeconds(31L * (index + 1))); service.checkAccount(account.getId());
+            now.set(NOW.plusSeconds(61L * (index + 1))); service.checkAccount(account.getId());
             if (index == 0) verifyNoInteractions(client);
         }
         awaitFinished(); verify(client,times(1)).revokeSession(any(OfficialSessionCredentials.class),eq(proxy),eq("bound"));
     }
 
     @Test void separateServerInstancesCannotDispatchTheSameAutomaticLogoutTwice() throws Exception {
-        binding("bound"); jdbc.update("update users set weekly_token_limit=0 where id=?",member.getId()); enable(true,false);
+        binding("bound"); jdbc.update("update users set weekly_usd_limit=0 where id=?",member.getId()); enable(true,false);
         CountDownLatch reading = new CountDownLatch(1), release = new CountDownLatch(1); AtomicInteger reads = new AtomicInteger();
         when(client.fetch(any(OfficialSessionCredentials.class),eq(proxy))).thenAnswer(call -> {
             if (reads.incrementAndGet() == 1) { reading.countDown(); assertThat(release.await(10,TimeUnit.SECONDS)).isTrue(); }
@@ -247,7 +322,7 @@ class RestrictionManagementIntegrationTest {
     }
 
     @Test void aRejectedWriteKeepsTheOfficialRetryDeadlineAcrossLaterChecks() throws Exception {
-        binding("bound"); jdbc.update("update users set weekly_token_limit=0 where id=?",member.getId()); enable(true,false);
+        binding("bound"); jdbc.update("update users set weekly_usd_limit=0 where id=?",member.getId()); enable(true,false);
         when(client.revokeSession(any(OfficialSessionCredentials.class),eq(proxy),eq("bound")))
                 .thenReturn(new OfficialSessionWriteResult("REJECTED","OFFICIAL_RATE_LIMITED",NOW.plusSeconds(7200)));
         service.checkAccount(account.getId()); awaitFinished();
@@ -258,7 +333,7 @@ class RestrictionManagementIntegrationTest {
     }
 
     private void pauseWorkerAndChange(Runnable mutation) throws Exception {
-        binding("bound"); jdbc.update("update users set weekly_token_limit=0 where id=?",member.getId()); enable(true,false);
+        binding("bound"); jdbc.update("update users set weekly_usd_limit=0 where id=?",member.getId()); enable(true,false);
         CountDownLatch reading = new CountDownLatch(1), release = new CountDownLatch(1); AtomicInteger reads = new AtomicInteger();
         when(client.fetch(any(OfficialSessionCredentials.class),eq(proxy))).thenAnswer(call -> {
             if (reads.incrementAndGet()==2) { reading.countDown(); assertThat(release.await(10,TimeUnit.SECONDS)).isTrue(); }
@@ -271,7 +346,20 @@ class RestrictionManagementIntegrationTest {
     }
 
     private void enable(boolean quota, boolean cleanup) { service.configure(admin.getId(),new RestrictionManagementService.Settings(quota,cleanup,90,0L)); }
-    private String settings(boolean quota, boolean cleanup, int interval, long version) { return json.writeValueAsString(Map.of("personalQuotaLogoutEnabled",quota,"unboundCleanupEnabled",cleanup,"unboundCheckIntervalMinutes",interval,"version",version)); }
+    @Test void personalIntervalIsConfigurableInMinutesAndSurvivesServiceRestart() {
+        service.configure(admin.getId(),new RestrictionManagementService.Settings(true,false,90,0L,7));
+        service.checkAccount(account.getId());
+        assertThat(service.read().policy().personalCheckIntervalMinutes()).isEqualTo(7);
+        assertThat(service.read().policy().quotaCheckIntervalSeconds()).isEqualTo(420);
+        assertThat(service.read().accounts().get(0).nextQuotaAt()).isEqualTo(NOW.plusSeconds(420));
+        service.configure(admin.getId(),new RestrictionManagementService.Settings(true,false,90,1L,15));
+        var restarted=new RestrictionManagementService(jdbc,quotas,logout,clock,json,manager);
+        assertThat(restarted.read().policy().personalCheckIntervalMinutes()).isEqualTo(15);
+        now.set(NOW.plusSeconds(899)); assertThat(restarted.dueAccounts()).isEmpty();
+        now.set(NOW.plusSeconds(900)); assertThat(restarted.dueAccounts()).contains(account.getId());
+        verifyNoInteractions(client);
+    }
+    private String settings(boolean quota, boolean cleanup, int interval, long version) { return json.writeValueAsString(Map.of("personalQuotaLogoutEnabled",quota,"unboundCleanupEnabled",cleanup,"unboundCheckIntervalMinutes",interval,"personalCheckIntervalMinutes",1,"version",version)); }
     private String token(User user) { return "Bearer "+jwt.create(user.getId(),user.getRole().name(),user.getSessionVersion()); }
     private static Object at(Instant value) { return value.atOffset(ZoneOffset.UTC); }
     private void binding(String session) {

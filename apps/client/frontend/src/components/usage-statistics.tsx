@@ -95,7 +95,7 @@ export function UsageStatistics({ userId }: { userId: string }) {
         <>
           <dl className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,15rem),1fr))] gap-x-4 gap-y-3 border-b pb-4">
             <div className="min-w-0">
-              <dt className="text-xs text-muted-foreground">估算费用 (USD)</dt>
+              <dt className="text-xs text-muted-foreground">账本费用 (USD)</dt>
               <dd
                 className="mt-1 break-words text-lg font-semibold tabular-nums"
                 style={{ color: "var(--cqg-chart-cost, #b78234)" }}
@@ -265,7 +265,7 @@ export function UsageStatistics({ userId }: { userId: string }) {
                       unit === "USD"
                         ? `USD ${formatUsd(Number(value))}`
                         : `${formatTokenCount(Number(value))} Token`,
-                      unit === "USD" ? "估算费用" : "总 Token",
+                      unit === "USD" ? "账本费用" : "总 Token",
                     ]}
                   />
                   <Area

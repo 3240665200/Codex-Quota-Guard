@@ -1,3 +1,4 @@
+import { usdFixture } from "@/test/usd-fixtures";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,
@@ -57,6 +58,7 @@ const deniedAccess = {
 };
 const allowedAccess = { allowed: true, bindingId: binding.id, reason: null };
 const quota: QuotaOverview = {
+  billing: usdFixture({allowed:false,blockReason:"SESSION_BINDING_REQUIRED"}),
   user: session.user!,
   team: null,
   teamQuota: null,

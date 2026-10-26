@@ -16,8 +16,9 @@ const manifest = path.join(
   "Cargo.toml",
 );
 const env = nativeBuildEnvironment();
+if (env.TEMP) mkdirSync(env.TEMP, { recursive: true });
 if (process.platform === "win32" && !env.CARGO_TARGET_DIR) {
-  env.CARGO_TARGET_DIR = path.join(repositoryRoot, "dist", "build-target");
+  env.CARGO_TARGET_DIR = path.join(repositoryRoot, ".cache", "rust");
 }
 const targetDir =
   env.CARGO_TARGET_DIR ??

@@ -209,6 +209,9 @@ class OfficialSessionClientTest {
         success(mismatch, ACCOUNTS.replace("official-account-one", "other-account"), SESSIONS);
         assertFailure(mismatch, "OFFICIAL_ACCOUNT_MISMATCH");
         for (String malformed : new String[] {"{}", "{\"show_session_manager\":true,\"devices\":{}}",
+                "{\"show_session_manager\":true,\"devices\":[],\"has_more\":true}",
+                "{\"show_session_manager\":true,\"devices\":[],\"next_cursor\":\"more\"}",
+                "{\"show_session_manager\":true,\"devices\":[],\"total\":2}",
                 "{\"show_session_manager\":true,\"devices\":[{\"render_id\":\"x\",\"app_sessions\":\"wrong\"}]}"}) {
             HttpClient http = mock(HttpClient.class);
             success(http, ACCOUNTS, malformed);

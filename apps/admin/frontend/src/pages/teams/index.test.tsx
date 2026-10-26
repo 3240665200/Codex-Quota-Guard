@@ -1,3 +1,4 @@
+import { usdScope, usdWindow } from '../../test/usd-fixtures';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { App as AntApp, ConfigProvider } from 'antd';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -11,7 +12,7 @@ import {
   listUsers,
   updateTeam,
   updateTeamMembers,
-  updateTeamTokenLimits,
+  updateTeamUsdLimits,
 } from '../../services/api';
 import type { TeamResponse } from '../../services/api';
 
@@ -24,15 +25,16 @@ vi.mock('../../services/api', () => ({
   listUsers: vi.fn(),
   updateTeam: vi.fn(),
   updateTeamMembers: vi.fn(),
-  updateTeamTokenLimits: vi.fn(),
+  updateTeamUsdLimits: vi.fn(),
 }));
 
 const team: TeamResponse = {
+  fiveHourTokenLimit: 50000, weeklyTokenLimit: 100000, totalTokenLimit: 200000,
   createdAt: '2026-01-01T00:00:00Z',
   description: '研发团队',
   fiveHourQuotaPercent: 80,
-  fiveHourTokenLimit: 50_000,
-  totalTokenLimit: 200_000,
+  fiveHourUsdLimit: '50',
+  totalUsdLimit: '200',
   officialAccountId: null,
   id: 'team-1',
   memberCount: 2,
@@ -41,7 +43,7 @@ const team: TeamResponse = {
   updatedAt: '2026-01-01T00:00:00Z',
   version: 1,
   weeklyQuotaPercent: 90,
-  weeklyTokenLimit: 100_000,
+  weeklyUsdLimit: '100',
 };
 
 function renderPage() {
@@ -58,13 +60,14 @@ function tokenLimitInputs() {
   return screen.getAllByRole('spinbutton') as HTMLInputElement[];
 }
 
-describe('团队与 Token 配额页面', () => {
+describe('团队与 USD 配额页面', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(listTeams).mockResolvedValue([]);
     vi.mocked(listOfficialAccounts).mockResolvedValue([]);
     vi.mocked(getTeamQuotaOverview).mockResolvedValue({
       id: team.id, name: team.name, status: team.status, memberCount: team.memberCount,
+      billing: usdScope(usdWindow('50', '0.12', '49.88'), usdWindow('100', '0.30', '99.70'), usdWindow('200', '0.50', '199.50')),
       fiveHourTokenLimit: team.fiveHourTokenLimit,
       weeklyTokenLimit: team.weeklyTokenLimit,
       totalTokenLimit: team.totalTokenLimit,
@@ -76,12 +79,13 @@ describe('团队与 Token 配额页面', () => {
     });
     vi.mocked(createTeam).mockResolvedValue(team);
     vi.mocked(updateTeam).mockResolvedValue(team);
-    vi.mocked(updateTeamTokenLimits).mockResolvedValue(team);
+    vi.mocked(updateTeamUsdLimits).mockResolvedValue(usdScope());
     vi.mocked(updateTeamMembers).mockResolvedValue({ ...team, memberCount: 3 });
     vi.mocked(listUsers).mockResolvedValue({ items: [{
       id: 'candidate', displayName: '待加入用户', email: 'candidate@example.com',
       teamId: null, role: 'USER', status: 'ACTIVE',
       fiveHourQuotaPercent: null, weeklyQuotaPercent: null,
+      fiveHourUsdLimit: null, weeklyUsdLimit: null,
       fiveHourTokenLimit: null, weeklyTokenLimit: null,
       createdAt: team.createdAt, updatedAt: team.updatedAt,
     }], page: 0, size: 20, totalElements: 1, totalPages: 1 });
@@ -106,12 +110,12 @@ describe('团队与 Token 配额页面', () => {
     expect(payload?.weeklyQuotaPercent).toBe(100);
     expect(payload).not.toHaveProperty('assignedCodexAccountId');
     await waitFor(() =>
-      expect(updateTeamTokenLimits).toHaveBeenCalledWith(team.id, {
-        fiveHourTokenLimit: 0,
-        totalTokenLimit: null,
+      expect(updateTeamUsdLimits).toHaveBeenCalledWith(team.id, {
+        fiveHourUsdLimit: '0',
+        totalUsdLimit: null,
         officialAccountId: null,
         version: team.version,
-        weeklyTokenLimit: null,
+        weeklyUsdLimit: null,
       }),
     );
   });
@@ -125,25 +129,26 @@ describe('团队与 Token 配额页面', () => {
   it('shows shared consumption next to the team limits', async () => {
     vi.mocked(listTeams).mockResolvedValue([team]);
     renderPage();
-    expect(await screen.findByTitle('精确值：120 Token')).toBeInTheDocument();
-    expect(screen.getByTitle('精确值：49,880 Token')).toBeInTheDocument();
+    expect(await screen.findByTitle('49.88 USD')).toBeInTheDocument();
+    expect(screen.getByTitle('50 USD')).toBeInTheDocument();
     expect(getTeamQuotaOverview).toHaveBeenCalledWith(team.id);
   });
 
   it('shows empty limits as unlimited while preserving measured usage', async () => {
     vi.mocked(listTeams).mockResolvedValue([{
-      ...team, fiveHourTokenLimit: null, weeklyTokenLimit: null, totalTokenLimit: null,
+      ...team, fiveHourUsdLimit: null, weeklyUsdLimit: null, totalUsdLimit: null,
     }]);
     vi.mocked(getTeamQuotaOverview).mockResolvedValue({
       id: team.id, name: team.name, status: team.status, memberCount: team.memberCount,
+      billing: usdScope(usdWindow(null, '0.12'), usdWindow(null, '0.30'), usdWindow(null, '0.50')),
       fiveHourTokenLimit: null, weeklyTokenLimit: null, totalTokenLimit: null,
       fiveHourUsedTokens: 120, weeklyUsedTokens: 300, totalUsedTokens: 500,
       fiveHourRemainingTokens: null, weeklyRemainingTokens: null, totalRemainingTokens: null,
       measuredAt: '2026-10-08T04:00:00Z',
     });
     renderPage();
-    expect(await screen.findByTitle('精确值：120 Token')).toBeInTheDocument();
-    expect(screen.getAllByText(/无限制/)).toHaveLength(6);
+    expect(await screen.findByTitle('0.12 USD')).toBeInTheDocument();
+    expect(screen.getAllByText(/无限制/)).toHaveLength(3);
     expect(screen.queryByText('未配置')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '编辑 研发' }));
     await waitFor(() => expect(screen.getByText('留空表示不设 7 天限制')).toBeVisible(), { timeout: 5000 });
@@ -189,17 +194,17 @@ describe('团队与 Token 配额页面', () => {
     fireEvent.click(screen.getByRole('button', { name: /保\s*存/ }));
     fireEvent.click(await screen.findByRole('button', { name: '确认保存' }));
 
-    await waitFor(() => expect(updateTeamTokenLimits).toHaveBeenCalled());
+    await waitFor(() => expect(updateTeamUsdLimits).toHaveBeenCalled());
     expect(updateTeam).toHaveBeenCalledWith(
       team.id,
       expect.not.objectContaining({ assignedCodexAccountId: expect.anything() }),
     );
-    expect(updateTeamTokenLimits).toHaveBeenCalledWith(team.id, {
-      fiveHourTokenLimit: 99999,
-      totalTokenLimit: 99999,
+    expect(updateTeamUsdLimits).toHaveBeenCalledWith(team.id, {
+      fiveHourUsdLimit: '99999',
+      totalUsdLimit: '99999',
       officialAccountId: null,
       version: 7,
-      weeklyTokenLimit: 99999,
+      weeklyUsdLimit: '99999',
     });
   });
 
@@ -226,7 +231,7 @@ describe('团队与 Token 配额页面', () => {
   });
 
   it('reloads and explains the partial result when the new team token limits fail', async () => {
-    vi.mocked(updateTeamTokenLimits).mockRejectedValueOnce(new Error('token limit failed'));
+    vi.mocked(updateTeamUsdLimits).mockRejectedValueOnce(new Error('token limit failed'));
     renderPage();
     fireEvent.click(screen.getByRole('button', { name: /新建团队/ }));
     fireEvent.change(screen.getByLabelText('团队名称'), {
@@ -236,14 +241,14 @@ describe('团队与 Token 配额页面', () => {
     fireEvent.click(await screen.findByRole('button', { name: '确认创建' }));
 
     expect(
-      await screen.findByText('团队已创建，但 Token 上限保存失败，请在编辑团队中重试。'),
+      await screen.findByText('团队已创建，但 USD 上限保存失败，请在编辑团队中重试。'),
     ).toBeInTheDocument();
     await waitFor(() => expect(listTeams).toHaveBeenCalledTimes(2));
   });
 
   it('shows a safe version-conflict reason when editing token limits fails', async () => {
     vi.mocked(listTeams).mockResolvedValue([team]);
-    vi.mocked(updateTeamTokenLimits).mockRejectedValueOnce(
+    vi.mocked(updateTeamUsdLimits).mockRejectedValueOnce(
       Object.assign(new Error('do not show raw server details'), { status: 409 }),
     );
     renderPage();

@@ -1,10 +1,11 @@
 ﻿#requires -Version 5.1
 [CmdletBinding()]
 param(
-    [ValidateSet('', 'Detect', 'Validate', 'CheckDestination', 'Migrate', 'Complete')][string]$Operation = '',
+    [ValidateSet('', 'Detect', 'Validate', 'CheckDestination', 'Migrate', 'Complete', 'HashPayload')][string]$Operation = '',
     [string]$ResultFile = '', [string]$RequestFile = '', [string]$DestinationDirectory = '',
     [string]$ExpectedDirectory = '', [string]$ExpectedVersion = '',
     [int]$ExpectedView = 64, [string]$Version = '',
+    [string]$PayloadHash = '', [string]$PayloadPath = '',
     [switch]$Confirmed, [switch]$Silent, [switch]$Passive
 )
 $ErrorActionPreference = 'Stop'
@@ -13,6 +14,13 @@ $script:CqgPublisher = 'codexquotaguard'
 $script:CqgBinary = 'codex-quota-guard.exe'
 $script:CqgUninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex Quota Guard'
 $script:CqgRememberedKey = 'Software\codexquotaguard\Codex Quota Guard'
+$script:CqgTargetVersion = $Version
+$script:CqgTargetPayloadHash = $PayloadHash
+# Verified 0.4.0 NSIS payload. Its only difference from the verified build is
+# Tauri's documented UNK -> NSS bundle marker; see the 0.4.1 release notes.
+$script:CqgRecoveryPayloads = @{
+    '0.4.0' = '90c3a0cd9e1802b9d23c49c2a6a09220d2a406a175618196cb50c22d971f5acb'
+}
 
 function ConvertTo-CqgDirectory([string]$Value) {
     $directory = $Value.Trim()
@@ -63,6 +71,17 @@ function Assert-CqgDirectoryTree([string]$Directory) {
     }
 }
 
+function Get-CqgFileSha256([string]$Path) {
+    # The 32-bit NSIS compiler may launch PowerShell without Utility-module
+    # auto-loading. Hash through .NET in both build-time and runtime checks.
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    $stream = $null
+    try {
+        $stream = [IO.File]::OpenRead($Path)
+        return [BitConverter]::ToString($algorithm.ComputeHash($stream)).Replace('-', '').ToLowerInvariant()
+    } finally { if ($stream) { $stream.Dispose() }; $algorithm.Dispose() }
+}
+
 function Get-CqgExecutableMetadata([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
     $item = Get-Item -LiteralPath $Path -Force
@@ -72,7 +91,21 @@ function Get-CqgExecutableMetadata([string]$Path) {
     $info = [Diagnostics.FileVersionInfo]::GetVersionInfo($Path)
     return [pscustomobject]@{
         ProductName = $info.ProductName; Version = $info.ProductVersion; IsRegularFile = $true
+        Publisher = $info.CompanyName; Sha256 = Get-CqgFileSha256 $Path
     }
+}
+
+function Test-CqgInterruptedPayload($Record, $Metadata) {
+    # Recovery never executes the mismatched binary or an old uninstaller.
+    # Only current-user, newer, byte-for-byte verified payloads are accepted.
+    if ($Record.Hive -cne 'HKCU' -or $Metadata.Publisher -cne $script:CqgPublisher -or
+        $Record.Version -notmatch '^\d+\.\d+\.\d+$' -or $Metadata.Version -notmatch '^\d+\.\d+\.\d+$' -or
+        $script:CqgTargetVersion -notmatch '^\d+\.\d+\.\d+$') { return $false }
+    if ([version]$Metadata.Version -le [version]$Record.Version -or
+        [version]$Metadata.Version -gt [version]$script:CqgTargetVersion) { return $false }
+    $expected = if ($Metadata.Version -ceq $script:CqgTargetVersion) { $script:CqgTargetPayloadHash }
+        else { $script:CqgRecoveryPayloads[$Metadata.Version] }
+    return $expected -match '^[0-9a-f]{64}$' -and $Metadata.Sha256 -ceq $expected
 }
 
 function Read-CqgInstalledRecords {
@@ -150,10 +183,13 @@ function Assert-CqgRegisteredRecord($Record, [string]$BinaryVersion = '') {
         throw '旧版本卸载记录不是本产品目录中的固定卸载程序。'
     }
     if (-not $BinaryVersion) { $BinaryVersion = $Record.Version }
-    foreach ($executable in @((Join-Path $directory $script:CqgBinary), $uninstaller)) {
+    foreach ($executable in @($uninstaller, (Join-Path $directory $script:CqgBinary))) {
         $metadata = Get-CqgExecutableMetadata $executable
-        if (-not $metadata -or -not $metadata.IsRegularFile -or $metadata.ProductName -cne $script:CqgProduct -or
-            $metadata.Version -cne $BinaryVersion) {
+        if (-not $metadata -or -not $metadata.IsRegularFile -or $metadata.ProductName -cne $script:CqgProduct) {
+            throw '旧版本程序文件缺失或产品版本不匹配，不能自动升级。'
+        }
+        if ($metadata.Version -cne $BinaryVersion -and
+            ($executable -ieq $uninstaller -or -not (Test-CqgInterruptedPayload $Record $metadata))) {
             throw '旧版本程序文件缺失或产品版本不匹配，不能自动升级。'
         }
     }
@@ -168,7 +204,9 @@ function Resolve-CqgUpgradePlan([object[]]$Records) {
         }
         if ($record.ArpPresent) {
             $directory = Assert-CqgRegisteredRecord $record
-            $registered += [pscustomobject]@{ Hive = $record.Hive; View = $record.View; Directory = $directory; Version = $record.Version; Mode = $(if ($record.Hive -eq 'HKCU') { 'upgrade' } else { 'migrate' }) }
+            $main = Get-CqgExecutableMetadata (Join-Path $directory $script:CqgBinary)
+            $mode = if ($record.Hive -eq 'HKLM') { 'migrate' } elseif ($main.Version -cne $record.Version) { 'repair' } else { 'upgrade' }
+            $registered += [pscustomobject]@{ Hive = $record.Hive; View = $record.View; Directory = $directory; Version = $main.Version; Mode = $mode }
         } elseif ($record.RememberedPath) {
             $directory = ConvertTo-CqgDirectory $record.RememberedPath
             $metadata = Get-CqgExecutableMetadata (Join-Path $directory $script:CqgBinary)
@@ -315,6 +353,12 @@ function Read-CqgRequest([string]$Path) {
 if ($Operation) {
     try {
         if (-not $ResultFile) { throw '安装检测结果路径缺失。' }
+        if ($Operation -eq 'HashPayload') {
+            $payload = Get-CqgExecutableMetadata $PayloadPath
+            if (-not $payload -or $payload.Sha256 -notmatch '^[0-9a-f]{64}$') { throw '无法读取安装包主程序指纹。' }
+            [IO.File]::WriteAllText($ResultFile, $payload.Sha256, [Text.Encoding]::ASCII)
+            exit 0
+        }
         if ($RequestFile) {
             $request = Read-CqgRequest $RequestFile
             $DestinationDirectory = $request.DestinationDirectory
@@ -349,6 +393,7 @@ if ($Operation) {
         }
         exit 0
     } catch {
+        if ($Operation -eq 'HashPayload') { [Console]::Error.WriteLine($_.Exception.Message) }
         if ($ResultFile) { Write-CqgResult ([pscustomobject]@{ Mode = 'error'; Hive = ''; View = 64; Directory = ''; Version = '' }) $_.Exception.Message }
         exit 2
     }

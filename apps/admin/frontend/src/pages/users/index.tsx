@@ -1,3 +1,4 @@
+import { usdBudgetRule } from '../../utils/usd';
 import {
   CheckCircleOutlined,
   DeleteOutlined,
@@ -34,7 +35,7 @@ import { history } from '@umijs/max';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { getErrorMessage } from '../../components/AdminState';
-import { TokenAmount } from '../../components/TokenAmount';
+import { UsdAmount } from '../../components/UsdAmount';
 import {
   createUser,
   deleteUser,
@@ -43,7 +44,7 @@ import {
   listTeams,
   listUsers,
   updateUserQuotaPolicy,
-  updateUserTokenLimits,
+  updateUserUsdLimits,
   updateUser,
 } from '../../services/api';
 import type {
@@ -77,8 +78,8 @@ interface UserFormValues {
 
 interface QuotaPolicyFormValues {
   teamId: string | null;
-  fiveHourTokenLimit: number | null;
-  weeklyTokenLimit: number | null;
+  fiveHourUsdLimit: string | null;
+  weeklyUsdLimit: string | null;
 }
 
 function formatDate(value: string): string {
@@ -90,25 +91,7 @@ function formatDate(value: string): string {
   }).format(date);
 }
 
-function tokenLimitRule() {
-  return {
-    validator: (_: unknown, value: unknown) => {
-      if (value === null || value === undefined || value === '') return Promise.resolve();
-      if (
-        typeof value !== 'number' ||
-        !Number.isFinite(value) ||
-        value < 0 ||
-        value > MAX_TOKEN_LIMIT ||
-        !Number.isInteger(value)
-      ) {
-        return Promise.reject(
-          new Error('请输入 0 到 1,000,000,000,000 的整数，或留空表示不设个人上限'),
-        );
-      }
-      return Promise.resolve();
-    },
-  };
-}
+function tokenLimitRule() { return usdBudgetRule; }
 
 export default function UsersPage() {
   const { token } = theme.useToken();
@@ -320,9 +303,9 @@ export default function UsersPage() {
     (user: UserResponse) => {
       setQuotaEditingUser(user);
       quotaForm.setFieldsValue({
-        fiveHourTokenLimit: user.fiveHourTokenLimit,
+        fiveHourUsdLimit: user.fiveHourUsdLimit,
         teamId: user.teamId,
-        weeklyTokenLimit: user.weeklyTokenLimit,
+        weeklyUsdLimit: user.weeklyUsdLimit,
       });
       setQuotaFormOpen(true);
     },
@@ -347,9 +330,9 @@ export default function UsersPage() {
     const user = quotaEditingUser;
     modal.confirm({
       cancelText: '取消',
-      title: '确认保存 Token 配额？',
+      title: '确认保存 USD 配额？',
       content:
-        '保存后会立即应用团队归属与个人 Token 上限，并使该用户现有会话失效。Token 上限是本系统配额，与 Codex 官方账户百分比无关。确定继续吗？',
+        '保存后会立即应用团队归属与个人 USD 上限，并使该用户现有会话失效。USD 上限是本系统配额，与 Codex 官方账户百分比无关。确定继续吗？',
       okText: '确认保存',
       onOk: async () => {
         setQuotaSaving(true);
@@ -362,16 +345,16 @@ export default function UsersPage() {
             weeklyQuotaPercent: null,
           });
           teamPolicySaved = true;
-          await updateUserTokenLimits(user.id, {
-            fiveHourTokenLimit: values.fiveHourTokenLimit ?? null,
-            weeklyTokenLimit: values.weeklyTokenLimit ?? null,
+          await updateUserUsdLimits(user.id, {
+            fiveHourUsdLimit: values.fiveHourUsdLimit ?? null,
+            weeklyUsdLimit: values.weeklyUsdLimit ?? null,
           });
-          message.success('用户团队归属与 Token 配额已保存');
+          message.success('用户团队归属与 USD 配额已保存');
           closeQuotaPolicy();
           await load();
         } catch (requestError) {
           if (teamPolicySaved) {
-            message.warning('用户团队归属已保存，但个人 Token 上限保存失败；请刷新后重试。');
+            message.warning('用户团队归属已保存，但个人 USD 上限保存失败；请刷新后重试。');
             closeQuotaPolicy();
             await load();
             return;
@@ -504,7 +487,7 @@ export default function UsersPage() {
                 {teamPolicyLoading
                   ? '团队加载中…'
                   : teamPolicyUnavailable
-                    ? '团队 Token 配额不可用'
+                    ? '团队 USD 配额不可用'
                     : teamsError
                       ? '团队列表不可用'
                       : team?.name ?? '未分配团队'}
@@ -513,25 +496,25 @@ export default function UsersPage() {
                 {teamPolicyLoading
                   ? '额度策略加载中…'
                   : teamPolicyUnavailable
-                    ? 'Token 配额暂不可用'
-                    : <>个人：5 小时 {user.fiveHourTokenLimit === null ? '不设限' : <TokenAmount value={user.fiveHourTokenLimit} />}
-                      {' · '}7 天 {user.weeklyTokenLimit === null ? '不设限' : <TokenAmount value={user.weeklyTokenLimit} />}
-                      <br />团队：{team ? <>{team.name} · 累计 {team.totalTokenLimit === null ? '不设限' : <TokenAmount value={team.totalTokenLimit} />}</> : '未分配'}</>}
+                    ? 'USD 配额暂不可用'
+                    : <>个人：5 小时 {user.fiveHourUsdLimit === null ? '不设限' : <UsdAmount value={user.fiveHourUsdLimit} />}
+                      {' · '}7 天 {user.weeklyUsdLimit === null ? '不设限' : <UsdAmount value={user.weeklyUsdLimit} />}
+                      <br />团队：{team ? <>{team.name} · 累计 {team.totalUsdLimit === null ? '不设限' : <UsdAmount value={team.totalUsdLimit} />}</> : '未分配'}</>}
               </Typography.Text>
               <Button
-                aria-label={`配置 ${user.email} 的团队与 Token 配额`}
+                aria-label={`配置 ${user.email} 的团队与 USD 配额`}
                 disabled={mutatingId === user.id || teamsLoading}
                 icon={<SlidersOutlined />}
                 onClick={() => openQuotaPolicy(user)}
                 size="small"
                 type="link"
               >
-                配置团队/个人 Token 配额
+                配置团队/个人 USD 配额
               </Button>
             </Space>
           );
         },
-        title: '团队与 Token 配额',
+        title: '团队与 USD 配额',
         width: 260,
       },
       {
@@ -557,7 +540,7 @@ export default function UsersPage() {
                   {
                     icon: <SlidersOutlined />,
                     key: 'quota',
-                    label: '配置团队/个人 Token 配额',
+                    label: '配置团队/个人 USD 配额',
                     onClick: () => openQuotaPolicy(user),
                   },
                   {
@@ -835,11 +818,11 @@ export default function UsersPage() {
       <Modal
         forceRender
         okButtonProps={{ loading: quotaSaving }}
-        okText="保存 Token 配额"
+        okText="保存 USD 配额"
         onCancel={closeQuotaPolicy}
         onOk={() => void saveQuotaPolicy()}
         open={quotaFormOpen}
-        title={quotaEditingUser ? `配置 ${quotaEditingUser.email} 的团队与 Token 配额` : '配置团队与 Token 配额'}
+        title={quotaEditingUser ? `配置 ${quotaEditingUser.email} 的团队与 USD 配额` : '配置团队与 USD 配额'}
       >
         <Form form={quotaForm} layout="vertical" preserve={false}>
           <Form.Item
@@ -864,29 +847,29 @@ export default function UsersPage() {
           <Space align="start" size={16}>
             <Form.Item
               extra="留空表示个人 5 小时不设限"
-              label="5 小时个人 Token 上限"
-              name="fiveHourTokenLimit"
+              label="5 小时个人 USD 上限"
+              name="fiveHourUsdLimit"
               rules={[tokenLimitRule()]}
             >
               <InputNumber
                 max={MAX_TOKEN_LIMIT}
                 min={0}
-                precision={0}
-                suffix="Token"
+                stringMode precision={12}
+                suffix="USD"
                 style={{ width: 180 }}
               />
             </Form.Item>
             <Form.Item
               extra="留空表示个人 7 天不设限；团队 7 天限制仍生效"
-              label="7 天个人 Token 上限"
-              name="weeklyTokenLimit"
+              label="7 天个人 USD 上限"
+              name="weeklyUsdLimit"
               rules={[tokenLimitRule()]}
             >
               <InputNumber
                 max={MAX_TOKEN_LIMIT}
                 min={0}
-                precision={0}
-                suffix="Token"
+                stringMode precision={12}
+                suffix="USD"
                 style={{ width: 180 }}
               />
             </Form.Item>
@@ -895,7 +878,7 @@ export default function UsersPage() {
         <Alert
           className="cqg-inline-alert"
           title="保存会使该用户当前会话失效"
-          description="Token 上限是本系统的个人统计配额；不会退出用户的官方 Codex 应用或 CLI。"
+          description="USD 上限是本系统的个人统计配额；不会退出用户的官方 Codex 应用或 CLI。"
           showIcon
           type="warning"
         />

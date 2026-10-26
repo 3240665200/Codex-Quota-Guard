@@ -4,7 +4,7 @@ import type { TableColumnsType } from 'antd';
 import { useState } from 'react';
 import { getErrorMessage } from '../../components/AdminState';
 import { formatUsd } from '../../components/UsageAmounts';
-import { deleteUsageModelPrice, saveUsageModelPrice } from '../../services/api';
+import { deleteUsageModelPrice, saveUsageModelPrice, reconcileUsageBilling } from '../../services/api';
 import type { UsageModelPrice, UsageModelPriceInput } from '../../services/api';
 
 const priceFields = [
@@ -54,7 +54,7 @@ export function ModelPrices({ prices, loading, onChanged, models }: {
   const remove = (price: UsageModelPrice) => {
     modal.confirm({
       title: `删除 ${price.model} 的定价？`,
-      content: '对应流水将显示为未定价，Token 统计不变。',
+      content: '已入账的 USD 金额和价格快照保留；后续该模型的用量将显示为待核算。',
       okText: '删除', cancelText: '取消', okButtonProps: { danger: true },
       onOk: async () => {
         try {
@@ -87,7 +87,8 @@ export function ModelPrices({ prices, loading, onChanged, models }: {
   ];
   return <section className="cqg-usage-section" aria-label="模型定价">
     <div className="cqg-usage-section-head">
-      <div><h2>模型定价</h2><span className="cqg-usage-muted">USD / 百万 Token · 内置 CC Switch 价格快照，可手动覆盖 · 历史流水按当前单价估算</span></div>
+      <div><h2>模型定价</h2><span className="cqg-usage-muted">USD / 百万 Token · 每笔费用保存单价和倍率快照，调价不改变旧账</span></div>
+      <Button onClick={() => void reconcileUsageBilling().then((result) => { message.success(`已补计 ${result.updated} 笔待定价记录`); onChanged(); }).catch((reason: unknown) => message.error(getErrorMessage(reason)))}>核算待定价记录</Button>
       <Button type="primary" icon={<PlusOutlined />} onClick={() => edit()}>添加定价</Button>
     </div>
     {unpriced.length ? <Alert className="cqg-inline-alert" type="warning" showIcon title={`${unpriced.length} 个已上报模型尚未定价`} /> : null}
@@ -103,6 +104,7 @@ export function ModelPrices({ prices, loading, onChanged, models }: {
           <Input disabled={editing} maxLength={96} list="usage-model-names" />
         </Form.Item>
         <datalist id="usage-model-names">{models.map((model) => <option key={model.value} value={model.value} />)}</datalist>
+        <Form.Item name="fastMultiplier" label="快速模式计费倍率" initialValue={1.5} rules={[{ type: 'number', min: 1, max: 100 }]} extra="fast / priority 默认按 1.5 倍计费；已入账记录保留原倍率。"><InputNumber min={1} max={100} step={0.1} precision={6} style={{ width: '100%' }} /></Form.Item>
         {priceFields.map((field) => <Form.Item key={field.name} name={field.name} label={`${field.label} (USD / 百万 Token)`}
           rules={[{ required: true, message: '请输入单价，免费填 0' }, { type: 'number', min: 0, max: 1_000_000 },
             { validator: (_, value: unknown) => typeof value !== 'number' || Math.abs(value * 1_000_000 - Math.round(value * 1_000_000)) > 0.0001

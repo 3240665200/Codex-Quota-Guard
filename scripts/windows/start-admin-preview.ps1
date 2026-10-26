@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [string]$ConfigPath = 'D:\BuildCache\pingche\private\admin-backend.clixml',
-    [string]$PreviewDirectory = 'D:\BuildCache\pingche\management-preview',
+    [string]$PreviewDirectory = '',
     [int]$BackendPort = 18080,
     [int]$FrontendPort = 8000,
     [string]$ProxyKernel = 'D:\codex-tools\sing-box-1.13.14\sing-box-1.13.14-windows-amd64\sing-box.exe',
@@ -13,6 +13,7 @@ param(
     [string]$PackageDirectory = ''
 )
 $ErrorActionPreference='Stop'
+if (!$PreviewDirectory) { $PreviewDirectory = Join-Path (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path '.local\runtime\admin-preview' }
 Import-Module (Join-Path $PSScriptRoot 'preview-lifecycle.psm1') -Force
 if ($PackageDirectory) {
     if (![IO.Path]::IsPathRooted($PackageDirectory)) { throw 'PREVIEW_PACKAGE_PATH_INVALID' }

@@ -1,3 +1,5 @@
+import { usdBudgetRule } from '../../utils/usd';
+import { QuotaAmount } from '../../components/QuotaAmount';
 import {
   CheckCircleOutlined,
   DeleteOutlined,
@@ -28,7 +30,7 @@ import type { TableColumnsType } from 'antd';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { getErrorMessage } from '../../components/AdminState';
-import { TokenAmount } from '../../components/TokenAmount';
+import { UsdAmount } from '../../components/UsdAmount';
 import TeamMembersModal from './TeamMembersModal';
 import {
   createTeam,
@@ -37,7 +39,7 @@ import {
   listOfficialAccounts,
   listTeams,
   updateTeam,
-  updateTeamTokenLimits,
+  updateTeamUsdLimits,
 } from '../../services/api';
 import type {
   TeamCreate,
@@ -55,9 +57,9 @@ interface TeamFormValues {
   name: string;
   description: string;
   status: TeamStatus;
-  fiveHourTokenLimit: number | null;
-  weeklyTokenLimit: number | null;
-  totalTokenLimit: number | null;
+  fiveHourUsdLimit: string | null;
+  weeklyUsdLimit: string | null;
+  totalUsdLimit: string | null;
   officialAccountId: string | null;
 }
 
@@ -78,7 +80,7 @@ function describeTokenLimitSaveFailure(error: unknown): string {
     case 403:
       return '当前账户没有管理员权限';
     case 404:
-      return '后台缺少 Token 上限接口，请重启最新后台';
+      return '后台缺少 USD 上限接口，请重启最新后台';
     case 409:
       return '团队版本冲突，请刷新后重试';
     default:
@@ -86,25 +88,7 @@ function describeTokenLimitSaveFailure(error: unknown): string {
   }
 }
 
-function tokenLimitRule() {
-  return {
-    validator: (_: unknown, value: unknown) => {
-      if (value === null || value === undefined || value === '') return Promise.resolve();
-      if (
-        typeof value !== 'number' ||
-        !Number.isFinite(value) ||
-        value < 0 ||
-        value > MAX_TOKEN_LIMIT ||
-        !Number.isInteger(value)
-      ) {
-        return Promise.reject(
-          new Error('请输入 0 到 1,000,000,000,000 的整数，或留空表示不设限'),
-        );
-      }
-      return Promise.resolve();
-    },
-  };
-}
+function tokenLimitRule() { return usdBudgetRule; }
 
 export default function TeamsPage() {
   const { message, modal } = AntApp.useApp();
@@ -148,12 +132,12 @@ export default function TeamsPage() {
     form.resetFields();
     form.setFieldsValue({
       description: '',
-      fiveHourTokenLimit: null,
+      fiveHourUsdLimit: null,
       name: '',
       officialAccountId: null,
       status: 'ACTIVE',
-      totalTokenLimit: null,
-      weeklyTokenLimit: null,
+      totalUsdLimit: null,
+      weeklyUsdLimit: null,
     });
     setFormOpen(true);
   }, [form]);
@@ -163,12 +147,12 @@ export default function TeamsPage() {
       setEditing(team);
       form.setFieldsValue({
         description: team.description,
-        fiveHourTokenLimit: team.fiveHourTokenLimit,
+        fiveHourUsdLimit: team.fiveHourUsdLimit,
         name: team.name,
         officialAccountId: team.officialAccountId,
         status: team.status,
-        totalTokenLimit: team.totalTokenLimit,
-        weeklyTokenLimit: team.weeklyTokenLimit,
+        totalUsdLimit: team.totalUsdLimit,
+        weeklyUsdLimit: team.weeklyUsdLimit,
       });
       setFormOpen(true);
     },
@@ -192,15 +176,15 @@ export default function TeamsPage() {
     modal.confirm({
       cancelText: '取消',
       content: editing
-        ? '保存后会更新团队 Token 上限，并使相关成员系统会话失效。确定继续吗？'
-        : '创建团队后会立即保存 Token 上限。确定创建吗？',
+        ? '保存后会更新团队 USD 上限，并使相关成员系统会话失效。确定继续吗？'
+        : '创建团队后会立即保存 USD 上限。确定创建吗？',
       okText: editing ? '确认保存' : '确认创建',
       onOk: async () => {
         setSaving(true);
         try {
-          const { fiveHourTokenLimit, weeklyTokenLimit, totalTokenLimit, officialAccountId, ...teamValues } = values;
+          const { fiveHourUsdLimit, weeklyUsdLimit, totalUsdLimit, officialAccountId, ...teamValues } = values;
           const account = officialAccounts.find((item) => item.id === officialAccountId);
-          const effectiveTotalLimit = account ? account.estimatedTotalTokens : totalTokenLimit ?? null;
+          const effectiveTotalLimit = account ? account.budgetUsd : totalUsdLimit ?? null;
           if (editing) {
             const update: TeamUpdate = {
               ...teamValues,
@@ -208,20 +192,20 @@ export default function TeamsPage() {
             };
             const updatedTeam = await updateTeam(editing.id, update);
             try {
-              await updateTeamTokenLimits(editing.id, {
-                fiveHourTokenLimit: fiveHourTokenLimit ?? null,
-                totalTokenLimit: effectiveTotalLimit,
+              await updateTeamUsdLimits(editing.id, {
+                fiveHourUsdLimit: fiveHourUsdLimit ?? null,
+                totalUsdLimit: effectiveTotalLimit,
                 officialAccountId: officialAccountId ?? null,
                 version: updatedTeam.version,
-                weeklyTokenLimit: weeklyTokenLimit ?? null,
+                weeklyUsdLimit: weeklyUsdLimit ?? null,
               });
             } catch (tokenLimitError) {
-              message.warning(`团队基本信息已保存，但 Token 上限保存失败：${describeTokenLimitSaveFailure(tokenLimitError)}。`);
+              message.warning(`团队基本信息已保存，但 USD 上限保存失败：${describeTokenLimitSaveFailure(tokenLimitError)}。`);
               closeForm();
               await load();
               return;
             }
-            message.success('团队与 Token 上限已更新');
+            message.success('团队与 USD 上限已更新');
           } else {
             const create: TeamCreate = {
               ...teamValues,
@@ -230,20 +214,20 @@ export default function TeamsPage() {
             };
             const createdTeam = await createTeam(create);
             try {
-              await updateTeamTokenLimits(createdTeam.id, {
-                fiveHourTokenLimit: fiveHourTokenLimit ?? null,
-                totalTokenLimit: effectiveTotalLimit,
+              await updateTeamUsdLimits(createdTeam.id, {
+                fiveHourUsdLimit: fiveHourUsdLimit ?? null,
+                totalUsdLimit: effectiveTotalLimit,
                 officialAccountId: officialAccountId ?? null,
                 version: createdTeam.version,
-                weeklyTokenLimit: weeklyTokenLimit ?? null,
+                weeklyUsdLimit: weeklyUsdLimit ?? null,
               });
             } catch (tokenLimitError) {
-              message.warning('团队已创建，但 Token 上限保存失败，请在编辑团队中重试。');
+              message.warning('团队已创建，但 USD 上限保存失败，请在编辑团队中重试。');
               closeForm();
               await load();
               return;
             }
-            message.success('团队与 Token 上限已创建');
+            message.success('团队与 USD 上限已创建');
           }
           closeForm();
           await load();
@@ -347,38 +331,20 @@ export default function TeamsPage() {
         width: 100,
       },
       {
-        dataIndex: 'fiveHourTokenLimit',
-        render: (value: number | null, team) => <Space orientation="vertical" size={0}>
-          <span>上限 {value === null ? '无限制' : <TokenAmount value={value} />}</span>
-          <Typography.Text type="secondary">已用 <TokenAmount value={quotaByTeam[team.id]?.fiveHourUsedTokens} /></Typography.Text>
-          <Typography.Text type={quotaByTeam[team.id]?.fiveHourRemainingTokens === 0 ? 'danger' : 'secondary'}>
-            剩余 {value === null ? '无限制' : <TokenAmount value={quotaByTeam[team.id]?.fiveHourRemainingTokens} />}
-          </Typography.Text>
-        </Space>,
+        dataIndex: 'fiveHourUsdLimit',
+        render: (_, team) => <QuotaAmount label={`${team.name}5 小时 USD`} quota={quotaByTeam[team.id]?.billing?.fiveHour} />,
         title: '5 小时团队共享额度',
         width: 185,
       },
       {
-        dataIndex: 'weeklyTokenLimit',
-        render: (value: number | null, team) => <Space orientation="vertical" size={0}>
-          <span>上限 {value === null ? '无限制' : <TokenAmount value={value} />}</span>
-          <Typography.Text type="secondary">已用 <TokenAmount value={quotaByTeam[team.id]?.weeklyUsedTokens} /></Typography.Text>
-          <Typography.Text type={quotaByTeam[team.id]?.weeklyRemainingTokens === 0 ? 'danger' : 'secondary'}>
-            剩余 {value === null ? '无限制' : <TokenAmount value={quotaByTeam[team.id]?.weeklyRemainingTokens} />}
-          </Typography.Text>
-        </Space>,
+        dataIndex: 'weeklyUsdLimit',
+        render: (_, team) => <QuotaAmount label={`${team.name}7 天 USD`} quota={quotaByTeam[team.id]?.billing?.weekly} />,
         title: '7 天团队共享额度',
         width: 185,
       },
       {
-        dataIndex: 'totalTokenLimit',
-        render: (value: number | null, team) => <Space orientation="vertical" size={0}>
-          <span>上限 {value === null ? '无限制' : <TokenAmount value={value} />}</span>
-          <Typography.Text type="secondary">已用 <TokenAmount value={quotaByTeam[team.id]?.totalUsedTokens} /></Typography.Text>
-          <Typography.Text type={quotaByTeam[team.id]?.totalRemainingTokens === 0 ? 'danger' : 'secondary'}>
-            剩余 {value === null ? '无限制' : <TokenAmount value={quotaByTeam[team.id]?.totalRemainingTokens} />}
-          </Typography.Text>
-        </Space>,
+        dataIndex: 'totalUsdLimit',
+        render: (_, team) => <QuotaAmount label={`${team.name}累计 USD`} quota={quotaByTeam[team.id]?.billing?.total} />,
         title: '团队累计总额',
         width: 185,
       },
@@ -465,7 +431,7 @@ export default function TeamsPage() {
           新建团队
         </Button>,
       ]}
-      title="团队与 Token 配额"
+      title="团队与 USD 配额"
     >
       {error ? (
         <Alert
@@ -528,7 +494,7 @@ export default function TeamsPage() {
         onCancel={closeForm}
         onOk={() => void saveTeam()}
         open={formOpen}
-        title={editing ? '编辑团队与 Token 配额' : '新建团队与 Token 配额'}
+        title={editing ? '编辑团队与 USD 配额' : '新建团队与 USD 配额'}
       >
         <Form form={form} layout="vertical" preserve={false}>
           <Form.Item
@@ -542,7 +508,7 @@ export default function TeamsPage() {
             <Input.TextArea maxLength={500} placeholder="说明团队用途（可选）" rows={3} />
           </Form.Item>
           <Form.Item
-            extra="仅用于关联额度快照，不参与官方请求转发。关联后，团队累计总额使用该账户登记的估算 Token。"
+            extra="关联后，团队累计美元上限使用该账户登记的 USD 预算；官方账户预算按关联团队合计消耗。"
             label="官方账户"
             name="officialAccountId"
           >
@@ -550,43 +516,43 @@ export default function TeamsPage() {
               label: account.label, value: account.id,
             }))} onChange={(value) => {
               const account = officialAccounts.find((item) => item.id === value);
-              form.setFieldValue('totalTokenLimit', account?.estimatedTotalTokens ?? null);
+              form.setFieldValue('totalUsdLimit', account?.budgetUsd ?? null);
             }} />
           </Form.Item>
           <Form.Item
-            extra={selectedOfficialAccountId ? '由关联官方账户的估算总量同步' : '团队全体成员累计消耗；留空表示不设累计上限。'}
-            label="团队累计总 Token"
-            name="totalTokenLimit"
+            extra={selectedOfficialAccountId ? '由关联官方账户的 USD 预算同步' : '团队全体成员累计消耗；留空表示不设累计上限。'}
+            label="团队累计总额（USD）"
+            name="totalUsdLimit"
             rules={[tokenLimitRule()]}
           >
-            <InputNumber disabled={Boolean(selectedOfficialAccountId)} max={MAX_TOKEN_LIMIT} min={0} precision={0} suffix="Token" style={{ width: '100%' }} />
+            <InputNumber disabled={Boolean(selectedOfficialAccountId)} max={MAX_TOKEN_LIMIT} min={0} stringMode precision={12} suffix="USD" style={{ width: '100%' }} />
           </Form.Item>
           <Space align="start" size={16}>
             <Form.Item
               extra="留空表示不设 5 小时限制"
-              label="5 小时 Token 上限"
-              name="fiveHourTokenLimit"
+              label="5 小时 USD 上限"
+              name="fiveHourUsdLimit"
               rules={[tokenLimitRule()]}
             >
               <InputNumber
                 max={MAX_TOKEN_LIMIT}
                 min={0}
-                precision={0}
-                suffix="Token"
+                stringMode precision={12}
+                suffix="USD"
                 style={{ width: 180 }}
               />
             </Form.Item>
             <Form.Item
               extra="留空表示不设 7 天限制"
-              label="7 天 Token 上限"
-              name="weeklyTokenLimit"
+              label="7 天 USD 上限"
+              name="weeklyUsdLimit"
               rules={[tokenLimitRule()]}
             >
               <InputNumber
                 max={MAX_TOKEN_LIMIT}
                 min={0}
-                precision={0}
-                suffix="Token"
+                stringMode precision={12}
+                suffix="USD"
                 style={{ width: 180 }}
               />
             </Form.Item>

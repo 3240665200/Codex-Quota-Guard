@@ -52,6 +52,8 @@ function Invoke-CqgUninstaller([string]$Executable, [string]$Arguments, [bool]$E
     return $script:uninstallExit
 }
 function Reset-Fixture {
+    $script:CqgTargetVersion = ''
+    $script:CqgTargetPayloadHash = ''
     $script:metadata = @{}
     $script:records = @()
     $script:uninstallCalls = @()
@@ -196,6 +198,47 @@ Reset-Fixture
 $wrongBinary = New-Record -Hive HKLM
 $script:metadata['D:\Custom Quota Guard\codex-quota-guard.exe'].ProductName = 'Another application'
 Assert-Rejected { Resolve-CqgUpgradePlan -Records @($wrongBinary) }
+
+# A failed service install leaves the new executable beside the old, valid
+# uninstaller/ARP entry. Recover only a known or current exact payload in HKCU.
+foreach ($payloadVersion in @('0.4.0', '0.4.1')) {
+    Reset-Fixture
+    $interrupted = New-Record -Version '0.3.29'
+    $script:CqgTargetVersion = '0.4.1'
+    $script:CqgTargetPayloadHash = 'a' * 64
+    $main = $script:metadata['D:\Custom Quota Guard\codex-quota-guard.exe']
+    $main.Version = $payloadVersion
+    $main | Add-Member NoteProperty Publisher 'codexquotaguard'
+    $main | Add-Member NoteProperty Sha256 $(if ($payloadVersion -eq '0.4.0') { $script:CqgRecoveryPayloads['0.4.0'] } else { $script:CqgTargetPayloadHash })
+    $plan = Resolve-CqgUpgradePlan -Records @($interrupted)
+    Assert-Equal $plan.Mode 'repair'
+    Assert-Equal $plan.Directory 'D:\Custom Quota Guard'
+    Assert-Equal $plan.Version $payloadVersion
+    Assert-Equal $script:uninstallCalls.Count 0
+    Assert-Equal $script:removedRecords.Count 0
+}
+foreach ($fault in @('hash', 'publisher', 'machine', 'older-installer', 'uninstaller', 'missing-file', 'unknown-payload')) {
+    Reset-Fixture
+    $interrupted = New-Record -Version '0.3.29'
+    $script:CqgTargetVersion = '0.4.1'
+    $script:CqgTargetPayloadHash = 'a' * 64
+    $main = $script:metadata['D:\Custom Quota Guard\codex-quota-guard.exe']
+    $main.Version = '0.4.0'
+    $main | Add-Member NoteProperty Publisher 'codexquotaguard'
+    $main | Add-Member NoteProperty Sha256 $script:CqgRecoveryPayloads['0.4.0']
+    switch ($fault) {
+        hash { $main.Sha256 = 'b' * 64 }
+        publisher { $main.Publisher = 'Other product' }
+        machine { $interrupted.Hive = 'HKLM' }
+        older-installer { $script:CqgTargetVersion = '0.3.30' }
+        uninstaller { $script:metadata['D:\Custom Quota Guard\uninstall.exe'].Version = '0.3.28' }
+        missing-file { $script:metadata.Remove('D:\Custom Quota Guard\uninstall.exe') }
+        unknown-payload { $main.Version = '0.3.30' }
+    }
+    Assert-Rejected { Resolve-CqgUpgradePlan -Records @($interrupted) }
+    Assert-Equal $script:uninstallCalls.Count 0
+    Assert-Equal $script:removedRecords.Count 0
+}
 
 # Legal Windows filename punctuation is data, never PowerShell source.
 Reset-Fixture

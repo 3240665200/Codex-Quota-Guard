@@ -109,12 +109,18 @@ test("the pinned Tauri CLI renders and compiles the complete Windows installer t
     assert.ok(generated.includes(`!define MAINBINARYSRCPATH "${payload}"`), "the fixture must package its isolated small payload");
     assert.match(generated, /!define INSTALLMODE "currentUser"/);
     assert.match(generated, /RequestExecutionLevel user/);
+    // !define /file is expanded by makensis rather than Tauri's renderer.
+    assert.match(generated, /HashPayload/);
+    assert.match(generated, /-PayloadHash "\$\{CQG_PAYLOAD_HASH\}"/);
     assert.doesNotMatch(generated, /resources\\(?:java|meter|backend)/i);
     assert.match(generated, /!define INSTALLWEBVIEW2MODE ""/);
     assert.match(generated, /!define WEBVIEW2INSTALLERPATH ""/);
     const installers = readdirSync(path.join(release, "bundle/nsis")).filter((name) => name.endsWith("-setup.exe"));
     assert.equal(installers.length, 1, "makensis must produce one compile-only setup artifact");
     assert.ok(statSync(path.join(release, "bundle/nsis", installers[0])).size > statSync(payload).size);
+    const expectedPayloadHash = createHash('sha256').update(readFileSync(payload)).digest('hex');
+    assert.ok(readFileSync(path.join(release, 'bundle/nsis', installers[0])).includes(Buffer.from(expectedPayloadHash, 'utf16le')),
+      'the exact bundled executable hash must be embedded in the installer policy command');
   } finally {
     // All generated source, payload, and setup files are confined to this mkdtemp directory.
     assert.equal(path.dirname(path.resolve(directory)), path.resolve(tmpdir()));

@@ -1,3 +1,5 @@
+import { usdBudgetRule } from '../../utils/usd';
+import { QuotaAmount } from '../../components/QuotaAmount';
 import { DeleteOutlined, EditOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { PageContainer } from '@ant-design/pro-components';
 import { Alert, App as AntApp, Button, Form, Input, InputNumber, Modal, Popconfirm,
@@ -6,7 +8,7 @@ import type { TableColumnsType } from 'antd';
 import { useCallback, useEffect, useState } from 'react';
 
 import { getErrorMessage } from '../../components/AdminState';
-import { TokenAmount } from '../../components/TokenAmount';
+import { UsdAmount } from '../../components/UsdAmount';
 import { createOfficialAccount, deleteOfficialAccount, listOfficialAccounts,
   updateOfficialAccount } from '../../services/api';
 import type { OfficialAccountInput, OfficialAccountResponse,
@@ -71,9 +73,9 @@ export default function OfficialAccountsPage() {
     setEditing(account);
     form.setFieldsValue(account ? {
       label: account.label,
-      estimatedTotalTokens: account.estimatedTotalTokens,
+      budgetUsd: account.budgetUsd,
       reporterEmail: account.reporterEmail,
-    } : { label: '', estimatedTotalTokens: 0, reporterEmail: null });
+    } : { label: '', budgetUsd: null, reporterEmail: null });
     setOpen(true);
   };
 
@@ -108,8 +110,8 @@ export default function OfficialAccountsPage() {
 
   const columns: TableColumnsType<OfficialAccountResponse> = [
     { title: '官方账户', dataIndex: 'label', render: (value: string) => <Typography.Text strong>{value}</Typography.Text> },
-    { title: '团队估算总量', dataIndex: 'estimatedTotalTokens', width: 165,
-      render: (value: number) => <TokenAmount value={value} /> },
+    { title: '账户预算 (USD)', dataIndex: 'budgetUsd', width: 165,
+      render: (_, row) => <QuotaAmount label={`${row.label}账户 USD`} quota={row.billing?.quota.total} /> },
     { title: '套餐', width: 90, render: (_, account) => account.quota?.planType || '未知' },
     { title: '官方额度', width: 310, render: (_, account) => account.quota?.windows.some(
       (item) => item.limitId === 'codex')
@@ -165,10 +167,10 @@ export default function OfficialAccountsPage() {
         <Form.Item name="label" label="账户名称" rules={[{ required: true, message: '请输入账户名称' }]}>
           <Input maxLength={120} placeholder="例如：研发团队官方账户" />
         </Form.Item>
-        <Form.Item name="estimatedTotalTokens" label="估算总 Token"
-          extra="关联团队后，此数值作为团队累计上限；它不是官方百分比换算结果。"
-          rules={[{ required: true, message: '请输入估算总量' }]}>
-          <InputNumber min={0} max={MAX_TOKEN_LIMIT} precision={0} suffix="Token" style={{ width: '100%' }} />
+        <Form.Item name="budgetUsd" label="账户预算（USD）"
+          extra="关联团队后，此数值作为团队累计美元上限；它不是官方百分比换算结果。"
+          rules={[usdBudgetRule]}>
+          <InputNumber min={0} max={MAX_TOKEN_LIMIT} stringMode precision={12} suffix="USD" style={{ width: '100%' }} />
         </Form.Item>
         <Form.Item name="reporterEmail" label="上报用户的系统邮箱"
           extra="兼容保留的客户端上报关联；账户管理的官方额度由后台定时查询，无需打开客户端。"
