@@ -202,7 +202,7 @@ export class ApiHttpHarness {
         },
       };
     }
-    if (path === "/api/v1/client/official-quota")
+    if (path === "/api/v1/client/official-quota" && method === "PUT")
       return { data: null, status: 204 };
     if (path === "/api/v1/client/login-assistance/events") {
       return {

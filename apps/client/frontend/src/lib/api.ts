@@ -514,6 +514,13 @@ const officialCodexRateLimitsSchema = z.object({
   planType: z.string().min(1).nullable(),
   windows: z.array(officialCodexRateLimitWindowSchema),
   fetchedAt: isoInstant.nullable(),
+  source: z.literal("SERVER").optional(),
+  accountLabel: z.string().nullable().optional(),
+  status: z.enum(["NOT_LINKED", "SUCCESS", "FETCHING", "PENDING", "AUTH_REQUIRED", "RETRY_WAIT", "DISABLED"]).optional(),
+  enabled: z.boolean().optional(),
+  intervalSeconds: z.number().int().min(60).max(86400).optional(),
+  stale: z.boolean().optional(),
+  nextAttemptAt: isoInstant.nullable().optional(),
 });
 
 /** The fixed central response for the currently signed-in product user. */
@@ -1678,18 +1685,10 @@ export const api = {
   },
   meterRuntimeLogs: () =>
     invokeValidated("meter_runtime_logs", meterRuntimeLogsSchema),
-  codexRateLimits: async () => {
-    const snapshot = await invokeValidated(
-      "codex_rate_limits",
-      officialCodexRateLimitsSchema,
-    );
-    await centralRequest({
-      method: "PUT",
-      url: "/api/v1/client/official-quota",
-      data: snapshot,
-    });
-    return snapshot;
-  },
+  codexRateLimits: () => centralJson(
+    { method: "GET", url: "/api/v1/client/official-quota" },
+    officialCodexRateLimitsSchema,
+  ),
 };
 
 const safeBackendMessages = new Set([

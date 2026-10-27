@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -38,11 +39,7 @@ import {
   type QuotaOverview,
   type SystemSession,
 } from "@/lib/api";
-import {
-  formatPercent,
-  formatResetTime,
-  cn,
-} from "@/lib/utils";
+import { formatPercent, formatResetTime, cn } from "@/lib/utils";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -54,12 +51,17 @@ import {
 } from "@/components/usage-activity-panel";
 import { ThemeSwitcher } from "@/components/theme-switcher";
 import { useQuotaDisplay } from "@/lib/quota-display";
+import { officialQuotaStatus } from "@/lib/official-quota";
+import { useClientTheme } from "@/lib/client-theme";
+import { useTrayDashboard } from "./tray-dashboard-bridge";
 import "./quota-layout.css";
 
 function describeBlockReason(reason: string | null): string {
   switch (reason) {
-    case "BILLING_PENDING": return "部分用量缺少价格、分项或速度模式，美元余额待核算，请联系管理员。";
-    case "OFFICIAL_ACCOUNT_USD_QUOTA_EXCEEDED": return "关联官方账户的美元预算已用尽。";
+    case "BILLING_PENDING":
+      return "部分用量缺少价格、分项或速度模式，美元余额待核算，请联系管理员。";
+    case "OFFICIAL_ACCOUNT_USD_QUOTA_EXCEEDED":
+      return "关联官方账户的美元预算已用尽。";
     case "TOKEN_QUOTA_UNCONFIGURED":
       return "7 天基础额度尚未配置。";
     case "TEAM_UNAVAILABLE":
@@ -113,7 +115,12 @@ function EmptyState({
 }
 
 function TeamUsdSection({ overview }: { overview: QuotaOverview }) {
-  return <UsdQuotaDashboard billing={overview.billing} />;
+  return (
+    <UsdQuotaDashboard
+      billing={overview.billing}
+      currentUserId={overview.user.id}
+    />
+  );
 }
 
 function OfficialRateLimitWindow({
@@ -181,7 +188,7 @@ function OfficialRateLimitsCard({
             {loading
               ? "正在读取…"
               : failed
-                ? "读取失败，请检查官方登录"
+                ? "服务端套餐数据暂时无法读取"
                 : rateLimits?.planType
                   ? `${rateLimits.planType} 套餐 · 账户级参考`
                   : "账户级参考"}
@@ -189,6 +196,11 @@ function OfficialRateLimitsCard({
         </div>
       </header>
       <div className="cqg-surface min-w-0 p-4">
+        {rateLimits ? (
+          <p className="mb-3 text-xs text-muted-foreground">
+            {officialQuotaStatus(rateLimits)}
+          </p>
+        ) : null}
         {fiveHour || weekly ? (
           <div className="cqg-quota-grid gap-5">
             {fiveHour ? (
@@ -202,7 +214,7 @@ function OfficialRateLimitsCard({
           <p className="text-sm text-muted-foreground">暂无可显示的官方额度</p>
         )}
         <p className="mt-4 border-t pt-3 text-xs text-muted-foreground">
-          官方接口提供套餐百分比；美元预算与消耗在上方单独核算。
+          服务端按管理员设置的间隔独立查询，退出桌面客户端后仍会更新。套餐百分比与美元预算单独核算。
         </p>
       </div>
     </section>
@@ -432,6 +444,73 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
     quotaQuery.isFetching ||
     usageStatusQuery.isFetching ||
     rateLimitsQuery.isFetching;
+  const { mode: trayMode } = useQuotaDisplay();
+  const { resolvedTheme } = useClientTheme();
+  const traySnapshot = useMemo(
+    () => ({
+      userName: session.user!.displayName,
+      bindingAllowed,
+      personal:
+        bindingAllowed && overview
+          ? {
+              fiveHour: overview.billing.personal.fiveHour,
+              weekly: overview.billing.personal.weekly,
+            }
+          : null,
+      account:
+        bindingAllowed && overview?.billing.officialAccount
+          ? {
+              label: overview.billing.officialAccount.label,
+              total: overview.billing.officialAccount.quota.total,
+            }
+          : null,
+      official: bindingAllowed ? (rateLimitsQuery.data ?? null) : null,
+      updatedAt:
+        bindingAllowed && quotaQuery.dataUpdatedAt
+          ? new Date(quotaQuery.dataUpdatedAt).toISOString()
+          : null,
+      quotaFailed: quotaQuery.isError,
+      officialFailed: rateLimitsQuery.isError,
+      meterRunning: ["UP_TO_DATE", "REPORTED", "BASELINE_READY"].includes(
+        usageStatusQuery.data?.state ?? "",
+      ),
+      refreshing: isRefreshing,
+      mode: trayMode,
+      theme: resolvedTheme,
+    }),
+    [
+      session.user,
+      bindingAllowed,
+      overview,
+      rateLimitsQuery.data,
+      quotaQuery.dataUpdatedAt,
+      quotaQuery.isError,
+      rateLimitsQuery.isError,
+      usageStatusQuery.data?.state,
+      isRefreshing,
+      trayMode,
+      resolvedTheme,
+    ],
+  );
+  useTrayDashboard(traySnapshot, (action) => {
+    if (action === "refresh") {
+      // A hidden main window still owns the Axios session; recheck the device binding before fetching display data.
+      void accessQuery
+        .refetch({ cancelRefetch: false })
+        .then(async (result) => {
+          if (!result.data?.allowed || result.isError) return;
+          await Promise.all([
+            quotaQuery.refetch(),
+            rateLimitsQuery.refetch(),
+            usageStatusQuery.refetch(),
+          ]);
+        })
+        .catch(() => {});
+    } else if (workspaces.some((page) => page.id === action)) {
+      // The focus recheck may be in flight after opening from the tray. The render-time binding gate still applies.
+      setWorkspace(action as WorkspaceId);
+    }
+  });
   const refresh = async () => {
     if (blockingReturn) return;
     window.dispatchEvent(new Event("quota-guard:assistance-refresh"));

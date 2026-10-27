@@ -195,7 +195,7 @@ describe("UsageActivityPanel", () => {
       within(table)
         .getAllByRole("columnheader")
         .map((header) => header.textContent),
-    ).toEqual(["消耗时间", "Token 消耗", "模型名称", "思考等级"]);
+    ).toEqual(["消耗时间", "消耗金额（USD）", "模型名称", "思考等级"]);
     expect(within(table).getByText("gpt-5-codex")).toBeVisible();
     expect(within(table).getByText("high")).toBeVisible();
     expect(within(table).getByTitle("精确值：12,500 Token")).toBeVisible();
@@ -575,7 +575,7 @@ describe("UsageActivityPanel", () => {
     const headers = within(table).getAllByRole("columnheader");
     expect(headers.map((header) => header.textContent)).toEqual([
       "消耗时间",
-      "Token 消耗",
+      "消耗金额（USD）",
       "来源",
       "后台接收",
       "状态",
@@ -655,6 +655,7 @@ describe("UsageActivityPanel", () => {
     const tokenCell = within(selectedRow).getAllByRole("cell")[1];
     expect(within(tokenCell).getByTitle("精确值：7,200 Token")).toBeVisible();
     expect(within(tokenCell).getByText("USD 0.0123")).toBeVisible();
+    expect(tokenCell.textContent!.indexOf("USD 0.0123")).toBeLessThan(tokenCell.textContent!.indexOf("Token"));
     const trigger = within(tokenCell).getByRole("button", {
       name: "查看详情",
     });
@@ -681,8 +682,8 @@ describe("UsageActivityPanel", () => {
       within(dialog).getByRole("button", { name: "关闭详情" }).closest("div"),
     ).toHaveClass("shrink-0");
     for (const label of [
-      "总消耗",
-      "费用估算",
+      "Token 用量",
+      "账本费用（USD）",
       "输入（含缓存）",
       "输出（含思考）",
       "缓存读",

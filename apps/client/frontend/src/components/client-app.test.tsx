@@ -215,7 +215,7 @@ describe("ClientApp", () => {
       await screen.findByRole("heading", { name: "Test dashboard" }),
     ).toBeVisible();
     expect(
-      screen.getByText(/已停止 CC Switch。已恢复 Codex 连接配置。/),
+      await screen.findByText(/已停止 CC Switch。已恢复 Codex 连接配置。/),
     ).toBeVisible();
     expect(toast.warning).not.toHaveBeenCalled();
   });

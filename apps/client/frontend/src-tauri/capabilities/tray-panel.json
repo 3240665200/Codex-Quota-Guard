@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "tray-panel",
+  "description": "Display-only tray panel; credentials and HTTP stay in the main renderer.",
+  "windows": ["tray-panel"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}

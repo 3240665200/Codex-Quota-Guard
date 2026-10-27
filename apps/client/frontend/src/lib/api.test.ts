@@ -898,7 +898,7 @@ describe("Tauri API boundary", () => {
   });
 
   it("keeps official account windows separate from personal token quota", async () => {
-    invokeMock.mockResolvedValue({
+    harness.respond({
       planType: "pro",
       windows: [
         {
@@ -916,7 +916,9 @@ describe("Tauri API boundary", () => {
       planType: "pro",
       windows: [{ windowDurationMins: 300, usedPercent: 25 }],
     });
-    expect(invokeMock).toHaveBeenCalledWith("codex_rate_limits");
+    expect(harness.requestsFor("GET", "/api/v1/client/official-quota")).toHaveLength(1);
+    expect(harness.requestsFor("PUT", "/api/v1/client/official-quota")).toHaveLength(0);
+    expect(invokeMock).not.toHaveBeenCalledWith("codex_rate_limits");
   });
 
   it("does not render arbitrary URL or token-like transport errors", () => {

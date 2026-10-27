@@ -96,7 +96,7 @@ class ClientAccessIntegrationTest {
     }
 
     @Test void missingBindingDeniesDirectProtectedRequestsIncludingFutureClientRoutes() throws Exception {
-        for (String path : new String[]{"/api/v1/client/quota/overview", "/api/v1/client/usage/analytics", "/api/v1/client/usage/events", "/api/v1/client/future-business"}) {
+        for (String path : new String[]{"/api/v1/client/official-quota", "/api/v1/client/quota/overview", "/api/v1/client/usage/analytics", "/api/v1/client/usage/events", "/api/v1/client/future-business"}) {
             mvc.perform(get(path).header(HttpHeaders.AUTHORIZATION, authorization).header(DEVICE_HEADER, deviceId))
                     .andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value("SESSION_BINDING_REQUIRED"));
         }
@@ -265,6 +265,22 @@ class ClientAccessIntegrationTest {
                         .header(HttpHeaders.ACCESS_CONTROL_REQUEST_HEADERS, "authorization,x-quota-guard-device-id"))
                 .andExpect(status().isOk()).andExpect(header().string(HttpHeaders.ACCESS_CONTROL_ALLOW_HEADERS,
                         org.hamcrest.Matchers.containsString("x-quota-guard-device-id")));
+    }
+
+    @Test void boundClientReadsOnlyTheAssociatedServerQuotaWithNoStore() throws Exception {
+        bind();
+        String snapshot = """
+            {"planType":"pro","windows":[{"limitId":"codex","slot":"primary","windowDurationMins":300,"usedPercent":27.5,"resetsAt":null}],"fetchedAt":"%s","receivedAt":"%s"}
+            """.formatted(NOW, NOW);
+        jdbc.update("insert into official_account_quota_polls (official_account_id,status,last_success_at,snapshot_json,connection_revision) values (?,'SUCCESS',?,?,?)", accountId, NOW, snapshot, revision);
+        mvc.perform(get("/api/v1/client/official-quota").header(HttpHeaders.AUTHORIZATION, authorization).header(DEVICE_HEADER, deviceId)
+                        .queryParam("userId", UUID.randomUUID().toString()).queryParam("officialAccountId", UUID.randomUUID().toString()))
+                .andExpect(status().isOk()).andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.source").value("SERVER"))
+                .andExpect(jsonPath("$.windows[0].usedPercent").value(27.5))
+                .andExpect(jsonPath("$.stale").value(false))
+                .andExpect(jsonPath("$.authorization").doesNotExist()).andExpect(jsonPath("$.cookie").doesNotExist());
+        mvc.perform(get("/api/v1/client/official-quota")).andExpect(status().isUnauthorized());
     }
 
     private UUID bind() {

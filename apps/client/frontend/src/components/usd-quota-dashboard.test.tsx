@@ -16,6 +16,15 @@ const example = (): UsdOverview => {
 };
 beforeEach(() => setQuotaDisplayMode('remaining'));
 describe('USD quota dashboard', () => {
+  it('marks the signed-in user by ID even when two members have the same name', () => {
+    const { rerender } = render(<UsdQuotaDashboard billing={example()} currentUserId="member-2" />);
+    const rows = screen.getAllByRole('article', { name: 'Alex成员用量' });
+    expect(within(rows[0]).queryByText('我')).not.toBeInTheDocument();
+    expect(within(rows[1]).getByText('我')).toHaveAccessibleName('当前登录用户');
+    rerender(<UsdQuotaDashboard billing={example()} currentUserId="member-1" />);
+    expect(within(rows[0]).getByText('我')).toBeVisible();
+    expect(within(rows[1]).queryByText('我')).not.toBeInTheDocument();
+  });
   it('separates personal, team, and official dollar budgets', () => {
     render(<UsdQuotaDashboard billing={example()} />);
     for(const name of ['个人额度（USD）','团队额度（USD）','官方账户额度（USD）','成员用量（USD）'])expect(screen.getByRole('heading',{name})).toBeVisible();

@@ -148,7 +148,13 @@ function Share({
   );
 }
 
-export function UsdQuotaDashboard({ billing }: { billing: UsdOverview }) {
+export function UsdQuotaDashboard({
+  billing,
+  currentUserId,
+}: {
+  billing: UsdOverview;
+  currentUserId?: string;
+}) {
   const [search, setSearch] = useState("");
   const members = billing.teamMembers.filter((member) =>
     member.displayName
@@ -239,7 +245,14 @@ export function UsdQuotaDashboard({ billing }: { billing: UsdOverview }) {
               className="cqg-usd-member"
             >
               <header className="cqg-usd-member-name">
-                <h3>{member.displayName}</h3>
+                <h3>
+                  {member.displayName}
+                  {member.userId === currentUserId ? (
+                    <span className="cqg-usd-me" aria-label="当前登录用户">
+                      我
+                    </span>
+                  ) : null}
+                </h3>
                 <span
                   className={`cqg-usd-member-status${member.status !== "ACTIVE" ? " is-disabled" : ""}`}
                 >

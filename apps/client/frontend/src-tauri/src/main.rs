@@ -15,6 +15,7 @@ mod server_config;
 mod session_vault;
 mod startup_gate;
 mod tray;
+mod tray_panel;
 mod window_layout;
 mod window_state;
 
@@ -134,6 +135,7 @@ fn session_vault_save(
 
 #[tauri::command]
 fn session_vault_clear(app: tauri::AppHandle) -> CommandResult<()> {
+    tray_panel::clear_snapshot(&app);
     session_vault::clear(&app)
 }
 
@@ -274,6 +276,7 @@ fn main() {
             }
 
             app.manage(tray::TrayState::default());
+            app.manage(tray_panel::PanelState::default());
             app.manage(startup_gate::StartupGate::default());
             let guard_app = app.handle().clone();
             std::thread::spawn(move || loop {
@@ -312,6 +315,10 @@ fn main() {
             session_vault_load,
             session_vault_save,
             session_vault_clear,
+            tray_panel::tray_snapshot_update,
+            tray_panel::tray_panel_snapshot,
+            tray_panel::tray_panel_show,
+            tray_panel::tray_panel_action,
             codex_rate_limits
         ]);
 

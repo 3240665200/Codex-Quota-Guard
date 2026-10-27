@@ -15,9 +15,17 @@ import org.springframework.web.bind.annotation.RestController;
 public class OfficialQuotaSnapshotController {
 
     private final OfficialQuotaSnapshotService snapshots;
+    private final ClientOfficialQuotaService clientQuota;
 
-    public OfficialQuotaSnapshotController(OfficialQuotaSnapshotService snapshots) {
+    public OfficialQuotaSnapshotController(OfficialQuotaSnapshotService snapshots, ClientOfficialQuotaService clientQuota) {
         this.snapshots = snapshots;
+        this.clientQuota = clientQuota;
+    }
+
+    @GetMapping("/api/v1/client/official-quota")
+    public ResponseEntity<ClientOfficialQuotaService.Response> current(Authentication authentication) {
+        return ResponseEntity.ok().cacheControl(org.springframework.http.CacheControl.noStore())
+                .body(clientQuota.read((UUID) authentication.getPrincipal()));
     }
 
     @PutMapping("/api/v1/client/official-quota")

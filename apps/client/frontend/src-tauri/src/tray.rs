@@ -110,19 +110,23 @@ fn build_menu<R: Runtime>(app: &App<R>) -> Result<Menu<R>, ()> {
 
 pub(crate) fn install(app: &App) -> Result<(), ()> {
     let icon = app.default_window_icon().cloned().ok_or(())?;
-    let menu = build_menu(app)?;
-    TrayIconBuilder::with_id("cqg-main-tray")
+    let panel_available = crate::tray_panel::create(app.handle()).is_ok();
+    let mut builder = TrayIconBuilder::with_id("cqg-main-tray")
         .icon(icon)
         .tooltip("Codex Quota Guard")
-        .menu(&menu)
-        .show_menu_on_left_click(false)
+        .show_menu_on_left_click(false);
+    if !panel_available { builder = builder.menu(&build_menu(app)?); }
+    builder
         .on_menu_event(|app, event| {
             if let Some(action) = menu_action_for_id(event.id().as_ref()) {
                 let mut ops = TauriMenuActionOps { app: app.clone() };
                 handle_menu_action(action, &mut ops);
             }
         })
-        .on_tray_icon_event(|tray, event| match event {
+        .on_tray_icon_event(move |tray, event| match event {
+            TrayIconEvent::Click { button: MouseButton::Right, button_state: MouseButtonState::Up, position, .. } if panel_available => {
+                if !crate::tray_panel::show(tray.app_handle(), position) { show_main_window(tray.app_handle()); }
+            }
             TrayIconEvent::Click {
                 button: MouseButton::Left,
                 button_state: MouseButtonState::Up,
@@ -178,7 +182,7 @@ impl MenuActionOps for TauriMenuActionOps {
     }
 }
 
-fn show_main_window(app: &AppHandle) -> bool {
+pub(crate) fn show_main_window(app: &AppHandle) -> bool {
     let Some(window) = app.get_webview_window("main") else {
         return false;
     };

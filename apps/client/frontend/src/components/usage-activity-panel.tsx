@@ -71,15 +71,40 @@ function TokenDetailRow({
   );
 }
 
-function UsageTokens({ item }: { item: UsageEventPage["items"][number] }) {
+function UsageCost({ item }: { item: UsageEventPage["items"][number] }) {
   const metadata = [
     ["消耗时间", time(item.occurredAt)],
     ["后台接收", time(item.receivedAt)],
     ["模型名称", item.model ?? "未知"],
     ["思考等级", item.reasoningEffort ?? "未知"],
-    ["速度模式", item.billingModeStatus === 'FAST' ? `快速 ×${item.billingMultiplier}` : item.billingModeStatus === 'STANDARD' ? '普通 ×1' : item.billingOrigin === 'HISTORICAL_RECALC' ? '历史未记录（普通费率回算）' : '未记录（待确认）'],
-    ["模式依据", item.billingModeSource === 'REPORTED' ? '日志明确记录' : item.billingModeSource === 'ADMIN_DECLARED' ? '管理员设备设置' : item.billingModeSource === 'ADMIN_CONFIRMED' ? '管理员逐笔确认' : '日志未记录'],
-    ["计费来源", item.billingOrigin === 'HISTORICAL_RECALC' ? '历史回算' : item.billingOrigin === 'ADMIN_REVIEW' ? '管理员核对入账' : '实时入账'],
+    [
+      "速度模式",
+      item.billingModeStatus === "FAST"
+        ? `快速 ×${item.billingMultiplier}`
+        : item.billingModeStatus === "STANDARD"
+          ? "普通 ×1"
+          : item.billingOrigin === "HISTORICAL_RECALC"
+            ? "历史未记录（普通费率回算）"
+            : "未记录（待确认）",
+    ],
+    [
+      "模式依据",
+      item.billingModeSource === "REPORTED"
+        ? "日志明确记录"
+        : item.billingModeSource === "ADMIN_DECLARED"
+          ? "管理员设备设置"
+          : item.billingModeSource === "ADMIN_CONFIRMED"
+            ? "管理员逐笔确认"
+            : "日志未记录",
+    ],
+    [
+      "计费来源",
+      item.billingOrigin === "HISTORICAL_RECALC"
+        ? "历史回算"
+        : item.billingOrigin === "ADMIN_REVIEW"
+          ? "管理员核对入账"
+          : "实时入账",
+    ],
     [
       "来源",
       item.source === "TOKEN_USAGE_RECORD" ? "官方用量记录" : "累计差值补录",
@@ -90,11 +115,11 @@ function UsageTokens({ item }: { item: UsageEventPage["items"][number] }) {
     <Dialog.Root>
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0 space-y-1">
-          <div className="text-primary">
-            <Tokens value={item.totalTokens} />
-          </div>
-          <div className="truncate text-xs text-muted-foreground">
+          <div className="text-base font-semibold text-primary">
             <EstimatedCost item={item} />
+          </div>
+          <div className="text-xs text-muted-foreground">
+            <Tokens value={item.totalTokens} />
           </div>
         </div>
         <Dialog.Trigger asChild>
@@ -140,16 +165,18 @@ function UsageTokens({ item }: { item: UsageEventPage["items"][number] }) {
           >
             <dl className="grid gap-4 rounded-xl bg-muted/50 p-4 sm:grid-cols-2">
               <div>
-                <dt className="text-xs text-muted-foreground">总消耗</dt>
-                <dd className="mt-1 text-xl text-primary">
-                  <TokenBreakdown value={item.totalTokens} />{" "}
-                  <span className="text-xs text-muted-foreground">Token</span>
+                <dt className="text-xs text-muted-foreground">
+                  账本费用（USD）
+                </dt>
+                <dd className="mt-1 text-xl font-semibold text-primary">
+                  <EstimatedCost item={item} />
                 </dd>
               </div>
               <div>
-                <dt className="text-xs text-muted-foreground">费用估算</dt>
-                <dd className="mt-1 text-lg font-medium">
-                  <EstimatedCost item={item} />
+                <dt className="text-xs text-muted-foreground">Token 用量</dt>
+                <dd className="mt-1 text-sm text-muted-foreground">
+                  <TokenBreakdown value={item.totalTokens} />{" "}
+                  <span className="text-xs">Token</span>
                 </dd>
               </div>
             </dl>
@@ -175,7 +202,7 @@ function UsageTokens({ item }: { item: UsageEventPage["items"][number] }) {
                 />
               </dl>
               <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
-                输入已包含缓存，输出已包含思考，分项不要重复相加。费用按当前模型单价估算，不是官方账单。
+                输入已包含缓存，输出已包含思考，分项不要重复相加。费用使用入账时保存的模型单价及速度倍率，不是官方账单。
               </p>
             </div>
             <dl className="grid gap-x-5 gap-y-4 border-t pt-4 text-sm sm:grid-cols-2">
@@ -206,8 +233,10 @@ function EstimatedCost({ item }: { item: UsageEventPage["items"][number] }) {
   const value = item.estimatedCostUsd;
   if (value === null)
     return (
-      <span className="text-xs text-muted-foreground">
-        {item.costStatus ? costLabels[item.costStatus] : "分项缺失"}
+      <span className="font-medium text-amber-600 dark:text-amber-400">
+        {item.costStatus && item.costStatus !== "PRICED"
+          ? costLabels[item.costStatus]
+          : "待核算"}
       </span>
     );
   return (
@@ -728,7 +757,7 @@ export function UsageActivityPanel({
                           消耗时间
                         </th>
                         <th className="pb-2 pr-2 font-medium" scope="col">
-                          Token 消耗
+                          消耗金额（USD）
                         </th>
                         {legacyView ? (
                           <>
@@ -758,7 +787,7 @@ export function UsageActivityPanel({
                             {time(item.occurredAt)}
                           </td>
                           <td className="py-2 pr-2">
-                            <UsageTokens item={item} />
+                            <UsageCost item={item} />
                           </td>
                           {legacyView ? (
                             <>
@@ -883,15 +912,29 @@ export function UsageActivityPanel({
                 {explainError(status?.errorCode) ?? "暂无统计程序错误"}
               </p>
               {status?.warningCode ? (
-                <div role="status" className="mt-2 text-xs text-amber-700 dark:text-amber-400 [overflow-wrap:anywhere]">
-                  <p>统计服务持续运行，待核对记录：{formatTokenCount(status.deferredEvents ?? 0)} 条。</p>
+                <div
+                  role="status"
+                  className="mt-2 text-xs text-amber-700 dark:text-amber-400 [overflow-wrap:anywhere]"
+                >
+                  <p>
+                    统计服务持续运行，待核对记录：
+                    {formatTokenCount(status.deferredEvents ?? 0)} 条。
+                  </p>
                   <p className="mt-1">{explainError(status.warningCode)}</p>
                 </div>
               ) : null}
-              {(status?.reviewSubmittedEvents ?? 0) > 0 ? <p role="status" className="mt-2 text-xs text-muted-foreground">
-                已提交后台核对：{formatTokenCount(status!.reviewSubmittedEvents!)} 条（本设备累计收件数，非未处理数量）。请在后台“用量核对”查看、批量归档或按原始时间入账；收件不会自动计费。
-              </p> : null}
-              {status?.reviewErrorCode ? <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">{explainError(status.reviewErrorCode)}</p> : null}
+              {(status?.reviewSubmittedEvents ?? 0) > 0 ? (
+                <p role="status" className="mt-2 text-xs text-muted-foreground">
+                  已提交后台核对：
+                  {formatTokenCount(status!.reviewSubmittedEvents!)}{" "}
+                  条（本设备累计收件数，非未处理数量）。请在后台“用量核对”查看、批量归档或按原始时间入账；收件不会自动计费。
+                </p>
+              ) : null}
+              {status?.reviewErrorCode ? (
+                <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">
+                  {explainError(status.reviewErrorCode)}
+                </p>
+              ) : null}
               {serviceState === "UNPAIRED" || pairingError.data ? (
                 <p className="mt-2 text-xs text-destructive [overflow-wrap:anywhere]">
                   {pairingError.data === "PAIRING_IDENTITY_MISMATCH"

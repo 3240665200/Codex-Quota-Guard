@@ -13,6 +13,7 @@ import {
 } from "@/lib/api";
 import { Dashboard } from "@/components/dashboard";
 import { SystemLoginPage } from "@/components/system-login";
+import { publishTraySnapshot } from "@/lib/tray-panel";
 
 const signedOutSession: SystemSession = {
   authenticated: false,
@@ -60,6 +61,10 @@ export function ClientApp() {
     refetchInterval: 10_000,
     enabled: !!sessionQuery.data?.authenticated,
   });
+  useEffect(() => {
+    if (localSignedOut || !sessionQuery.data?.authenticated)
+      void publishTraySnapshot(null).catch(() => {});
+  }, [localSignedOut, sessionQuery.data?.authenticated]);
 
   useEffect(() => {
     if (gateQuery.data) setGate(gateQuery.data);

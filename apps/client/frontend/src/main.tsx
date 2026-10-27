@@ -5,6 +5,7 @@ import { I18nextProvider } from "react-i18next";
 
 import { Toaster } from "@/components/ui/sonner";
 import { ClientApp } from "@/components/client-app";
+import { TrayPanel } from "@/components/tray-panel";
 import { ClientThemeProvider } from "@/lib/client-theme";
 import i18n from "@/lib/i18n";
 import "@/index.css";
@@ -18,15 +19,24 @@ const queryClient = new QueryClient({
   },
 });
 
+const isTrayPanel =
+  new URLSearchParams(window.location.search).get("view") === "tray";
+
 createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <I18nextProvider i18n={i18n}>
-      <QueryClientProvider client={queryClient}>
-        <ClientThemeProvider>
-          <ClientApp />
-          <Toaster />
-        </ClientThemeProvider>
-      </QueryClientProvider>
-    </I18nextProvider>
-  </StrictMode>,
+  isTrayPanel ? (
+    <StrictMode>
+      <TrayPanel />
+    </StrictMode>
+  ) : (
+    <StrictMode>
+      <I18nextProvider i18n={i18n}>
+        <QueryClientProvider client={queryClient}>
+          <ClientThemeProvider>
+            <ClientApp />
+            <Toaster />
+          </ClientThemeProvider>
+        </QueryClientProvider>
+      </I18nextProvider>
+    </StrictMode>
+  ),
 );
