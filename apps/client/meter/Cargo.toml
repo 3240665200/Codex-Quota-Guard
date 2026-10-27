@@ -1,6 +1,6 @@
 [package]
 name = "quota-guard-meter"
-version = "0.2.11"
+version = "0.2.12"
 edition = "2021"
 rust-version = "1.85"
 
@@ -14,4 +14,4 @@ uuid = { version = "1", features = ["serde", "v4"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_Diagnostics_ToolHelp", "Win32_System_RemoteDesktop", "Win32_System_Services", "Win32_System_Threading", "Win32_UI_Shell"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_RemoteDesktop", "Win32_System_Services", "Win32_System_Threading", "Win32_UI_Shell"] }

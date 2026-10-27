@@ -9,7 +9,7 @@
   ExecWait '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$INSTDIR\meter\installer-meter.ps1" -Operation Install' $0
   ${If} ${Errors}
   ${OrIf} $0 != 0
-    MessageBox MB_OK|MB_ICONSTOP "统计服务未能安装或启动，安装已停止。请以当前 Windows 用户批准管理员权限后重新运行安装程序。已有统计记录会保留。"
+    MessageBox MB_OK|MB_ICONSTOP "统计服务或 Codex CLI 适配未能完成，安装已停止。请以当前 Windows 用户批准管理员权限后重新运行安装程序。已有统计记录会保留。"
     SetErrorLevel 2
     Abort
   ${EndIf}

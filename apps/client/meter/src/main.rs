@@ -104,6 +104,13 @@ fn command_from_args(
 }
 
 fn main() {
+    if std::env::var_os("QUOTA_GUARD_CODEX_CAPTURE").as_deref() == Some(std::ffi::OsStr::new("1")) {
+        let arguments=std::env::args_os().skip(1).collect::<Vec<_>>();
+        match quota_guard_meter::run_codex_cli(&arguments) {
+            Ok(code)=>std::process::exit(code),
+            Err(error)=>{eprintln!("{error}");std::process::exit(1);}
+        }
+    }
     if std::env::args_os().skip(1).collect::<Vec<_>>() == [std::ffi::OsString::from("--version")] {
         println!("quota-guard-meter {}", env!("CARGO_PKG_VERSION"));
         return;

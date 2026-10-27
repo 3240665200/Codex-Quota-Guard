@@ -38,6 +38,8 @@ try {
     # enables automatic startup and SCM recovery, then verifies a fresh heartbeat.
     & (Join-Path $PSScriptRoot 'install-meter-service.ps1') -ServerUrl $origin `
         -BinaryPath (Join-Path $PSScriptRoot 'quota-guard-meter.exe') -ExpectedUserSid $ExpectedUserSid -RepairOnly
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    & (Join-Path $PSScriptRoot 'configure-cli-adapter.ps1') -Operation Install -MeterExecutable (Join-Path $PSScriptRoot 'quota-guard-meter.exe')
     exit $LASTEXITCODE
 } catch {
     # Detailed exception text may contain paths; the UI displays bounded messages.

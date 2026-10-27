@@ -1,0 +1,23 @@
+import { Codex as OriginalCodex } from "__CQG_ORIGINAL_IMPORT__";
+export * from "__CQG_ORIGINAL_IMPORT__";
+
+const configuration = "__CQG_CONFIGURATION__";
+
+// Use the SDK's public executable override; never patch its implementation.
+export class Codex extends OriginalCodex {
+  constructor(options = {}) {
+    const executable = options.codexPathOverride || configuration.codexExecutable;
+    if (executable.toLowerCase() === configuration.meterExecutable.toLowerCase()) {
+      throw new Error("Codex CLI adapter cannot launch itself.");
+    }
+    super({
+      ...options,
+      codexPathOverride: configuration.meterExecutable,
+      env: {
+        ...(options.env ?? process.env),
+        QUOTA_GUARD_CODEX_EXECUTABLE: executable,
+        QUOTA_GUARD_CODEX_CAPTURE: "1",
+      },
+    });
+  }
+}

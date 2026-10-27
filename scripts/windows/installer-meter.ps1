@@ -54,10 +54,16 @@ try {
         & (Join-Path $PSScriptRoot 'install-meter-service.ps1') -ServerUrl $server `
             -BinaryPath (Join-Path $PSScriptRoot 'quota-guard-meter.exe') -ExpectedUserSid $sid
     } else {
+        & (Join-Path $PSScriptRoot 'configure-cli-adapter.ps1') -Operation Uninstall
+        if ($LASTEXITCODE -ne 0) { throw 'CLI adapter restoration failed.' }
         $global:LASTEXITCODE = 0
         & (Join-Path $PSScriptRoot 'uninstall-meter-service.ps1') -ExpectedUserSid $sid
     }
     if ($LASTEXITCODE -ne 0) { throw 'The required statistics service operation failed.' }
+    if ($Operation -eq 'Install') {
+        & (Join-Path $PSScriptRoot 'configure-cli-adapter.ps1') -Operation Install -MeterExecutable (Join-Path $PSScriptRoot 'quota-guard-meter.exe')
+        if ($LASTEXITCODE -ne 0) { throw 'CLI adapter installation failed.' }
+    }
     exit 0
 } catch {
     [Console]::Error.WriteLine($_.Exception.Message)

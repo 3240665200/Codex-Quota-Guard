@@ -54,6 +54,7 @@ if (process.platform === "win32") {
     "installer-meter.ps1",
     "configure-meter-server.ps1",
     "repair-meter-service.ps1",
+    "configure-cli-adapter.ps1",
   ]) {
     copyFileSync(
       path.join(repositoryRoot, "scripts", "windows", script),
@@ -61,6 +62,10 @@ if (process.platform === "win32") {
     );
   }
 }
+copyFileSync(
+  path.join(repositoryRoot, "apps/client/meter/integrations/codex-sdk-adapter.mjs.template"),
+  path.join(resources, "codex-sdk-adapter.mjs.template"),
+);
 process.stdout.write(
   `Prepared Rust meter ${meterIdentity.version} (SHA-256 ${meterIdentity.sha256}): ${resources}\n`,
 );
