@@ -2,6 +2,7 @@ package com.pingche.web.authenticator;
 
 import com.pingche.web.auth.DomainException;
 import com.pingche.web.common.ManagementTransportGuard;
+import com.pingche.web.mail.LoginAssistanceAccess;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import java.util.UUID;
@@ -31,10 +32,14 @@ public class AuthenticatorController {
         requireTransport(http); return noStore(service.preview(id, (UUID) auth.getPrincipal()));
     }
     @GetMapping("/client/login-assistance/authenticator")
-    public ResponseEntity<AuthenticatorService.Availability> availability(Authentication auth) { return noStore(service.availability((UUID) auth.getPrincipal())); }
+    @PreAuthorize("hasAnyRole('USER','ADMIN')")
+    public ResponseEntity<AuthenticatorService.Availability> availability(Authentication auth, HttpServletRequest http) {
+        return noStore(service.availability((UUID) auth.getPrincipal(), http.getHeader(LoginAssistanceAccess.DEVICE_HEADER)));
+    }
     @PostMapping("/client/login-assistance/authenticator/code")
+    @PreAuthorize("hasAnyRole('USER','ADMIN')")
     public ResponseEntity<AuthenticatorService.Code> code(Authentication auth, HttpServletRequest http) {
-        requireTransport(http); return noStore(service.code((UUID) auth.getPrincipal()));
+        requireTransport(http); return noStore(service.code((UUID) auth.getPrincipal(), http.getHeader(LoginAssistanceAccess.DEVICE_HEADER)));
     }
     private void requireTransport(HttpServletRequest http) {
         if (!transport.isAllowed(http)) throw new DomainException("AUTHENTICATOR_HTTPS_REQUIRED", "当前传输方式不被服务器允许。", HttpStatus.BAD_REQUEST);

@@ -193,6 +193,8 @@ export function SessionBinding({
       if (!current()) return;
       lifetime.attempt = result;
       setAttempt(result);
+      if (["BOUND", "CANCELLED", "EXPIRED", "REJECTED"].includes(result.status))
+        window.dispatchEvent(new Event("quota-guard:assistance-revoked"));
       setNeedsServerCheck(false);
       setNow(Date.now());
       if (result.binding) setBinding(result.binding);

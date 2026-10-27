@@ -210,7 +210,10 @@ class ClientAccessIntegrationTest {
 
     @Test void bootstrapAndAdministrativeAccessRemainAvailableWithoutBinding() throws Exception {
         mvc.perform(get("/api/v1/users/me").header(HttpHeaders.AUTHORIZATION, authorization)).andExpect(status().isOk());
-        mvc.perform(get("/api/v1/client/login-assistance").header(HttpHeaders.AUTHORIZATION, authorization)).andExpect(status().isOk());
+        mvc.perform(get("/api/v1/client/login-assistance/context").header(HttpHeaders.AUTHORIZATION, authorization))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.allowed").value(false));
+        mvc.perform(get("/api/v1/client/login-assistance").header(HttpHeaders.AUTHORIZATION, authorization))
+                .andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value("LOGIN_ASSISTANCE_NOT_ALLOWED"));
         mvc.perform(get("/api/v1/client/session-bindings/current").secure(true).header(HttpHeaders.AUTHORIZATION, authorization)
                         .queryParam("deviceId", deviceId.toString()).queryParam("enrollmentId", deviceId.toString()))
                 .andExpect(status().isOk());

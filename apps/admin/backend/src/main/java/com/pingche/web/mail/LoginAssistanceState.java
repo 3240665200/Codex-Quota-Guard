@@ -36,9 +36,11 @@ public class LoginAssistanceState {
                 where owner_user_id=? order by started_at desc,id desc limit 1
                 """, userId);
         var context = jdbc.queryForList("""
-                select u.team_id,t.version,t.status,m.revision,m.enabled,c.revision as connection_revision,c.status as connection_status
+                select u.team_id,t.version,t.status,m.revision,m.enabled,v.version as authenticator_version,v.enabled as authenticator_enabled,
+                    c.revision as connection_revision,c.status as connection_status
                 from users u left join teams t on t.id=u.team_id
                 left join official_account_mailboxes m on m.official_account_id=t.official_account_id
+                left join official_account_authenticators v on v.official_account_id=t.official_account_id
                 left join official_account_connections c on c.official_account_id=t.official_account_id
                 where u.id=?
                 """, userId);

@@ -117,6 +117,35 @@ describe('官方账户额度检测与验证器设置', () => {
     await waitFor(() => expect(screen.queryByLabelText('当前一次性验证码')).not.toBeInTheDocument());
     expect(api.previewOfficialAuthenticator).toHaveBeenCalledTimes(1);
   });
+  it('automatically replaces an expired code and stops updating when requested', async () => {
+    const now=vi.spyOn(performance,'now').mockReturnValue(0);
+    vi.mocked(api.previewOfficialAuthenticator).mockResolvedValueOnce(preview).mockResolvedValueOnce({
+      ...preview,code:'654321',serverTime:'2026-10-25T04:00:30Z',expiresAt:'2026-10-25T04:01:00Z',
+    });
+    render(<AuthenticatorConfigModal account={account} onClose={vi.fn()} />);
+    const button=await screen.findByRole('button',{name:'获取当前验证码'});
+    await waitFor(() => expect(button).toBeEnabled()); fireEvent.click(button);
+    expect(await screen.findByLabelText('当前一次性验证码')).toHaveTextContent('123456');
+    now.mockReturnValue(31_000);
+    await waitFor(() => expect(screen.getByLabelText('当前一次性验证码')).toHaveTextContent('654321'));
+    expect(api.previewOfficialAuthenticator).toHaveBeenCalledTimes(2);
+    expect(screen.getByText(/本轮到期/)).toBeVisible();
+    fireEvent.click(screen.getByRole('button',{name:'停止自动更新'}));
+    now.mockReturnValue(62_000);
+    await act(async () => { await new Promise(resolve => setTimeout(resolve,350)); });
+    expect(api.previewOfficialAuthenticator).toHaveBeenCalledTimes(2);
+    expect(screen.queryByLabelText('当前一次性验证码')).not.toBeInTheDocument();
+  });
+  it('discards a pending code after automatic updating has been stopped', async () => {
+    let resolve!: (value:api.OfficialAuthenticatorCode)=>void;
+    vi.mocked(api.previewOfficialAuthenticator).mockReturnValue(new Promise(done => { resolve=done; }));
+    render(<AuthenticatorConfigModal account={account} onClose={vi.fn()} />);
+    const button=await screen.findByRole('button',{name:'获取当前验证码'});
+    await waitFor(() => expect(button).toBeEnabled()); fireEvent.click(button);
+    fireEvent.click(await screen.findByRole('button',{name:'停止自动更新'}));
+    await act(async () => resolve(preview));
+    expect(screen.queryByLabelText('当前一次性验证码')).not.toBeInTheDocument();
+  });
   it('disables immediate requests while the server cooldown is active', async () => {
     vi.mocked(api.getOfficialQuotaPolling).mockResolvedValue({ ...polling, nextAttemptAt: new Date(Date.now() + 60_000).toISOString() });
     render(<QuotaPollingModal account={account} onClose={vi.fn()} onChange={vi.fn()} />);

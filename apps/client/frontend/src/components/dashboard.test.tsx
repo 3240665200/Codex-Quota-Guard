@@ -1,11 +1,6 @@
 import { usdFixture } from "@/test/usd-fixtures";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import {
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-} from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { I18nextProvider } from "react-i18next";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -155,10 +150,13 @@ describe("Dashboard", () => {
       });
       for (const [page, heading] of [
         ["设置", "启动设置"],
-        ["登录辅助", "监听登录邮件"],
+        [
+          "登录辅助",
+          "会话已绑定，登录辅助已关闭。解除绑定后重新申请名额才能使用。",
+        ],
       ]) {
         fireEvent.click(screen.getByRole("button", { name: page }));
-        await screen.findByRole("heading", { name: heading });
+        await screen.findByText(heading);
         expect(
           screen.queryByRole("region", { name: "官方登录助手" }),
         ).toBeNull();
@@ -176,7 +174,9 @@ describe("Dashboard", () => {
       await renderDashboard();
       await screen.findByRole("heading", { name: "个人额度（USD）" });
       fireEvent.click(screen.getByRole("button", { name: "登录辅助" }));
-      await screen.findByRole("heading", { name: "监听登录邮件" });
+      await screen.findByText(
+        "会话已绑定，登录辅助已关闭。解除绑定后重新申请名额才能使用。",
+      );
       expect(warnings.mock.calls.flat().join(" ")).not.toContain("same key");
     } finally {
       warnings.mockRestore();
@@ -185,6 +185,15 @@ describe("Dashboard", () => {
   beforeEach(() => {
     setQuotaDisplayMode("remaining");
     apiCalls.mockReset();
+    vi.spyOn(api, "loginAssistanceContext").mockResolvedValue({
+      allowed: false,
+      reasonCode: "ALREADY_BOUND",
+      bindingAttemptId: null,
+      expiresAt: null,
+      serverTime: new Date().toISOString(),
+      mailEnabled: true,
+      authenticatorEnabled: true,
+    });
     vi.spyOn(api, "clientAccess").mockImplementation(() =>
       apiCalls("clientAccess"),
     );

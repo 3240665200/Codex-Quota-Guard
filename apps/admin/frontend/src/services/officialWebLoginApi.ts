@@ -5,6 +5,7 @@ export interface OfficialWebLoginJob {
   id: string; officialAccountId: string; accountName: string; state: OfficialBrowserLoginState;
   expiresAt: string; errorCode: string | null; proxyNodeId: string | null;
   pageOrigin: string | null; readyToSave: boolean;
+  frontProxyNodeId?: string | null;
 }
 export interface OfficialWebLoginFrame {
   width: number; height: number; jpegBase64: string; pageOrigin: string | null;
@@ -35,15 +36,18 @@ function job(value: unknown, expectedId?: string, accountId?: string): OfficialW
     || typeof value.accountName !== 'string' || !['WAITING_FOR_HELPER', 'WAITING_FOR_LOGIN', 'SAVING', 'COMPLETED', 'FAILED', 'CANCELLED', 'EXPIRED'].includes(value.state as string)
     || typeof value.expiresAt !== 'string' || !Number.isFinite(Date.parse(value.expiresAt))
     || !nullable(value.errorCode) || !nullable(value.proxyNodeId) || !safeOfficialOrigin(value.pageOrigin)
-    || typeof value.readyToSave !== 'boolean') throw invalid();
+    || typeof value.readyToSave !== 'boolean' || value.frontProxyNodeId !== undefined && !nullable(value.frontProxyNodeId)) throw invalid();
   const { id, officialAccountId, accountName, state, expiresAt, errorCode, proxyNodeId, pageOrigin, readyToSave } = value;
   // Pick the documented fields so unexpected upstream properties never reach the view.
-  return { id, officialAccountId, accountName, state, expiresAt, errorCode, proxyNodeId, pageOrigin, readyToSave } as OfficialWebLoginJob;
+  return { id, officialAccountId, accountName, state, expiresAt, errorCode, proxyNodeId, pageOrigin, readyToSave,
+    ...(value.frontProxyNodeId !== undefined ? { frontProxyNodeId: value.frontProxyNodeId } : {}) } as OfficialWebLoginJob;
 }
-export async function startOfficialWebLogin(accountId: string, body: { version: number; proxyNodeId: string | null }): Promise<OfficialWebLoginJob> {
-  return job(await request(`/api/v1/admin/official-accounts/${encodeURIComponent(accountId)}/web-login`, {
+export async function startOfficialWebLogin(accountId: string, body: { version: number; proxyNodeId: string | null; frontProxyNodeId?: string | null }): Promise<OfficialWebLoginJob> {
+  const result = job(await request(`/api/v1/admin/official-accounts/${encodeURIComponent(accountId)}/web-login`, {
     method: 'POST', cache: 'no-store', body: JSON.stringify(body),
   }, options), undefined, accountId);
+  if (body.frontProxyNodeId && result.frontProxyNodeId !== body.frontProxyNodeId) throw invalid();
+  return result;
 }
 export async function getOfficialWebLogin(id: string): Promise<OfficialWebLoginJob> {
   return job(await request(base(id), { cache: 'no-store' }, options), id);

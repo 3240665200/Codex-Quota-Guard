@@ -18,6 +18,7 @@ public class MailListener {
     @Column(name = "owner_user_id", nullable = false) UUID ownerUserId;
     @Column(name = "team_id", nullable = false) UUID teamId;
     @Column(name = "config_revision", nullable = false) UUID configRevision;
+    @Column(name = "binding_attempt_id") UUID bindingAttemptId;
     @Column(name = "active_account_id", unique = true) UUID activeAccountId;
     @Enumerated(EnumType.STRING) @Column(nullable = false, length = 16) State state;
     @Column(name = "started_at", nullable = false) Instant startedAt;

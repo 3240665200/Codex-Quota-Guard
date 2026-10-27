@@ -245,11 +245,39 @@ class WebLoginServiceTest {
         var job=service.create(owner,account,new BrowserLoginService.StartRequest(0L,proxy,front));
         assertThat(job.frontProxyNodeId()).isEqualTo(front);
         verify(browser).open(job.id(),front,proxy);
+        var otpInput = new ManagedLoginBrowser.Input("TEXT",null,null,null,null,"123456",false,false);
+        service.input(owner,job.id(),otpInput);
+        verify(session).input(otpInput);
         assertThat(service.complete(owner,job.id()).state()).isEqualTo("COMPLETED");
         verify(client).fetch(any(),eq(front),eq(proxy));
         verify(connections).saveVerified(eq(account),argThat(request -> front.equals(request.frontProxyNodeId())
                 && proxy.equals(request.proxyNodeId())),any());
         verify(client,never()).fetch(any(),eq(proxy));
+    }
+
+    @Test void omittedFrontNodeKeepsTheSavedAccountChainForMfaInput() {
+        UUID front=UUID.randomUUID();
+        jdbc.update("insert into managed_proxy_nodes(id) values (?)",front);
+        when(connections.read(account)).thenReturn(new OfficialConnectionResponse(true,true,"CONNECTED","synthetic-account",
+                proxy,true,false,null,null,null,null,0L,front));
+        when(browser.open(any(),eq(front),eq(proxy))).thenReturn(session);
+        var job=service.create(owner,account,new BrowserLoginService.StartRequest(0L,proxy));
+        assertThat(job.frontProxyNodeId()).isEqualTo(front);
+        service.input(owner,job.id(),new ManagedLoginBrowser.Input("TEXT",null,null,null,null,"123456",false,false));
+        verify(browser).open(job.id(),front,proxy);
+        verify(browser,never()).open(any(),eq(proxy));
+        verify(session).input(argThat(input -> "TEXT".equals(input.type()) && "123456".equals(input.text())));
+    }
+
+    @Test void unavailableSavedFrontNeverFallsBackToExitOnlyForMfaLogin() {
+        UUID front=UUID.randomUUID();
+        jdbc.update("insert into managed_proxy_nodes values (?,false)",front);
+        when(connections.read(account)).thenReturn(new OfficialConnectionResponse(true,true,"CONNECTED","synthetic-account",
+                proxy,true,false,null,null,null,null,0L,front));
+        assertThatThrownBy(() -> service.create(owner,account,new BrowserLoginService.StartRequest(0L,proxy)))
+                .isInstanceOf(DomainException.class);
+        verify(browser,never()).open(any(),any());
+        verify(browser,never()).open(any(),any(),any());
     }
 
     @Test void absentDisabledOrDuplicateNodesCannotLaunchOrValidateCredentials() {

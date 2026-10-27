@@ -54,6 +54,23 @@ describe('browser-local QR image decoding', () => {
     for (let i = 0; i < pixels.data.length; i += 4) for (let channel = 0; channel < 3; channel += 1) pixels.data[i + channel] = 255 - pixels.data[i + channel];
     expect(await readAuthenticatorQr(new File(['synthetic image'], 'qr.webp', { type: 'image/webp' }))).toBe(fixture.uri);
   });
+  it('recovers an image that is unreadable at the first resampling scale', async () => {
+    const first = qrPixels(); first.data.fill(255);
+    const second = qrPixels();
+    vi.stubGlobal('Image', class {
+      naturalWidth = 1080; naturalHeight = 2414;
+      onload: (() => void) | null = null; onerror: (() => void) | null = null;
+      set src(value: string) { if (value) queueMicrotask(() => this.onload?.()); }
+    });
+    const frames = [first, second];
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+      drawImage: vi.fn(), getImageData: () => frames.shift()!,
+    } as unknown as CanvasRenderingContext2D);
+    expect(await readAuthenticatorQr(new File(['synthetic-photo'], 'photo.jpg', { type: 'image/jpeg' }))).toBe(fixture.uri);
+    expect(first.data.every((byte) => byte === 0)).toBe(true);
+    expect(second.data.every((byte) => byte === 0)).toBe(true);
+    expect(fetch).not.toHaveBeenCalled();
+  });
   it('clears pixels and releases the URL when no QR is present', async () => {
     pixels.data.fill(255);
     await expect(readAuthenticatorQr(new File(['blank'], 'blank.png', { type: 'image/png' }))).rejects.toThrow('没有识别到二维码');

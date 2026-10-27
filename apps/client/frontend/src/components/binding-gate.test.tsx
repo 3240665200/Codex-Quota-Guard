@@ -58,7 +58,10 @@ const deniedAccess = {
 };
 const allowedAccess = { allowed: true, bindingId: binding.id, reason: null };
 const quota: QuotaOverview = {
-  billing: usdFixture({allowed:false,blockReason:"SESSION_BINDING_REQUIRED"}),
+  billing: usdFixture({
+    allowed: false,
+    blockReason: "SESSION_BINDING_REQUIRED",
+  }),
   user: session.user!,
   team: null,
   teamQuota: null,
@@ -146,6 +149,15 @@ async function emitStreamEvent(type: AssistanceEvent) {
 }
 
 beforeEach(() => {
+  vi.spyOn(api, "loginAssistanceContext").mockResolvedValue({
+    allowed: false,
+    reasonCode: "BINDING_GRANT_REQUIRED",
+    bindingAttemptId: null,
+    expiresAt: null,
+    serverTime: new Date().toISOString(),
+    mailEnabled: true,
+    authenticatorEnabled: true,
+  });
   vi.spyOn(api, "authenticatorInfo").mockResolvedValue({
     available: false,
     reasonCode: "AUTHENTICATOR_UNCONFIGURED",
@@ -214,14 +226,17 @@ afterEach(async () => {
 });
 
 describe("device binding access gate", () => {
-  it("keeps assistance and binding available while the central access gate denies protected menus", async () => {
+  it("keeps binding available but waits for an exclusive grant before opening assistance", async () => {
     show("ADMIN");
 
     expect(
       await screen.findByRole("region", { name: "本设备官方会话绑定" }),
     ).toBeVisible();
     expect(api.sessionBindingCurrent).toHaveBeenCalled();
-    expect(api.loginAssistanceInfo).toHaveBeenCalled();
+    await screen.findByText(/请先点击“开始绑定会话”/);
+    expect(api.loginAssistanceContext).toHaveBeenCalled();
+    expect(api.loginAssistanceInfo).not.toHaveBeenCalled();
+    expect(api.authenticatorInfo).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "设置" })).toBeDisabled();
     expect(
       screen.getByText(/完成本设备官方会话绑定后，中央后台确认有效/),

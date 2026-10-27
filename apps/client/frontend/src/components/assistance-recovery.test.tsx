@@ -9,7 +9,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { api } from "@/lib/api";
-import { LoginAssistance } from "./login-assistance";
+import { MailAssistance as LoginAssistance } from "./login-assistance";
 import { SessionBinding } from "./session-binding";
 
 const handlers = vi.hoisted(() => new Set<(event: { type: string }) => void>());

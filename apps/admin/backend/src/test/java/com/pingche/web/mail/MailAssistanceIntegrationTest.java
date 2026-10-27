@@ -51,6 +51,7 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.HttpStatus;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
@@ -67,6 +68,7 @@ class MailAssistanceIntegrationTest {
     private static final String BODY = "ChatGPT Log-in Code\nWe noticed a suspicious log-in on your account. If that was you, enter this code:\n123456\nIf this wasn't you, reset your password.";
     private static final ObjectMapper JSON = new ObjectMapper();
     @Autowired MailAssistanceService service;
+    UUID deviceId;
     @Autowired MailboxConfigRepository mailboxes;
     @Autowired MailListenerRepository listeners;
     @Autowired OfficialAccountRepository accounts;
@@ -78,7 +80,7 @@ class MailAssistanceIntegrationTest {
     @Autowired MailSecretCipher cipher;
     @Autowired LoginAssistanceEvents events;
     @Autowired LoginAssistanceState eventState;
-    @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
+    @Autowired JdbcTemplate jdbc;
     @MockitoBean MailTransport transport;
     @MockitoBean MailOAuthClient oauth;
     @MockitoBean Clock clock;
@@ -98,6 +100,7 @@ class MailAssistanceIntegrationTest {
         team = new Team("Mail team", "", Team.Status.ACTIVE, 100, 100, NOW);
         team.updateTokenLimits(null, null, null, account.getId(), NOW); team = teams.saveAndFlush(team);
         owner = member("owner@example.com"); other = member("other@example.com");
+        deviceId = AssistanceGrantFixture.grant(jdbc,owner.getId(),NOW);
         admin = users.saveAndFlush(User.bootstrapAdministrator("admin@example.com", "synthetic-unused-password-hash", "Admin"));
         when(transport.open(any())).thenAnswer(invocation -> new FakeConnection());
     }
@@ -105,16 +108,16 @@ class MailAssistanceIntegrationTest {
     @AfterEach
     void stopJobs() {
         for (MailListener listener : listeners.findAll()) {
-            try { service.cancel(listener.ownerUserId, listener.id); } catch (DomainException ignored) { }
+            try { service.cancel(listener.ownerUserId, listener.id, deviceId.toString()); } catch (DomainException ignored) { }
         }
         await().atMost(Duration.ofSeconds(5)).until(() -> listeners.findAll().stream().noneMatch(MailListener::active));
     }
 
     @Test
     void configIsAdminOnlyEncryptedReadOnlyAndEmptySecretsArePreserved() throws Exception {
-        mvc.perform(post("/api/v1/client/login-assistance/listeners").header(HttpHeaders.AUTHORIZATION, token(owner)))
+        mvc.perform(post("/api/v1/client/login-assistance/listeners").header(HttpHeaders.AUTHORIZATION, token(owner)).header(LoginAssistanceAccess.DEVICE_HEADER,deviceId))
                 .andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value("MAILBOX_UNCONFIGURED"));
-        mvc.perform(get(configUrl()).header(HttpHeaders.AUTHORIZATION, token(owner))).andExpect(status().isForbidden());
+        mvc.perform(get(configUrl()).header(HttpHeaders.AUTHORIZATION, token(owner)).header(LoginAssistanceAccess.DEVICE_HEADER,deviceId)).andExpect(status().isForbidden());
         mvc.perform(get(configUrl()).header(HttpHeaders.AUTHORIZATION, token(admin)))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.configured").value(false));
         mvc.perform(put(configUrl()).header(HttpHeaders.AUTHORIZATION, token(admin)).contentType(MediaType.APPLICATION_JSON)
@@ -143,17 +146,17 @@ class MailAssistanceIntegrationTest {
     void listenerPreservesSafeConnectionFailureCategoryAndReleasesMailboxForRetry(String code) throws Exception {
         configure();
         when(transport.open(any())).thenThrow(new DomainException(code, "private-provider-credential-details", HttpStatus.BAD_GATEWAY));
-        MailListenerResponse started = service.start(owner.getId());
+        MailListenerResponse started = service.start(owner.getId(), deviceId.toString());
         awaitState(started.id(), MailListener.State.FAILED);
         var response = mvc.perform(get("/api/v1/client/login-assistance/listeners/" + started.id())
-                        .header(HttpHeaders.AUTHORIZATION, token(owner)))
+                        .header(HttpHeaders.AUTHORIZATION, token(owner)).header(LoginAssistanceAccess.DEVICE_HEADER,deviceId))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.errorCode").value(code))
                 .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
                 .andReturn().getResponse().getContentAsString();
         assertThat(response).doesNotContain("private-provider-credential-details", "synthetic-password");
         assertThat(listeners.findById(started.id()).orElseThrow().activeAccountId).isNull();
         doAnswer(invocation -> new FakeConnection()).when(transport).open(any());
-        MailListenerResponse retry = service.start(owner.getId());
+        MailListenerResponse retry = service.start(owner.getId(), deviceId.toString());
         assertThat(retry.id()).isNotEqualTo(started.id());
         awaitState(retry.id(), MailListener.State.LISTENING);
     }
@@ -164,9 +167,9 @@ class MailAssistanceIntegrationTest {
     void listenerMasksUnknownFailureCodesWithoutLeavingMailboxBusy(String code) throws Exception {
         configure();
         when(transport.open(any())).thenThrow(new DomainException(code, "private-provider-credential-details", HttpStatus.BAD_GATEWAY));
-        MailListenerResponse started = service.start(owner.getId());
+        MailListenerResponse started = service.start(owner.getId(), deviceId.toString());
         awaitState(started.id(), MailListener.State.FAILED);
-        assertThat(service.poll(owner.getId(), started.id()).errorCode()).isEqualTo("MAIL_CONNECTION_FAILED");
+        assertThat(service.poll(owner.getId(), started.id(), deviceId.toString()).errorCode()).isEqualTo("MAIL_CONNECTION_FAILED");
         assertThat(listeners.findById(started.id()).orElseThrow().activeAccountId).isNull();
     }
 
@@ -178,7 +181,7 @@ class MailAssistanceIntegrationTest {
         UUID previousRevision = previous.revision;
         FakeConnection connection = new FakeConnection();
         when(transport.open(any())).thenReturn(connection);
-        MailListenerResponse active = service.start(owner.getId());
+        MailListenerResponse active = service.start(owner.getId(), deviceId.toString());
         awaitState(active.id(), MailListener.State.LISTENING);
 
         mvc.perform(put(configUrl()).header(HttpHeaders.AUTHORIZATION, token(admin)).contentType(MediaType.APPLICATION_JSON)
@@ -238,20 +241,20 @@ class MailAssistanceIntegrationTest {
         FakeConnection first = codeConnection(100, 10);
         FakeConnection second = codeConnection(100, 10);
         when(transport.open(any())).thenReturn(first, second);
-        MailListenerResponse started = service.start(owner.getId());
+        MailListenerResponse started = service.start(owner.getId(), deviceId.toString());
         awaitState(started.id(), MailListener.State.RECEIVED);
         await().atMost(Duration.ofSeconds(5)).untilTrue(first.closed);
-        MailListenerResponse result = service.poll(owner.getId(), started.id());
+        MailListenerResponse result = service.poll(owner.getId(), started.id(), deviceId.toString());
         assertThat(result.code()).isEqualTo("123456"); assertThat(result.expiresAt()).isEqualTo(NOW.plusSeconds(60));
         MailListener stored = listeners.findById(started.id()).orElseThrow();
         assertThat(stored.activeAccountId).isNull(); assertThat(stored.codeCipher).doesNotContain("123456");
         assertThat(cipher.decrypt(stored.codeCipher, stored.aad())).isEqualTo("123456");
-        mvc.perform(get("/api/v1/client/login-assistance/listeners/{id}", started.id()).header(HttpHeaders.AUTHORIZATION, token(owner)))
+        mvc.perform(get("/api/v1/client/login-assistance/listeners/{id}", started.id()).header(HttpHeaders.AUTHORIZATION, token(owner)).header(LoginAssistanceAccess.DEVICE_HEADER,deviceId))
                 .andExpect(status().isOk()).andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
                 .andExpect(jsonPath("$.code").value("123456"))
                 .andExpect(jsonPath("$.body").doesNotExist()).andExpect(jsonPath("$.subject").doesNotExist())
                 .andExpect(jsonPath("$.senders").doesNotExist()).andExpect(jsonPath("$.recipients").doesNotExist());
-        MailListenerResponse repeated = service.start(owner.getId());
+        MailListenerResponse repeated = service.start(owner.getId(), deviceId.toString());
         awaitState(repeated.id(), MailListener.State.RECEIVED);
         assertThat(repeated.id()).isNotEqualTo(started.id());
     }
@@ -265,10 +268,10 @@ class MailAssistanceIntegrationTest {
         connection.batch.set(new MailTransport.Batch(10, 101, List.of(new MailTransport.Candidate(100, chinese))));
         when(transport.open(any())).thenReturn(connection);
 
-        MailListenerResponse started = service.start(owner.getId());
+        MailListenerResponse started = service.start(owner.getId(), deviceId.toString());
         awaitState(started.id(), MailListener.State.RECEIVED);
         await().atMost(Duration.ofSeconds(5)).untilTrue(connection.closed);
-        mvc.perform(get("/api/v1/client/login-assistance/listeners/{id}", started.id()).header(HttpHeaders.AUTHORIZATION, token(owner)))
+        mvc.perform(get("/api/v1/client/login-assistance/listeners/{id}", started.id()).header(HttpHeaders.AUTHORIZATION, token(owner)).header(LoginAssistanceAccess.DEVICE_HEADER,deviceId))
                 .andExpect(status().isOk()).andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
                 .andExpect(jsonPath("$.state").value("RECEIVED")).andExpect(jsonPath("$.code").value("123456"))
                 .andExpect(jsonPath("$.body").doesNotExist()).andExpect(jsonPath("$.subject").doesNotExist())
@@ -276,37 +279,38 @@ class MailAssistanceIntegrationTest {
     }
 
     @Test
-    void sharedAccountIsBusyAndAnotherUserCannotPollOrCancelOwnerResult() throws Exception {
-        configure(); MailListenerResponse started = service.start(owner.getId());
+    void anotherUserCannotUseAnOccupiedGrantOrPollOrCancelOwnerResult() throws Exception {
+        configure(); MailListenerResponse started = service.start(owner.getId(), deviceId.toString());
         awaitState(started.id(), MailListener.State.LISTENING);
         mvc.perform(post("/api/v1/client/login-assistance/listeners").header(HttpHeaders.AUTHORIZATION, token(other)))
-                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("MAIL_LISTENER_BUSY"));
+                .andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value("LOGIN_ASSISTANCE_NOT_ALLOWED"));
         mvc.perform(get("/api/v1/client/login-assistance/listeners/{id}", started.id()).header(HttpHeaders.AUTHORIZATION, token(other)))
-                .andExpect(status().isNotFound());
+                .andExpect(status().isForbidden());
         mvc.perform(delete("/api/v1/client/login-assistance/listeners/{id}", started.id()).header(HttpHeaders.AUTHORIZATION, token(other)))
                 .andExpect(status().isNotFound());
-        assertThat(service.cancel(owner.getId(), started.id()).state()).isEqualTo(MailListener.State.CANCELLED);
+        assertThat(service.cancel(owner.getId(), started.id(), deviceId.toString()).state()).isEqualTo(MailListener.State.CANCELLED);
         assertThat(listeners.findById(started.id()).orElseThrow().activeAccountId).isNull();
     }
 
     @Test
     void currentRestoresOnlyTheOwnerListenerWithoutOpeningAnotherConnectionOrResettingItsCursor() throws Exception {
         configure();
-        assertThat(service.current(owner.getId()).listener()).isNull();
+        assertThat(service.current(owner.getId(), deviceId.toString()).listener()).isNull();
         FakeConnection connection = new FakeConnection();
         when(transport.open(any())).thenReturn(connection);
-        MailListenerResponse started = service.start(owner.getId());
+        MailListenerResponse started = service.start(owner.getId(), deviceId.toString());
         awaitState(started.id(), MailListener.State.LISTENING);
         MailListener before = listeners.findById(started.id()).orElseThrow();
         assertThat(before.expiresAt).isEqualTo(NOW.plusSeconds(600));
         for (int refresh = 0; refresh < 3; refresh++) {
             mvc.perform(get("/api/v1/client/login-assistance/listeners/current")
-                            .header(HttpHeaders.AUTHORIZATION, token(owner)))
+                            .header(HttpHeaders.AUTHORIZATION, token(owner)).header(LoginAssistanceAccess.DEVICE_HEADER,deviceId))
                     .andExpect(status().isOk()).andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
                     .andExpect(jsonPath("$.listener.id").value(started.id().toString()))
                     .andExpect(jsonPath("$.listener.state").value("LISTENING"));
         }
-        assertThat(service.current(other.getId()).listener()).isNull();
+        assertThatThrownBy(() -> service.current(other.getId(), deviceId.toString()))
+                .hasMessage(LoginAssistanceAccess.denied().getMessage());
         MailListener after = listeners.findById(started.id()).orElseThrow();
         assertThat(after.uidValidity).isEqualTo(before.uidValidity);
         assertThat(after.nextUid).isEqualTo(before.nextUid);
@@ -314,59 +318,61 @@ class MailAssistanceIntegrationTest {
         assertThat(after.listeningAt).isEqualTo(before.listeningAt);
         org.mockito.Mockito.verify(transport, org.mockito.Mockito.times(1)).open(any());
         assertThat(connection.closed).isFalse();
-        service.cancel(owner.getId(), started.id());
-        assertThat(service.current(owner.getId()).listener()).isNull();
+        service.cancel(owner.getId(), started.id(), deviceId.toString());
+        assertThat(service.current(owner.getId(), deviceId.toString()).listener()).isNull();
     }
 
     @Test
     void currentRestoresUnexpiredReceivedCodeButNeverAnotherUsersCodeOrExpiredResult() throws Exception {
         configure();
         when(transport.open(any())).thenReturn(codeConnection(100, 10));
-        MailListenerResponse started = service.start(owner.getId());
+        MailListenerResponse started = service.start(owner.getId(), deviceId.toString());
         awaitState(started.id(), MailListener.State.RECEIVED);
-        assertThat(service.current(owner.getId()).listener().code()).isEqualTo("123456");
+        assertThat(service.current(owner.getId(), deviceId.toString()).listener().code()).isEqualTo("123456");
         mvc.perform(get("/api/v1/client/login-assistance/listeners/current")
                         .header(HttpHeaders.AUTHORIZATION, token(other)))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.listener").isEmpty());
+                .andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value("LOGIN_ASSISTANCE_NOT_ALLOWED"));
         now.set(NOW.plusSeconds(60));
-        assertThat(service.current(owner.getId()).listener()).isNull();
+        assertThat(service.current(owner.getId(), deviceId.toString()).listener()).isNull();
         assertThat(listeners.findById(started.id()).orElseThrow().codeCipher).isNull();
     }
 
     @Test
     void currentChecksCurrentMembershipAndConfigurationRevisionBeforeRestoring() {
         configure();
-        MailListenerResponse started = service.start(owner.getId());
+        MailListenerResponse started = service.start(owner.getId(), deviceId.toString());
         awaitState(started.id(), MailListener.State.LISTENING);
         owner.clearTeam(NOW); users.saveAndFlush(owner);
-        assertThat(service.current(owner.getId()).listener()).isNull();
-        assertThat(listeners.findById(started.id()).orElseThrow().state).isEqualTo(MailListener.State.FAILED);
+        assertThatThrownBy(() -> service.current(owner.getId(), deviceId.toString()))
+                .hasMessage(LoginAssistanceAccess.denied().getMessage());
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                assertThat(listeners.findById(started.id()).orElseThrow().state).isEqualTo(MailListener.State.CANCELLED));
         owner.updateQuotaPolicy(team.getId(), null, null, NOW); users.saveAndFlush(owner);
-        MailListenerResponse changed = service.start(owner.getId());
+        MailListenerResponse changed = service.start(owner.getId(), deviceId.toString());
         awaitState(changed.id(), MailListener.State.LISTENING);
         MailboxConfig config = mailboxes.findById(account.getId()).orElseThrow();
         config.revision = UUID.randomUUID(); mailboxes.saveAndFlush(config);
-        assertThat(service.current(owner.getId()).listener()).isNull();
+        assertThat(service.current(owner.getId(), deviceId.toString()).listener()).isNull();
         assertThat(listeners.findById(changed.id()).orElseThrow().state).isEqualTo(MailListener.State.FAILED);
     }
 
     @Test
     void systemLogoutStopsOwnedListenerAndDoesNotAffectAnotherOwner() {
         configure();
-        MailListenerResponse started = service.start(owner.getId());
+        MailListenerResponse started = service.start(owner.getId(), deviceId.toString());
         awaitState(started.id(), MailListener.State.LISTENING);
         service.systemLogout(new SystemLogoutEvent(other.getId()));
-        assertThat(service.current(owner.getId()).listener().id()).isEqualTo(started.id());
+        assertThat(service.current(owner.getId(), deviceId.toString()).listener().id()).isEqualTo(started.id());
         service.systemLogout(new SystemLogoutEvent(owner.getId()));
-        assertThat(service.current(owner.getId()).listener()).isNull();
+        assertThat(service.current(owner.getId(), deviceId.toString()).listener()).isNull();
         assertThat(listeners.findById(started.id()).orElseThrow().state).isEqualTo(MailListener.State.CANCELLED);
         assertThat(listeners.findById(started.id()).orElseThrow().activeAccountId).isNull();
         when(transport.open(any())).thenReturn(codeConnection(100, 10));
-        MailListenerResponse received = service.start(owner.getId());
+        MailListenerResponse received = service.start(owner.getId(), deviceId.toString());
         awaitState(received.id(), MailListener.State.RECEIVED);
         service.systemLogout(new SystemLogoutEvent(owner.getId()));
         assertThat(listeners.findById(received.id()).orElseThrow().codeCipher).isNull();
-        assertThat(service.current(owner.getId()).listener()).isNull();
+        assertThat(service.current(owner.getId(), deviceId.toString()).listener()).isNull();
     }
 
     @Test
@@ -374,14 +380,14 @@ class MailAssistanceIntegrationTest {
         mvc.perform(get("/api/v1/client/login-assistance/events")).andExpect(status().isUnauthorized());
         configure();
         var stream = mvc.perform(get("/api/v1/client/login-assistance/events")
-                        .header(HttpHeaders.AUTHORIZATION, token(owner)))
+                        .header(HttpHeaders.AUTHORIZATION, token(owner)).header(LoginAssistanceAccess.DEVICE_HEADER,deviceId))
                 .andExpect(status().isOk()).andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
                 .andExpect(header().string("X-Accel-Buffering", "no"))
                 .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.request().asyncStarted())
                 .andReturn();
         try {
             assertThat(stream.getResponse().getContentAsString()).contains("event:connected", "data:{}");
-            MailListenerResponse started = service.start(owner.getId());
+            MailListenerResponse started = service.start(owner.getId(), deviceId.toString());
             awaitState(started.id(), MailListener.State.LISTENING);
             events.tick();
             assertThat(stream.getResponse().getContentAsString()).contains("event:state_changed")
@@ -405,7 +411,6 @@ class MailAssistanceIntegrationTest {
                     """, entry.getKey(), entry.getValue(), device, device, team.getId(), 0L,
                     account.getId(), UUID.randomUUID(), "QUEUED", created, created.plusSeconds(600));
         }
-        jdbc.update("insert into session_binding_accounts (official_account_id,updated_at) values (?,?)", account.getId(), created);
         try {
             String waiting = eventState.fingerprint(owner.getId());
             jdbc.update("update session_binding_attempts set status='CANCELLED' where id=?", earlier);
@@ -429,10 +434,10 @@ class MailAssistanceIntegrationTest {
                 new MailTransport.Candidate(100, message(NOW.plusSeconds(1))))));
         when(transport.open(any())).thenReturn(connection);
 
-        MailListenerResponse started = service.start(owner.getId());
+        MailListenerResponse started = service.start(owner.getId(), deviceId.toString());
         awaitState(started.id(), MailListener.State.RECEIVED);
 
-        MailListenerResponse received = service.poll(owner.getId(), started.id());
+        MailListenerResponse received = service.poll(owner.getId(), started.id(), deviceId.toString());
         assertThat(received.startedAt()).isEqualTo(NOW);
         assertThat(received.listeningAt()).isEqualTo(NOW.plusSeconds(2));
         assertThat(received.code()).isEqualTo("123456");
@@ -446,30 +451,30 @@ class MailAssistanceIntegrationTest {
                 new MailTransport.Candidate(99, message(NOW.plusSeconds(3))),
                 new MailTransport.Candidate(100, message(NOW.minusSeconds(1))))));
         when(transport.open(any())).thenReturn(connection);
-        MailListenerResponse started = service.start(owner.getId());
+        MailListenerResponse started = service.start(owner.getId(), deviceId.toString());
         await().atMost(Duration.ofSeconds(5)).until(() -> connection.polled.get());
         await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> assertThat(listeners.findById(started.id()).orElseThrow().nextUid).isEqualTo(101L));
-        assertThat(service.poll(owner.getId(), started.id()).code()).isNull();
+        assertThat(service.poll(owner.getId(), started.id(), deviceId.toString()).code()).isNull();
     }
 
     @Test
     void changedUidValidityFailsClosedAndClosesConnection() {
         configure(); FakeConnection connection = codeConnection(100, 11);
         when(transport.open(any())).thenReturn(connection);
-        MailListenerResponse started = service.start(owner.getId()); awaitState(started.id(), MailListener.State.FAILED);
-        assertThat(service.poll(owner.getId(), started.id()).errorCode()).isEqualTo("MAIL_CURSOR_CHANGED");
+        MailListenerResponse started = service.start(owner.getId(), deviceId.toString()); awaitState(started.id(), MailListener.State.FAILED);
+        assertThat(service.poll(owner.getId(), started.id(), deviceId.toString()).errorCode()).isEqualTo("MAIL_CURSOR_CHANGED");
         assertThat(connection.closed.get()).isTrue();
     }
 
     @Test
     void leaseTimeoutAndResultExpiryReleaseSlotAndClearCiphertext() {
-        configure(); MailListenerResponse active = service.start(owner.getId()); awaitState(active.id(), MailListener.State.LISTENING);
+        configure(); MailListenerResponse active = service.start(owner.getId(), deviceId.toString()); awaitState(active.id(), MailListener.State.LISTENING);
         now.set(NOW.plusSeconds(601));
-        assertThat(service.poll(owner.getId(), active.id()).state()).isEqualTo(MailListener.State.TIMED_OUT);
+        assertThat(service.poll(owner.getId(), active.id(), deviceId.toString()).state()).isEqualTo(MailListener.State.TIMED_OUT);
         when(transport.open(any())).thenReturn(codeConnection(100, 10));
-        MailListenerResponse received = service.start(owner.getId()); awaitState(received.id(), MailListener.State.RECEIVED);
+        MailListenerResponse received = service.start(owner.getId(), deviceId.toString()); awaitState(received.id(), MailListener.State.RECEIVED);
         now.set(NOW.plusSeconds(662));
-        MailListenerResponse expired = service.poll(owner.getId(), received.id());
+        MailListenerResponse expired = service.poll(owner.getId(), received.id(), deviceId.toString());
         assertThat(expired.state()).isEqualTo(MailListener.State.TIMED_OUT); assertThat(expired.errorCode()).isEqualTo("CODE_EXPIRED");
         assertThat(expired.code()).isNull(); assertThat(expired.receivedAt()).isNull();
         assertThat(listeners.findById(received.id()).orElseThrow().codeCipher).isNull();
@@ -477,13 +482,16 @@ class MailAssistanceIntegrationTest {
 
     @Test
     void teamRevocationAndConfigChangesStopExistingListenersBeforeReturningCode() {
-        configure(); MailListenerResponse revoked = service.start(owner.getId()); awaitState(revoked.id(), MailListener.State.LISTENING);
+        configure(); MailListenerResponse revoked = service.start(owner.getId(), deviceId.toString()); awaitState(revoked.id(), MailListener.State.LISTENING);
         owner.clearTeam(NOW); users.saveAndFlush(owner);
-        assertThat(service.poll(owner.getId(), revoked.id()).errorCode()).isEqualTo("MAIL_ACCESS_REVOKED");
+        assertThatThrownBy(() -> service.poll(owner.getId(), revoked.id(), deviceId.toString()))
+                .hasMessage(LoginAssistanceAccess.denied().getMessage());
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                assertThat(listeners.findById(revoked.id()).orElseThrow().state).isEqualTo(MailListener.State.CANCELLED));
         owner.updateQuotaPolicy(team.getId(), null, null, NOW); users.saveAndFlush(owner);
-        MailListenerResponse changed = service.start(owner.getId()); awaitState(changed.id(), MailListener.State.LISTENING);
+        MailListenerResponse changed = service.start(owner.getId(), deviceId.toString()); awaitState(changed.id(), MailListener.State.LISTENING);
         service.saveConfig(account.getId(), request("", MailboxConfig.AuthMode.PASSWORD));
-        MailListenerResponse response = service.poll(owner.getId(), changed.id());
+        MailListenerResponse response = service.poll(owner.getId(), changed.id(), deviceId.toString());
         assertThat(response.code()).isNull(); assertThat(response.errorCode()).isEqualTo("MAIL_ACCESS_REVOKED");
     }
 
@@ -518,13 +526,14 @@ class MailAssistanceIntegrationTest {
     void repeatedCancelAndStartIsRateLimitedAndRequiresCurrentTeam() {
         configure();
         for (int i = 0; i < 6; i++) {
-            MailListenerResponse listener = service.start(owner.getId()); service.cancel(owner.getId(), listener.id());
+            MailListenerResponse listener = service.start(owner.getId(), deviceId.toString()); service.cancel(owner.getId(), listener.id(), deviceId.toString());
         }
-        assertThatThrownBy(() -> service.start(owner.getId())).isInstanceOf(DomainException.class)
+        assertThatThrownBy(() -> service.start(owner.getId(), deviceId.toString())).isInstanceOf(DomainException.class)
                 .hasMessage("Too many mailbox listener requests");
         owner.clearTeam(NOW); users.saveAndFlush(owner);
-        assertThat(service.availability(owner.getId()).reasonCode()).isEqualTo("TEAM_UNAVAILABLE");
-        assertThatThrownBy(() -> service.start(owner.getId())).isInstanceOf(DomainException.class);
+        assertThatThrownBy(() -> service.availability(owner.getId(), deviceId.toString()))
+                .hasMessage(LoginAssistanceAccess.denied().getMessage());
+        assertThatThrownBy(() -> service.start(owner.getId(), deviceId.toString())).isInstanceOf(DomainException.class);
     }
 
     @Test
@@ -554,9 +563,9 @@ class MailAssistanceIntegrationTest {
             if (order == 1) { entered.countDown(); assertThat(release.await(5, TimeUnit.SECONDS)).isTrue(); }
             return new MailOAuthClient.Token("synthetic-access-" + order, "refresh-rotated-" + order);
         });
-        MailListenerResponse first = service.start(owner.getId()); assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
-        assertThat(service.cancel(owner.getId(), first.id()).state()).isEqualTo(MailListener.State.CANCELLED);
-        CompletableFuture<MailListenerResponse> next = CompletableFuture.supplyAsync(() -> service.start(owner.getId()));
+        MailListenerResponse first = service.start(owner.getId(), deviceId.toString()); assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(service.cancel(owner.getId(), first.id(), deviceId.toString()).state()).isEqualTo(MailListener.State.CANCELLED);
+        CompletableFuture<MailListenerResponse> next = CompletableFuture.supplyAsync(() -> service.start(owner.getId(), deviceId.toString()));
         try {
             assertThatThrownBy(() -> next.get(100, TimeUnit.MILLISECONDS)).isInstanceOf(TimeoutException.class);
             assertThat(calls.get()).isEqualTo(1);
@@ -565,15 +574,15 @@ class MailAssistanceIntegrationTest {
         assertThat(tokens).containsExactly("refresh-initial", "refresh-rotated-1");
         MailboxConfig saved = mailboxes.findById(account.getId()).orElseThrow();
         assertThat(cipher.decrypt(saved.refreshTokenCipher, saved.aad("refresh-token"))).isEqualTo("refresh-rotated-2");
-        assertThat(service.poll(owner.getId(), first.id()).code()).isNull();
+        assertThat(service.poll(owner.getId(), first.id(), deviceId.toString()).code()).isNull();
     }
 
     @Test
     void connectionFailureIsGenericAndDoesNotReturnSensitiveException() {
         configure(); when(transport.open(any())).thenThrow(new IllegalStateException("private-secret raw provider response"));
         assertThat(service.testConfig(account.getId()).message()).doesNotContain("private-secret");
-        MailListenerResponse listener = service.start(owner.getId()); awaitState(listener.id(), MailListener.State.FAILED);
-        assertThat(service.poll(owner.getId(), listener.id()).errorCode()).isEqualTo("MAIL_CONNECTION_FAILED");
+        MailListenerResponse listener = service.start(owner.getId(), deviceId.toString()); awaitState(listener.id(), MailListener.State.FAILED);
+        assertThat(service.poll(owner.getId(), listener.id(), deviceId.toString()).errorCode()).isEqualTo("MAIL_CONNECTION_FAILED");
     }
 
     private User member(String email) {
@@ -607,7 +616,7 @@ class MailAssistanceIntegrationTest {
         return connection;
     }
     private void awaitState(UUID id, MailListener.State expected) {
-        await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> assertThat(service.poll(owner.getId(), id).state()).isEqualTo(expected));
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> assertThat(service.poll(owner.getId(), id, deviceId.toString()).state()).isEqualTo(expected));
     }
     private static final class FakeConnection implements MailTransport.Connection {
         private final Runnable afterBaselineSnapshot;

@@ -171,6 +171,7 @@ describe("one-message login assistance", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(new Date("2026-10-12T10:00:01Z"));
     apiSpies = {
+      loginAssistanceContext: vi.spyOn(api, "loginAssistanceContext"),
       clientAccess: vi.spyOn(api, "clientAccess"),
       sessionBindingCurrent: vi.spyOn(api, "sessionBindingCurrent"),
       quotaOverview: vi.spyOn(api, "quotaOverview"),
@@ -183,6 +184,17 @@ describe("one-message login assistance", () => {
       loginAssistanceStatus: vi.spyOn(api, "loginAssistanceStatus"),
       loginAssistanceCancel: vi.spyOn(api, "loginAssistanceCancel"),
     };
+    // This suite exercises mail recovery inside a granted binding window;
+    // queue ownership and bound-user denial are covered by login-assistance-gate.test.tsx.
+    apiSpies.loginAssistanceContext.mockImplementation(async () => ({
+      allowed: true,
+      reasonCode: null,
+      bindingAttemptId: "d3cf83a0-f2d0-47c9-b4e5-2ad3d84f7d5b",
+      serverTime: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 1_800_000).toISOString(),
+      mailEnabled: true,
+      authenticatorEnabled: false,
+    }));
     apiSpies.clientAccess.mockResolvedValue({
       allowed: true,
       bindingId: listenerId,

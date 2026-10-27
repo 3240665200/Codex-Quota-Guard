@@ -28,7 +28,7 @@ import { toast } from "sonner";
 
 import { AppIcon } from "@/components/app-icon";
 import { ClientSettings } from "@/components/client-settings";
-import { LoginAssistance } from "@/components/login-assistance";
+import { LoginAssistance } from "@/components/login-assistance-gate";
 import { SessionBinding } from "@/components/session-binding";
 import { subscribeToAssistanceEvents } from "@/lib/assistance-events";
 import {
@@ -357,6 +357,7 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
   const blockingReturn = bindingAllowed && checkingReturn;
   const { refetch: refetchAccess } = accessQuery;
   const handleBound = (bindingId: string | null) => {
+    if (bindingId) window.dispatchEvent(new Event("quota-guard:assistance-revoked"));
     // Restoring the already-authorized record is not a new binding or a revocation.
     if (bindingAllowed && bindingId === accessQuery.data.bindingId) return;
     // A completion is only a hint: the central access result still decides access.

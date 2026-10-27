@@ -1,11 +1,13 @@
 package com.pingche.web.mail;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.awaitility.Awaitility.await;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
 import com.pingche.web.auth.DomainException;
+import com.pingche.web.auth.SystemLogoutEvent;
 import com.pingche.web.meter.MeterDevice;
 import com.pingche.web.meter.MeterDeviceRepository;
 import com.pingche.web.officialsession.OfficialConnectionService;
@@ -90,7 +92,8 @@ class MailBindingCleanupIntegrationTest {
     }
 
     @AfterEach void cleanup() {
-        for (MailListener listener : listeners.findByOfficialAccountId(accountId)) mail.cancel(listener.ownerUserId, listener.id);
+        mail.systemLogout(new SystemLogoutEvent(owner.getId()));
+        mail.systemLogout(new SystemLogoutEvent(other.getId()));
         for (FakeConnection connection : opened) connection.close();
     }
 
@@ -98,9 +101,10 @@ class MailBindingCleanupIntegrationTest {
     @CsvSource({"PREPARING,cancel", "READY_FOR_LOGIN,cancel", "DETECTING,cancel", "AWAITING_CONFIRMATION,cancel",
             "READY_FOR_LOGIN,expire", "READY_FOR_LOGIN,fail"})
     void endingTheOwnedClaimReleasesItsMailboxAndClosesOnlyAfterCommit(String stage, String ending) {
-        UUID attempt = claimed(stage);
+        UUID attempt = claimed(stage.equals("PREPARING") ? "READY_FOR_LOGIN" : stage);
         MailListenerResponse listener = start(owner);
         FakeConnection connection = opened.get(0);
+        if (stage.equals("PREPARING")) jdbc.update("update session_binding_attempts set status='PREPARING' where id=?", attempt);
         if (ending.equals("expire")) jdbc.update("update session_binding_attempts set expires_at=? where id=?", NOW.minusSeconds(1), attempt);
         if (ending.equals("fail")) when(official.refresh(accountId)).thenThrow(
                 new DomainException("SESSION_BINDING_SNAPSHOT_UNAVAILABLE", "synthetic-provider-detail", HttpStatus.BAD_GATEWAY));
@@ -112,7 +116,9 @@ class MailBindingCleanupIntegrationTest {
         assertThat(stopped.errorCode).isEqualTo("MAIL_BINDING_ENDED");
         assertThat(stopped.activeAccountId).isNull();
         await().atMost(Duration.ofSeconds(5)).untilTrue(connection.closed);
-        assertThat(mail.current(owner.getId()).listener()).isNull();
+        assertThatThrownBy(() -> mail.current(owner.getId(), deviceId.toString()))
+                .hasMessage(LoginAssistanceAccess.denied().getMessage());
+        claimed(other, otherDeviceId, "READY_FOR_LOGIN");
         assertThat(start(other).state()).isEqualTo(MailListener.State.LISTENING);
     }
 
@@ -121,7 +127,7 @@ class MailBindingCleanupIntegrationTest {
         MailListenerResponse listener = start(owner);
         UUID queued = bindings.create(other.getId(), otherDeviceId, otherDeviceId, null).id();
         bindings.cancel(other.getId(), queued);
-        assertThat(mail.poll(owner.getId(), listener.id()).state()).isEqualTo(MailListener.State.LISTENING);
+        assertThat(mail.poll(owner.getId(), listener.id(), deviceId.toString()).state()).isEqualTo(MailListener.State.LISTENING);
         assertThat(opened.get(0).closed).isFalse();
     }
 
@@ -137,17 +143,20 @@ class MailBindingCleanupIntegrationTest {
         time.set(NOW.plusSeconds(10));bindings.advance(accountId);
         assertThat(bindings.get(owner.getId(), attempt).status()).isEqualTo("BOUND");
         assertThat(listeners.findById(listener.id()).orElseThrow().state).isEqualTo(MailListener.State.CANCELLED);
-        assertThat(mail.current(owner.getId()).listener()).isNull();
+        assertThatThrownBy(() -> mail.current(owner.getId(), deviceId.toString()))
+                .hasMessage(LoginAssistanceAccess.denied().getMessage());
         await().atMost(Duration.ofSeconds(5)).untilTrue(opened.get(0).closed);
         assertThat(bindings.accountState(accountId).activeAttemptId()).isNull();
     }
 
-    @Test void endingAnOwnerClaimDoesNotCancelAnotherOwnersMailboxListener() {
+    @Test void anotherUserCannotOpenTheMailboxDuringTheOwnersClaim() {
         UUID attempt = claimed("READY_FOR_LOGIN");
-        MailListenerResponse listener = start(other);
-        bindings.cancel(owner.getId(), attempt);
-        assertThat(mail.poll(other.getId(), listener.id()).state()).isEqualTo(MailListener.State.LISTENING);
+        MailListenerResponse listener = start(owner);
+        assertThatThrownBy(() -> start(other)).hasMessage(LoginAssistanceAccess.denied().getMessage());
+        assertThat(mail.poll(owner.getId(), listener.id(), deviceId.toString()).state()).isEqualTo(MailListener.State.LISTENING);
         assertThat(opened.get(0).closed).isFalse();
+        bindings.cancel(owner.getId(), attempt);
+        assertThat(listeners.findById(listener.id()).orElseThrow().state).isEqualTo(MailListener.State.CANCELLED);
     }
 
     @Test void cancellingTheSameOwnersOtherQueuedTaskPreservesTheirCurrentClaimAndListener() {
@@ -157,7 +166,7 @@ class MailBindingCleanupIntegrationTest {
         UUID queued = bindings.create(owner.getId(), anotherDevice, anotherDevice, null).id();
         bindings.cancel(owner.getId(), queued);
         assertThat(bindings.accountState(accountId).activeAttemptId()).isEqualTo(current);
-        assertThat(mail.poll(owner.getId(), listener.id()).state()).isEqualTo(MailListener.State.LISTENING);
+        assertThat(mail.poll(owner.getId(), listener.id(), deviceId.toString()).state()).isEqualTo(MailListener.State.LISTENING);
         assertThat(opened.get(0).closed).isFalse();
     }
 
@@ -173,7 +182,7 @@ class MailBindingCleanupIntegrationTest {
             return null;
         });
         assertThat(bindings.get(owner.getId(), attempt).status()).isEqualTo("READY_FOR_LOGIN");
-        assertThat(mail.poll(owner.getId(), listener.id()).state()).isEqualTo(MailListener.State.LISTENING);
+        assertThat(mail.poll(owner.getId(), listener.id(), deviceId.toString()).state()).isEqualTo(MailListener.State.LISTENING);
         assertThat(connection.closed).isFalse();
     }
 
@@ -185,7 +194,10 @@ class MailBindingCleanupIntegrationTest {
             // Run before the binding cleanup callback, on a thread without the completed transaction's resources.
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override public void afterCommit() {
-                    try { replacement.set(CompletableFuture.supplyAsync(() -> start(owner)).get(5, TimeUnit.SECONDS)); }
+                    try { replacement.set(CompletableFuture.supplyAsync(() -> {
+                        claimed("READY_FOR_LOGIN");
+                        return start(owner);
+                    }).get(5, TimeUnit.SECONDS)); }
                     catch (Exception failure) { throw new IllegalStateException("Synthetic replacement listener failed", failure); }
                 }
             });
@@ -193,7 +205,7 @@ class MailBindingCleanupIntegrationTest {
             return null;
         });
         assertThat(replacement.get().id()).isNotEqualTo(old.id());
-        assertThat(mail.poll(owner.getId(), replacement.get().id()).state()).isEqualTo(MailListener.State.LISTENING);
+        assertThat(mail.poll(owner.getId(), replacement.get().id(), deviceId.toString()).state()).isEqualTo(MailListener.State.LISTENING);
         assertThat(opened.get(1).closed).isFalse();
     }
 
@@ -207,24 +219,30 @@ class MailBindingCleanupIntegrationTest {
             listener.resultExpiresAt = NOW.plusSeconds(60); listener.expiresAt = listener.resultExpiresAt;
             return null;
         });
-        assertThat(mail.current(owner.getId()).listener().code()).isEqualTo("123456");
+        assertThat(mail.current(owner.getId(), deviceId.toString()).listener().code()).isEqualTo("123456");
         bindings.cancel(owner.getId(), attempt);
-        assertThat(mail.current(owner.getId()).listener()).isNull();
+        assertThatThrownBy(() -> mail.current(owner.getId(), deviceId.toString()))
+                .hasMessage(LoginAssistanceAccess.denied().getMessage());
         assertThat(listeners.findById(started.id()).orElseThrow().codeCipher).isNull();
     }
 
     private UUID claimed(String stage) {
-        UUID id = bindings.create(owner.getId(), deviceId, deviceId, null).id();
-        jdbc.update("update session_binding_accounts set active_attempt_id=?,generation=1 where official_account_id=?", id, accountId);
+        return claimed(owner, deviceId, stage);
+    }
+    private UUID claimed(User user, UUID device, String stage) {
+        UUID id = bindings.create(user.getId(), device, device, null).id();
+        jdbc.update("update session_binding_accounts set active_attempt_id=?,generation=1,quarantined=false,recovery_id=null,settle_until=null where official_account_id=?", id, accountId);
+        jdbc.update("update session_binding_attempts set official_account_key=?,official_user_key='synthetic-user' where id=?", "synthetic-" + accountId, id);
         jdbc.update("update session_binding_attempts set status=?,claim_generation=1,before_session_ids='[]',expires_at=? where id=?",
                 stage, NOW.plusSeconds(1800), id);
         return id;
     }
     private MailListenerResponse start(User user) {
-        MailListenerResponse started = mail.start(user.getId());
+        String device = (user.getId().equals(owner.getId()) ? deviceId : otherDeviceId).toString();
+        MailListenerResponse started = mail.start(user.getId(), device);
         await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
-                assertThat(mail.poll(user.getId(), started.id()).state()).isEqualTo(MailListener.State.LISTENING));
-        return mail.poll(user.getId(), started.id());
+                assertThat(mail.poll(user.getId(), started.id(), device).state()).isEqualTo(MailListener.State.LISTENING));
+        return mail.poll(user.getId(), started.id(), device);
     }
     private User member(UUID teamId) {
         User user = new User(UUID.randomUUID() + "@example.test", "synthetic-unused", "Synthetic");

@@ -94,7 +94,8 @@ export function importAuthenticator(input: string): ImportedAuthenticator {
     if (entries.length !== 1 || integer(payload, 3, 1n) !== 1n || integer(payload, 4) !== 0n) {
       throw new Error('请在 Google Authenticator 导出时只勾选当前 GPT 账户，一次导入一个账户。');
     }
-    if (entries[0].wire !== 2 || ![0n, 1n].includes(integer(payload, 2))) throw invalid();
+    // Google migration v2 adds metadata while retaining the validated TOTP core fields.
+    if (entries[0].wire !== 2 || ![0n, 1n, 2n].includes(integer(payload, 2))) throw invalid();
     const account = fields(entries[0].value as Uint8Array);
     const secret = one(account, 1, 2)?.value as Uint8Array | undefined;
     if (!secret || secret.length < 10 || secret.length > 128) throw invalid();

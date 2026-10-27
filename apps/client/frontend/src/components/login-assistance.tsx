@@ -3,7 +3,6 @@ import { Check, Copy, LoaderCircle, Mail } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { AuthenticatorAssistance } from "./authenticator-assistance";
 import { useAssistanceRefresh } from "@/lib/use-assistance-refresh";
 import {
   api,
@@ -105,7 +104,7 @@ interface Lifetime {
 
 // Listener responses (including the code) belong only to this mounted page.
 // They are deliberately excluded from React Query and persistent storage.
-export function LoginAssistance({ userId }: { userId: string }) {
+export function MailAssistance({ userId }: { userId: string }) {
   const [info, setInfo] = useState<LoginAssistanceInfo | null>(null);
   const [infoLoading, setInfoLoading] = useState(true);
   const [infoAttempt, setInfoAttempt] = useState(0);
@@ -348,7 +347,6 @@ export function LoginAssistance({ userId }: { userId: string }) {
   const active = isActive(listener);
   return (
     <div className="space-y-6">
-      <AuthenticatorAssistance key={userId} userId={userId} />
       <section
         className="cqg-surface min-w-0 p-5 sm:p-6"
         aria-label="登录验证码辅助"

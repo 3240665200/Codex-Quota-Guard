@@ -174,6 +174,27 @@ const loginAssistanceReason = z
   .string()
   .regex(/^[A-Z][A-Z0-9_]{0,63}$/)
   .nullable();
+const loginAssistanceContextSchema = z
+  .strictObject({
+    allowed: z.boolean(),
+    reasonCode: loginAssistanceReason,
+    bindingAttemptId: z.string().uuid().nullable(),
+    expiresAt: z.iso.datetime({ offset: true }).nullable(),
+    serverTime: z.iso.datetime({ offset: true }),
+    mailEnabled: z.boolean(),
+    authenticatorEnabled: z.boolean(),
+  })
+  .refine((value) =>
+    value.allowed
+      ? value.bindingAttemptId !== null &&
+        value.expiresAt !== null &&
+        Date.parse(value.expiresAt) > Date.parse(value.serverTime)
+      : value.bindingAttemptId === null && value.expiresAt === null,
+  );
+export type LoginAssistanceContext = z.infer<
+  typeof loginAssistanceContextSchema
+>;
+export const assistanceAccessRevokedEvent = "quota-guard:assistance-revoked";
 const loginAssistanceInfoSchema = z.strictObject({
   available: z.boolean(),
   reasonCode: loginAssistanceReason,
@@ -811,6 +832,14 @@ function isBindingRequired(error: unknown): boolean {
 }
 
 function rethrowSafeCentralError(error: unknown): never {
+  if (
+    axios.isAxiosError(error) &&
+    error.response?.status === 403 &&
+    error.response.data?.code === "LOGIN_ASSISTANCE_NOT_ALLOWED"
+  ) {
+    window.dispatchEvent(new Event(assistanceAccessRevokedEvent));
+    throw new Error("登录辅助仅在取得本次绑定名额后开放，绑定完成后自动关闭。");
+  }
   if (isBindingRequired(error)) {
     window.dispatchEvent(new Event(bindingGateEvent));
     throw new Error(bindingRequiredMessage);
@@ -1591,6 +1620,13 @@ export const api = {
       { method: "GET", url: "/api/v1/client/login-assistance" },
       loginAssistanceInfoSchema,
     ),
+  loginAssistanceContext: (signal?: AbortSignal) =>
+    centralJson(
+      { method: "GET", url: "/api/v1/client/login-assistance/context" },
+      loginAssistanceContextSchema,
+      true,
+      signal,
+    ),
   authenticatorInfo: (signal?: AbortSignal) =>
     centralJson(
       { method: "GET", url: "/api/v1/client/login-assistance/authenticator" },
@@ -1692,6 +1728,7 @@ export const api = {
 };
 
 const safeBackendMessages = new Set([
+  "登录辅助仅在取得本次绑定名额后开放，绑定完成后自动关闭。",
   bindingRequiredMessage,
   authRequiredMessage,
   deviceIdentityUnavailableMessage,

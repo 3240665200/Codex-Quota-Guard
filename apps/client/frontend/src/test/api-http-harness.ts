@@ -204,6 +204,19 @@ export class ApiHttpHarness {
     }
     if (path === "/api/v1/client/official-quota" && method === "PUT")
       return { data: null, status: 204 };
+    if (path === "/api/v1/client/login-assistance/context") {
+      return {
+        data: {
+          allowed: false,
+          reasonCode: "BINDING_GRANT_REQUIRED",
+          bindingAttemptId: null,
+          expiresAt: null,
+          serverTime: new Date().toISOString(),
+          mailEnabled: false,
+          authenticatorEnabled: false,
+        },
+      };
+    }
     if (path === "/api/v1/client/login-assistance/events") {
       return {
         data: new ReadableStream<Uint8Array>({

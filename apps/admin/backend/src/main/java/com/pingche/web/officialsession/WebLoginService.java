@@ -64,6 +64,7 @@ public class WebLoginService implements AutoCloseable {
     }
     private record Row(UUID id, UUID owner, UUID account, String accountName, String state, Instant expiresAt,
             String errorCode, UUID proxyNode, long version, long ownerVersion) { }
+    private record Start(Row row, UUID frontProxyNodeId) { }
     private static final class Entry {
         final UUID owner;
         final Instant expiresAt;
@@ -94,7 +95,7 @@ public class WebLoginService implements AutoCloseable {
     public synchronized Job create(UUID owner, UUID account, BrowserLoginService.StartRequest request) {
         cleanup();
         if (closed || !browser.available()) throw failure("BROWSER_LOGIN_BROWSER_UNAVAILABLE",HttpStatus.SERVICE_UNAVAILABLE);
-        Row row=tx(() -> {
+        Start start=tx(() -> {
             var names=jdbc.query("select label from official_accounts where id=? for update",(rs,n) -> rs.getString(1),account);
             if(names.isEmpty()) throw failure("OFFICIAL_ACCOUNT_NOT_FOUND",HttpStatus.NOT_FOUND);
             logoutFence.assertAvailable(account);
@@ -102,11 +103,14 @@ public class WebLoginService implements AutoCloseable {
             var current=connections.read(account);
             if(!current.encryptionReady()) throw failure("OFFICIAL_ENCRYPTION_UNAVAILABLE",HttpStatus.SERVICE_UNAVAILABLE);
             if(request.version()==null || request.version()!=current.version()) throw failure("OFFICIAL_CONNECTION_VERSION_CONFLICT",HttpStatus.CONFLICT);
-            if(request.proxyNodeId()==null)throw failure("OFFICIAL_PROXY_REQUIRED",HttpStatus.BAD_REQUEST);
-            if(request.proxyNodeId().equals(request.frontProxyNodeId()))throw failure("PROXY_CHAIN_INVALID",HttpStatus.BAD_REQUEST);
-            if(jdbc.queryForObject("select count(*) from managed_proxy_nodes where id=? and enabled=true",Integer.class,request.proxyNodeId())!=1)
+            UUID exit = request.proxyNodeId() == null ? current.proxyNodeId() : request.proxyNodeId();
+            // Preserve the account's front node when older callers omit it.
+            UUID front = request.frontProxyNodeId() == null ? current.frontProxyNodeId() : request.frontProxyNodeId();
+            if(exit==null)throw failure("OFFICIAL_PROXY_REQUIRED",HttpStatus.BAD_REQUEST);
+            if(exit.equals(front))throw failure("PROXY_CHAIN_INVALID",HttpStatus.BAD_REQUEST);
+            if(jdbc.queryForObject("select count(*) from managed_proxy_nodes where id=? and enabled=true",Integer.class,exit)!=1)
                 throw failure("OFFICIAL_PROXY_UNAVAILABLE",HttpStatus.BAD_REQUEST);
-            if(request.frontProxyNodeId()!=null && jdbc.queryForObject("select count(*) from managed_proxy_nodes where id=? and enabled=true",Integer.class,request.frontProxyNodeId())!=1)
+            if(front!=null && jdbc.queryForObject("select count(*) from managed_proxy_nodes where id=? and enabled=true",Integer.class,front)!=1)
                 throw failure("OFFICIAL_PROXY_UNAVAILABLE",HttpStatus.BAD_REQUEST);
             if(count("official_account_id=? and state in "+ACTIVE,account)>0
                     || count("login_method='WEB' and owner_id=? and state in "+ACTIVE,owner)>0)
@@ -116,11 +120,12 @@ public class WebLoginService implements AutoCloseable {
                 throw failure("BROWSER_LOGIN_RATE_LIMITED",HttpStatus.TOO_MANY_REQUESTS);
             UUID id=UUID.randomUUID();
             jdbc.update("insert into official_browser_login_jobs(id,owner_id,official_account_id,account_name,proxy_node_id,connection_version,state,expires_at,created_at,login_method,owner_session_version) "
-                    + "values(?,?,?,?,?,?,'WAITING_FOR_LOGIN',?,?,'WEB',?)",id,owner,account,names.get(0),request.proxyNodeId(),request.version(),
+                    + "values(?,?,?,?,?,?,'WAITING_FOR_LOGIN',?,?,'WEB',?)",id,owner,account,names.get(0),exit,request.version(),
                     at(clock.instant().plusSeconds(600)),at(clock.instant()),ownerVersion);
-            return row(owner,id,false);
+            return new Start(row(owner,id,false), front);
         });
-        Entry entry=new Entry(owner,row.expiresAt(),request.frontProxyNodeId());
+        Row row = start.row();
+        Entry entry=new Entry(owner,row.expiresAt(),start.frontProxyNodeId());
         sessions.put(row.id(),entry);
         try {
             var opened=entry.frontProxyNodeId==null ? browser.open(row.id(),row.proxyNode())

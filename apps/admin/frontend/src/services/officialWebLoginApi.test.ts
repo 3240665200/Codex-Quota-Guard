@@ -19,6 +19,15 @@ describe('服务器网页登录 API', () => {
     expect(call).toHaveBeenCalledExactlyOnceWith('/api/v1/admin/web-logins/job%2Fid/input',
       { method: 'POST', cache: 'no-store', body: JSON.stringify({ type: 'TEXT', text: '用户中文' }) }, { retryAfterRefresh: false });
   });
+  it('preserves both nodes and validates the chain returned for a new login', async () => {
+    call.mockResolvedValue({...job,proxyNodeId:'exit-1',frontProxyNodeId:'front-1'});
+    const body={version:3,proxyNodeId:'exit-1',frontProxyNodeId:'front-1'};
+    const result=await startOfficialWebLogin('account/id',body);
+    expect(JSON.parse(call.mock.calls[0][1].body)).toEqual(body);
+    expect(result.frontProxyNodeId).toBe('front-1');
+    call.mockResolvedValue({...job,proxyNodeId:'exit-1'});
+    await expect(startOfficialWebLogin('account/id',body)).rejects.toThrow();
+  });
   it('rejects invalid dimensions or an origin that includes credentials or a query', async () => {
     call.mockResolvedValue({ width: 1024, height: 768, jpegBase64: '/9j/AA==', pageOrigin: 'https://auth.openai.com/?secret=x', readyToSave: false, errorCode: null });
     await expect(getOfficialWebLoginFrame('job/id')).rejects.toThrow();

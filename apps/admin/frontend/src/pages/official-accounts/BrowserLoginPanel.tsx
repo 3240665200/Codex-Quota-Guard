@@ -14,8 +14,8 @@ type Lifetime = { alive: boolean; accountId: string; epoch: number; job: Officia
 const lifetime = (accountId: string): Lifetime => ({ alive: true, accountId, epoch: 0, job: null, queue: [], sending: false, paused: false, saveAttempted: false });
 const abandon = (job: OfficialWebLoginJob | null) => { if (pending(job)) void cancelOfficialWebLogin(job!.id).catch(() => undefined); };
 
-export default function BrowserLoginPanel({ accountId, version, proxyNodeId, disabled, onResultChanged, onActiveChange }: {
-  accountId: string; version: number; proxyNodeId: string | null; disabled: boolean;
+export default function BrowserLoginPanel({ accountId, version, proxyNodeId, frontProxyNodeId, disabled, onResultChanged, onActiveChange }: {
+  accountId: string; version: number; proxyNodeId: string | null; frontProxyNodeId?: string | null; disabled: boolean;
   onResultChanged: () => Promise<void>; onActiveChange?: (active: boolean) => void;
 }) {
   const [job, setJob] = useState<OfficialWebLoginJob | null>(null);
@@ -140,7 +140,8 @@ export default function BrowserLoginPanel({ accountId, version, proxyNodeId, dis
     scope.job = null; scope.queue.length = 0; scope.sending = false;
     scope.paused = false; scope.saveAttempted = false; setPaused(false); setError(''); clearFrame(); setWorking('start');
     try {
-      const result = await startOfficialWebLogin(accountId, { version, proxyNodeId });
+      const result = await startOfficialWebLogin(accountId, { version, proxyNodeId,
+        ...(frontProxyNodeId ? { frontProxyNodeId } : {}) });
       if (!isCurrent(scope, epoch)) { abandon(result); return; }
       await accept(scope, result);
     } catch (reason) { if (isCurrent(scope, epoch)) setError(managedErrorMessage(reason, '无法创建服务器网页登录任务，请检查配置后重试。')); }
@@ -200,8 +201,10 @@ export default function BrowserLoginPanel({ accountId, version, proxyNodeId, dis
     } else if (event.key.length === 1) { event.preventDefault(); text(event.key); }
   };
 
-  return <Card size="small" title="官方网页登录（推荐）"><Space orientation="vertical" size={12} style={{ width: '100%' }}>
+  return <Card size="small" title="通过账户代理链登录"><Space orientation="vertical" size={12} style={{ width: '100%' }}>
     <Typography.Paragraph style={{ marginBottom: 0 }}>登录在服务器的独立浏览器中进行。请在下方官方页面亲自输入账号、密码和验证码；验证码与浏览器验证需要你自行完成。</Typography.Paragraph>
+    <Alert type="info" showIcon title="登录与提交 Google Authenticator 验证码使用同一条账户代理链。"
+      description={frontProxyNodeId ? '服务器 → 前置节点 → 出口节点 → 官方登录；代理中断时停止请求。' : '服务器 → 已选出口节点 → 官方登录。账户有前置节点时会一并使用；更换链路后请先保存代理链。'} />
     <Typography.Text type="secondary">登录与后续读取均使用所选代理节点；失败时不会自动切换出口。登录画面和输入仅用于本次任务，关闭、取消或到期会销毁该浏览器。</Typography.Text>
     {error ? <Alert type="error" showIcon title="登录任务操作未完成" description={error} /> : null}
     {visibleJob ? <><Tag color={visibleJob.state === 'COMPLETED' ? 'success' : active ? 'processing' : 'default'}>{needsRecheck ? '登录任务结果待核对' : labels[visibleJob.state]}</Tag>

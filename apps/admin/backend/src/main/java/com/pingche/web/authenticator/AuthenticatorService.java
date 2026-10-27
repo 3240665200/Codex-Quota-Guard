@@ -4,6 +4,7 @@ import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.pingche.web.auth.DomainException;
 import com.pingche.web.officialsession.OfficialSessionCipher;
+import com.pingche.web.mail.LoginAssistanceAccess;
 import com.pingche.web.quota.OfficialAccount;
 import com.pingche.web.quota.OfficialAccountRepository;
 import com.pingche.web.team.Team;
@@ -45,12 +46,15 @@ public class AuthenticatorService {
     private final JdbcTemplate jdbc;
     private final Clock clock;
     private final TransactionTemplate tx;
+    private final LoginAssistanceAccess assistance;
     private final Cache<UUID, Instant> lastCode = Caffeine.newBuilder().maximumSize(10_000).expireAfterWrite(Duration.ofMinutes(1)).build();
 
     public AuthenticatorService(OfficialAccountRepository accounts, UserRepository users, TeamRepository teams,
-            OfficialSessionCipher cipher, JdbcTemplate jdbc, Clock clock, PlatformTransactionManager manager) {
+            OfficialSessionCipher cipher, JdbcTemplate jdbc, Clock clock, PlatformTransactionManager manager,
+            LoginAssistanceAccess assistance) {
         this.accounts = accounts; this.users = users; this.teams = teams; this.cipher = cipher;
         this.jdbc = jdbc; this.clock = clock; tx = new TransactionTemplate(manager);
+        this.assistance = assistance;
     }
     public Config read(UUID id) {
         return tx.execute(ignored -> { requireAccount(id, false); return response(saved(id)); });
@@ -82,21 +86,33 @@ public class AuthenticatorService {
         tx.executeWithoutResult(ignored -> { requireAccount(id, true); jdbc.update("delete from official_account_authenticators where official_account_id=?", id); });
     }
     public Availability availability(UUID userId) {
+        return availability(userId, null);
+    }
+    public Availability availability(UUID userId, String deviceId) {
         return tx.execute(ignored -> {
+            var grant = assistance.require(userId, deviceId);
             OfficialAccount account = access(userId, false);
             if (account == null) return new Availability(false, "TEAM_UNAVAILABLE", null, null);
+            if (!account.getId().equals(grant.accountId())) throw LoginAssistanceAccess.denied();
             Saved config = saved(account.getId());
             String reason = reason(config);
-            return new Availability(reason == null, reason, account.getId(), account.getLabel());
+            return new Availability(reason == null, reason, reason == null ? account.getId() : null, reason == null ? account.getLabel() : null);
         });
     }
     public Code code(UUID userId) {
+        return code(userId, null);
+    }
+    public Code code(UUID userId, String deviceId) {
         return tx.execute(ignored -> {
-            OfficialAccount account = access(userId, true);
+            var grant = assistance.require(userId, deviceId);
+            OfficialAccount account = access(userId, false);
             if (account == null) throw error("AUTHENTICATOR_UNAVAILABLE", "所属团队或官方账户不可用。", HttpStatus.FORBIDDEN);
+            if (!account.getId().equals(grant.accountId())) throw LoginAssistanceAccess.denied();
             Saved config = saved(account.getId());
             if (reason(config) != null) throw error("AUTHENTICATOR_UNAVAILABLE", "团队验证器尚未启用，请联系管理员配置。", HttpStatus.CONFLICT);
-            return generate(account.getId(), config, userId);
+            Code code = generate(account.getId(), config, userId);
+            return code.expiresAt().isAfter(grant.expiresAt())
+                    ? new Code(code.code(),code.serverTime(),grant.expiresAt(),code.periodSeconds(),code.officialAccountId()) : code;
         });
     }
     public Code preview(UUID accountId, UUID administratorId) {

@@ -58,6 +58,7 @@ public class MailAssistanceService implements DisposableBean {
     private final LoginMailMatcher matcher;
     private final Clock clock;
     private final TransactionTemplate transaction;
+    private final LoginAssistanceAccess assistance;
     private final ThreadPoolExecutor workers;
     private final ScheduledExecutorService cleaner;
     private final Semaphore testConnections = new Semaphore(8);
@@ -67,11 +68,12 @@ public class MailAssistanceService implements DisposableBean {
     public MailAssistanceService(UserRepository users, TeamRepository teams, OfficialAccountRepository accounts,
             MailboxConfigRepository mailboxes, MailListenerRepository listeners, MailSecretCipher cipher,
             MailTransport transport, MailOAuthClient oauth, MailProviderCatalog providers, MailTargetPolicy targets,
-            LoginMailMatcher matcher, Clock clock, PlatformTransactionManager transactionManager) {
+            LoginMailMatcher matcher, Clock clock, PlatformTransactionManager transactionManager, LoginAssistanceAccess assistance) {
         this.users = users; this.teams = teams; this.accounts = accounts; this.mailboxes = mailboxes;
         this.listeners = listeners; this.cipher = cipher; this.transport = transport; this.oauth = oauth;
         this.providers = providers; this.targets = targets; this.matcher = matcher; this.clock = clock;
         transaction = new TransactionTemplate(transactionManager);
+        this.assistance = assistance;
         ThreadFactory factory = runnable -> {
             Thread thread = new Thread(runnable, "mail-assistance"); thread.setDaemon(true); return thread;
         };
@@ -193,35 +195,47 @@ public class MailAssistanceService implements DisposableBean {
     }
 
     public LoginAssistanceResponse availability(UUID userId) {
+        return availability(userId, null);
+    }
+    public LoginAssistanceResponse availability(UUID userId, String deviceId) {
         return inTransaction(() -> {
+            var grant = assistance.require(userId, deviceId);
             Access access = access(userId, false);
+            if (access != null && !access.account().getId().equals(grant.accountId())) throw LoginAssistanceAccess.denied();
             String reason = access == null ? "TEAM_UNAVAILABLE" : reason(access.config());
-            return new LoginAssistanceResponse(reason == null, reason, access == null ? null : access.account().getId(),
-                    access == null ? null : access.account().getLabel(),
-                    access == null || access.config() == null ? null : access.config().recipientEmail);
+            return new LoginAssistanceResponse(reason == null, reason, reason == null ? access.account().getId() : null,
+                    reason == null ? access.account().getLabel() : null, reason == null ? access.config().recipientEmail : null);
         });
     }
 
     public MailListenerResponse start(UUID userId) {
+        return start(userId, null);
+    }
+    public MailListenerResponse start(UUID userId, String deviceId) {
         MailListenerResponse response;
         try {
             response = inTransaction(() -> {
-                Access access = access(userId, true);
+                var grant = assistance.require(userId, deviceId);
+                Access access = access(userId, false);
                 if (access == null) throw error("MAIL_ACCESS_UNAVAILABLE", "Active team mailbox is unavailable", HttpStatus.FORBIDDEN);
+                if (!access.account().getId().equals(grant.accountId())) throw LoginAssistanceAccess.denied();
                 String reason = reason(access.config());
                 if (reason != null) throw error(reason, "Mailbox assistance is unavailable", HttpStatus.FORBIDDEN);
                 Instant now = clock.instant();
                 if (access.config().connectionTestUntil != null && access.config().connectionTestUntil.isAfter(now))
                     throw error("MAIL_LISTENER_BUSY", "A connection test is already using this mailbox", HttpStatus.CONFLICT);
                 listeners.findByActiveAccountId(access.account().getId()).ifPresent(active -> {
+                    if (!validateListener(active)) return;
                     if (!active.expiresAt.isAfter(now)) active.stop(MailListener.State.TIMED_OUT, "MAIL_LISTENER_TIMEOUT");
                     else throw error("MAIL_LISTENER_BUSY", "A listener is already using this mailbox", HttpStatus.CONFLICT);
                 });
                 listeners.flush();
                 if (listeners.countByOwnerUserIdAndStartedAtAfter(userId, now.minusSeconds(60)) >= 6)
                     throw error("MAIL_RATE_LIMITED", "Too many mailbox listener requests", HttpStatus.TOO_MANY_REQUESTS);
-                MailListener listener = listeners.saveAndFlush(new MailListener(userId, access.team().getId(),
-                        access.account().getId(), access.config().revision, now));
+                MailListener listener = new MailListener(userId, access.team().getId(), access.account().getId(), access.config().revision, now);
+                listener.bindingAttemptId = grant.attemptId();
+                if (listener.expiresAt.isAfter(grant.expiresAt())) listener.expiresAt = grant.expiresAt();
+                listeners.saveAndFlush(listener);
                 return response(listener);
             });
         } catch (DataIntegrityViolationException ignored) {
@@ -236,9 +250,17 @@ public class MailAssistanceService implements DisposableBean {
     }
 
     public MailListenerResponse poll(UUID userId, UUID id) {
+        return poll(userId, id, null);
+    }
+    public MailListenerResponse poll(UUID userId, UUID id, String deviceId) {
         MailListenerResponse result = inTransaction(() -> {
+            var grant = assistance.require(userId, deviceId);
             MailListener listener = listeners.findByIdForUpdate(id).orElseThrow(this::notFound);
             if (!listener.ownerUserId.equals(userId)) throw notFound();
+            if (!Objects.equals(listener.bindingAttemptId, grant.attemptId())) {
+                listener.stop(MailListener.State.CANCELLED, "MAIL_ACCESS_REVOKED");
+                return response(listener);
+            }
             validateListener(listener);
             return response(listener);
         });
@@ -247,8 +269,17 @@ public class MailAssistanceService implements DisposableBean {
     }
 
     public MailListenerCurrentResponse current(UUID userId) {
+        return current(userId, null);
+    }
+    public MailListenerCurrentResponse current(UUID userId, String deviceId) {
         MailListenerCurrentResponse result = inTransaction(() -> {
+            var grant = assistance.require(userId, deviceId);
             List<MailListener> candidates = resumableListeners(userId);
+            candidates.forEach(listener -> {
+                if (!Objects.equals(listener.bindingAttemptId, grant.attemptId()))
+                    listener.stop(MailListener.State.CANCELLED, "MAIL_ACCESS_REVOKED");
+            });
+            candidates = candidates.stream().filter(listener -> Objects.equals(listener.bindingAttemptId, grant.attemptId())).toList();
             // An active listener takes precedence over a previous, still readable result.
             MailListener selected = candidates.stream().filter(MailListener::active).findFirst()
                     .orElse(candidates.isEmpty() ? null : candidates.get(0));
@@ -295,9 +326,13 @@ public class MailAssistanceService implements DisposableBean {
     }
 
     public MailListenerResponse cancel(UUID userId, UUID id) {
+        return cancel(userId, id, null);
+    }
+    public MailListenerResponse cancel(UUID userId, UUID id, String deviceId) {
         MailListenerResponse result = inTransaction(() -> {
             MailListener listener = listeners.findByIdForUpdate(id).orElseThrow(this::notFound);
             if (!listener.ownerUserId.equals(userId)) throw notFound();
+            if (!assistance.ownsDevice(userId, listener.bindingAttemptId, deviceId)) throw LoginAssistanceAccess.denied();
             validateListener(listener);
             if (listener.active() || listener.state == MailListener.State.RECEIVED) listener.stop(MailListener.State.CANCELLED, null);
             return response(listener);
@@ -374,9 +409,13 @@ public class MailAssistanceService implements DisposableBean {
                 // that snapshot and publishing LISTENING is not lost to the later readiness timestamp.
                 var code = matcher.findCode(candidate.message(), config.senderEmail, config.recipientEmail, listener.startedAt);
                 if (code.isPresent()) {
+                    var grant = assistance.currentGrant(listener.ownerUserId, listener.bindingAttemptId, listener.officialAccountId);
+                    if (grant == null) { listener.stop(MailListener.State.CANCELLED, "MAIL_ACCESS_REVOKED"); return false; }
                     listener.codeCipher = cipher.encrypt(code.get(), listener.aad()); listener.state = MailListener.State.RECEIVED;
                     listener.activeAccountId = null; listener.receivedAt = clock.instant();
-                    listener.resultExpiresAt = listener.receivedAt.plusSeconds(60); listener.expiresAt = listener.resultExpiresAt;
+                    listener.resultExpiresAt = listener.receivedAt.plusSeconds(60);
+                    if (listener.resultExpiresAt.isAfter(grant.expiresAt())) listener.resultExpiresAt = grant.expiresAt();
+                    listener.expiresAt = listener.resultExpiresAt;
                     return false;
                 }
             }
@@ -401,6 +440,7 @@ public class MailAssistanceService implements DisposableBean {
                 MailListener listener = listeners.findById(listenerId).orElse(null);
                 Access access = listener == null ? null : access(listener.ownerUserId, false);
                 if (listener == null || !listener.active() || !listener.expiresAt.isAfter(clock.instant()) || access == null
+                        || !assistance.current(listener.ownerUserId, listener.bindingAttemptId, listener.officialAccountId)
                         || !access.team().getId().equals(listener.teamId) || !access.account().getId().equals(listener.officialAccountId)
                         || !current.revision.equals(listener.configRevision))
                     throw error("MAIL_LISTENER_STOPPED", "Mailbox listener stopped", HttpStatus.CONFLICT);
@@ -414,6 +454,9 @@ public class MailAssistanceService implements DisposableBean {
     }
 
     private boolean validateListener(MailListener listener) {
+        if (!assistance.current(listener.ownerUserId, listener.bindingAttemptId, listener.officialAccountId)) {
+            listener.stop(MailListener.State.CANCELLED, "MAIL_ACCESS_REVOKED"); return false;
+        }
         Access current = access(listener.ownerUserId, false);
         if (current == null || !current.team().getId().equals(listener.teamId)
                 || !current.account().getId().equals(listener.officialAccountId)

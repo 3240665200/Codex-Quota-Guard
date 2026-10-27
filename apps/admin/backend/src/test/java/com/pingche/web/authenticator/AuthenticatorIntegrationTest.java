@@ -12,6 +12,8 @@ import com.pingche.web.team.Team;
 import com.pingche.web.team.TeamRepository;
 import com.pingche.web.user.User;
 import com.pingche.web.user.UserRepository;
+import com.pingche.web.mail.AssistanceGrantFixture;
+import com.pingche.web.mail.LoginAssistanceAccess;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.UUID;
@@ -42,6 +44,7 @@ class AuthenticatorIntegrationTest {
     @MockitoBean Clock clock;
     OfficialAccount account;
     User owner, outsider, admin;
+    UUID deviceId;
     static final Instant NOW = Instant.parse("2026-10-25T04:00:59Z");
     static final String SECRET = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
     @BeforeEach void setup() {
@@ -54,6 +57,7 @@ class AuthenticatorIntegrationTest {
         owner.updateQuotaPolicy(team.getId(), null, null, NOW); owner = users.saveAndFlush(owner);
         outsider = users.saveAndFlush(new User("outside@example.com", "synthetic-hash", "Outsider"));
         admin = users.saveAndFlush(User.bootstrapAdministrator("admin@example.com", "synthetic-hash", "Admin"));
+        deviceId = AssistanceGrantFixture.grant(jdbc,owner.getId(),NOW);
     }
     @Test void storesOnlyAccountBoundCiphertextAndNeverReturnsTheSecret() throws Exception {
         String response = mvc.perform(put(configUrl()).header("Authorization", token(admin)).contentType(MediaType.APPLICATION_JSON)
@@ -68,17 +72,17 @@ class AuthenticatorIntegrationTest {
         assertThat(jdbc.queryForObject("select secret_cipher from official_account_authenticators where official_account_id=?", String.class, account.getId())).isEqualTo(stored);
         assertThat(new AuthenticatorService.Request(true, SECRET, 0L).toString()).doesNotContain(SECRET);
     }
-    @Test void allowsOnlyCurrentTeamMembersEvenBeforeSessionBindingAndUsesServerTime() throws Exception {
+    @Test void allowsOnlyTheGrantedDeviceBeforeBindingAndUsesServerTime() throws Exception {
         service.save(account.getId(), new AuthenticatorService.Request(true, SECRET, 0L));
-        mvc.perform(get("/api/v1/client/login-assistance/authenticator").header("Authorization", token(owner)))
+        mvc.perform(get("/api/v1/client/login-assistance/authenticator").header("Authorization", token(owner)).header(LoginAssistanceAccess.DEVICE_HEADER,deviceId))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.available").value(true));
-        mvc.perform(post("/api/v1/client/login-assistance/authenticator/code").header("Authorization", token(owner)))
+        mvc.perform(post("/api/v1/client/login-assistance/authenticator/code").header("Authorization", token(owner)).header(LoginAssistanceAccess.DEVICE_HEADER,deviceId))
                 .andExpect(status().isOk()).andExpect(header().string("Cache-Control", "no-store"))
                 .andExpect(jsonPath("$.code").isString()).andExpect(jsonPath("$.expiresAt").value("2026-10-25T04:01:00Z"))
                 .andExpect(jsonPath("$.serverTime").value(NOW.toString())).andExpect(jsonPath("$.secret").doesNotExist());
-        mvc.perform(post("/api/v1/client/login-assistance/authenticator/code").header("Authorization", token(owner))).andExpect(status().isTooManyRequests());
+        mvc.perform(post("/api/v1/client/login-assistance/authenticator/code").header("Authorization", token(owner)).header(LoginAssistanceAccess.DEVICE_HEADER,deviceId)).andExpect(status().isTooManyRequests());
         mvc.perform(post("/api/v1/client/login-assistance/authenticator/code").header("Authorization", token(outsider))).andExpect(status().isForbidden());
-        mvc.perform(get(configUrl()).header("Authorization", token(owner))).andExpect(status().isForbidden());
+        mvc.perform(get(configUrl()).header("Authorization", token(owner)).header(LoginAssistanceAccess.DEVICE_HEADER,deviceId)).andExpect(status().isForbidden());
         mvc.perform(post("/api/v1/client/login-assistance/authenticator/code")).andExpect(status().isUnauthorized());
     }
     @Test void rejectsCiphertextCopiedFromAnotherAccountAndDisabledConfiguration() {
@@ -87,17 +91,19 @@ class AuthenticatorIntegrationTest {
         service.save(another.getId(), new AuthenticatorService.Request(true, SECRET, 0L));
         String encrypted = jdbc.queryForObject("select secret_cipher from official_account_authenticators where official_account_id=?", String.class, another.getId());
         jdbc.update("update official_account_authenticators set secret_cipher=? where official_account_id=?", encrypted, account.getId());
-        assertThatThrownBy(() -> service.code(owner.getId())).hasMessageContaining("无法读取").hasMessageNotContaining(SECRET);
+        assertThatThrownBy(() -> service.code(owner.getId(), deviceId.toString())).hasMessageContaining("无法读取").hasMessageNotContaining(SECRET);
         service.save(account.getId(), new AuthenticatorService.Request(false, null, 1L));
-        assertThat(service.availability(owner.getId()).available()).isFalse();
-        assertThatThrownBy(() -> service.code(owner.getId())).hasMessageContaining("尚未启用");
+        assertThat(service.availability(owner.getId(), deviceId.toString()).available()).isFalse();
+        assertThatThrownBy(() -> service.code(owner.getId(), deviceId.toString())).hasMessageContaining("尚未启用");
     }
     @Test void refusesStaleAdminUpdatesAndRevokesCodeAccessAfterTeamRemoval() {
         service.save(account.getId(), new AuthenticatorService.Request(true, SECRET, 0L));
         assertThatThrownBy(() -> service.save(account.getId(), new AuthenticatorService.Request(true, SECRET, 0L))).hasMessageContaining("已变化");
         owner.updateQuotaPolicy(null, null, null, NOW); users.saveAndFlush(owner);
-        assertThat(service.availability(owner.getId()).available()).isFalse();
-        assertThatThrownBy(() -> service.code(owner.getId())).hasMessageContaining("不可用");
+        assertThatThrownBy(() -> service.availability(owner.getId(), deviceId.toString()))
+                .hasMessage(LoginAssistanceAccess.denied().getMessage());
+        assertThatThrownBy(() -> service.code(owner.getId(), deviceId.toString()))
+                .hasMessage(LoginAssistanceAccess.denied().getMessage());
     }
     @Test void administratorsCanPreviewWithoutATeamAndWithoutEnablingMemberAccess() throws Exception {
         service.save(account.getId(), new AuthenticatorService.Request(false, SECRET, 0L));
@@ -110,13 +116,13 @@ class AuthenticatorIntegrationTest {
                 .andExpect(jsonPath("$.officialAccountId").value(account.getId().toString()))
                 .andExpect(jsonPath("$.secret").doesNotExist());
         assertThat(service.read(account.getId()).enabled()).isFalse();
-        assertThat(service.availability(owner.getId()).available()).isFalse();
+        assertThat(service.availability(owner.getId(), deviceId.toString()).available()).isFalse();
         mvc.perform(post(configUrl() + "/code").header("Authorization", token(admin))).andExpect(status().isTooManyRequests());
     }
     @Test void previewRequiresAnAdministratorAndAnExistingSavedAccount() throws Exception {
         service.save(account.getId(), new AuthenticatorService.Request(true, SECRET, 0L));
         mvc.perform(post(configUrl() + "/code")).andExpect(status().isUnauthorized());
-        mvc.perform(post(configUrl() + "/code").header("Authorization", token(owner))).andExpect(status().isForbidden());
+        mvc.perform(post(configUrl() + "/code").header("Authorization", token(owner)).header(LoginAssistanceAccess.DEVICE_HEADER,deviceId)).andExpect(status().isForbidden());
         mvc.perform(post(configUrl() + "/code").header("Authorization", token(outsider))).andExpect(status().isForbidden());
         assertThatThrownBy(() -> service.preview(account.getId(), owner.getId())).hasMessageContaining("仅管理员");
         mvc.perform(post("/api/v1/admin/official-accounts/" + UUID.randomUUID() + "/authenticator/code")

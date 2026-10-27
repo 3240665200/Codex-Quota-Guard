@@ -52,6 +52,14 @@ describe('服务器官方网页登录', () => {
     expect(onResultChanged).toHaveBeenCalledOnce();
     expect(screen.queryByLabelText('官方登录浏览器画面')).not.toBeInTheDocument();
   });
+  it('keeps the front and exit nodes when starting a login that will submit an OTP', async () => {
+    render(<BrowserLoginPanel accountId="account-1" version={4} proxyNodeId="proxy-1" frontProxyNodeId="front-1"
+      disabled={false} onResultChanged={vi.fn().mockResolvedValue(undefined)} />);
+    await start();
+    expect(mocks.startOfficialWebLogin).toHaveBeenCalledWith('account-1', { version:4, proxyNodeId:'proxy-1', frontProxyNodeId:'front-1' });
+    fireEvent.paste(screen.getByLabelText('官方登录浏览器画面'), { clipboardData: { getData: () => '123456' } });
+    await waitFor(() => expect(mocks.sendOfficialWebLoginInput).toHaveBeenCalledWith('job-1', {type:'TEXT',text:'123456'}));
+  });
   it('sends scaled click, bounded wheel, keyboard and Chinese paste without a retained input value', async () => {
     show(); await start(); const canvas = screen.getByLabelText('官方登录浏览器画面');
     vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({ left: 0, top: 0, width: 512, height: 384 } as DOMRect);

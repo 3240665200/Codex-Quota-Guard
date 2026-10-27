@@ -44,6 +44,10 @@ describe('local Google Authenticator import', () => {
     const uri = 'otpauth://totp/OpenAI%3Asynthetic?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ';
     expect(importAuthenticator(uri)).toEqual({ uri, label: 'OpenAI:synthetic' });
   });
+  it('imports current Google migration v2 without changing the key or TOTP parameters', () => {
+    const v2 = migration([[...entry(), ...bytes(8, 'synthetic-metadata')]], [...number(2, 2), ...number(3, 1), ...number(4, 0)]);
+    expect(importAuthenticator(v2).uri).toBe(importAuthenticator(migration()).uri);
+  });
   it.each([
     migration([entry(), entry()]), migration([entry()], [...number(2, 1), ...number(3, 2)]),
     migration([entry()], [...number(2, 1), ...number(3, 1), ...number(4, 1)]),
@@ -62,7 +66,7 @@ describe('local Google Authenticator import', () => {
     'otpauth-migration://offline?data=AA&extra=1', 'otpauth-migration://offline?data=%ZZ',
     'otpauth-migration://offline?data=AAAA#private', 'otpauth-migration://user@offline?data=AAAA',
     migration([[...entry(), ...bytes(1, KEY)]]), migration([entry({ key: 'short' })]),
-    migration([entry()], [...number(2, 2), ...number(3, 1)]),
+    migration([entry()], [...number(2, 3), ...number(3, 1)]),
     `otpauth-migration://offline?data=${encodeURIComponent(Buffer.from([10, 255, 255]).toString('base64'))}`,
     `otpauth-migration://offline?data=${encodeURIComponent(Buffer.from([128, 128, 128]).toString('base64'))}`,
     'x'.repeat(8193),

@@ -18,6 +18,7 @@ import { SessionBindingResult, SessionBindingsTable } from './SessionBindings';
 import { listSessionBindings, releaseSessionBinding } from '../../services/sessionBindingsApi';
 import type { SessionBinding } from '../../services/sessionBindingsApi';
 import { sessionSelectionReason } from './sessionSelection';
+import BrowserLoginPanel from './BrowserLoginPanel';
 
 const statusLabels: Record<OfficialConnectionStatus, string> = {
   NOT_CONFIGURED: '未配置', UNVERIFIED: '待验证', CONNECTED: '已连接', AUTH_REQUIRED: '需要重新授权',
@@ -125,6 +126,7 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
   const [presetNotice, setPresetNotice] = useState('');
   const [manualKeys, setManualKeys] = useState<string[]>([]);
   const [logoutBusy, setLogoutBusy] = useState(false);
+  const [browserActive, setBrowserActive] = useState(false);
   const [queueRevision, setQueueRevision] = useState(0);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<'save' | 'preset' | 'refresh' | 'delete' | 'import' | 'chain' | 'proxy' | null>(null);
@@ -151,7 +153,7 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
     nodes.find((node) => node.id === selectedNode)?.label || '请选择出口节点', '官网'].join(' → ');
   const refreshUnavailable = savedNodeUnavailable || (view !== 'sessions' && (nodeUnavailable || nodeChanged));
   const externallyLocked = loading || busy !== null || releaseBusy;
-  const locked = externallyLocked || logoutBusy;
+  const locked = externallyLocked || logoutBusy || browserActive;
   const selectedSessionIds = sessionSelection.snapshot === snapshot ? sessionSelection.ids : [];
   const isCurrentLifetime = (lifetime: typeof releaseLifetime.current) => active.current && lifetime.active
     && releaseLifetime.current === lifetime && currentAccountId.current === lifetime.accountId;
@@ -562,6 +564,20 @@ export default function ConnectionModal({ account, onClose, view = 'all', inline
               }]} />
             </Space>
           </Form> : null}
+          {view !== 'sessions' && config && supported ? <BrowserLoginPanel key={`web-login:${account.id}`}
+            accountId={account.id} version={config.version} proxyNodeId={selectedNode ?? null}
+            frontProxyNodeId={selectedFront ?? null}
+            disabled={externallyLocked || logoutBusy || !config.encryptionReady || nodeUnavailable || Boolean(config.configured && nodeChanged)}
+            onActiveChange={(value) => { if (active.current && currentAccountId.current === account.id) setBrowserActive(value); }}
+            onResultChanged={async () => {
+              const lifetime = releaseLifetime.current;
+              updateSnapshot(null); clearSecrets();
+              const saved = await getOfficialAccountConnection(lifetime.accountId);
+              if (!isCurrentLifetime(lifetime)) return;
+              setConfig(saved); form.setFieldsValue({ requestedAccountId: saved.requestedAccountId ?? '',
+                frontProxyNodeId: saved.frontProxyNodeId ?? null, proxyNodeId: saved.proxyNodeId, version: saved.version });
+              setSnapshotNotice('官方登录任务已结束，连接信息已重新读取。');
+            }} /> : null}
           {view !== 'authorization' ? <>
           <Divider style={{ margin: '4px 0' }}>官方账户与设备会话</Divider>
           {supported ? <SessionLogoutPanel key={account.id} accountId={account.id}
