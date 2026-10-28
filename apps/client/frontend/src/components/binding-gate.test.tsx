@@ -336,6 +336,90 @@ describe("device binding access gate", () => {
     expect(api.systemLogout).not.toHaveBeenCalled();
   });
 
+  it("does not swallow the first navigation click during a focus recheck", async () => {
+    vi.mocked(api.clientAccess).mockResolvedValue(allowedAccess);
+    show();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "设置" })).toBeEnabled(),
+    );
+    let finish!: (value: typeof allowedAccess) => void;
+    const checking = new Promise<typeof allowedAccess>((resolve) => {
+      finish = resolve;
+    });
+    vi.mocked(api.clientAccess).mockReturnValueOnce(checking);
+    try {
+      fireEvent.focus(window);
+      expect(screen.getByRole("button", { name: "设置" })).toBeEnabled();
+      fireEvent.click(screen.getByRole("button", { name: "设置" }));
+      await screen.findByRole("heading", { name: "启动设置" });
+    } finally {
+      await act(async () => finish(allowedAccess));
+    }
+  });
+
+  it("remembers a navigation click while an expired grant is being revalidated", async () => {
+    vi.mocked(api.clientAccess).mockResolvedValue(allowedAccess);
+    const { client } = show();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "设置" })).toBeEnabled(),
+    );
+    const lastVerified = client.getQueryState([
+      "client-access",
+      userId,
+      0,
+    ])!.dataUpdatedAt;
+    vi.spyOn(Date, "now").mockReturnValue(lastVerified + 11_000);
+    let finish!: (value: typeof allowedAccess) => void;
+    const checking = new Promise<typeof allowedAccess>((resolve) => {
+      finish = resolve;
+    });
+    vi.mocked(api.clientAccess).mockReturnValueOnce(checking);
+    try {
+      fireEvent.focus(window);
+      expect(screen.getByRole("button", { name: "设置" })).toBeEnabled();
+      fireEvent.click(screen.getByRole("button", { name: "设置" }));
+      expect(screen.queryByRole("heading", { name: "启动设置" })).toBeNull();
+      expect(api.autostartStatus).not.toHaveBeenCalled();
+      await act(async () => finish(allowedAccess));
+      await screen.findByRole("heading", { name: "启动设置" });
+      expect(screen.getByRole("button", { name: "设置" })).toHaveAttribute(
+        "aria-current",
+        "page",
+      );
+    } finally {
+      await act(async () => finish(allowedAccess));
+    }
+  });
+
+  it("keeps a pending navigation protected when the server confirms the binding was revoked", async () => {
+    vi.mocked(api.clientAccess).mockResolvedValue(allowedAccess);
+    const { client } = show();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "设置" })).toBeEnabled(),
+    );
+    const verified = client.getQueryState([
+      "client-access",
+      userId,
+      0,
+    ])!.dataUpdatedAt;
+    vi.spyOn(Date, "now").mockReturnValue(verified + 11_000);
+    let finish!: (value: typeof deniedAccess) => void;
+    vi.mocked(api.clientAccess).mockReturnValueOnce(
+      new Promise<typeof deniedAccess>((resolve) => {
+        finish = resolve;
+      }),
+    );
+    fireEvent.focus(window);
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    expect(screen.queryByRole("heading", { name: "启动设置" })).toBeNull();
+    await act(async () => finish(deniedAccess));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "设置" })).toBeDisabled(),
+    );
+    expect(screen.queryByRole("heading", { name: "启动设置" })).toBeNull();
+    expect(api.autostartStatus).not.toHaveBeenCalled();
+  });
+
   it("rechecks access after a BOUND event and keeps menus locked until central access allows them", async () => {
     const accessResponses = [deniedAccess, deniedAccess, allowedAccess];
     vi.mocked(api.clientAccess).mockImplementation(

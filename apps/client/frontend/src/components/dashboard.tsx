@@ -332,7 +332,6 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
     [session.user!.id],
   );
   const [accessEpoch, setAccessEpoch] = useState(0);
-  const [checkingReturn, setCheckingReturn] = useState(false);
   const [now, setNow] = useState(Date.now);
   const accessQuery = useQuery({
     queryKey: ["client-access", session.user!.id, accessEpoch],
@@ -354,28 +353,26 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
     !accessQuery.isError &&
     accessQuery.data.allowed &&
     now - accessQuery.dataUpdatedAt < 10_000;
-  const blockingReturn = bindingAllowed && checkingReturn;
+  // A refresh is not a revocation. Keep navigation responsive for a verified
+  // binding, but do not render protected content from an expired grant.
+  const recheckingBinding =
+    accessQuery.isSuccess && accessQuery.isFetching && accessQuery.data.allowed;
+  const canSelectWorkspace = bindingAllowed || recheckingBinding;
   const { refetch: refetchAccess } = accessQuery;
   const handleBound = (bindingId: string | null) => {
-    if (bindingId) window.dispatchEvent(new Event("quota-guard:assistance-revoked"));
+    if (bindingId)
+      window.dispatchEvent(new Event("quota-guard:assistance-revoked"));
     // Restoring the already-authorized record is not a new binding or a revocation.
     if (bindingAllowed && bindingId === accessQuery.data.bindingId) return;
     // A completion is only a hint: the central access result still decides access.
     void refetchAccess({ cancelRefetch: false });
   };
   useEffect(() => {
-    let disposed = false;
-    let returnCheck = 0;
-    setCheckingReturn(false);
     const recheckOnReturn = () => {
       // Native title-bar interactions can refocus the WebView. Revalidate the
       // current user's query without tearing down a still-fresh workspace.
-      const check = ++returnCheck;
       setNow(Date.now());
-      setCheckingReturn(true);
-      void refetchAccess({ cancelRefetch: false }).finally(() => {
-        if (!disposed && check === returnCheck) setCheckingReturn(false);
-      });
+      void refetchAccess({ cancelRefetch: false });
     };
     const onVisible = () => {
       if (document.visibilityState === "visible") recheckOnReturn();
@@ -387,7 +384,6 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
     document.addEventListener("visibilitychange", onVisible);
     const timer = window.setInterval(() => setNow(Date.now()), 500);
     return () => {
-      disposed = true;
       window.removeEventListener(bindingGateEvent, recheckAccess);
       window.removeEventListener("online", recheckAccess);
       window.removeEventListener("offline", recheckAccess);
@@ -401,15 +397,14 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
   if (!accessQuery.isPending) accessResolvedFor.current = session.user!.id;
   const [collapsed, setCollapsed] = useState(false);
   const scrollArea = useRef<HTMLDivElement>(null);
-  const visibleWorkspace = bindingAllowed ? workspace : "login-assistance";
+  const visibleWorkspace = canSelectWorkspace ? workspace : "login-assistance";
   const showAssistance =
     visibleWorkspace === "login-assistance" &&
     (workspace === "login-assistance" ||
       accessResolvedFor.current === session.user!.id);
   const currentPage = workspaces.find((page) => page.id === visibleWorkspace)!;
   const navigate = (next: WorkspaceId) => {
-    if (blockingReturn) return;
-    if (!bindingAllowed && next !== "login-assistance") return;
+    if (!canSelectWorkspace && next !== "login-assistance") return;
     setWorkspace(next);
     if (scrollArea.current) scrollArea.current.scrollTop = 0;
   };
@@ -513,7 +508,6 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
     }
   });
   const refresh = async () => {
-    if (blockingReturn) return;
     window.dispatchEvent(new Event("quota-guard:assistance-refresh"));
     if (!bindingAllowed) {
       recheckAccess();
@@ -604,9 +598,7 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
             <button
               key={id}
               type="button"
-              disabled={
-                blockingReturn || (!bindingAllowed && id !== "login-assistance")
-              }
+              disabled={!canSelectWorkspace && id !== "login-assistance"}
               onClick={() => navigate(id)}
               aria-label={label}
               title={label}
@@ -614,7 +606,7 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
               className={cn(
                 "cqg-nav-item",
                 visibleWorkspace === id && "cqg-nav-item-active",
-                !bindingAllowed &&
+                !canSelectWorkspace &&
                   id !== "login-assistance" &&
                   "cursor-not-allowed opacity-40",
               )}
@@ -628,7 +620,7 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
           <button
             type="button"
             className="cqg-meter-link"
-            disabled={!bindingAllowed || blockingReturn}
+            disabled={!canSelectWorkspace}
             onClick={() => navigate("diagnostics")}
             title={meterLabel}
             aria-label={`查看统计程序：${meterLabel}`}
@@ -704,7 +696,7 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
             <div className="min-w-0">
               <h1 className="text-base font-semibold">{currentPage.title}</h1>
               <p className="cqg-page-description mt-1 truncate text-xs text-muted-foreground">
-                {blockingReturn
+                {!bindingAllowed && recheckingBinding
                   ? "正在重新核验本设备绑定…"
                   : currentPage.description}
               </p>
@@ -727,7 +719,7 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
               variant="outline"
               size="sm"
               onClick={refresh}
-              disabled={isRefreshing || blockingReturn}
+              disabled={isRefreshing}
               aria-label={isRefreshing ? t("refreshing") : t("refresh")}
               title={isRefreshing ? t("refreshing") : t("refresh")}
             >
@@ -755,24 +747,9 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
           tabIndex={0}
           role="region"
           aria-label={`${currentPage.label}内容`}
-          aria-busy={blockingReturn || undefined}
-          onClickCapture={(event) => {
-            if (blockingReturn) {
-              event.preventDefault();
-              event.stopPropagation();
-            }
-          }}
-          onSubmitCapture={(event) => {
-            if (blockingReturn) {
-              event.preventDefault();
-              event.stopPropagation();
-            }
-          }}
+          aria-busy={(!bindingAllowed && recheckingBinding) || undefined}
         >
-          <div
-            className="cqg-workspace-content mx-auto flex w-full max-w-[1240px] flex-col gap-4 p-4"
-            {...{ inert: blockingReturn ? "" : undefined }}
-          >
+          <div className="cqg-workspace-content mx-auto flex w-full max-w-[1240px] flex-col gap-4 p-4">
             {!bindingAllowed ? (
               <Alert>
                 <AlertTitle>
