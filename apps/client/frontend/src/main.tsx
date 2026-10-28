@@ -25,7 +25,9 @@ const isTrayPanel =
 createRoot(document.getElementById("root")!).render(
   isTrayPanel ? (
     <StrictMode>
-      <TrayPanel />
+      <ClientThemeProvider>
+        <TrayPanel />
+      </ClientThemeProvider>
     </StrictMode>
   ) : (
     <StrictMode>

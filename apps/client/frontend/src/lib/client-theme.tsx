@@ -74,6 +74,17 @@ export function ClientThemeProvider({ children }: ClientThemeProviderProps) {
   const resolvedTheme = theme === "system" ? systemTheme : theme;
 
   useEffect(() => {
+    // The main window and tray WebView share storage, including before login.
+    const syncStoredTheme = (event: StorageEvent) => {
+      if (event.key === THEME_STORAGE_KEY || event.key === null) {
+        setThemeState(readStoredTheme());
+      }
+    };
+    window.addEventListener("storage", syncStoredTheme);
+    return () => window.removeEventListener("storage", syncStoredTheme);
+  }, []);
+
+  useEffect(() => {
     if (typeof window.matchMedia !== "function") return;
 
     const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");

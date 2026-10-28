@@ -2,14 +2,18 @@ import {
   Activity,
   ArrowUpRight,
   Check,
+  ChevronLeft,
   CircleAlert,
   Gauge,
+  KeyRound,
   ListChecks,
   LoaderCircle,
   Power,
   RefreshCw,
+  Search,
   Settings2,
   ShieldCheck,
+  Wallet,
   X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -74,6 +78,41 @@ function Budget({
   );
 }
 
+type Category = "personal" | "official" | "account";
+const categoryTitles: Record<Category, string> = {
+  personal: "个人额度",
+  official: "官方套餐参考",
+  account: "账户美元预算",
+};
+
+function budgetAmount(quota: UsdWindow, mode: "used" | "remaining") {
+  if (mode === "remaining" && quota.limitUsd === null) return "无限制";
+  if (mode === "remaining" && quota.pendingEvents) return "待核算";
+  const amount = mode === "used" ? quota.usedUsd : quota.remainingUsd;
+  return amount === null ? "待核算" : formatUsdCompact(amount);
+}
+
+function MiniUsage({
+  label,
+  percent,
+  warning,
+}: {
+  label: string;
+  percent: number | null;
+  warning?: boolean;
+}) {
+  return (
+    <span className={`cqg-tray-mini${warning ? " is-warning" : ""}`}>
+      <span>{label}</span>
+      {percent !== null ? (
+        <span className="cqg-tray-mini-track" aria-hidden="true">
+          <span style={{ width: `${percent}%` }} />
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 export function TrayPanelView({
   snapshot,
   error,
@@ -83,221 +122,450 @@ export function TrayPanelView({
   error?: boolean;
   onAction: (action: TrayAction) => void;
 }) {
+  const [category, setCategory] = useState<Category>("personal");
+  const [tab, setTab] = useState<"usage" | "shortcuts">("usage");
+  const [search, setSearch] = useState("");
+  const [detailOpen, setDetailOpen] = useState(false);
   const mode = snapshot?.mode ?? "remaining";
-  const official = snapshot?.official;
+  const allowed = !!snapshot?.bindingAllowed;
+  const official = allowed ? snapshot?.official : null;
+  const personal = allowed ? snapshot?.personal : null;
+  const account = allowed ? snapshot?.account : null;
   const windows =
     official?.windows.filter((window) =>
       [300, 10080].includes(window.windowDurationMins),
     ) ?? [];
+  const mainWindow =
+    windows.find((window) => window.windowDurationMins === 10080) ?? windows[0];
+  const matches = (label: string) =>
+    label.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase());
+  const selectCategory = (next: Category) => {
+    setCategory(next);
+    setSearch("");
+    setDetailOpen(true);
+  };
+  const shortcuts = [
+    {
+      action: "quota",
+      label: "额度总览",
+      description: "个人、团队与账户额度",
+      Icon: Gauge,
+    },
+    {
+      action: "ledger",
+      label: "消耗流水",
+      description: "查看每笔 USD 消耗",
+      Icon: ListChecks,
+    },
+    {
+      action: "diagnostics",
+      label: "统计程序",
+      description: "运行状态与自修复",
+      Icon: Activity,
+    },
+    {
+      action: "login-assistance",
+      label: "登录辅助",
+      description: "绑定会话与登录验证",
+      Icon: KeyRound,
+    },
+  ] as const;
+  const syncTime = snapshot?.updatedAt
+    ? new Date(snapshot.updatedAt).toLocaleTimeString("zh-CN", {
+        hour12: false,
+      })
+    : "等待同步";
+  const rows =
+    category === "personal"
+      ? ["5 小时", "7 天"]
+      : category === "account"
+        ? [account?.label ?? "账户预算"]
+        : windows.map((window) =>
+            window.windowDurationMins === 300 ? "5 小时窗口" : "7 天窗口",
+          );
   return (
     <main
-      className="cqg-tray-panel"
+      className={`cqg-tray-panel${detailOpen ? " is-detail-open" : ""}`}
       aria-label="Quota Guard 用量速览"
       onContextMenu={(event) => event.preventDefault()}
     >
-      <header className="cqg-tray-header">
-        <span className="cqg-tray-logo">
-          <ShieldCheck size={21} aria-hidden="true" />
-        </span>
-        <div>
-          <h1>用量速览</h1>
-          <p>
-            {snapshot?.userName ?? "Quota Guard"}
-            {snapshot ? <span className="cqg-tray-me">我</span> : null}
-          </p>
-        </div>
-        <button
-          aria-label="刷新实时用量"
-          title="刷新实时用量"
-          onClick={() => onAction("refresh")}
-          disabled={snapshot?.refreshing}
-        >
-          <RefreshCw
-            size={16}
-            className={snapshot?.refreshing ? "animate-spin" : ""}
+      <section className="cqg-tray-details" aria-label="额度详情">
+        <header className="cqg-tray-detail-header">
+          <button
+            className="cqg-tray-back"
+            aria-label="返回托盘菜单"
+            onClick={() => setDetailOpen(false)}
+          >
+            <ChevronLeft size={17} />
+          </button>
+          <div>
+            <h1>{categoryTitles[category]}</h1>
+            <p>
+              {category === "official"
+                ? (official?.planType ?? "服务端同步")
+                : `USD · ${mode === "remaining" ? "剩余额度" : "已用额度"}`}
+            </p>
+          </div>
+          <button
+            aria-label="关闭速览"
+            title="关闭速览"
+            onClick={() => onAction("close")}
+          >
+            <X size={16} />
+          </button>
+        </header>
+        <label className="cqg-tray-search">
+          <Search size={15} aria-hidden="true" />
+          <input
+            aria-label="搜索额度"
+            placeholder="搜索额度..."
+            value={search}
+            disabled={!allowed}
+            onChange={(event) => setSearch(event.target.value)}
           />
-        </button>
-        <button aria-label="关闭速览" onClick={() => onAction("close")}>
-          <X size={16} />
-        </button>
-      </header>
-      <div className="cqg-tray-scroll">
-        {error ? (
-          <p role="alert" className="cqg-tray-warning">
-            暂时无法同步，请刷新或打开主窗口。
-          </p>
-        ) : null}
-        {!snapshot ? (
-          <div className="cqg-tray-empty">
-            <Gauge size={28} aria-hidden="true" />
-            <h2>登录后查看实时额度</h2>
-            <p>官方套餐由服务端定时更新</p>
-            <button onClick={() => onAction("show")}>
-              打开客户端登录 <ArrowUpRight size={14} />
-            </button>
-          </div>
-        ) : !snapshot.bindingAllowed ? (
-          <div className="cqg-tray-empty">
-            <ShieldCheck size={28} aria-hidden="true" />
-            <h2>请先绑定当前会话</h2>
-            <p>绑定后可查看个人与官方套餐额度</p>
-            <button onClick={() => onAction("login-assistance")}>
-              前往登录辅助 <ArrowUpRight size={14} />
-            </button>
-          </div>
-        ) : (
-          <>
-            <div className="cqg-tray-sync" role="status">
-              <span className={snapshot.quotaFailed ? "is-warning" : ""}>
-                {snapshot.refreshing ? (
-                  <LoaderCircle size={12} className="animate-spin" />
-                ) : snapshot.quotaFailed ? (
-                  <CircleAlert size={12} />
-                ) : (
-                  <Check size={12} />
-                )}
-                {snapshot.quotaFailed
-                  ? "连接暂不可用，显示上次数据"
-                  : snapshot.refreshing
-                    ? "正在同步最新用量"
-                    : "已同步中央服务器"}
-              </span>
-              <time>
-                {snapshot.updatedAt
-                  ? new Date(snapshot.updatedAt).toLocaleTimeString("zh-CN", {
-                      hour12: false,
-                    })
-                  : "等待同步"}
-              </time>
+        </label>
+        <div className="cqg-tray-scroll">
+          {error ? (
+            <p role="alert" className="cqg-tray-warning">
+              暂时无法同步，请刷新或打开主窗口。
+            </p>
+          ) : null}
+          {!snapshot ? (
+            <div className="cqg-tray-empty">
+              <Gauge size={28} aria-hidden="true" />
+              <h2>登录后查看实时额度</h2>
+              <p>官方套餐由服务端定时更新</p>
+              <button onClick={() => onAction("show")}>
+                打开客户端登录 <ArrowUpRight size={14} />
+              </button>
             </div>
-            <section className="cqg-tray-section" aria-label="个人额度">
-              <div className="cqg-tray-section-title">
-                <h2>
-                  <Gauge size={14} aria-hidden="true" />
-                  个人额度
-                </h2>
-                <span>USD · {mode === "remaining" ? "剩余" : "已用"}</span>
-              </div>
-              {snapshot.personal ? (
-                <>
-                  <Budget
-                    label="5 小时"
-                    quota={snapshot.personal.fiveHour}
-                    mode={mode}
-                  />
-                  <Budget
-                    label="7 天"
-                    quota={snapshot.personal.weekly}
-                    mode={mode}
-                  />
-                </>
-              ) : (
-                <p className="cqg-tray-hint">个人额度暂不可用</p>
-              )}
-            </section>
-            <section className="cqg-tray-section" aria-label="官方套餐参考">
-              <div className="cqg-tray-section-title">
-                <h2>
-                  <ShieldCheck size={14} aria-hidden="true" />
-                  官方套餐参考
-                </h2>
-                <span>{official?.planType ?? "服务端"}</span>
-              </div>
-              {official?.accountLabel ? (
-                <p className="cqg-tray-account">{official.accountLabel}</p>
+          ) : !snapshot.bindingAllowed ? (
+            <div className="cqg-tray-empty">
+              <ShieldCheck size={28} aria-hidden="true" />
+              <h2>请先绑定当前会话</h2>
+              <p>绑定后可查看个人与官方套餐额度</p>
+              <button onClick={() => onAction("login-assistance")}>
+                前往登录辅助 <ArrowUpRight size={14} />
+              </button>
+            </div>
+          ) : (
+            <>
+              {category === "personal" ? (
+                <section className="cqg-tray-section" aria-label="个人额度">
+                  {personal ? (
+                    <>
+                      {matches("5 小时") ? (
+                        <Budget
+                          label="5 小时"
+                          quota={personal.fiveHour}
+                          mode={mode}
+                        />
+                      ) : null}
+                      {matches("7 天") ? (
+                        <Budget
+                          label="7 天"
+                          quota={personal.weekly}
+                          mode={mode}
+                        />
+                      ) : null}
+                    </>
+                  ) : (
+                    <p className="cqg-tray-hint">个人额度暂不可用</p>
+                  )}
+                </section>
               ) : null}
-              {windows.map((window) => {
-                const label =
-                  window.windowDurationMins === 300 ? "5 小时窗口" : "7 天窗口";
-                const percent =
-                  mode === "remaining"
-                    ? 100 - window.usedPercent
-                    : window.usedPercent;
-                return (
-                  <div
-                    className="cqg-tray-budget"
-                    key={`${window.limitId}:${window.slot}`}
+              {category === "official" ? (
+                <section className="cqg-tray-section" aria-label="官方套餐参考">
+                  {official?.accountLabel ? (
+                    <p className="cqg-tray-account">{official.accountLabel}</p>
+                  ) : null}
+                  {windows.map((window) => {
+                    const label =
+                      window.windowDurationMins === 300
+                        ? "5 小时窗口"
+                        : "7 天窗口";
+                    const percent =
+                      mode === "remaining"
+                        ? 100 - window.usedPercent
+                        : window.usedPercent;
+                    if (!matches(label)) return null;
+                    return (
+                      <div
+                        className="cqg-tray-budget"
+                        key={`${window.limitId}:${window.slot}`}
+                      >
+                        <div className="cqg-tray-line">
+                          <span>{label}</span>
+                          <strong>
+                            {mode === "remaining" ? "剩余" : "已用"}{" "}
+                            {formatPercent(percent)}
+                          </strong>
+                        </div>
+                        <Progress
+                          value={percent}
+                          aria-label={`${label}官方套餐额度`}
+                          className="h-1.5"
+                        />
+                        <p className="cqg-tray-hint">
+                          {window.resetsAt
+                            ? formatResetTime(window.resetsAt)
+                            : "重置时间未知"}
+                        </p>
+                      </div>
+                    );
+                  })}
+                  <p
+                    className={`cqg-tray-hint${snapshot.officialFailed || official?.stale ? " is-warning" : ""}`}
                   >
-                    <div className="cqg-tray-line">
-                      <span>{label}</span>
-                      <strong>
-                        {mode === "remaining" ? "剩余" : "已用"}{" "}
-                        {formatPercent(percent)}
-                      </strong>
-                    </div>
-                    <Progress
-                      value={percent}
-                      aria-label={`${label}官方套餐额度`}
-                      className="h-1.5"
-                    />
-                    <p className="cqg-tray-hint">
-                      {window.resetsAt
-                        ? formatResetTime(window.resetsAt)
-                        : "重置时间未知"}
-                    </p>
-                  </div>
-                );
-              })}
-              <p
-                className={`cqg-tray-hint${snapshot.officialFailed || official?.stale ? " is-warning" : ""}`}
-              >
-                {snapshot.officialFailed
-                  ? "服务端套餐数据读取失败"
-                  : official
-                    ? officialQuotaStatus(official)
-                    : "等待服务端套餐数据"}
-              </p>
-            </section>
-            {snapshot.account ? (
-              <section
-                className="cqg-tray-section"
-                aria-label="官方账户美元预算"
-              >
-                <div className="cqg-tray-section-title">
-                  <h2>账户美元预算</h2>
-                  <span>USD</span>
-                </div>
-                <Budget
-                  label={snapshot.account.label}
-                  quota={snapshot.account.total}
-                  mode={mode}
-                />
-              </section>
-            ) : null}
-          </>
-        )}
-      </div>
-      <nav className="cqg-tray-actions" aria-label="快捷操作">
-        <button onClick={() => onAction("quota")}>
-          <Gauge size={15} />
-          额度总览
-          <ArrowUpRight size={12} />
-        </button>
-        <button onClick={() => onAction("ledger")}>
-          <ListChecks size={15} />
-          消耗流水
-          <ArrowUpRight size={12} />
-        </button>
-        <button onClick={() => onAction("diagnostics")}>
-          <Activity size={15} />
-          统计程序
-          <span
-            className={`cqg-tray-dot${snapshot?.meterRunning ? " is-running" : ""}`}
-          />
-        </button>
-        <button onClick={() => onAction("settings")}>
-          <Settings2 size={15} />
-          设置
-          <ArrowUpRight size={12} />
-        </button>
-      </nav>
-      <footer className="cqg-tray-footer">
-        <span>统计服务独立运行</span>
-        <button onClick={() => onAction("quit")}>
-          <Power size={13} />
-          退出客户端
-        </button>
-      </footer>
+                    {snapshot.officialFailed
+                      ? "服务端套餐数据读取失败"
+                      : official
+                        ? officialQuotaStatus(official)
+                        : "等待服务端套餐数据"}
+                  </p>
+                </section>
+              ) : null}
+              {category === "account" && account && matches(account.label) ? (
+                <section
+                  className="cqg-tray-section"
+                  aria-label="官方账户美元预算"
+                >
+                  <Budget
+                    label={account.label}
+                    quota={account.total}
+                    mode={mode}
+                  />
+                </section>
+              ) : null}
+              {search.trim() && !rows.some(matches) ? (
+                <p className="cqg-tray-no-results">没有匹配的额度</p>
+              ) : null}
+            </>
+          )}
+        </div>
+        <div className="cqg-tray-sync" role="status">
+          <span className={snapshot?.quotaFailed ? "is-warning" : ""}>
+            {snapshot?.refreshing ? (
+              <LoaderCircle size={12} className="animate-spin" />
+            ) : snapshot?.quotaFailed ? (
+              <CircleAlert size={12} />
+            ) : (
+              <Check size={12} />
+            )}
+            {snapshot?.quotaFailed
+              ? "连接暂不可用，显示上次数据"
+              : snapshot?.refreshing
+                ? "正在同步最新用量"
+                : snapshot
+                  ? "已同步中央服务器"
+                  : "尚未登录"}
+          </span>
+          <time>{syncTime}</time>
+        </div>
+      </section>
+      <aside className="cqg-tray-menu" aria-label="托盘菜单">
+        <header className="cqg-tray-header">
+          <h2>Quota Guard</h2>
+          <button
+            aria-label="设置"
+            title="设置"
+            onClick={() => onAction("settings")}
+          >
+            <Settings2 size={18} />
+          </button>
+        </header>
+        <div className="cqg-tray-tabs" role="tablist" aria-label="菜单内容">
+          {(
+            [
+              ["usage", "用量"],
+              ["shortcuts", "快捷"],
+            ] as const
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              role="tab"
+              aria-selected={tab === value}
+              id={`tray-tab-${value}`}
+              aria-controls="tray-menu-content"
+              tabIndex={tab === value ? 0 : -1}
+              onClick={() => setTab(value)}
+              onKeyDown={(event) => {
+                if (
+                  ["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)
+                ) {
+                  event.preventDefault();
+                  const next =
+                    event.key === "Home"
+                      ? "usage"
+                      : event.key === "End"
+                        ? "shortcuts"
+                        : value === "usage"
+                          ? "shortcuts"
+                          : "usage";
+                  setTab(next);
+                  document.getElementById(`tray-tab-${next}`)?.focus();
+                }
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <div
+          id="tray-menu-content"
+          role="tabpanel"
+          aria-labelledby={`tray-tab-${tab}`}
+          className="cqg-tray-menu-content"
+        >
+          {tab === "usage" ? (
+            <nav aria-label="用量分类" className="cqg-tray-categories">
+              {(
+                [
+                  {
+                    id: "personal",
+                    title: "个人额度",
+                    description: snapshot?.userName ?? "尚未登录",
+                    Icon: Gauge,
+                    available: allowed,
+                  },
+                  {
+                    id: "official",
+                    title: "官方套餐参考",
+                    description: official?.accountLabel ?? "中央服务器",
+                    Icon: ShieldCheck,
+                    available: allowed,
+                  },
+                  {
+                    id: "account",
+                    title: "账户美元预算",
+                    description: account?.label ?? "尚未关联账户",
+                    Icon: Wallet,
+                    available: !!account,
+                  },
+                ] as const
+              ).map(({ id, title, description, Icon, available }) => (
+                <button
+                  key={id}
+                  className={`cqg-tray-category${category === id ? " is-selected" : ""}`}
+                  aria-label={`查看${title}`}
+                  aria-pressed={category === id}
+                  disabled={!available}
+                  onClick={() => selectCategory(id)}
+                >
+                  <span className="cqg-tray-app-icon">
+                    <Icon size={22} />
+                  </span>
+                  <span className="cqg-tray-category-copy">
+                    <strong>{title}</strong>
+                    <span className="cqg-tray-category-description">
+                      <span className="cqg-tray-description-name">
+                        {description}
+                      </span>
+                      {id === "personal" && snapshot ? (
+                        <span className="cqg-tray-me">我</span>
+                      ) : null}
+                    </span>
+                    {id === "personal" && personal ? (
+                      <MiniUsage
+                        label={`7 天${mode === "remaining" ? "剩余" : "已用"} ${budgetAmount(personal.weekly, mode)}${personal.weekly.pendingEvents && mode === "used" ? " · 待核算" : ""}`}
+                        percent={
+                          personal.weekly.pendingEvents
+                            ? null
+                            : usdPercent(personal.weekly, mode)
+                        }
+                        warning={!!personal.weekly.pendingEvents}
+                      />
+                    ) : null}
+                    {id === "official" ? (
+                      <MiniUsage
+                        label={
+                          snapshot?.officialFailed
+                            ? "套餐查询失败"
+                            : mainWindow
+                              ? `${mainWindow.windowDurationMins === 300 ? "5 小时" : "每周"}${mode === "remaining" ? "剩余" : "已用"} ${formatPercent(mode === "remaining" ? 100 - mainWindow.usedPercent : mainWindow.usedPercent)}${official?.stale ? " · 上次数据" : ""}`
+                              : "等待服务端套餐数据"
+                        }
+                        percent={
+                          mainWindow && !snapshot?.officialFailed
+                            ? mode === "remaining"
+                              ? 100 - mainWindow.usedPercent
+                              : mainWindow.usedPercent
+                            : null
+                        }
+                        warning={snapshot?.officialFailed || official?.stale}
+                      />
+                    ) : null}
+                    {id === "account" && account ? (
+                      <MiniUsage
+                        label={`${mode === "remaining" ? "剩余" : "已用"} ${budgetAmount(account.total, mode)}${account.total.pendingEvents && mode === "used" ? " · 待核算" : ""}`}
+                        percent={
+                          account.total.pendingEvents
+                            ? null
+                            : usdPercent(account.total, mode)
+                        }
+                        warning={!!account.total.pendingEvents}
+                      />
+                    ) : null}
+                  </span>
+                  <ChevronLeft className="cqg-tray-category-arrow" size={15} />
+                </button>
+              ))}
+            </nav>
+          ) : (
+            <nav className="cqg-tray-shortcuts" aria-label="快捷操作">
+              {shortcuts.map(({ action, label, description, Icon }) => (
+                <button key={action} onClick={() => onAction(action)}>
+                  <span className="cqg-tray-app-icon">
+                    <Icon size={21} />
+                  </span>
+                  <span className="cqg-tray-category-copy">
+                    <strong>{label}</strong>
+                    <span className="cqg-tray-category-description">
+                      {description}
+                    </span>
+                  </span>
+                  <ArrowUpRight size={15} />
+                </button>
+              ))}
+            </nav>
+          )}
+          <button
+            className="cqg-tray-meter"
+            aria-label="查看统计服务状态"
+            onClick={() => onAction("diagnostics")}
+          >
+            <Activity size={15} />
+            <span>统计服务独立运行</span>
+            <span
+              className={`cqg-tray-dot${snapshot?.meterRunning ? " is-running" : ""}`}
+            />
+          </button>
+        </div>
+        <div className="cqg-tray-refresh-row">
+          <button
+            aria-label="刷新实时用量"
+            onClick={() => onAction("refresh")}
+            disabled={snapshot?.refreshing}
+          >
+            <RefreshCw
+              size={15}
+              className={snapshot?.refreshing ? "animate-spin" : ""}
+            />
+            <span>刷新用量</span>
+            <span className="cqg-tray-auto-sync">每 15 秒同步</span>
+          </button>
+        </div>
+        <footer className="cqg-tray-footer">
+          <button onClick={() => onAction("show")}>
+            <ArrowUpRight size={16} />
+            打开主窗口
+          </button>
+          <button onClick={() => onAction("quit")}>
+            <Power size={16} />
+            退出客户端
+          </button>
+        </footer>
+      </aside>
     </main>
   );
 }
@@ -316,13 +584,6 @@ export function TrayPanel() {
       if (!active) return;
       setSnapshot(value);
       setError(false);
-      if (value) {
-        document.documentElement.classList.toggle(
-          "dark",
-          value.theme === "dark",
-        );
-        document.documentElement.style.colorScheme = value.theme;
-      }
     };
     const stop = listenTraySnapshots(accept);
     void stop
@@ -346,8 +607,13 @@ export function TrayPanel() {
     };
     const focus = () => {
       refresh();
-      refreshButton.current
-        ?.querySelector<HTMLButtonElement>("button")
+      Array.from(
+        refreshButton.current?.querySelectorAll<HTMLButtonElement>("button") ??
+          [],
+      )
+        .find(
+          (button) => !button.disabled && button.getClientRects().length > 0,
+        )
         ?.focus();
     };
     window.addEventListener("keydown", escape);

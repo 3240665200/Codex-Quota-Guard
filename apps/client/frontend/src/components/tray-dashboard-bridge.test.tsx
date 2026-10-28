@@ -46,13 +46,21 @@ describe("main renderer tray bridge", () => {
     expect(current).toHaveBeenCalledWith("ledger");
     expect(old).not.toHaveBeenCalled();
   });
-  it("opens the quota menu on blank areas and keeps native editing context menus", () => {
+  it("never opens the tray menu or intercepts right clicks in the main window", () => {
     render(<Bridge request={vi.fn()} />);
-    fireEvent.contextMenu(screen.getByText("用量面板"));
-    expect(invoke).toHaveBeenCalledWith("tray_panel_show");
-    vi.mocked(invoke).mockClear();
-    fireEvent.contextMenu(screen.getByLabelText("输入区"));
-    fireEvent.contextMenu(screen.getByLabelText("编辑区"));
+    for (const target of [
+      document.body,
+      screen.getByText("用量面板"),
+      screen.getByLabelText("输入区"),
+      screen.getByLabelText("编辑区"),
+    ]) {
+      const event = new MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+      });
+      fireEvent(target, event);
+      expect(event.defaultPrevented).toBe(false);
+    }
     expect(invoke).not.toHaveBeenCalled();
   });
   it("keeps the normal copy menu when text is selected", () => {

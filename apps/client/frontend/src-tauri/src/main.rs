@@ -317,7 +317,6 @@ fn main() {
             session_vault_clear,
             tray_panel::tray_snapshot_update,
             tray_panel::tray_panel_snapshot,
-            tray_panel::tray_panel_show,
             tray_panel::tray_panel_action,
             codex_rate_limits
         ]);

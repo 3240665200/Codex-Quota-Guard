@@ -8,6 +8,8 @@ use tauri::{
 };
 
 const LABEL: &str = "tray-panel";
+const PANEL_WIDTH: f64 = 760.0;
+const PANEL_HEIGHT: f64 = 640.0;
 
 #[derive(Default)]
 pub(crate) struct PanelState {
@@ -46,7 +48,7 @@ pub(crate) fn create(app: &AppHandle) -> tauri::Result<()> {
     let window =
         WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("index.html?view=tray".into()))
             .title("Quota Guard 用量速览")
-            .inner_size(400.0, 640.0)
+            .inner_size(PANEL_WIDTH, PANEL_HEIGHT)
             .decorations(false)
             .transparent(true)
             .shadow(false)
@@ -76,9 +78,9 @@ pub(crate) fn create(app: &AppHandle) -> tauri::Result<()> {
 fn frame(work: (i32, i32, u32, u32), anchor: (f64, f64), scale: f64) -> (i32, i32, u32, u32) {
     let margin = (8.0 * scale).round() as i32;
     let width =
-        ((400.0 * scale).round() as u32).min(work.2.saturating_sub((2 * margin) as u32).max(1));
+        ((PANEL_WIDTH * scale).round() as u32).min(work.2.saturating_sub((2 * margin) as u32).max(1));
     let height =
-        ((640.0 * scale).round() as u32).min(work.3.saturating_sub((2 * margin) as u32).max(1));
+        ((PANEL_HEIGHT * scale).round() as u32).min(work.3.saturating_sub((2 * margin) as u32).max(1));
     let left = work.0 + margin;
     let top = work.1 + margin;
     let right = (work.0 + work.2 as i32 - margin - width as i32).max(left);
@@ -171,19 +173,6 @@ pub(crate) fn tray_panel_snapshot(app: AppHandle, window: WebviewWindow) -> Resu
         .lock()
         .map(|value| value.clone())
         .map_err(|_| "托盘状态不可用。".into())
-}
-
-#[tauri::command]
-pub(crate) fn tray_panel_show(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
-    if window.label() != "main" {
-        return Err("无法打开用量速览。".into());
-    }
-    let cursor = app.cursor_position().map_err(|_| "无法定位用量速览。")?;
-    if show(&app, cursor) {
-        Ok(())
-    } else {
-        Err("无法打开用量速览。".into())
-    }
 }
 
 #[tauri::command]

@@ -90,4 +90,74 @@ describe("ThemeSwitcher", () => {
     unmount();
     expect(removeEventListener).toHaveBeenCalledWith("change", listener);
   });
+
+  it("syncs theme changes from another window without waiting for quota data", async () => {
+    window.localStorage.setItem(THEME_STORAGE_KEY, "light");
+    render(
+      <ClientThemeProvider>
+        <ThemeSwitcher compact />
+      </ClientThemeProvider>,
+    );
+
+    window.localStorage.setItem(THEME_STORAGE_KEY, "dark");
+    fireEvent(
+      window,
+      new StorageEvent("storage", { key: THEME_STORAGE_KEY, newValue: "dark" }),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "深色模式" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      ),
+    );
+    expect(document.documentElement).toHaveClass("dark");
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(document.documentElement.style.colorScheme).toBe("dark");
+
+    window.localStorage.setItem(THEME_STORAGE_KEY, "light");
+    fireEvent(
+      window,
+      new StorageEvent("storage", {
+        key: "unrelated-setting",
+        newValue: "light",
+      }),
+    );
+    expect(document.documentElement).toHaveClass("dark");
+    fireEvent(
+      window,
+      new StorageEvent("storage", {
+        key: THEME_STORAGE_KEY,
+        newValue: "light",
+      }),
+    );
+    await waitFor(() =>
+      expect(document.documentElement).not.toHaveClass("dark"),
+    );
+  });
+
+  it("returns to the system theme when another window clears preferences", async () => {
+    window.localStorage.setItem(THEME_STORAGE_KEY, "dark");
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: vi.fn(() => ({
+        matches: false,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      })),
+    });
+    render(
+      <ClientThemeProvider>
+        <ThemeSwitcher compact />
+      </ClientThemeProvider>,
+    );
+    await waitFor(() => expect(document.documentElement).toHaveClass("dark"));
+    window.localStorage.clear();
+    fireEvent(window, new StorageEvent("storage", { key: null }));
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "跟随系统模式" }),
+      ).toHaveAttribute("aria-pressed", "true"),
+    );
+    expect(document.documentElement).not.toHaveClass("dark");
+  });
 });
