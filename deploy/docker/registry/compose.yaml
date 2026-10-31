@@ -178,7 +178,7 @@
       "tmpfs": [
         "/tmp:rw,noexec,nosuid,size=64m"
       ],
-      "image": "minjm/codex-quota-guard-web:0.4.12",
+      "image": "minjm/codex-quota-guard-web:0.4.13",
       "platform": "linux/amd64",
       "pull_policy": "missing"
     }
