@@ -37,7 +37,8 @@
         "MANAGED_PROXY_ALLOW_PRIVATE_NODES": "${MANAGED_PROXY_ALLOW_PRIVATE_NODES:-false}",
         "SERVER_ADDRESS": "0.0.0.0",
         "SPRING_PROFILES_ACTIVE": "prod",
-        "WEB_SERVER_PORT": "8080"
+        "WEB_SERVER_PORT": "8080",
+        "DESKTOP_UPDATE_STORAGE_DIR": "/var/lib/quota-guard/releases"
       },
       "healthcheck": {
         "interval": "10s",
@@ -71,6 +72,7 @@
         "/tmp:rw,noexec,nosuid,size=128m"
       ],
       "volumes": [
+        { "type": "volume", "source": "desktop_releases", "target": "/var/lib/quota-guard/releases" },
         {
           "type": "bind",
           "source": "./secrets",
@@ -79,7 +81,7 @@
           "bind": { "create_host_path": false }
         }
       ],
-      "image": "minjm/codex-quota-guard-backend:0.3.30",
+      "image": "minjm/codex-quota-guard-backend:0.4.12",
       "platform": "linux/amd64",
       "pull_policy": "missing"
     },
@@ -175,12 +177,13 @@
       "tmpfs": [
         "/tmp:rw,noexec,nosuid,size=64m"
       ],
-      "image": "minjm/codex-quota-guard-web:0.3.30",
+      "image": "minjm/codex-quota-guard-web:0.4.12",
       "platform": "linux/amd64",
       "pull_policy": "missing"
     }
   },
   "volumes": {
-    "pgdata": {}
+    "pgdata": {},
+    "desktop_releases": {}
   }
 }

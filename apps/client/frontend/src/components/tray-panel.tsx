@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Progress } from "./ui/progress";
+import { QuotaProgress } from "./quota-progress";
 import {
   formatUsd,
   formatUsdCompact,
@@ -61,10 +62,9 @@ function Budget({
         </strong>
       </div>
       {percent !== null ? (
-        <Progress
+        <QuotaProgress
           value={percent}
-          aria-label={`${label}${mode === "remaining" ? "剩余" : "已用"}额度`}
-          className="h-1.5"
+          label={`${label}${mode === "remaining" ? "剩余" : "已用"}额度`}
         />
       ) : null}
       <p className="cqg-tray-hint">
@@ -139,9 +139,13 @@ export function TrayPanelView({
     windows.find((window) => window.windowDurationMins === 10080) ?? windows[0];
   const matches = (label: string) =>
     label.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase());
-  const selectCategory = (next: Category) => {
+  const previewCategory = (next: Category) => {
+    if (category === next) return;
     setCategory(next);
     setSearch("");
+  };
+  const selectCategory = (next: Category) => {
+    previewCategory(next);
     setDetailOpen(true);
   };
   const shortcuts = [
@@ -450,10 +454,16 @@ export function TrayPanelView({
                   aria-label={`查看${title}`}
                   aria-pressed={category === id}
                   disabled={!available}
+                  onMouseEnter={() => {
+                    if (available) previewCategory(id);
+                  }}
+                  onFocus={() => {
+                    if (available) previewCategory(id);
+                  }}
                   onClick={() => selectCategory(id)}
                 >
                   <span className="cqg-tray-app-icon">
-                    <Icon size={22} />
+                    <Icon size={19} />
                   </span>
                   <span className="cqg-tray-category-copy">
                     <strong>{title}</strong>
@@ -514,9 +524,13 @@ export function TrayPanelView({
           ) : (
             <nav className="cqg-tray-shortcuts" aria-label="快捷操作">
               {shortcuts.map(({ action, label, description, Icon }) => (
-                <button key={action} onClick={() => onAction(action)}>
+                <button
+                  key={action}
+                  title={description}
+                  onClick={() => onAction(action)}
+                >
                   <span className="cqg-tray-app-icon">
-                    <Icon size={21} />
+                    <Icon size={19} />
                   </span>
                   <span className="cqg-tray-category-copy">
                     <strong>{label}</strong>

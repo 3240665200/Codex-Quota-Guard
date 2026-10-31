@@ -185,6 +185,9 @@ describe("Dashboard", () => {
   beforeEach(() => {
     setQuotaDisplayMode("remaining");
     apiCalls.mockReset();
+    vi.spyOn(api, "launchPreferences").mockResolvedValue({
+      silentStartup: false,
+    });
     vi.spyOn(api, "loginAssistanceContext").mockResolvedValue({
       allowed: false,
       reasonCode: "ALREADY_BOUND",
@@ -560,7 +563,7 @@ describe("Dashboard", () => {
       enabled: false,
     });
     expect(screen.getByText(/不会影响统计服务/)).toBeVisible();
-    expect(screen.getByText(/登录 Windows 后自动打开客户端/)).toBeVisible();
+    expect(screen.getByText(/登录 Windows 后自动启动客户端/)).toBeVisible();
     expect(screen.getByText(/故障恢复由 Windows 负责/)).toBeVisible();
     expect(screen.queryByText(/未提权时需确认管理员授权/)).toBeNull();
     expect(screen.queryByText(/安装时默认开启/)).not.toBeInTheDocument();
@@ -604,7 +607,9 @@ describe("Dashboard", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "无法读取自启动状态",
     );
-    expect(screen.queryByRole("switch")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("switch", { name: "开机自启动" }),
+    ).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "重试读取" }));
     expect(
       await screen.findByRole("switch", { name: "开机自启动" }),
@@ -647,7 +652,9 @@ describe("Dashboard", () => {
     expect(
       await screen.findByText("当前系统暂不支持开机自启动设置"),
     ).toBeVisible();
-    expect(screen.queryByRole("switch")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("switch", { name: "开机自启动" }),
+    ).not.toBeInTheDocument();
   });
 
   it("shows a failed independent capture service as unhealthy", async () => {

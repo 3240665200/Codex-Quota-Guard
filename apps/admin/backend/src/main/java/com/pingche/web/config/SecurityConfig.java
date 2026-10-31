@@ -113,6 +113,7 @@ public class SecurityConfig {
                                 "/api/v1/auth/login",
                                 "/api/v1/auth/refresh"
                         ).permitAll()
+                        .requestMatchers(HttpMethod.GET,"/api/v1/desktop-updates/**").permitAll()
                         .requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
                         .requestMatchers("/api/v1/meter/**").hasRole("METER")
                         .anyRequest().authenticated())

@@ -6,6 +6,8 @@ mod codex_rate_limits;
 #[path = "../../../conflict_evidence.rs"]
 mod conflict_evidence;
 mod conflict_notice;
+mod launch_preferences;
+mod desktop_updates;
 mod meter_service;
 mod meter_diagnostics;
 mod meter_status;
@@ -37,6 +39,20 @@ async fn autostart_set(enabled: bool) -> CommandResult<autostart::AutostartStatu
         .await
         .map_err(|_| "无法设置开机自启动，请稍后重试。".to_owned())?
         .map_err(str::to_owned)
+}
+
+#[tauri::command]
+async fn launch_preferences_get(app: tauri::AppHandle, window: tauri::WebviewWindow) -> CommandResult<launch_preferences::LaunchPreferences> {
+    if window.label() != "main" { return Err("无效的客户端设置操作。".into()); }
+    tauri::async_runtime::spawn_blocking(move || launch_preferences::load(&app)).await
+        .map_err(|_| "无法读取静默启动设置。".to_owned())?
+}
+
+#[tauri::command]
+async fn launch_preferences_set(app: tauri::AppHandle, window: tauri::WebviewWindow, silent_startup: bool) -> CommandResult<launch_preferences::LaunchPreferences> {
+    if window.label() != "main" { return Err("无效的客户端设置操作。".into()); }
+    tauri::async_runtime::spawn_blocking(move || launch_preferences::save(&app,silent_startup)).await
+        .map_err(|_| "无法保存静默启动设置。".to_owned())?
 }
 
 #[tauri::command]
@@ -253,6 +269,8 @@ fn main() {
     };
 
     let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             app.manage(conflict_notice::ConflictNotices::default());
             let window_state = window_state::WindowState::from_app(app.handle());
@@ -296,11 +314,23 @@ fn main() {
             if !tray_available {
                 eprintln!("Unable to initialize the desktop tray; closing the main window will exit the client.");
             }
+            let preferences=launch_preferences::load(app.handle()).unwrap_or_else(|_| {
+                eprintln!("Unable to read launch preferences; using normal window startup.");
+                launch_preferences::LaunchPreferences::default()
+            });
+            if launch_preferences::should_show_main(preferences,tray_available) {
+                tray::show_main_window(app.handle());
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             autostart_status,
             autostart_set,
+            launch_preferences_get,
+            launch_preferences_set,
+            desktop_updates::desktop_update_info,
+            desktop_updates::desktop_update_notify,
+            desktop_updates::desktop_update_install,
             startup_gate_check,
             startup_guard_status,
             device_identity,

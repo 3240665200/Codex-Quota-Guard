@@ -39,6 +39,40 @@ const example = (): TraySnapshot => ({
 });
 
 describe("tray quota panel", () => {
+  it("previews each quota module on hover without opening the main window", () => {
+    const action = vi.fn();
+    render(<TrayPanelView snapshot={example()} onAction={action} />);
+    fireEvent.mouseEnter(
+      screen.getByRole("button", { name: "查看官方套餐参考" }),
+    );
+    expect(screen.getByRole("region", { name: "官方套餐参考" })).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "查看官方套餐参考" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    fireEvent.mouseEnter(
+      screen.getByRole("button", { name: "查看账户美元预算" }),
+    );
+    expect(
+      screen.getByRole("region", { name: "官方账户美元预算" }),
+    ).toBeVisible();
+    fireEvent.mouseEnter(screen.getByRole("button", { name: "查看个人额度" }));
+    expect(screen.getByRole("region", { name: "个人额度" })).toBeVisible();
+    expect(action).not.toHaveBeenCalled();
+    expect(screen.getByRole("main")).not.toHaveClass("is-detail-open");
+  });
+  it("keeps a filter when hovering the current module and supports keyboard focus previews", () => {
+    render(<TrayPanelView snapshot={example()} onAction={vi.fn()} />);
+    fireEvent.change(screen.getByRole("textbox", { name: "搜索额度" }), {
+      target: { value: "7 天" },
+    });
+    fireEvent.mouseEnter(screen.getByRole("button", { name: "查看个人额度" }));
+    expect(screen.getByRole("textbox", { name: "搜索额度" })).toHaveValue(
+      "7 天",
+    );
+    fireEvent.focus(screen.getByRole("button", { name: "查看官方套餐参考" }));
+    expect(screen.getByRole("region", { name: "官方套餐参考" })).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "搜索额度" })).toHaveValue("");
+  });
   it("switches the left detail pane without mixing dollars and official percentages", () => {
     render(<TrayPanelView snapshot={example()} onAction={vi.fn()} />);
     const personal = screen.getByRole("region", { name: "个人额度" });

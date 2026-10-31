@@ -1,10 +1,10 @@
 [package]
 name = "codex-quota-guard"
-version = "0.4.10"
+version = "0.4.12"
 description = "Secure desktop shell for Codex Quota Guard"
 authors = ["Codex Quota Guard contributors"]
 edition = "2021"
-rust-version = "1.77"
+rust-version = "1.90"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
@@ -26,6 +26,10 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 toml_edit = "0.22"
 sha2 = "0.10"
 tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-updater = "2"
+tauri-plugin-notification = "2"
+semver = "1"
+reqwest = { version = "0.13", default-features = false, features = ["stream", "rustls-no-provider", "system-proxy"] }
 thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
 

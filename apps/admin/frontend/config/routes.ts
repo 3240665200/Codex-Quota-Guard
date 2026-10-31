@@ -87,6 +87,13 @@ export default [
   },
   {
     access: 'canAdmin',
+    component: './desktop-releases',
+    icon: 'cloudUpload',
+    name: '版本管理',
+    path: '/desktop-releases',
+  },
+  {
+    access: 'canAdmin',
     component: './settings',
     icon: 'setting',
     name: '设置',

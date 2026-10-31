@@ -28,6 +28,7 @@ import { toast } from "sonner";
 
 import { AppIcon } from "@/components/app-icon";
 import { ClientSettings } from "@/components/client-settings";
+import { DesktopVersionButton } from "@/components/desktop-updates";
 import { LoginAssistance } from "@/components/login-assistance-gate";
 import { SessionBinding } from "@/components/session-binding";
 import { subscribeToAssistanceEvents } from "@/lib/assistance-events";
@@ -636,6 +637,7 @@ export function Dashboard({ session, onLogout, guardNotice }: DashboardProps) {
             />
             <span className="cqg-nav-copy truncate text-xs">{meterLabel}</span>
           </button>
+          <DesktopVersionButton />
           <div className="cqg-theme-row">
             <span className="cqg-nav-copy text-xs text-muted-foreground">
               外观

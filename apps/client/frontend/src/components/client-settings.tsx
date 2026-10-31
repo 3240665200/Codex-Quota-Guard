@@ -6,6 +6,8 @@ import { api, getApiErrorMessage } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { useQuotaDisplay } from "@/lib/quota-display";
+import { SilentStartupSetting } from "./silent-startup-setting";
+import { DesktopUpdateSettings } from "./desktop-updates";
 
 const autostartQueryKey = ["desktop-autostart"];
 
@@ -66,6 +68,7 @@ export function ClientSettings() {
 
   return (
     <div className="space-y-6">
+      <DesktopUpdateSettings />
       <section
         className="cqg-surface p-4 sm:p-5"
         aria-labelledby="display-settings-heading"
@@ -155,7 +158,7 @@ export function ClientSettings() {
                   id={descriptionId}
                   className="mt-1 text-xs leading-5 text-muted-foreground"
                 >
-                  登录 Windows 后自动打开客户端。
+                  登录 Windows 后自动启动客户端。
                 </p>
               </div>
               <button
@@ -219,8 +222,9 @@ export function ClientSettings() {
             中启用或禁用；返回此页会自动刷新状态。
           </p>
         ) : null}
+        <SilentStartupSetting />
         <p className="mt-5 border-t pt-4 text-xs leading-5 text-muted-foreground">
-          此开关只控制桌面界面，关闭不会影响统计服务在后台运行。统计服务随
+          以上选项只控制桌面界面的启动方式，关闭不会影响统计服务在后台运行。统计服务随
           Windows 自动启动，故障恢复由 Windows 负责。
         </p>
       </section>

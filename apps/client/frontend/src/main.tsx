@@ -7,6 +7,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { ClientApp } from "@/components/client-app";
 import { TrayPanel } from "@/components/tray-panel";
 import { ClientThemeProvider } from "@/lib/client-theme";
+import { DesktopUpdatesProvider } from "@/components/desktop-updates";
 import i18n from "@/lib/i18n";
 import "@/index.css";
 
@@ -34,7 +35,7 @@ createRoot(document.getElementById("root")!).render(
       <I18nextProvider i18n={i18n}>
         <QueryClientProvider client={queryClient}>
           <ClientThemeProvider>
-            <ClientApp />
+            <DesktopUpdatesProvider><ClientApp /></DesktopUpdatesProvider>
             <Toaster />
           </ClientThemeProvider>
         </QueryClientProvider>

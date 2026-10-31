@@ -1,4 +1,10 @@
 spring:
+  servlet:
+    multipart:
+      max-file-size: 512MB
+      max-request-size: 514MB
+      file-size-threshold: 0
+      location: ${DESKTOP_UPDATE_STORAGE_DIR:${java.io.tmpdir}/cqg-desktop-releases}/.uploads
   datasource:
     url: ${DATABASE_URL}
     username: ${DATABASE_USERNAME}

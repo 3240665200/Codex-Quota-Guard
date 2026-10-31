@@ -19,6 +19,9 @@ import {
 } from "@/lib/quota-display";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("./silent-startup-setting", () => ({
+  SilentStartupSetting: () => null,
+}));
 
 const invokeMock = vi.mocked(invoke);
 const autostartQueryKey = ["desktop-autostart"];
@@ -104,22 +107,14 @@ describe("ClientSettings autostart synchronization", () => {
   it("persists a single quota display selection without changing autostart", async () => {
     const view = renderSettings();
     await loadedSwitch();
-    expect(
-      screen.getByRole("radio", { name: "剩余" }),
-    ).toBeChecked();
+    expect(screen.getByRole("radio", { name: "剩余" })).toBeChecked();
     fireEvent.click(screen.getByRole("radio", { name: "已用" }));
-    expect(
-      screen.getByRole("radio", { name: "已用" }),
-    ).toBeChecked();
-    expect(
-      screen.getByRole("radio", { name: "剩余" }),
-    ).not.toBeChecked();
+    expect(screen.getByRole("radio", { name: "已用" })).toBeChecked();
+    expect(screen.getByRole("radio", { name: "剩余" })).not.toBeChecked();
     expect(localStorage.getItem(quotaDisplayStorageKey)).toBe("used");
     view.unmount();
     renderSettings();
-    expect(
-      screen.getByRole("radio", { name: "已用" }),
-    ).toBeChecked();
+    expect(screen.getByRole("radio", { name: "已用" })).toBeChecked();
     expectNoAutostartWrites();
   });
 
@@ -130,9 +125,7 @@ describe("ClientSettings autostart synchronization", () => {
       throw new Error("blocked");
     });
     fireEvent.click(screen.getByRole("radio", { name: "已用" }));
-    expect(
-      screen.getByRole("radio", { name: "已用" }),
-    ).toBeChecked();
+    expect(screen.getByRole("radio", { name: "已用" })).toBeChecked();
     expect(quotaPercent("used", 1, null, null)).toBeNull();
     expect(quotaPercent("remaining", 1, null, 100)).toBeNull();
     expect(quotaPercent("used", 120, 0, 100)).toBe(100);

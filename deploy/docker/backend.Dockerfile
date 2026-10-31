@@ -26,6 +26,8 @@ RUN apk add --no-cache curl gcompat \
     && addgroup -S -g 10001 quota \
     && adduser -S -D -H -u 10001 -G quota quota
 WORKDIR /app
+RUN mkdir -p /var/lib/quota-guard/releases/.uploads \
+    && chown -R 10001:10001 /var/lib/quota-guard/releases
 COPY --from=proxy-core /usr/local/bin/sing-box /usr/local/bin/sing-box
 COPY --from=proxy-core /usr/share/licenses/sing-box /usr/share/licenses/sing-box
 ENV MANAGED_PROXY_SING_BOX_PATH=/usr/local/bin/sing-box

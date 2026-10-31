@@ -35,6 +35,8 @@ describe('USD quota dashboard', () => {
     render(<UsdQuotaDashboard billing={example()} />);
     const row=screen.getAllByRole('article',{name:'Alex成员用量'})[0];
     expect(within(row).getByRole('progressbar',{name:'5 小时个人剩余美元额度'})).toHaveAttribute('aria-valuenow','40');
+    expect(within(row).getByRole('progressbar',{name:'5 小时个人剩余美元额度'})).toHaveAttribute('aria-valuetext','40.0%');
+    expect(within(row).getByRole('article',{name:'5 小时个人美元额度'})).toHaveTextContent('40.0%');
     expect(within(row).getByRole('progressbar',{name:'5 小时团队美元用量占比'})).toHaveAttribute('aria-valuenow','10');
   });
   it('uses the saved display mode for all quota windows while retaining contribution shares', () => {
@@ -43,6 +45,7 @@ describe('USD quota dashboard', () => {
     expect(screen.getByRole('progressbar',{name:'个人 5 小时已用美元额度'})).toHaveAttribute('aria-valuenow','25');
     const row=screen.getAllByRole('article',{name:'Alex成员用量'})[0];
     expect(within(row).getByRole('progressbar',{name:'5 小时个人已用美元额度'})).toHaveAttribute('aria-valuenow','60');
+    expect(within(row).getByRole('article',{name:'5 小时个人美元额度'})).toHaveTextContent('60.0%');
     expect(within(row).getByRole('progressbar',{name:'5 小时团队美元用量占比'})).toHaveAttribute('aria-valuenow','10');
   });
   it('keeps duplicate names, disabled members and zero use visible', () => {

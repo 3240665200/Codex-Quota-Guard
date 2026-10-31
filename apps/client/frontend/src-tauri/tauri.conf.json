@@ -1,13 +1,15 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Codex Quota Guard",
-  "version": "0.4.10",
+  "version": "0.4.12",
   "identifier": "com.codexquotaguard.desktop",
   "build": {
     "beforeDevCommand": "pnpm dev:renderer",
     "beforeBuildCommand": "pnpm build:desktop",
     "beforeBundleCommand": "node verify-desktop-package.mjs",
-    "features": ["custom-protocol"],
+    "features": [
+      "custom-protocol"
+    ],
     "devUrl": "http://localhost:3000",
     "frontendDist": "../dist"
   },
@@ -15,6 +17,8 @@
     "windows": [
       {
         "label": "main",
+        "visible": false,
+        "focus": false,
         "title": "Codex Quota Guard",
         "width": 960,
         "height": 640,
@@ -50,7 +54,9 @@
         "installMode": "currentUser",
         "template": "./windows/installer-template.nsi",
         "installerHooks": "./windows/installer-hooks.nsh",
-        "languages": ["SimpChinese"]
+        "languages": [
+          "SimpChinese"
+        ]
       },
       "webviewInstallMode": {
         "type": "offlineInstaller",
@@ -66,6 +72,18 @@
     "linux": {
       "deb": {
         "depends": []
+      }
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDFCNzFGMzA3QzFFRkIxQjEKUldTeHNlL0JCL054RzJ3VU1DaVhCbThqMnRLdkhWTjlIUk16UFlXTzc4RGppNTVVaVBiTHg3Um0K",
+      "endpoints": [],
+      "requireSignedVersion": true,
+      "dangerousInsecureTransportProtocol": true,
+      "windows": {
+        "installMode": "basicUi"
       }
     }
   }

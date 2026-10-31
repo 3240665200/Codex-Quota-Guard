@@ -22,6 +22,11 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
 @RestControllerAdvice
 public class ApiExceptionHandler {
 
+    @ExceptionHandler(org.springframework.web.multipart.MaxUploadSizeExceededException.class)
+    public ResponseEntity<ApiError> uploadTooLarge() {
+        return response(HttpStatus.PAYLOAD_TOO_LARGE, "UPLOAD_TOO_LARGE", "上传文件过大；桌面安装包须不超过 512 MiB。", List.of());
+    }
+
     private static final Logger LOGGER = LoggerFactory.getLogger(ApiExceptionHandler.class);
     private static final AtomicLong LAST_METER_REJECTION_LOG = new AtomicLong();
     private static final long METER_REJECTION_LOG_INTERVAL_MILLIS = 300_000L;

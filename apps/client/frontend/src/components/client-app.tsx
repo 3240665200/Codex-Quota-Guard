@@ -78,7 +78,7 @@ export function ClientApp() {
       setLocalSignedOut(true);
       queryClient.removeQueries({
         predicate: (query) =>
-          !["startup-gate", "system-session"].includes(
+          !["startup-gate", "system-session", "desktop-updates"].includes(
             String(query.queryKey[0]),
           ),
       });
@@ -122,7 +122,7 @@ export function ClientApp() {
   const handleAuthenticated = (session: SystemSession) => {
     queryClient.removeQueries({
       predicate: (query) =>
-        !["startup-gate", "system-session"].includes(String(query.queryKey[0])),
+        !["startup-gate", "system-session", "desktop-updates"].includes(String(query.queryKey[0])),
     });
     setLogoutError(null);
     setLocalSignedOut(false);
@@ -141,7 +141,7 @@ export function ClientApp() {
     setLocalSignedOut(true);
     queryClient.removeQueries({
       predicate: (query) =>
-        !["startup-gate", "system-session"].includes(String(query.queryKey[0])),
+        !["startup-gate", "system-session", "desktop-updates"].includes(String(query.queryKey[0])),
     });
     queryClient.setQueryData(["system-session"], signedOutSession);
     await queryClient.invalidateQueries({ queryKey: ["system-session"] });

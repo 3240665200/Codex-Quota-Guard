@@ -9,6 +9,7 @@ export function nativeBuildEnvironment(
     const cache = result.CQG_BUILD_CACHE_DIR ?? 'D:\\BuildCache\\pingche\\cache';
     result.CARGO_TARGET_DIR ??= path.win32.join(cache, 'rust');
     result.CARGO_HOME ??= path.win32.join(cache, 'cargo');
+    result.CARGO_BUILD_JOBS ??= '1';
     result.TEMP = result.TMP = result.TMPDIR = result.CQG_BUILD_TEMP_DIR ?? path.win32.join(cache, 'tmp');
     const flags = result.CARGO_ENCODED_RUSTFLAGS
       ? result.CARGO_ENCODED_RUSTFLAGS.split("\x1f")

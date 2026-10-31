@@ -8,8 +8,8 @@ use tauri::{
 };
 
 const LABEL: &str = "tray-panel";
-const PANEL_WIDTH: f64 = 760.0;
-const PANEL_HEIGHT: f64 = 640.0;
+const PANEL_WIDTH: f64 = 640.0;
+const PANEL_HEIGHT: f64 = 480.0;
 
 #[derive(Default)]
 pub(crate) struct PanelState {

@@ -60,12 +60,14 @@ services:
       CORS_ALLOWED_ORIGINS: ${PUBLIC_ORIGIN:?Set the public web origin}
       SERVER_ADDRESS: 0.0.0.0
       WEB_SERVER_PORT: "8080"
+      DESKTOP_UPDATE_STORAGE_DIR: /var/lib/quota-guard/releases
       JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=70 -Duser.timezone=UTC
     depends_on:
       postgres:
         condition: service_healthy
     networks: [database, application]
     volumes:
+      - desktop_releases:/var/lib/quota-guard/releases
       - type: bind
         source: ./secrets
         target: /run/secrets
@@ -114,6 +116,7 @@ services:
 
 volumes:
   pgdata:
+  desktop_releases:
 
 networks:
   database:

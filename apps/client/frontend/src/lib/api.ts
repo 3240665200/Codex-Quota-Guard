@@ -15,6 +15,9 @@ const autostartSchema = z.object({
   supported: z.boolean(),
   enabled: z.boolean(),
 });
+const launchPreferencesSchema = z.object({ silentStartup: z.boolean() });
+const desktopVersionSchema = z.object({ currentVersion: z.string().regex(/^\d+\.\d+\.\d+$/), target: z.enum(["windows", "darwin", "linux"]), arch: z.enum(["x86_64", "aarch64"]) });
+const desktopUpdateSchema = z.object({ currentVersion: z.string().max(32), latestVersion: z.string().max(32).regex(/^\d+\.\d+\.\d+$/).nullable(), available: z.boolean(), notes: z.string().max(4000), publishedAt: z.string().nullable(), sizeBytes: z.number().int().min(0).max(512 * 1024 * 1024), sha256: z.string().regex(/^[a-f0-9]{64}$/i).nullable() });
 
 const startupGateSchema = z.object({
   state: z.enum([
@@ -1450,6 +1453,7 @@ async function saveServerConfigNow(
   const saved = serverConfigSchema.parse(payload);
   if (revision !== configRevision) return currentConfig ?? saved;
   currentConfig = saved;
+  window.dispatchEvent(new Event("quota-guard:server-changed"));
   return saved;
 }
 
@@ -1492,6 +1496,21 @@ export const api = {
   autostartStatus: () => invokeValidated("autostart_status", autostartSchema),
   setAutostart: (enabled: boolean) =>
     invokeValidated("autostart_set", autostartSchema, { enabled }),
+  launchPreferences: () => invokeValidated("launch_preferences_get", launchPreferencesSchema),
+  setSilentStartup: (silentStartup: boolean) =>
+    invokeValidated("launch_preferences_set", launchPreferencesSchema, { silentStartup }),
+  desktopUpdateCheck: async (signal?: AbortSignal) => {
+    const local = desktopVersionSchema.parse(await invoke("desktop_update_info"));
+    const config = await getServerConfig(true);
+    const origin = serverOrigin(config);
+    const response = await axios.get<unknown>(`${origin}/api/v1/desktop-updates/info/${local.target}/${local.arch}/${local.currentVersion}`, {
+      signal, timeout: 20_000, withCredentials: false, headers: { Accept: "application/json" },
+    });
+    const remote = desktopUpdateSchema.parse(response.data);
+    if (origin !== serverOrigin(await getServerConfig(true))) throw new Error("服务器地址已变化，请重新检查更新。");
+    if (remote.currentVersion !== local.currentVersion) throw new Error("更新信息与当前客户端版本不匹配。");
+    return { ...remote, ...local, origin };
+  },
   startupGateCheck: () =>
     invokeValidated("startup_gate_check", startupGateSchema),
   startupGuardStatus: () =>
@@ -1728,6 +1747,21 @@ export const api = {
 };
 
 const safeBackendMessages = new Set([
+  "无法读取静默启动设置，请检查本机客户端设置目录。",
+  "无法保存静默启动设置，请检查本机客户端设置目录权限。",
+  "无法读取静默启动设置。", "无法保存静默启动设置。",
+  "服务器地址已变化，请重新检查更新。", "更新信息与当前客户端版本不匹配。",
+  "更新提醒记录无法读取。", "更新提醒目录不可用。", "更新提醒目录不可写。", "更新提醒保存失败。", "更新提醒暂不可用。",
+  "系统未能显示更新通知，请在设置中查看更新。",
+  "更新版本号无效。", "客户端版本号无效。", "该版本不高于当前版本，请重新检查更新。",
+  "已有更新正在进行。", "更新地址无效。", "无法配置更新检查。", "无法初始化更新程序。",
+  "无法获取更新信息，请检查网络或稍后重试。", "该更新已撤回或当前已是最新版本，请重新检查。",
+  "后台版本信息已变化，请重新检查后更新。", "更新包地址无效，请联系管理员重新发布。", "更新包地址无效。",
+  "更新包大小信息无效。", "更新包缺少校验信息。", "无法创建更新下载。", "下载连接失败，请检查网络。",
+  "下载请求未成功或更新包已变化，请重新检查。", "下载中断，请重试。", "下载超过预期大小，已停止更新。",
+  "内存不足，请关闭其他程序后重试。", "更新包大小不符，请重新下载。", "更新包校验失败，请重新下载。",
+  "更新包签名或版本校验失败，已停止更新。", "无法启动更新程序，请重试或手动安装。",
+  "更新程序未能启动，已恢复主窗口。请重新启动客户端后重试。",
   "登录辅助仅在取得本次绑定名额后开放，绑定完成后自动关闭。",
   bindingRequiredMessage,
   authRequiredMessage,

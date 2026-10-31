@@ -178,6 +178,26 @@ describe("login assistance API boundary", () => {
   });
 });
 
+describe("desktop update API boundary", () => {
+  beforeEach(async () => harness.prepare(api));
+  it("uses anonymous Axios version checks without sending login credentials or losing the session", async () => {
+    const previous = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command, args) => command === "desktop_update_info"
+      ? { currentVersion: "0.4.12", target: "windows", arch: "x86_64" } : previous(command, args));
+    harness.respond({ currentVersion: "0.4.12", latestVersion: "0.4.13", available: true, notes: "Test", publishedAt: "2026-10-31T00:00:00Z", sizeBytes: 100, sha256: "a".repeat(64) });
+    expect((await api.desktopUpdateCheck()).latestVersion).toBe("0.4.13");
+    const request = harness.requestsFor("GET", "/api/v1/desktop-updates/info/windows/x86_64/0.4.12")[0];
+    expect(request.headers?.Authorization).toBeUndefined();
+    expect(request.withCredentials).toBe(false);
+    expect(invokeMock.mock.calls.some(([command]) => command === "session_vault_clear")).toBe(false);
+    expect((await api.systemSession()).authenticated).toBe(true);
+  });
+  it.each(["更新包签名或版本校验失败，已停止更新。", "下载中断，请重试。", "系统未能显示更新通知，请在设置中查看更新。"])("preserves bounded update failures without exposing extra details: %s", message => {
+    expect(getApiErrorMessage(message)).toBe(message);
+    expect(getApiErrorMessage(`${message} token=synthetic-secret`)).not.toContain("synthetic-secret");
+  });
+});
+
 describe("Tauri API boundary", () => {
   beforeEach(async () => harness.prepare(api));
 

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Search, Users } from "lucide-react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
+import { QuotaProgress } from "./quota-progress";
 import { useQuotaDisplay } from "@/lib/quota-display";
 import {
   compareUsd,
@@ -31,7 +32,7 @@ function Window({
   compact?: boolean;
 }) {
   const { mode, label: displayLabel } = useQuotaDisplay();
-  const percent = usdPercent(quota, mode);
+  const percent = quota.pendingEvents ? null : usdPercent(quota, mode);
   const exhausted =
     quota.limitUsd !== null && compareUsd(quota.usedUsd, quota.limitUsd) >= 0;
   const amount = mode === "used" ? quota.usedUsd : quota.remainingUsd;
@@ -59,11 +60,9 @@ function Window({
         )}
       </div>
       {percent !== null ? (
-        <Progress
-          className="h-1.5"
+        <QuotaProgress
           value={percent}
-          aria-label={`${label}${displayLabel}美元额度`}
-          aria-valuenow={percent}
+          label={`${label}${displayLabel}美元额度`}
         />
       ) : (
         <div className="cqg-usd-no-limit" aria-hidden="true" />

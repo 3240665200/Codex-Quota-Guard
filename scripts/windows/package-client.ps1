@@ -48,7 +48,12 @@ Write-Host "Building desktop installer. Rust output: $targetDirectory"
 Write-Host "Build temporary files: $temporaryDirectory"
 Write-Host "Installer output: $OutputDirectory"
 $startedAt = Get-Date
-$buildEnvironment = @{CARGO_TARGET_DIR=$targetDirectory; CARGO_HOME=$cargoHome; TEMP=$temporaryDirectory; TMP=$temporaryDirectory; TMPDIR=$temporaryDirectory}
+$signingKey = [Environment]::GetEnvironmentVariable('TAURI_SIGNING_PRIVATE_KEY','Process')
+if (!$signingKey) { $signingKey = 'D:\BuildCache\pingche\private\desktop-updater\desktop-update.key' }
+if (!(Test-Path -LiteralPath $signingKey -PathType Leaf) -and $signingKey.Length -lt 100) {
+    throw 'Updater signing key is unavailable. Set TAURI_SIGNING_PRIVATE_KEY to the private publisher key file; do not generate a replacement key for an existing app.'
+}
+$buildEnvironment = @{CARGO_TARGET_DIR=$targetDirectory; CARGO_HOME=$cargoHome; TEMP=$temporaryDirectory; TMP=$temporaryDirectory; TMPDIR=$temporaryDirectory; CARGO_BUILD_JOBS='1'; TAURI_SIGNING_PRIVATE_KEY=$signingKey}
 $previousEnvironment = @{}
 foreach ($name in $buildEnvironment.Keys) {
     $previousEnvironment[$name] = [Environment]::GetEnvironmentVariable($name,'Process')
@@ -94,11 +99,14 @@ $releaseDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 $meterVersion = ((& $builtMeter --version) -replace '^quota-guard-meter ', '').Trim()
 New-Item -ItemType Directory -Path $releaseDirectory -Force | Out-Null
 foreach ($installer in $installers) {
+    $signatureSource = $installer.FullName + '.sig'
+    if (!(Test-Path -LiteralPath $signatureSource -PathType Leaf)) { throw 'The installer updater signature is missing.' }
     $destination = Join-Path $releaseDirectory $installer.Name
     $sha256 = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash
     Move-Item -LiteralPath $installer.FullName -Destination $destination -Force
     if ((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash -ne $sha256) { throw 'Installer transfer verification failed.' }
-    [ordered]@{ version=$version; meterVersion=$meterVersion; installer=$installer.Name; sha256=$sha256; createdAt=[DateTime]::UtcNow.ToString('o') } |
+    Move-Item -LiteralPath $signatureSource -Destination ($destination + '.sig') -Force
+    [ordered]@{ version=$version; meterVersion=$meterVersion; installer=$installer.Name; signature=($installer.Name + '.sig'); sha256=$sha256; createdAt=[DateTime]::UtcNow.ToString('o') } |
         ConvertTo-Json | Set-Content -LiteralPath (Join-Path $releaseDirectory 'package-manifest.json') -Encoding utf8
     Write-Host $destination
 }
