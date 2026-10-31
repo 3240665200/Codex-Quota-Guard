@@ -151,6 +151,16 @@ trait GuardOps {
     fn conflict_current(&self, lease: &GuardLease, evidence: &ConflictEvidence) -> bool;
 }
 
+// A terminated Windows process object can remain open after its PID disappears
+// from process enumeration. Its token/session queries may already fail.
+fn live_identity<P:GuardProcess>(process:&P)->Result<Option<ProcessIdentity>,()> {
+    if process.exited(0)? {return Ok(None);}
+    match process.identity() {
+        Ok(identity)=>Ok(Some(identity)),
+        Err(())=>if process.exited(0)? {Ok(None)} else {Err(())},
+    }
+}
+
 fn enforce<O: GuardOps>(lease: &GuardLease, owner_sid: &str, ops: &O) -> GuardCheck {
     let mut detected = false;
     let mut confirmed_termination_count = 0u64;
@@ -162,7 +172,7 @@ fn enforce<O: GuardOps>(lease: &GuardLease, owner_sid: &str, ops: &O) -> GuardCh
         let Some(app) = ops.open(lease.pid)? else {
             return Ok(GuardState::Inactive);
         };
-        let app_id = app.identity()?;
+        let Some(app_id) = live_identity(&app)? else {return Ok(GuardState::Inactive);};
         if app_id.pid != lease.pid
             || app_id.created_at != lease.created_at
             || app_id.owner_sid != owner_sid
@@ -190,7 +200,7 @@ fn enforce<O: GuardOps>(lease: &GuardLease, owner_sid: &str, ops: &O) -> GuardCh
         let mut terminated = false;
         for pid in ops.cc_candidates()? {
             let Some(cc) = ops.open(pid)? else { continue };
-            let cc_id = cc.identity()?;
+            let Some(cc_id) = live_identity(&cc)? else {continue;};
             if cc_id.pid != pid
                 || cc_id.created_at == 0
                 || !exact_exe(&cc_id.image, CC_EXE)
@@ -700,9 +710,13 @@ mod tests {
         terminate_count: Rc<Cell<u32>>,
         exit_after_terminate: bool,
         creation_override: Rc<Cell<Option<u64>>>,
+        identity_error: bool,
+        exit_during_identity: bool,
     }
     impl GuardProcess for MockProcess {
         fn identity(&self) -> Result<ProcessIdentity, ()> {
+            if self.exit_during_identity {self.exits.set(true);}
+            if self.identity_error {return Err(());}
             let mut id = self.id.clone();
             if let Some(created_at) = self.creation_override.get() {
                 id.created_at = created_at;
@@ -787,6 +801,8 @@ mod tests {
             terminate_count: Rc::new(Cell::new(0)),
             exit_after_terminate: true,
             creation_override: Rc::new(Cell::new(None)),
+            identity_error: false,
+            exit_during_identity: false,
         }
     }
     fn lease() -> GuardLease {
@@ -808,6 +824,28 @@ mod tests {
         }
     }
 
+    #[test]
+    fn exited_desktop_with_an_unavailable_token_withdraws_guard_authority() {
+        let cc=process(20,CC_EXE,"S-1-5-21-1",2);let count=cc.terminate_count.clone();let mut mock=ops(cc);
+        let app=mock.processes.get_mut(&10).unwrap();app.exits.set(true);app.identity_error=true;
+        let result=enforce(&lease(),"S-1-5-21-1",&mock);
+        assert_eq!(result.state,GuardState::Inactive);assert_eq!(count.get(),0);assert!(!mock.claimed.get());
+    }
+    #[test]
+    fn a_desktop_exiting_during_identity_inspection_is_not_a_guard_failure() {
+        let mut mock=ops(process(20,CC_EXE,"S-1-5-21-1",2));let app=mock.processes.get_mut(&10).unwrap();app.exit_during_identity=true;app.identity_error=true;
+        assert_eq!(enforce(&lease(),"S-1-5-21-1",&mock).state,GuardState::Inactive);
+    }
+    #[test]
+    fn an_uninspectable_live_desktop_remains_fail_closed() {
+        let cc=process(20,CC_EXE,"S-1-5-21-1",2);let count=cc.terminate_count.clone();let mut mock=ops(cc);mock.processes.get_mut(&10).unwrap().identity_error=true;
+        assert_eq!(enforce(&lease(),"S-1-5-21-1",&mock).state,GuardState::Error);assert_eq!(count.get(),0);
+    }
+    #[test]
+    fn an_exited_cc_candidate_with_no_token_is_skipped() {
+        let mut cc=process(20,CC_EXE,"S-1-5-21-1",2);cc.exits.set(true);cc.identity_error=true;let count=cc.terminate_count.clone();
+        assert_eq!(enforce(&lease(),"S-1-5-21-1",&ops(cc)).state,GuardState::Clear);assert_eq!(count.get(),0);
+    }
     #[test]
     fn desktop_lease_and_cc_switch_process_alone_never_authorize_termination() {
         let cc = process(20, CC_EXE, "S-1-5-21-1", 2);

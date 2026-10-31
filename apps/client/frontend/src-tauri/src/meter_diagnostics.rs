@@ -81,9 +81,9 @@ pub(crate) fn diagnose(app: &tauri::AppHandle) -> Diagnostics {
             "统计程序版本与文件",
             version.status == MeterVersionState::Current,
             if version.status == MeterVersionState::Current {
-                "运行文件与安装包一致。"
+                "统计程序版本与运行状态正常，较新的独立版本会保留。"
             } else {
-                "版本或文件校验未通过，修复将使用当前安装包内的统计程序。"
+                "版本或文件校验未通过，修复将恢复统计程序并保留较新的独立版本。"
             },
             true,
         ),
@@ -119,7 +119,9 @@ pub(crate) fn diagnose(app: &tauri::AppHandle) -> Diagnostics {
             false,
         ));
     }
-    if status.error_code.is_some() {
+    if guard_repairable(status.error_code.as_deref()) {
+        checks.push(check("CC_SWITCH_GUARD","CC Switch 检测记录",false,"旧进程退出后可能留下失效检测记录。修复会备份失效记录并重新建立检测连接，不会结束其他仍在运行的客户端。",true));
+    } else if status.error_code.is_some() {
         checks.push(check(
             "REPORT",
             "用量上报",
@@ -137,3 +139,8 @@ pub(crate) fn diagnose(app: &tauri::AppHandle) -> Diagnostics {
         checks,
     }
 }
+
+fn guard_repairable(code:Option<&str>)->bool {
+    matches!(code,Some("METER_CC_SWITCH_GUARD_FAILED"|"METER_GUARD_CHECK_STALE"|"METER_GUARD_CHECK_UNAVAILABLE"|"METER_GUARD_THREAD_UNAVAILABLE"))
+}
+#[cfg(test)]mod tests {use super::*;#[test]fn guard_failures_are_repairable_without_reclassifying_identity_or_queue_failures(){assert!(guard_repairable(Some("METER_CC_SWITCH_GUARD_FAILED")));assert!(guard_repairable(Some("METER_GUARD_CHECK_STALE")));assert!(!guard_repairable(Some("METER_QUEUE_CONTEXT_MISMATCH")));assert!(!guard_repairable(None));}}

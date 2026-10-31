@@ -18,6 +18,7 @@ use std::{
 };
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
+use crate::guard_lease_repair::{self,GuardLeaseRecord,Liveness};
 
 const GUARD_WAIT: Duration = Duration::from_secs(18);
 const GUARD_FRESH_SECONDS: u64 = 30;
@@ -134,14 +135,6 @@ impl RestoreTracker {
     }
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GuardLeaseRecord {
-    pid: u32,
-    created_at: u64,
-    lease_id: String,
-    policy: String,
-}
 
 fn evidence_lease_matches(
     record: &GuardLeaseRecord,
@@ -198,6 +191,15 @@ impl Default for StartupGate {
 }
 
 impl StartupGate {
+    pub(crate) fn prepare_meter_repair(&self,app:&AppHandle)->Result<(),String> {
+        let _operation=self.operation.lock().map_err(|_|"检测记录正在使用，请稍后重试。")?;
+        self.ready.store(false,Ordering::Release);
+        let mut lease=self.lease.lock().map_err(|_|"检测记录正在使用，请稍后重试。")?;
+        if let Some(owned)=lease.take(){owned.stop();}
+        drop(lease);
+        let Some(path)=status_path(app).and_then(|path|path.parent().map(|parent|parent.join(LEASE_FILE))) else{return Err("无法读取客户端检测记录目录。".into());};
+        guard_lease_repair::archive_stale(&path)?;Ok(())
+    }
     pub(crate) fn ready_flag(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.ready)
     }
@@ -682,26 +684,7 @@ fn process_created_at() -> Option<u64> {
 }
 
 #[cfg(windows)]
-fn process_is_same(record: &GuardLeaseRecord) -> bool {
-    use windows_sys::Win32::{
-        Foundation::{CloseHandle, FILETIME},
-        System::Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
-    };
-    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, record.pid) };
-    if process.is_null() {
-        return false;
-    }
-    let mut created = FILETIME::default();
-    let mut exited = FILETIME::default();
-    let mut kernel = FILETIME::default();
-    let mut user = FILETIME::default();
-    let success =
-        unsafe { GetProcessTimes(process, &mut created, &mut exited, &mut kernel, &mut user) } != 0;
-    unsafe { CloseHandle(process) };
-    success
-        && ((u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
-            == record.created_at
-}
+fn process_is_same(record: &GuardLeaseRecord) -> bool { guard_lease_repair::liveness(record) != Liveness::Stale }
 
 #[cfg(not(windows))]
 fn process_is_same(_record: &GuardLeaseRecord) -> bool {

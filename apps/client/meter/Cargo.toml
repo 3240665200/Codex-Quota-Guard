@@ -1,6 +1,6 @@
 [package]
 name = "quota-guard-meter"
-version = "0.2.13"
+version = "0.2.14"
 edition = "2021"
 rust-version = "1.85"
 

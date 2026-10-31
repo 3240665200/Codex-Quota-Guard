@@ -45,7 +45,8 @@ export function MeterMaintenance() {
     <div className="mt-4 border-t pt-3 text-xs">
       <h4 className="font-medium">统计程序自检与修复</h4>
       <p className="mt-1 text-muted-foreground">
-        检查服务、开机自启、故障恢复、版本和扫描心跳。修复需要 Windows
+        检查服务、开机自启、故障恢复、版本、扫描心跳和 CC Switch
+        检测记录。修复需要 Windows
         管理员授权，保留设备配对、用量队列与原始记录时间。
       </p>
       <div className="mt-3 flex flex-wrap gap-2">
@@ -121,8 +122,8 @@ export function MeterMaintenance() {
               修复统计程序
             </Dialog.Title>
             <Dialog.Description className="mt-3 text-sm text-muted-foreground">
-              将使用当前安装包恢复统计程序文件、自动启动和 Windows
-              故障恢复策略，并重新启动统计服务。系统会请求管理员授权；不会删除配对、队列或修改用量时间。
+              将备份清理失效的客户端检测记录，恢复统计程序、自动启动和 Windows
+              故障恢复策略，并重新建立检测连接。较新的独立统计程序会保留。系统会请求管理员授权；不会删除配对、队列或修改用量时间。
             </Dialog.Description>
             <div className="mt-4 flex justify-end gap-2">
               <Dialog.Close asChild>

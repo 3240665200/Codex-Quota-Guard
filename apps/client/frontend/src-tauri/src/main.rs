@@ -7,6 +7,7 @@ mod codex_rate_limits;
 mod conflict_evidence;
 mod conflict_notice;
 mod launch_preferences;
+mod guard_lease_repair;
 mod desktop_updates;
 mod meter_service;
 mod meter_diagnostics;
@@ -114,7 +115,11 @@ async fn meter_service_diagnose(app: tauri::AppHandle) -> CommandResult<meter_di
 #[tauri::command]
 async fn meter_service_repair(app: tauri::AppHandle) -> CommandResult<meter_diagnostics::Diagnostics> {
     tauri::async_runtime::spawn_blocking(move || {
-        meter_service::repair_service(&app)?;
+        let gate=app.state::<startup_gate::StartupGate>();
+        gate.prepare_meter_repair(&app)?;
+        let repaired=meter_service::repair_service(&app);
+        let _=gate.check(&app);
+        repaired?;
         Ok(meter_diagnostics::diagnose(&app))
     }).await.map_err(|_| "统计程序修复失败，请重新自检。".to_owned())?
 }

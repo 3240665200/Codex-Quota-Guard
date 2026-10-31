@@ -31,19 +31,17 @@ it("only diagnoses and repairs after separate user actions, then shows fresh res
   const diagnose = vi
     .spyOn(api, "meterServiceDiagnose")
     .mockResolvedValue(result);
-  const repair = vi
-    .spyOn(api, "meterServiceRepair")
-    .mockResolvedValue({
-      ...result,
-      checks: [
-        {
-          ...result.checks[0],
-          state: "PASS",
-          repairable: false,
-          detail: "正在后台运行",
-        },
-      ],
-    });
+  const repair = vi.spyOn(api, "meterServiceRepair").mockResolvedValue({
+    ...result,
+    checks: [
+      {
+        ...result.checks[0],
+        state: "PASS",
+        repairable: false,
+        detail: "正在后台运行",
+      },
+    ],
+  });
   view();
   expect(diagnose).not.toHaveBeenCalled();
   expect(repair).not.toHaveBeenCalled();
@@ -72,4 +70,41 @@ it("keeps authorization failures visible and permits retry without clearing data
     "已取消管理员授权",
   );
   expect(screen.getByRole("button", { name: "修复统计程序" })).toBeEnabled();
+});
+it("offers repair for an expired guard record without treating it as a queue ownership error", async () => {
+  vi.spyOn(api, "meterServiceDiagnose").mockResolvedValue({
+    ...result,
+    checks: [
+      {
+        code: "CC_SWITCH_GUARD",
+        label: "CC Switch 检测记录",
+        state: "WARNING",
+        detail: "旧进程已退出",
+        repairable: true,
+      },
+    ],
+  });
+  const repair = vi
+    .spyOn(api, "meterServiceRepair")
+    .mockResolvedValue({
+      ...result,
+      checks: [
+        {
+          code: "CC_SWITCH_GUARD",
+          label: "CC Switch 检测记录",
+          state: "PASS",
+          detail: "检测记录已重建",
+          repairable: false,
+        },
+      ],
+    });
+  view();
+  await userEvent.click(screen.getByRole("button", { name: "开始自检" }));
+  const button = screen.getByRole("button", { name: "修复统计程序" });
+  await waitFor(() => expect(button).toBeEnabled());
+  await userEvent.click(button);
+  expect(screen.getByRole("dialog")).toHaveTextContent("失效的客户端检测记录");
+  await userEvent.click(screen.getByRole("button", { name: "确认修复" }));
+  expect(await screen.findByText("检测记录已重建")).toBeVisible();
+  expect(repair).toHaveBeenCalledTimes(1);
 });

@@ -1,6 +1,6 @@
 {
   "name": "codex-quota-guard-monorepo",
-  "version": "0.4.14",
+  "version": "0.4.15",
   "private": true,
   "description": "Codex Quota Guard client and administration monorepo",
   "packageManager": "pnpm@10.12.3",
