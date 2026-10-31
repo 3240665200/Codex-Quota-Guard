@@ -61,6 +61,7 @@ services:
       SERVER_ADDRESS: 0.0.0.0
       WEB_SERVER_PORT: "8080"
       DESKTOP_UPDATE_STORAGE_DIR: /var/lib/quota-guard/releases
+      APP_DESKTOP_UPDATE_STORAGE_DIR: /var/lib/quota-guard/releases
       JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=70 -Duser.timezone=UTC
     depends_on:
       postgres:
