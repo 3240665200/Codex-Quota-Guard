@@ -38,6 +38,7 @@ fn run_foreground(config_path: &Path, once: bool) -> Result<(), String> {
 }
 
 enum Command {
+    VerifyUpdate { directory: PathBuf },
     SpeedProbe { home: PathBuf },
     Run {
         path: PathBuf,
@@ -54,6 +55,12 @@ fn command_from_args(
     mut arguments: impl Iterator<Item = std::ffi::OsString>,
 ) -> Result<Command, String> {
     let mode = arguments.next().ok_or("METER_ARGUMENTS_INVALID")?;
+    if mode=="verify-update" {
+        if arguments.next().as_deref()!=Some(std::ffi::OsStr::new("--directory")){return Err("METER_ARGUMENTS_INVALID".into());}
+        let directory=PathBuf::from(arguments.next().ok_or("METER_ARGUMENTS_INVALID")?);
+        if !directory.is_absolute() || arguments.next().is_some(){return Err("METER_ARGUMENTS_INVALID".into());}
+        return Ok(Command::VerifyUpdate {directory});
+    }
     if mode == "speed-probe" {
         if arguments.next().as_deref()!=Some(std::ffi::OsStr::new("--codex-home")) { return Err("METER_ARGUMENTS_INVALID".into()); }
         let home=PathBuf::from(arguments.next().ok_or("METER_ARGUMENTS_INVALID")?);
@@ -104,6 +111,13 @@ fn command_from_args(
 }
 
 fn main() {
+    if std::env::args_os().nth(1).as_deref()==Some(std::ffi::OsStr::new("verify-update")) {
+        let result=command_from_args(std::env::args_os().skip(1)).and_then(|command|match command {
+            Command::VerifyUpdate {directory}=>quota_guard_meter::self_update::verify_work_directory(&directory),
+            _=>Err("METER_ARGUMENTS_INVALID".into()),
+        });
+        if let Err(code)=result {eprintln!("{code}");std::process::exit(1);}return;
+    }
     if std::env::var_os("QUOTA_GUARD_CODEX_CAPTURE").as_deref() == Some(std::ffi::OsStr::new("1")) {
         let arguments=std::env::args_os().skip(1).collect::<Vec<_>>();
         match quota_guard_meter::run_codex_cli(&arguments) {
@@ -117,6 +131,7 @@ fn main() {
     }
     let outcome = (|| {
         let (config_path, service, once) = match command_from_args(std::env::args_os().skip(1))? {
+            Command::VerifyUpdate {directory}=>{quota_guard_meter::self_update::verify_work_directory(&directory)?;return Ok(());}
             Command::SpeedProbe { home } => { println!("{}",serde_json::to_string(&quota_guard_meter::speed_detection_probe(&home)).map_err(|_|"METER_PROBE_INVALID")?);return Ok(()); }
             Command::PrepareServerState { path, state_dir } => {
                 prepare_server_state(&path, &state_dir)?;
@@ -244,6 +259,7 @@ mod windows_service_entry {
             return;
         }
         set_status(handle, SERVICE_START_PENDING, 0, 0, 10_000);
+        let updater=CONFIG.get().cloned().map(quota_guard_meter::self_update::Supervisor::start);
         let result = CONFIG
             .get()
             .ok_or_else(|| "METER_SERVICE_CONFIG_INVALID".to_owned())
@@ -253,6 +269,7 @@ mod windows_service_entry {
             set_status(handle, SERVICE_STOPPED, 0, 1, 0);
             return;
         };
+        runtime.set_shutdown_signal(&STOP);
         set_status(
             handle,
             SERVICE_RUNNING,
@@ -262,6 +279,7 @@ mod windows_service_entry {
         );
         while !STOP.load(Ordering::SeqCst) {
             runtime.tick();
+            if let Some(updater)=&updater {updater.heartbeat();}
             if runtime.fatal_error().is_some() {
                 let _ = runtime.shutdown();
                 set_status(handle, SERVICE_STOPPED, 0, 1, 0);

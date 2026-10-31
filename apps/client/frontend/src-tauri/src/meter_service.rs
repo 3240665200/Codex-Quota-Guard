@@ -24,6 +24,66 @@ pub(crate) struct MeterVersionStatus {
     pub status: MeterVersionState,
 }
 
+fn assess_version(
+    installed: Option<&str>,
+    bundled: Option<&str>,
+    current_hash: Option<&str>,
+    bundled_hash: Option<&str>,
+    running: bool,
+) -> (Option<bool>, MeterVersionState) {
+    let order = installed
+        .and_then(|v| semver::Version::parse(v).ok())
+        .zip(bundled.and_then(|v| semver::Version::parse(v).ok()))
+        .map(|(a, b)| a.cmp(&b));
+    match order {
+        Some(std::cmp::Ordering::Greater) => (
+            Some(false),
+            if running {
+                MeterVersionState::Current
+            } else {
+                MeterVersionState::Unknown
+            },
+        ),
+        Some(std::cmp::Ordering::Less) => (Some(true), MeterVersionState::UpgradeRequired),
+        _ => match (current_hash, bundled_hash) {
+            (Some(a), Some(b)) if !a.eq_ignore_ascii_case(b) => {
+                (Some(true), MeterVersionState::UpgradeRequired)
+            }
+            (Some(_), Some(_)) if running => (Some(false), MeterVersionState::Current),
+            _ => (None, MeterVersionState::Unknown),
+        },
+    }
+}
+
+#[cfg(test)]
+mod independent_version_tests {
+    use super::*;
+    #[test]
+    fn a_newer_independent_service_is_current_even_with_a_different_bundled_hash() {
+        assert_eq!(
+            assess_version(
+                Some("0.2.14"),
+                Some("0.2.13"),
+                Some("newer"),
+                Some("bundled"),
+                true
+            ),
+            (Some(false), MeterVersionState::Current)
+        );
+    }
+    #[test]
+    fn old_or_modified_same_version_services_still_require_repair() {
+        assert_eq!(
+            assess_version(Some("0.2.12"), Some("0.2.13"), Some("a"), Some("a"), true),
+            (Some(true), MeterVersionState::UpgradeRequired)
+        );
+        assert_eq!(
+            assess_version(Some("0.2.13"), Some("0.2.13"), Some("a"), Some("b"), true),
+            (Some(true), MeterVersionState::UpgradeRequired)
+        );
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub(crate) enum MeterSync {
@@ -394,15 +454,13 @@ mod windows {
         }
         let installed_version = crate::meter_status::meter_status(app).version;
         let configured_hash = crate::meter_status::meter_connection_binary_hash(app);
-        let (needs_upgrade, status) = match (configured_hash, bundled_hash) {
-            (Some(current), Some(bundled)) if !current.eq_ignore_ascii_case(&bundled) => {
-                (Some(true), MeterVersionState::UpgradeRequired)
-            }
-            (Some(_), Some(_)) if observation == ServiceObservation::Running => {
-                (Some(false), MeterVersionState::Current)
-            }
-            _ => (None, MeterVersionState::Unknown),
-        };
+        let (needs_upgrade, status) = super::assess_version(
+            installed_version.as_deref(),
+            bundled_version.as_deref(),
+            configured_hash.as_deref(),
+            bundled_hash.as_deref(),
+            observation == ServiceObservation::Running,
+        );
         MeterVersionStatus {
             installed_version,
             bundled_version,

@@ -1,6 +1,6 @@
 {
   "name": "@codex-quota-guard/client",
-  "version": "0.4.12",
+  "version": "0.4.14",
   "private": true,
   "description": "Codex quota dashboard with an independent Windows metering service",
   "type": "module",
@@ -15,6 +15,7 @@
     "test:packaging": "node --test native-build.test.mjs verify-desktop-package.test.mjs",
     "test:autostart-installer": "node --test src-tauri/tests/autostart-installer.test.mjs",
     "test:installer": "node --test src-tauri/tests/*test.mjs",
+    "test:meter-updater": "node --test ../meter/tests/update-worker.test.mjs",
     "typecheck": "tsc --noEmit",
     "format": "prettier --write \"src/**/*.{js,jsx,ts,tsx,css,json}\"",
     "format:check": "prettier --check \"src/**/*.{js,jsx,ts,tsx,css,json}\"",

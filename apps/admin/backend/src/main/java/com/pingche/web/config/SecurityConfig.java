@@ -57,7 +57,7 @@ public class SecurityConfig {
                 "DELETE",
                 "OPTIONS"
         ));
-        configuration.setAllowedHeaders(List.of("Authorization", "Content-Type",
+        configuration.setAllowedHeaders(List.of("Authorization", "Content-Type", "X-Chunk-SHA256",
                 ClientAccessService.DEVICE_HEADER, "X-CQG-Queue-Version"));
         configuration.setAllowCredentials(false);
         configuration.setMaxAge(600L);
@@ -113,7 +113,7 @@ public class SecurityConfig {
                                 "/api/v1/auth/login",
                                 "/api/v1/auth/refresh"
                         ).permitAll()
-                        .requestMatchers(HttpMethod.GET,"/api/v1/desktop-updates/**").permitAll()
+                        .requestMatchers(HttpMethod.GET,"/api/v1/desktop-updates/**","/api/v1/meter-updates/**").permitAll()
                         .requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
                         .requestMatchers("/api/v1/meter/**").hasRole("METER")
                         .anyRequest().authenticated())

@@ -1,3 +1,5 @@
+import axios, { type AxiosProgressEvent } from 'axios';
+
 export type UserRole = 'USER' | 'ADMIN';
 export type UserStatus = 'ACTIVE' | 'DISABLED';
 export type TeamStatus = 'ACTIVE' | 'DISABLED';
@@ -899,7 +901,7 @@ async function readPayload(response: Response): Promise<unknown> {
 export async function request<T>(
   path: string,
   init: RequestInit = {},
-  options: { authenticated?: boolean; retryAfterRefresh?: boolean } = {},
+  options: { authenticated?: boolean; retryAfterRefresh?: boolean; onUploadProgress?: (event: AxiosProgressEvent) => void } = {},
 ): Promise<T> {
   const authenticated = options.authenticated !== false;
   const requestSession = authenticated ? getSession() : null;
@@ -910,7 +912,9 @@ export async function request<T>(
     headers.set('Authorization', `Bearer ${requestSession.accessToken}`);
   }
 
-  const response = await fetch(path, { ...init, headers });
+  const response = options.onUploadProgress
+    ? await uploadResponse(path, init, headers, options.onUploadProgress)
+    : await fetch(path, { ...init, headers });
   const payload = await readPayload(response);
 
   if (response.status === 401 && authenticated && options.retryAfterRefresh !== false) {
@@ -949,6 +953,16 @@ export async function request<T>(
   }
 
   return payload as T;
+}
+
+async function uploadResponse(path: string, init: RequestInit, headers: Headers, onUploadProgress: (event: AxiosProgressEvent) => void): Promise<Response> {
+  const response = await axios.request<string>({
+    url: path, method: init.method || 'POST', data: init.body,
+    headers: Object.fromEntries(headers.entries()), signal: init.signal ?? undefined,
+    onUploadProgress, timeout: 180_000, withCredentials: false,
+    responseType: 'text', transformResponse: value => value, validateStatus: () => true,
+  });
+  return new Response(response.status === 204 ? null : response.data, { status: response.status });
 }
 
 async function refreshAuthenticatedSession(refreshToken: string): Promise<AuthResponse> {

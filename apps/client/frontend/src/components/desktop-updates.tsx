@@ -137,7 +137,7 @@ export function DesktopUpdatesProvider({ children }: { children: ReactNode }) {
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50" />
           <Dialog.Content
-            className="fixed left-1/2 top-1/2 z-50 w-[calc(100%-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-xl border bg-background p-5 shadow-xl"
+            className="fixed left-1/2 top-1/2 z-50 max-h-[calc(100vh-2rem)] w-[calc(100%-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-xl border bg-background p-5 shadow-xl"
             onEscapeKeyDown={(event) => {
               if (busy.current) event.preventDefault();
             }}
@@ -280,7 +280,7 @@ export function DesktopUpdateSettings() {
         </div>
         {updates.data?.latestVersion && (
           <div>
-            <dt className="text-muted-foreground">后台最新版本</dt>
+            <dt className="text-muted-foreground">最新版本</dt>
             <dd className="mt-1 font-medium">v{updates.data.latestVersion}</dd>
           </div>
         )}

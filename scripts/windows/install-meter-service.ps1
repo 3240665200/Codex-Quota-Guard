@@ -18,6 +18,7 @@ function Test-MeterBinary([string]$Path) {
     $startInfo.CreateNoWindow = $true
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
+    $startInfo.EnvironmentVariables.Remove('QUOTA_GUARD_CODEX_CAPTURE')
     $probe = [Diagnostics.Process]::Start($startInfo)
     try {
         if (-not $probe.WaitForExit(10000)) {
@@ -36,6 +37,15 @@ function Test-MeterBinary([string]$Path) {
     } finally {
         $probe.Dispose()
     }
+}
+
+function Select-MeterSetupBinary([string]$BundledPath,[string]$BundledVersion,[string]$InstalledPath,[string]$InstalledVersion) {
+    $bundled=$null; $installed=$null
+    if ($InstalledPath -and [Version]::TryParse($BundledVersion,[ref]$bundled) -and
+        [Version]::TryParse($InstalledVersion,[ref]$installed) -and $installed -gt $bundled) {
+        return @{ Path=$InstalledPath; Version=$InstalledVersion }
+    }
+    return @{ Path=$BundledPath; Version=$BundledVersion }
 }
 
 function Write-MeterSetupStatus([string]$State, [string]$Stage, [string]$Reason = '') {
@@ -665,6 +675,13 @@ if ($existingConfiguration) {
 New-Item -ItemType Directory -Path $stateDirectory -Force | Out-Null
 
 # Stage and verify the replacement before stopping the existing service.
+if ($service -and (Test-Path -LiteralPath $installedBinary -PathType Leaf)) {
+    $existingVersion=$null
+    try { $existingVersion=Test-MeterBinary $installedBinary } catch {}
+    $selected=Select-MeterSetupBinary $sourceBinary $binaryVersion $installedBinary $existingVersion
+    # A client installer or repair must preserve a newer independently updated service.
+    $sourceBinary=$selected.Path; $binaryVersion=$selected.Version
+}
 $setupStage = 'STAGE_BINARY'
 $stagedBinary = Join-Path $install "quota-guard-meter.$([Guid]::NewGuid().ToString('N')).new"
 Copy-Item -LiteralPath $sourceBinary -Destination $stagedBinary -Force

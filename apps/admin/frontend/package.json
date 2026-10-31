@@ -14,9 +14,11 @@
   "dependencies": {
     "@ant-design/icons": "^6.3.2",
     "@ant-design/pro-components": "^3.1.14-7",
+    "@noble/hashes": "^2.4.0",
     "@umijs/max": "^4.7.3",
     "antd": "^6.6.0",
     "antd-style": "^4.1.0",
+    "axios": "1.20.0",
     "jsqr": "1.4.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",

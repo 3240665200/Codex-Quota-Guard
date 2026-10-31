@@ -121,7 +121,7 @@ fn fingerprint(path: &Path, limit: u64) -> Result<Option<String>, ()> {
 }
 
 #[cfg(windows)]
-pub(crate) use native_security::ProtectedEvidenceChannel;
+pub(crate) use native_security::{ProtectedEvidenceChannel, ServiceDirectoryPins, system_account, validate_service_file};
 
 /// This is a privilege boundary, not a secret. Only elevated administrators and
 /// SYSTEM may publish evidence. Keep all directory handles pinned through each
@@ -465,6 +465,40 @@ mod native_security {
             .open(path)
     }
 
+    pub(crate) fn system_account() -> bool { current_sid().as_deref()==Ok(SYSTEM) }
+
+    pub(super) fn validate_service_security(summary:&SecuritySummary)->Result<(),()> {
+        validate_security(summary,false)?;
+        let writes=REPLACE_RIGHTS|0x2|0x4|0x10|0x100|0x40000000|0x02000000;
+        if summary.grants.iter().any(|g|!g.inherit_only && !privileged(&g.sid) && g.sid!=TRUSTED_INSTALLER && g.mask&writes!=0){return Err(());}
+        Ok(())
+    }
+    pub(crate) fn validate_service_file(path:&Path)->Result<(),()> {
+        let file=OpenOptions::new().read(true).share_mode(FILE_SHARE_READ).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(path).map_err(|_|())?;
+        let metadata=file.metadata().map_err(|_|())?;
+        if !metadata.is_file() || metadata.file_attributes()&0x400!=0 {return Err(());}
+        validate_service_security(&security(&file)?)
+    }
+
+    /// Pins service ancestors and rejects non-administrator write access to the service directory.
+    pub(crate) struct ServiceDirectoryPins { _handles: Vec<File> }
+    impl ServiceDirectoryPins {
+        pub(crate) fn open(directory: &Path) -> Result<Self, ()> {
+            if !directory.is_absolute() || directory.components().any(|c| matches!(c,Component::ParentDir|Component::CurDir)) {return Err(());}
+            let mut ancestors:Vec<_>=directory.ancestors().collect();ancestors.reverse();
+            let mut handles=Vec::new();
+            for path in ancestors {
+                let handle=pin_directory(path).map_err(|_|())?;
+                let metadata=handle.metadata().map_err(|_|())?;
+                if !metadata.is_dir() || metadata.file_attributes() & 0x400 != 0 {return Err(());}
+                let summary=security(&handle)?;validate_security(&summary,false)?;
+                if path==directory {validate_service_security(&summary)?;}
+                handles.push(handle);
+            }
+            Ok(Self {_handles:handles})
+        }
+    }
+
     pub(crate) struct ProtectedEvidenceChannel {
         directory: PathBuf,
         _pinned_directories: Vec<File>,
@@ -759,5 +793,18 @@ mod tests {
             summary.grants[0].mask = dangerous;
             assert!(validate_security(&summary, false).is_err());
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn service_update_files_allow_user_reads_but_never_user_writes() {
+        use native_security::{validate_service_security,AccessGrant,SecuritySummary};
+        let mut summary=SecuritySummary {owner:"S-1-5-32-544".into(),protected:false,grants:vec![AccessGrant {sid:"S-1-5-32-545".into(),mask:0x1200a9,inherit_only:false}]};
+        assert!(validate_service_security(&summary).is_ok());
+        for write in [0x2,0x4,0x10,0x100,0x40,0x40000,0x80000,0x40000000] {
+            summary.grants[0].mask=write;assert!(validate_service_security(&summary).is_err());
+        }
+        summary.grants[0].mask=0x1200a9;summary.owner="S-1-5-21-1-2-3-1001".into();
+        assert!(validate_service_security(&summary).is_err());
     }
 }

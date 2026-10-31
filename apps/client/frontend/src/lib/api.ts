@@ -1511,6 +1511,15 @@ export const api = {
     if (remote.currentVersion !== local.currentVersion) throw new Error("更新信息与当前客户端版本不匹配。");
     return { ...remote, ...local, origin };
   },
+  meterUpdateCheck: async (currentVersion: string) => {
+    if (!/^\d+\.\d+\.\d+$/.test(currentVersion)) throw new Error("统计程序版本号无效。");
+    const local = desktopVersionSchema.parse(await invoke("desktop_update_info"));
+    if (local.target !== "windows") return null;
+    const config = await getServerConfig(true); const origin = serverOrigin(config);
+    const response = await axios.get<unknown>(`${origin}/api/v1/meter-updates/info/windows/${local.arch}/${currentVersion}`, { timeout: 20_000, withCredentials: false });
+    if (origin !== serverOrigin(await getServerConfig(true))) throw new Error("服务器地址已变化，请重新检查更新。");
+    return desktopUpdateSchema.extend({ mandatory: z.literal(true) }).parse(response.data);
+  },
   startupGateCheck: () =>
     invokeValidated("startup_gate_check", startupGateSchema),
   startupGuardStatus: () =>

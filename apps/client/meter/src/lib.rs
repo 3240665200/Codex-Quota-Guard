@@ -25,6 +25,7 @@ pub fn speed_detection_probe(home: &Path) -> BTreeMap<String, usize> {
     modes
 }
 mod server_state;
+pub mod self_update;
 use audit::{AuditKind, AuditLog};
 pub use server_state::prepare_server_state;
 #[cfg(windows)]
@@ -1303,6 +1304,7 @@ fn ensure_current_owner(config: &MeterConfig, expected_user_id: uuid::Uuid) -> R
 }
 
 pub struct MeterRuntime {
+    shutdown_signal: Option<&'static std::sync::atomic::AtomicBool>,
     last_speed_review: Option<Instant>,
     last_review_upload: Option<(Instant, bool)>,
     review_submitted_events: usize,
@@ -1380,6 +1382,7 @@ impl MeterRuntime {
             )
         })?;
         Ok(Self {
+            shutdown_signal: None,
             last_speed_review: None,
             last_review_upload: None,
             config,
@@ -1500,6 +1503,8 @@ impl MeterRuntime {
         Ok(())
     }
 
+    pub fn set_shutdown_signal(&mut self, signal: &'static std::sync::atomic::AtomicBool) { self.shutdown_signal=Some(signal); }
+
     pub fn fatal_error(&self) -> Option<&'static str> {
         self.capture.fatal_error()
     }
@@ -1507,6 +1512,7 @@ impl MeterRuntime {
     // Recheck between bounded HTTP operations so a failed collector cannot
     // remain hidden behind a large upload backlog before SCM recovers it.
     fn ensure_operational(&self) -> Result<(), String> {
+        if self.shutdown_signal.is_some_and(|signal|signal.load(Ordering::SeqCst)) {return Err("METER_STOP_REQUESTED".into());}
         if let Some(code) = self.capture.fatal_error() {
             return Err(code.into());
         }

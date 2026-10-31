@@ -79,6 +79,7 @@ const emptyAnalytics = {
 describe("UsageActivityPanel", () => {
   beforeEach(async () => {
     await http.prepare(api);
+    vi.spyOn(api, "meterUpdateCheck").mockImplementation(async currentVersion => ({ currentVersion, latestVersion: "0.2.99", available: true, notes: "", publishedAt: null, sizeBytes: 128, sha256: "a".repeat(64), mandatory: true }));
     http.respond(ledger);
     http.route("GET", "/api/v1/client/usage/events", (config) => {
       const page = Number(config.params?.page ?? 0);
@@ -364,7 +365,8 @@ describe("UsageActivityPanel", () => {
     expect(onStart).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole("tab", { name: "运行诊断" }));
     expect(screen.getByText("0.1.0")).toBeVisible();
-    expect(screen.getAllByText("0.1.1")).toHaveLength(2);
+    expect(screen.getAllByText("0.1.1")).toHaveLength(1);
+    expect(await screen.findByText("0.2.99")).toBeVisible();
   });
 
   it("does not treat an unknown installed version as current", async () => {
@@ -433,7 +435,8 @@ describe("UsageActivityPanel", () => {
     expect(screen.getByText(/运行版本 0.1.0 与已安装版本 0.1.1/)).toBeVisible();
     await userEvent.click(screen.getByRole("tab", { name: "运行诊断" }));
     expect(screen.getByText("0.1.0")).toBeVisible();
-    expect(screen.getAllByText("0.1.1")).toHaveLength(2);
+    expect(screen.getAllByText("0.1.1")).toHaveLength(1);
+    expect(await screen.findByText("0.2.99")).toBeVisible();
   });
 
   it("shows retained historical events as a warning while the service remains running", () => {

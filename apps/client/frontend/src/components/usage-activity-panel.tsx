@@ -399,6 +399,12 @@ export function UsageActivityPanel({
     enabled: legacyView || activeView === "diagnostics",
     refetchInterval: 30000,
   });
+  const meterLatest = useQuery({
+    queryKey: ["meter-latest-release", status?.version],
+    queryFn: () => api.meterUpdateCheck(status?.version ?? "0.0.0"),
+    enabled: activeView === "diagnostics",
+    retry: false, refetchInterval: 60_000,
+  });
   const pairingError = useQuery({
     queryKey: ["meter-pairing-error", userId],
     queryFn: api.meterPairingError,
@@ -893,12 +899,13 @@ export function UsageActivityPanel({
                   </dd>
                 </div>
                 <div>
-                  <dt className="text-muted-foreground">安装包版本</dt>
+                  <dt className="text-muted-foreground">最新版本</dt>
                   <dd className="mt-0.5 tabular-nums [overflow-wrap:anywhere]">
-                    {meterVersion.data?.bundledVersion ?? "未知"}
+                    {meterLatest.data?.latestVersion ?? (meterLatest.isError ? "暂不可用" : meterLatest.isPending ? "正在读取…" : "尚未发布")}
                   </dd>
                 </div>
               </dl>
+              <p className="mt-2 text-xs text-muted-foreground">统计服务独立检查并静默强制更新，无需打开客户端或手动确认。</p>
               {meterVersion.isError ? (
                 <p className="mt-2 text-xs text-amber-700">
                   暂时无法读取统计程序版本，请刷新重试。
