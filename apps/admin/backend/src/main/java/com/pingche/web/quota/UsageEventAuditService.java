@@ -14,12 +14,14 @@ public class UsageEventAuditService {
     private final UserRepository users;
     private final CodexUsageEventRepository events;
     private final UsageBillingService billing;
+    private final UsageBillingOverrides overrides;
 
     public UsageEventAuditService(UserRepository users, CodexUsageEventRepository events,
-            UsageBillingService billing) {
+            UsageBillingService billing, UsageBillingOverrides overrides) {
         this.users = users;
         this.events = events;
         this.billing = billing;
+        this.overrides = overrides;
     }
 
     @Transactional(readOnly = true)
@@ -28,6 +30,7 @@ public class UsageEventAuditService {
             throw new DomainException("USER_NOT_FOUND", "User not found", HttpStatus.NOT_FOUND);
         }
         var pageData = events.findByUserIdOrderByReceivedAtDescIdDesc(userId, PageRequest.of(page,size));
-        return UsageEventAuditPage.from(pageData, billing.entries(pageData.getContent().stream().map(CodexUsageEvent::getId).toList()));
+        var corrected=overrides.effective(pageData.getContent()).stream().collect(Collectors.toMap(CodexUsageEvent::getId,event -> event));
+        return UsageEventAuditPage.from(pageData.map(event -> corrected.get(event.getId())), billing.entries(pageData.getContent().stream().map(CodexUsageEvent::getId).toList()));
     }
 }

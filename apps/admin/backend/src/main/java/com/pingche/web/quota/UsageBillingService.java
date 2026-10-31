@@ -27,10 +27,11 @@ public class UsageBillingService {
     private final UsageModelPriceRepository prices;
     private final CodexUsageEventRepository events;
     private final Clock clock;
+    private final UsageBillingOverrides overrides;
 
     public UsageBillingService(JdbcTemplate jdbc, UsageModelPriceRepository prices,
-            CodexUsageEventRepository events, Clock clock) {
-        this.jdbc = jdbc; this.prices = prices; this.events = events; this.clock = clock;
+            CodexUsageEventRepository events, Clock clock, UsageBillingOverrides overrides) {
+        this.jdbc = jdbc; this.prices = prices; this.events = events; this.clock = clock; this.overrides=overrides;
     }
 
     @Transactional
@@ -55,7 +56,7 @@ public class UsageBillingService {
     /** Only unresolved missing-price rows may be completed; PRICED rows are never updated. */
     @Transactional
     public int reconcileMissingPrices() {
-        List<String> ids = jdbc.query("select b.event_id from usage_billing_entries b join codex_usage_events e on e.id=b.event_id "
+        List<String> ids = jdbc.query("select b.event_id from usage_billing_entries b join usage_effective_events e on e.id=b.event_id "
                 + "join usage_model_prices p on p.model=e.model where b.cost_status='MISSING_PRICE' order by b.event_id limit 500",
                 (rs,n) -> rs.getString(1));
         int updated = 0;
@@ -66,6 +67,7 @@ public class UsageBillingService {
             String mode = (String) row.get("mode_status");
             Mode resolved = "FAST".equals(mode) ? new Mode("fast", mode, (String) row.get("mode_source"))
                     : "STANDARD".equals(mode) ? new Mode("standard", mode, (String) row.get("mode_source"))
+                    : "ADMIN_CONFIRMED".equals(row.get("mode_source")) ? new Mode(null,"UNRECORDED","ADMIN_CONFIRMED")
                     : "HISTORICAL_RECALC".equals(origin) ? new Mode("standard", "UNRECORDED", "HISTORICAL_UNRECORDED")
                     : resolveMode(event);
             updated += write(event, (UUID) row.get("official_account_id"), origin, resolved, true);
@@ -130,12 +132,27 @@ public class UsageBillingService {
         return updated;
     }
 
+    /** Called only by the audited administrator review transaction after locking and preview validation. */
+    @Transactional
+    public int recalculateReviewed(String id,String tier,UUID administrator) {
+        var row=jdbc.queryForMap("select * from usage_billing_entries where event_id=? for update",id);
+        if(row.get("cost_usd")!=null) throw new DomainException("BILLING_REVIEW_ALREADY_PRICED","记录已入账，不能再次改写。",HttpStatus.CONFLICT);
+        String status="fast".equals(tier)?"FAST":"standard".equals(tier)?"STANDARD":"UNRECORDED";
+        String source=status.equals(row.get("mode_status")) ? (String)row.get("mode_source") : "ADMIN_CONFIRMED";
+        int updated=write(events.findById(id).orElseThrow(),(UUID)row.get("official_account_id"),(String)row.get("origin"),
+                new Mode("UNRECORDED".equals(status)?null:tier,status,source),true);
+        if("ADMIN_CONFIRMED".equals(source)) jdbc.update("update usage_billing_entries set mode_confirmed_by=?,mode_confirmed_at=? where event_id=?",
+                administrator,Timestamp.from(clock.instant()),id);
+        return updated;
+    }
+
     /** Metadata-only repair: missing/deleted events and billed amounts stay untouched. */
     @Transactional
     public int correctReportedMode(UUID userId, UUID deviceId, String eventId, String tier) {
         var rows=jdbc.queryForList("select b.* from usage_billing_entries b join codex_usage_events e on e.id=b.event_id "
                 + "where b.event_id=? and e.user_id=? and (e.meter_device_id=? or e.meter_device_id is null) for update",eventId,userId,deviceId);
-        if(rows.isEmpty() || rows.get(0).get("cost_usd")!=null || !"UNRECORDED".equals(rows.get(0).get("mode_status"))) return 0;
+        if(rows.isEmpty() || rows.get(0).get("cost_usd")!=null || !"UNRECORDED".equals(rows.get(0).get("mode_status"))
+                || "ADMIN_CONFIRMED".equals(rows.get(0).get("mode_source"))) return 0;
         var row=rows.get(0);
         var event=events.findById(eventId).orElseThrow();
         event.setServiceTier(tier);events.saveAndFlush(event);
@@ -159,7 +176,9 @@ public class UsageBillingService {
     }
 
     private int write(CodexUsageEvent event, UUID account, String origin, Mode mode, boolean reconcile) {
-        UsageModelPrice price = event.getModel() == null ? null : prices.findById(event.getModel()).orElse(null);
+        if(reconcile) event=overrides.effective(event);
+        UsageModelPrice price = reconcile ? overrides.customPrice(event.getId(),event.getModel()) : null;
+        if(price==null) price=event.getModel() == null ? null : prices.findById(event.getModel()).orElse(null);
         var estimate = UsagePricingCalculator.estimate(event, price);
         boolean fast = "fast".equals(mode.tier());
         BigDecimal multiplier = fast ? (price == null ? new BigDecimal("1.5") : price.getFastMultiplier()) : BigDecimal.ONE;

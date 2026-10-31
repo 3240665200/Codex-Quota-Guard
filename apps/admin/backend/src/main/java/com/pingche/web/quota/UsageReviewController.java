@@ -42,5 +42,12 @@ public class UsageReviewController {
     public ResponseEntity<Map<String, Integer>> act(@Valid @RequestBody Action request, Authentication authentication) {
         return result(Map.of("updated", reviews.review(request.ids(), request.action(), request.note(), (UUID) authentication.getPrincipal())));
     }
+    @GetMapping("/billing-reviewed")
+    public ResponseEntity<UsageReviewService.Page<UsageReviewService.PendingBill>> reviewedBilling(@RequestParam(required=false) UUID userId,
+            @RequestParam(defaultValue="0") @Min(0) @Max(1_000_000) int page,
+            @RequestParam(defaultValue="20") @Min(1) @Max(100) int size,
+            @RequestParam(required=false) Instant from,@RequestParam(required=false) Instant to) {
+        return result(reviews.reviewedBilling(userId,page,size,from,to));
+    }
     private <T> ResponseEntity<T> result(T value) { return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(value); }
 }

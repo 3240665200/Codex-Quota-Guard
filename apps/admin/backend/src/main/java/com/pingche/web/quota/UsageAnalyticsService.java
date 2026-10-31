@@ -64,7 +64,7 @@ public class UsageAnalyticsService {
                   b.cost_usd as estimated_cost_usd,
                   coalesce(b.cost_status,'PENDING_BILLING') as cost_status,
                   b.multiplier as billing_multiplier,b.mode_status as billing_mode_status,b.origin as billing_origin,b.mode_source as billing_mode_source
-                from codex_usage_events e
+                from usage_effective_events e
                 left join users u on u.id = e.user_id
                 left join teams t on t.id = e.team_id
                 left join usage_billing_entries b on b.event_id = e.id
@@ -163,7 +163,7 @@ public class UsageAnalyticsService {
     public Options options() {
         var params = new MapSqlParameterSource("since", clock.instant().minus(Duration.ofDays(93)).atOffset(ZoneOffset.UTC));
         List<Option> models = jdbc.query("""
-                select distinct model from codex_usage_events
+                select distinct model from usage_effective_events
                 where model is not null and occurred_at >= :since order by model limit 1000
                 """, params, (row, index) -> new Option(row.getString("model"), row.getString("model")));
         List<Option> users = jdbc.query("select id, display_name from users order by display_name, id limit 1000",

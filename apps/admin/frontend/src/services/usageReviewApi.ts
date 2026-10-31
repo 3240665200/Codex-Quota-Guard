@@ -14,7 +14,7 @@ export interface ReviewItem {
   reviewedAt: string | null; reviewedBy: string | null; reviewNote: string | null; event: ReviewEvent;
 }
 export interface PendingBill {
-  id: string; userId: string; displayName: string; email: string; occurredAt: string;
+  id: string; userId: string | null; displayName: string; email: string; occurredAt: string;
   model: string | null; totalTokens: number; costStatus: string; modeStatus: string;
 }
 export interface ReviewPage<T> { items: T[]; page: number; size: number; totalElements: number; totalPages: number }
@@ -26,13 +26,13 @@ export interface ReviewBulkJob extends ReviewFilters {
   succeededCount: number; skippedCount: number; failedCount: number; lastErrorCode: string | null;
 }
 const base = '/api/v1/admin/usage/reviews';
-export async function listReviews(params: ReviewFilters & { page: number; size: number; status?: string }, billing = false) {
+export async function listReviews(params: ReviewFilters & { page: number; size: number; status?: string }, billing = false, reviewed = false) {
   const query = new URLSearchParams({ page: String(params.page), size: String(params.size) });
   if (params.userId) query.set('userId', params.userId);
   if (params.status && !billing) query.set('status', params.status);
   if (params.from) query.set('from', params.from);
   if (params.to) query.set('to', params.to);
-  const result = await request<ReviewPage<ReviewItem | PendingBill>>(`${base}${billing ? '/billing' : ''}?${query}`, { cache: 'no-store' });
+  const result = await request<ReviewPage<ReviewItem | PendingBill>>(`${base}${billing ? reviewed ? '/billing-reviewed' : '/billing' : ''}?${query}`, { cache: 'no-store' });
   if (!result || !Array.isArray(result.items) || !Number.isSafeInteger(result.totalElements) || result.totalElements < 0)
     throw new Error('用量核对响应不完整，请刷新后重试。');
   return result;

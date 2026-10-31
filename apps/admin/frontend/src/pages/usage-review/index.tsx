@@ -7,6 +7,7 @@ import { listUsers, type UserResponse } from '../../services/api';
 import { confirmBillingMode, listReviews, reconcilePrices, reviewUsage, listReviewJobs, previewReviewJob, startReviewJob, type ReviewBulkJob, type PendingBill, type ReviewItem } from '../../services/usageReviewApi';
 import { activeJob, BulkJobs } from './bulk-jobs';
 import { reviewDatePreset, reviewDateQuery, type ReviewDates } from './review-dates';
+import { BillingEditor } from './billing-editor';
 
 const reasons: Record<string, string> = { TOO_OLD: '超过 30 天', FUTURE_TIME: '时间超前', CLIENT_DEFERRED: '设备延后提交' };
 const states: Record<string, string> = { PENDING: '待核对', ARCHIVED: '已归档 · 不计费', IMPORTED: '已按原始时间入账' };
@@ -33,6 +34,7 @@ export default function UsageReviewPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [detail, setDetail] = useState<ReviewItem>();
+  const [billingEditorId, setBillingEditorId] = useState<string>();
   const [action, setAction] = useState<Action>();
   const [actionIds, setActionIds] = useState<string[]>([]);
   const [draftJob, setDraftJob] = useState<ReviewBulkJob>();
@@ -46,16 +48,18 @@ export default function UsageReviewPage() {
   const userGeneration = useRef(0);
   const actionGeneration = useRef(0);
   const jobsRef = useRef(jobs); jobsRef.current = jobs;
-  const billing = tab === 'billing';
+  const billing = tab !== 'review';
+  const reviewedBilling = tab === 'reviewed-billing';
   const load = useCallback(async () => {
     const version = ++generation.current;
     setLoading(true); setError(''); setSelected([]);
     try {
-      const result = await listReviews({ page, size, status, userId, ...timeQuery }, billing);
+      const filters = { page, size, status, userId, ...timeQuery };
+      const result = reviewedBilling ? await listReviews(filters, true, true) : await listReviews(filters, billing);
       if (generation.current === version) { setRows(result.items); setTotal(result.totalElements); }
     } catch (failure) { if (generation.current === version) { setRows([]); setError(getErrorMessage(failure)); } }
     finally { if (generation.current === version) setLoading(false); }
-  }, [page, size, status, userId, billing, timeQuery]);
+  }, [page, size, status, userId, billing, reviewedBilling, timeQuery]);
   useEffect(() => { void load(); return () => { generation.current++; }; }, [load]);
   const searchUsers = useCallback(async (q: string) => {
     const version = ++userGeneration.current;
@@ -132,7 +136,7 @@ export default function UsageReviewPage() {
       <Alert type="info" showIcon title="正常用量自动入账，无需逐条人工核对。" description="时间异常的记录由新版统计程序分批提交到待审区，收件不计费。管理员可批量归档，或确认后按原始消耗时间入账；缺少价格、分项或速度模式的记录仍会保持待核算。" />
       <Card>
         <Tabs activeKey={tab} onChange={(next) => { setTab(next); setPage(0); setSelected([]); setAllMatching(false); }} items={[
-          { key: 'review', label: '异常上传待审' }, { key: 'billing', label: '计费信息待核算' },
+          { key: 'review', label: '异常上传待审' }, { key: 'billing', label: '计费信息待核算' }, { key: 'reviewed-billing', label: '人工核对记录' },
         ]} />
         <Space wrap style={{ marginBottom: 16 }}>
           <Select aria-label="筛选用户" style={{ width: 240 }} allowClear showSearch filterOption={false}
@@ -172,16 +176,16 @@ export default function UsageReviewPage() {
         <Table<Row> rowKey="id" dataSource={rows} loading={loading} scroll={{ x: 1050 }}
           rowSelection={{ selectedRowKeys: allMatching ? rows.filter((row) => 'status' in row && row.status === 'PENDING').map((row) => row.id) : selected,
             onChange: (keys) => { setAllMatching(false); setSelected(keys); }, preserveSelectedRowKeys: false,
-            getCheckboxProps: (row) => ({ disabled: saving || ('status' in row && row.status !== 'PENDING') }) }}
+            getCheckboxProps: (row) => ({ disabled: saving || ('status' in row && row.status !== 'PENDING') || ('costStatus' in row && row.costStatus === 'PRICED') }) }}
           pagination={{ current: page + 1, pageSize: size, total, showSizeChanger: true, pageSizeOptions: [20, 50, 100],
             onChange: (next, nextSize) => { setPage(nextSize === size ? next - 1 : 0); setSize(nextSize); setSelected([]); } }}
           columns={[
             { title: '用户', width: 210, render: (_, row) => <Space orientation="vertical" size={0}><b>{row.displayName}</b><Typography.Text type="secondary">{row.email}</Typography.Text></Space> },
             { title: '原始消耗时间', dataIndex: 'occurredAt', width: 190, render: date },
             { title: '模型 / Token', width: 180, render: (_, row) => { const e = 'event' in row ? row.event : row; return <Space orientation="vertical" size={0}><span>{e.model ?? '未记录模型'}</span><span>{count(e.totalTokens)} Token</span></Space>; } },
-            { title: billing ? '待核算原因' : '核对原因', width: 180, render: (_, row) => 'reason' in row ? <Tag color="warning">{reasons[row.reason]}</Tag> : <Space orientation="vertical" size={0}><Tag color="warning">{costs[row.costStatus] ?? row.costStatus}</Tag>{row.modeStatus === 'UNRECORDED' && <Typography.Text type="warning">速度模式未记录</Typography.Text>}</Space> },
-            { title: billing ? '说明' : '状态 / 收件时间', width: 230, render: (_, row) => 'status' in row ? <Space orientation="vertical" size={0}><Tag>{states[row.status]}</Tag><span>{date(row.receivedAt)}</span></Space> : <Typography.Text type="secondary">仅确认有依据的模式；分项缺失时不自动推算费用。</Typography.Text> },
-            { title: '操作', width: 95, render: (_, row) => 'event' in row && <Button type="link" onClick={() => setDetail(row)}>查看详情</Button> },
+            { title: billing ? '计费状态 / 待核算原因' : '核对原因', width: 180, render: (_, row) => 'reason' in row ? <Tag color="warning">{reasons[row.reason]}</Tag> : <Space orientation="vertical" size={0}><Tag color={row.costStatus === 'PRICED' ? 'success' : 'warning'}>{row.costStatus === 'PRICED' ? '已核算' : costs[row.costStatus] ?? row.costStatus}</Tag>{row.modeStatus === 'UNRECORDED' && <Typography.Text type="warning">速度模式未记录</Typography.Text>}</Space> },
+            { title: billing ? '说明' : '状态 / 收件时间', width: 230, render: (_, row) => 'status' in row ? <Space orientation="vertical" size={0}><Tag>{states[row.status]}</Tag><span>{date(row.receivedAt)}</span></Space> : <Typography.Text type="secondary">可核对模型、Token 分项、速度模式与单价；原始上报和修改日志保留，已入账快照只读。</Typography.Text> },
+            { title: '操作', width: 150, render: (_, row) => 'event' in row ? <Button type="link" onClick={() => setDetail(row)}>查看详情</Button> : <Button type="link" disabled={saving} onClick={() => setBillingEditorId(row.id)}>{row.costStatus === 'PRICED' ? '查看核对详情' : '补全计费信息'}</Button> },
           ]} />
       </Card>
       <BulkJobs jobs={jobs} error={jobsError} refresh={() => void refreshJobs()} />
@@ -216,5 +220,6 @@ export default function UsageReviewPage() {
         { key: 'note', label: '处理备注', children: detail.reviewNote ?? '—' },
       ]} />}
     </Modal>
+    {billingEditorId && <BillingEditor id={billingEditorId} onClose={() => setBillingEditorId(undefined)} onSaved={() => void load()} />}
   </PageContainer>;
 }

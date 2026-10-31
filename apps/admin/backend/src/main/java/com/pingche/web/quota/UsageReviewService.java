@@ -93,14 +93,23 @@ public class UsageReviewService {
 
     @Transactional(readOnly = true)
     public Page<PendingBill> pendingBilling(UUID userId, int page, int size, Instant fromAt, Instant toAt) {
-        StringBuilder filter = new StringBuilder(" where b.cost_usd is null" + (userId == null ? "" : " and e.user_id=?"));
+        return billingRecords(userId,page,size,fromAt,toAt,false);
+    }
+
+    @Transactional(readOnly = true)
+    public Page<PendingBill> reviewedBilling(UUID userId,int page,int size,Instant fromAt,Instant toAt) {
+        return billingRecords(userId,page,size,fromAt,toAt,true);
+    }
+
+    private Page<PendingBill> billingRecords(UUID userId,int page,int size,Instant fromAt,Instant toAt,boolean reviewed) {
+        StringBuilder filter = new StringBuilder((reviewed ? " where exists(select 1 from usage_billing_overrides o where o.event_id=b.event_id)" : " where b.cost_usd is null") + (userId == null ? "" : " and e.user_id=?"));
         var params = new ArrayList<Object>();
         if (userId != null) params.add(userId);
         appendRange(filter, params, "e", fromAt, toAt);
-        String from = " from usage_billing_entries b join codex_usage_events e on e.id=b.event_id join users u on u.id=e.user_id";
+        String from = " from usage_billing_entries b join usage_effective_events e on e.id=b.event_id left join users u on u.id=e.user_id";
         long total = jdbc.queryForObject("select count(*)" + from + filter, Long.class, params.toArray());
         params.add(size); params.add((long) page * size);
-        var rows = jdbc.query("select e.id,e.user_id,u.display_name,u.email,e.occurred_at,e.model,e.total_tokens,b.cost_status,b.mode_status"
+        var rows = jdbc.query("select e.id,e.user_id,coalesce(u.display_name,'已删除用户'),coalesce(u.email,''),e.occurred_at,e.model,e.total_tokens,b.cost_status,b.mode_status"
                 + from + filter + " order by e.received_at desc,e.id limit ? offset ?", (rs, n) -> new PendingBill(
                         rs.getString(1), rs.getObject(2, UUID.class), rs.getString(3), rs.getString(4), rs.getTimestamp(5).toInstant(),
                         rs.getString(6), rs.getLong(7), rs.getString(8), rs.getString(9)), params.toArray());

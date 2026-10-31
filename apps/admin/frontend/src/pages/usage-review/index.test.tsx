@@ -8,6 +8,7 @@ import { listReviews, reviewUsage, confirmBillingMode, reconcilePrices, listRevi
 
 vi.mock('../../services/api', () => ({ listUsers: vi.fn() }));
 vi.mock('../../services/usageReviewApi', () => ({ listReviews: vi.fn(), reviewUsage: vi.fn(), confirmBillingMode: vi.fn(), reconcilePrices: vi.fn(), listReviewJobs: vi.fn(), previewReviewJob: vi.fn(), startReviewJob: vi.fn() }));
+vi.mock('./billing-editor', () => ({ BillingEditor: ({ id }: { id: string }) => <section aria-label="完整计费核对表单">{id}</section> }));
 const job: ReviewBulkJob = { id: 'job-1', requestedBy: 'admin-1', action: 'ARCHIVE', status: 'DRAFT', createdAt: '2026-10-26T14:00:00Z',
   totalCount: 125, excludedCount: 0, processedCount: 0, succeededCount: 0, skippedCount: 0, failedCount: 0, lastErrorCode: null };
 const item: ReviewItem = {
@@ -72,4 +73,15 @@ it('requires selection, explicit confirmation and a review note before batch arc
   fireEvent.change(screen.getByRole('textbox', { name: '核对依据 / 处理备注' }), { target: { value: '确认历史测试记录，不计费' } });
   fireEvent.click(screen.getByRole('button', { name: '确认处理' }));
   await waitFor(() => expect(reviewUsage).toHaveBeenCalledWith([item.id], 'ARCHIVE', '确认历史测试记录，不计费'));
+});
+it('opens the full billing editor for a pending bill with missing model information', async () => {
+  vi.mocked(listReviews).mockImplementation(async (_, billing) => ({ items: billing ? [{ id: item.id, userId: item.userId,
+    displayName: item.displayName, email: item.email, occurredAt: item.occurredAt, model: null, totalTokens: 1234,
+    costStatus: 'MISSING_PRICE', modeStatus: 'STANDARD' }] : [item], page: 0, size: 20, totalElements: 1, totalPages: 1 }));
+  view();await screen.findByText('待核对用户');
+  fireEvent.click(screen.getByRole('tab', { name: '计费信息待核算' }));
+  fireEvent.click(await screen.findByRole('button', { name: '补全计费信息' }));
+  expect(screen.getByRole('region', { name: '完整计费核对表单' })).toHaveTextContent(item.id);
+  fireEvent.click(screen.getByRole('tab', { name: '人工核对记录' }));
+  await waitFor(() => expect(listReviews).toHaveBeenLastCalledWith(expect.anything(), true, true));
 });
